@@ -13,6 +13,19 @@ class APIModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ErrorDetail(APIModel):
+    """Stable, safe error fields returned by the HTTP API."""
+
+    code: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9_]+$")
+    message: str = Field(min_length=1, max_length=500)
+
+
+class ErrorResponse(APIModel):
+    """Consistent JSON error envelope for Phase 1 routes."""
+
+    error: ErrorDetail
+
+
 class CreateConversationRequest(APIModel):
     """Optional initial title for a new conversation."""
 
