@@ -4,6 +4,11 @@ This is the execution plan for the first usable vertical slice: a single-user ch
 
 Read [project brief](project-brief.md) first. Its constraints override convenience decisions in this plan.
 
+For a human-readable walkthrough of the delivered code, verification paths,
+and commit history, see the
+[Phase 1 implementation guide](phase-1-implementation-guide.md). This plan is
+the normative backlog; the guide explains how each part was realized.
+
 ## Scope boundary
 
 Phase 1 includes only conversation chat:
@@ -38,6 +43,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 
 ### P0.1 — Record the Phase 1 decisions
 
+**Implementation reference:** [P0.1 — Phase 1 decisions](phase-1-implementation-guide.md#p01--phase-1-decisions)
+
 **Dependencies:** none  
 **Decision required:** yes
 
@@ -67,6 +74,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 
 ### P0.2 — Establish local quality and test tooling
 
+**Implementation reference:** [P0.2 — Quality and test tooling](phase-1-implementation-guide.md#p02--quality-and-test-tooling)
+
 **Dependencies:** none
 
 **Goal:** make every later task independently verifiable.
@@ -94,6 +103,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 **Out of scope:** end-to-end browser automation, coverage targets, or production observability.
 
 ### P0.3 — Define application settings, schemas, and API contract
+
+**Implementation reference:** [P0.3 — Settings, schemas, and API contract](phase-1-implementation-guide.md#p03--settings-schemas-and-api-contract)
 
 **Dependencies:** P0.1
 
@@ -154,6 +165,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 
 ### P1.1 — Implement Firestore conversation and message repositories
 
+**Implementation reference:** [P1.1 — Conversation and message persistence](phase-1-implementation-guide.md#p11--conversation-and-message-persistence)
+
 **Dependencies:** P0.2, P0.3
 
 **Goal:** create a storage boundary that supports basic chat and later identity migration without leaking Firestore details into API code.
@@ -185,6 +198,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 
 ### P1.2 — Implement the replaceable Gemini streaming adapter
 
+**Implementation reference:** [P1.2 — Gemini streaming adapter](phase-1-implementation-guide.md#p12--gemini-streaming-adapter)
+
 **Dependencies:** P0.1, P0.2, P0.3
 
 **Goal:** make one model provider work through a small internal interface that can be faked and replaced.
@@ -214,6 +229,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 
 ### P1.3 — Implement conversation service and non-streaming routes
 
+**Implementation reference:** [P1.3 — Conversation service and non-streaming API](phase-1-implementation-guide.md#p13--conversation-service-and-non-streaming-api)
+
 **Dependencies:** P0.2, P0.3, P1.1
 
 **Goal:** expose reliable create, list, and retrieve operations before introducing streamed turns.
@@ -241,6 +258,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 **Out of scope:** pagination UI, deleting conversations, searching history, user accounts, and message mutation routes.
 
 ### P1.4 — Implement streamed message, regenerate, and edit-and-retry flows
+
+**Implementation reference:** [P1.4 — Streamed chat-turn lifecycle](phase-1-implementation-guide.md#p14--streamed-chat-turn-lifecycle)
 
 **Dependencies:** P0.2, P0.3, P1.1, P1.2, P1.3
 
@@ -274,6 +293,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 
 ### P1.5 — Build the frontend application shell and API client
 
+**Implementation reference:** [P1.5 — Frontend shell and API boundary](phase-1-implementation-guide.md#p15--frontend-shell-and-api-boundary)
+
 **Dependencies:** P0.2, P0.3, P1.3
 
 **Goal:** establish a small, typed frontend boundary before rendering streaming chat behavior.
@@ -301,6 +322,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 **Out of scope:** rich Markdown/code rendering, message edit controls, theming, user preferences, and responsive visual polish beyond basic usability.
 
 ### P1.6 — Add the chat composer, SSE rendering, and retry controls
+
+**Implementation reference:** [P1.6 — Composer, streaming UI, and retry controls](phase-1-implementation-guide.md#p16--composer-streaming-ui-and-retry-controls)
 
 **Dependencies:** P0.2, P1.4, P1.5
 
@@ -331,6 +354,8 @@ Tasks marked **decision required** should stop for user input only when the docu
 **Out of scope:** attachments, voice, Markdown extensions, citations, tool-progress visualization, and multi-user synchronization.
 
 ### P1.7 — Document, deploy, and verify the Phase 1 vertical slice
+
+**Implementation reference:** [P1.7 — Local use, deployment, and verification](phase-1-implementation-guide.md#p17--local-use-deployment-and-verification)
 
 **Dependencies:** P0.2, P1.4, P1.6
 

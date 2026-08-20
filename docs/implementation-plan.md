@@ -2,7 +2,9 @@
 
 This plan builds a usable personal chat system first, then progressively turns it into a memory and research-agent platform. Each phase should be evaluated before the next one adds complexity.
 
-For task-level dependencies, requirements, and acceptance criteria for the current work, see [Phase 0–1 implementation plan](phase-1-implementation-plan.md).
+For task-level dependencies, requirements, and acceptance criteria, see the
+[Phase 0–1 implementation plan](phase-1-implementation-plan.md) and the
+[Phase 2 implementation plan](phase-2-implementation-plan.md).
 
 ## Phase 0 — Define the learning baseline
 
@@ -24,6 +26,9 @@ For task-level dependencies, requirements, and acceptance criteria for the curre
 **Outcome:** a usable personal chat application with no long-term memory.
 
 ## Phase 2 — Add context-window management
+
+For the Phase 2 task backlog, dependencies, requirements, and acceptance
+criteria, see [Phase 2 implementation plan](phase-2-implementation-plan.md).
 
 1. Define a context-assembly interface.
 2. Add token-aware recent-message selection.
