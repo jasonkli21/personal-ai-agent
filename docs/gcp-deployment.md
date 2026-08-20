@@ -18,8 +18,8 @@ Cloud Run: personal-ai-api (FastAPI) ----> Firestore (Native mode)
                          |
                   future consolidation / research / expiry jobs
 
-Cloud Run services read provider credentials from Secret Manager when real LLM
-and search adapters are introduced.
+The Phase 1 API reads its Gemini credential from Secret Manager. The worker
+remains deployed but idle; Phase 1 chat does not publish Pub/Sub messages.
 ```
 
 This keeps the synchronous chat and research request path simple. Pub/Sub is not part of initial chat latency; it is reserved for durable work that can happen later, such as memory consolidation, evidence-expiry maintenance, or longer research tasks.
@@ -39,20 +39,30 @@ This keeps the synchronous chat and research request path simple. Pub/Sub is not
 
 ### Prerequisites
 
-1. Install the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) and authenticate with an account permitted to create the listed resources.
+1. Install the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) and authenticate with an account permitted to administer Cloud Run, Firestore, Pub/Sub, Secret Manager, service accounts, and IAM bindings in the target project.
 2. Create a GCP project with billing enabled. Free quotas are applied before usage charges, but deployment is not a promise of zero cost.
-3. From the repository root, run:
+3. Create a billing budget and at least one alert before deploying. Review it after the first smoke test.
+4. Create the Gemini API-key secret without putting its value in a committed file or shell history. The default name expected by the script is `personal-ai-gemini-api-key`:
+
+```bash
+printf '%s' "$GEMINI_API_KEY" | gcloud secrets create personal-ai-gemini-api-key \
+  --replication-policy=automatic --data-file=-
+```
+
+Set `GEMINI_API_KEY` only in the current terminal or use your secret-entry workflow; do not paste the key into a command-line argument. If the secret already exists, add a new version with `gcloud secrets versions add personal-ai-gemini-api-key --data-file=-` and pipe the value in the same way.
+
+5. From the repository root, run:
 
 ```bash
 chmod +x infrastructure/gcp/deploy.sh
-infrastructure/gcp/deploy.sh YOUR_PROJECT_ID us-central1
+infrastructure/gcp/deploy.sh YOUR_PROJECT_ID us-central1 personal-ai-gemini-api-key gemini-2.5-flash
 ```
 
-The script enables required APIs, creates the default Firestore database if absent, creates a Pub/Sub topic and authenticated push subscription, then deploys the API, worker, and web service. It prints the web URL and health-check URL.
+The script enables required APIs, creates the default Firestore database if absent, creates a Pub/Sub topic and authenticated push subscription, creates or reuses a dedicated API runtime service account, grants it the named-secret and Firestore permissions, then deploys the API, worker, and web service. It injects `AI_API_KEY` using Secret Manager rather than an environment file or command-line value. It prints the web URL and health-check URL, never the secret.
 
 ### Verify the end-to-end baseline
 
-Open the printed `/api/health` URL. The web service calls the API server-side, so a successful response confirms that both Cloud Run services are deployed and connected. Firestore and Pub/Sub are provisioned for the next implementation phases; no user data or jobs are written by the initial health check.
+Use the [Phase 1 deployment checklist](phase-1-deployment-checklist.md) after deployment. It verifies the web-to-API path, a streamed chat turn, and Firestore persistence. A successful `/api/health` response confirms that the web service can reach the API server-side; it does not exercise the model or Firestore.
 
 ## Free-tier-aware defaults
 
@@ -65,4 +75,4 @@ Keep a billing budget and usage alerts enabled. External model, web-search, trav
 
 ## Security boundary
 
-The bootstrap makes the web and API endpoints public so the two-service health check runs without identity infrastructure. It is not ready for personal data. Before storing real chats or provider keys, implement Phase 9 authentication and authorization, restrict API ingress as appropriate, and add secrets through Secret Manager rather than environment files.
+The bootstrap makes the web and API endpoints public so the two-service health check runs without identity infrastructure. It is unsuitable for sensitive personal data. Before storing real chats or provider keys, implement Phase 9 authentication and authorization, restrict API ingress as appropriate, and add secrets through Secret Manager rather than environment files.
