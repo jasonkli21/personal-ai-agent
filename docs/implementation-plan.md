@@ -1,0 +1,109 @@
+# Implementation plan
+
+This plan builds a usable personal chat system first, then progressively turns it into a memory and research-agent platform. Each phase should be evaluated before the next one adds complexity.
+
+For task-level dependencies, requirements, and acceptance criteria for the current work, see [Phase 0–1 implementation plan](phase-1-implementation-plan.md).
+
+## Phase 0 — Define the learning baseline
+
+1. Write short architecture decisions: initial LLM provider, storage choice, deployment target, and privacy boundaries.
+2. Define the initial data vocabulary: users, conversations, messages, memories, research sessions, evidence, and entities.
+3. Add local development setup, formatting, tests, and continuous integration.
+4. Create a small set of evaluation conversations before building advanced behavior.
+
+**Outcome:** a reproducible project foundation and a way to measure progress.
+
+## Phase 1 — Build the basic chat system
+
+1. Implement conversation and message persistence.
+2. Create FastAPI endpoints for conversations and streamed responses.
+3. Add a minimal Next.js chat interface with conversation history.
+4. Implement an LLM provider adapter and error/retry handling.
+5. Support regenerate and edit/retry flows.
+
+**Outcome:** a usable personal chat application with no long-term memory.
+
+## Phase 2 — Add context-window management
+
+1. Define a context-assembly interface.
+2. Add token-aware recent-message selection.
+3. Add conversation summaries once a thread becomes large.
+4. Expose a development-only context-inspection view.
+5. Evaluate answer quality as conversations grow.
+
+**Outcome:** conversations remain coherent without sending all history every time.
+
+## Phase 3 — Add simple long-term memory
+
+1. Define memory types: preference, episodic observation, semantic summary, and explicit user correction.
+2. Extract candidate memories from conversations.
+3. Store memory with provenance, confidence, timestamps, and embeddings.
+4. Retrieve relevant memories for a new query.
+5. Inject retrieved memory through the context layer.
+6. Build tests for relevance, contradiction, temporal change, and non-retrieval of irrelevant facts.
+
+**Outcome:** the system remembers useful personal context across conversations.
+
+## Phase 4 — Make memory experimental
+
+1. Implement memory scoring: semantic similarity, importance, recency, frequency, and confidence.
+2. Add consolidation jobs that turn related episodes into general preferences.
+3. Add contradiction handling and supersession.
+4. Add forgetting and decay policies.
+5. Compare fixed retrieval, scored retrieval, and consolidated-memory approaches using the evaluation suite.
+
+**Outcome:** memory becomes a researchable subsystem rather than generic RAG.
+
+## Phase 5 — Build the reusable search platform
+
+1. Define research-session, search-query, evidence, and source-adapter contracts.
+2. Implement a basic web-search adapter.
+3. Add evidence extraction, source attribution, timestamps, TTLs, and deduplication.
+4. Add a query-planning interface and a simple single-pass research flow.
+5. Add evidence selection and reranking before synthesis.
+6. Generate answers with evidence links and clear uncertainty.
+
+**Outcome:** the assistant can conduct fresh, source-grounded research without confusing it with long-term memory.
+
+## Phase 6 — Add entities, constraints, and ranking
+
+1. Define canonical entities and entity-resolution interfaces.
+2. Implement deterministic hard constraints, such as budget, date, availability, dimensions, or location.
+3. Implement explainable soft ranking.
+4. Use memory-derived preferences only after hard constraints are satisfied.
+5. Add evaluation cases for stale data, conflicting sources, duplicate entities, and invalid recommendations.
+
+**Outcome:** research turns into structured decision support instead of a generic web summary.
+
+## Phase 7 — Build travel and shopping agents
+
+1. Implement the travel domain: places, neighborhoods, hotels, flights, restaurants, and itineraries.
+2. Add travel source adapters incrementally, beginning with general web search and structured place data.
+3. Implement travel-specific constraints and ranking features.
+4. Implement the shopping domain: products, offers, merchants, specifications, and reviews.
+5. Add shopping-specific source adapters, constraints, and ranking features.
+6. Build UI views for evidence, comparisons, filters, and recommendation rationale.
+
+**Outcome:** two practical domain agents validate that the shared platform is reusable.
+
+## Phase 8 — Add iterative research behavior
+
+1. Make the research agent assess whether evidence is sufficient.
+2. Identify missing facts, conflicts, stale evidence, or weak entity matches.
+3. Generate focused follow-up searches.
+4. Stop based on a configurable evidence-quality budget.
+5. Stream research progress to the frontend.
+6. Evaluate single-pass versus iterative research on the same scenarios.
+
+**Outcome:** the system can investigate a question in multiple steps instead of only performing search → answer.
+
+## Phase 9 — Harden and deploy
+
+1. Add authentication appropriate for personal use.
+2. Add secrets management, observability, rate limits, and cost safeguards.
+3. Deploy the API and UI, initially with a simple serverless architecture.
+4. Add scheduled maintenance for memory consolidation and evidence expiry.
+5. Create backups, export tools, and data-deletion controls.
+6. Track evaluation results and regressions for every experimental change.
+
+**Outcome:** a private, maintainable personal AI system that can support real experiments.

@@ -1,0 +1,32 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.pnpm-store/
+.next/
+out/
+coverage/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
+# Local data and generated artifacts
+data/
+artifacts/
+*.sqlite3
