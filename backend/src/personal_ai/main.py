@@ -5,6 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from personal_ai.api.routes import router as conversations_router
+from personal_ai.services import HistoryLimitExceededError, InvalidRetryTargetError
 from personal_ai.storage import ResourceNotFoundError, StorageError
 
 app = FastAPI(title="Personal AI System", version="0.1.0")
@@ -34,6 +35,16 @@ async def resource_not_found(_: Request, __: ResourceNotFoundError) -> JSONRespo
 async def storage_error(_: Request, __: StorageError) -> JSONResponse:
     """Map storage failures without disclosing provider-specific details."""
     return _error_response(503, "storage_unavailable", "Storage is temporarily unavailable.")
+
+
+@app.exception_handler(HistoryLimitExceededError)
+async def history_limit_error(_: Request, __: HistoryLimitExceededError) -> JSONResponse:
+    return _error_response(422, "history_limit_exceeded", "Please start a new chat.")
+
+
+@app.exception_handler(InvalidRetryTargetError)
+async def invalid_retry_target(_: Request, __: InvalidRetryTargetError) -> JSONResponse:
+    return _error_response(422, "invalid_retry_target", "This message cannot be retried.")
 
 
 @app.get("/health")

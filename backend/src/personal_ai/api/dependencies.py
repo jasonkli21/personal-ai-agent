@@ -4,7 +4,8 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from personal_ai.services import ConversationService
+from personal_ai.llm import GeminiLLMClient, LLMClient
+from personal_ai.services import ChatTurnService, ConversationService
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage import FirestoreConversationRepository, FirestoreMessageRepository
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
@@ -38,3 +39,28 @@ def get_conversation_service(
 ) -> ConversationService:
     """Compose the conversation use cases from injectable boundaries."""
     return ConversationService(conversations, messages, owner_id=owner_id)
+
+
+def get_llm_client(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LLMClient:
+    """Build the configured provider behind the replaceable streaming contract."""
+    return GeminiLLMClient(settings)
+
+
+def get_chat_turn_service(
+    conversations: Annotated[ConversationRepository, Depends(get_conversation_repository)],
+    messages: Annotated[MessageRepository, Depends(get_message_repository)],
+    llm: Annotated[LLMClient, Depends(get_llm_client)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    owner_id: Annotated[str, Depends(get_current_owner_id)],
+) -> ChatTurnService:
+    """Compose the durable streaming chat lifecycle."""
+    return ChatTurnService(
+        conversations,
+        messages,
+        llm,
+        owner_id=owner_id,
+        max_history_messages=settings.max_phase_1_history_messages,
+        model=settings.ai_model,
+    )
