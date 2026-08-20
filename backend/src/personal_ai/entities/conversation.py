@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+MAX_MESSAGE_CONTENT_CHARS = 20_000
+
 
 class MessageRole(StrEnum):
     """The two message authors supported by the Phase 1 chat surface."""
@@ -54,7 +56,7 @@ class Message(TimestampedRecord):
     conversation_id: UUID
     owner_id: str = Field(min_length=1, max_length=200)
     role: MessageRole
-    content: str = Field(max_length=20_000)
+    content: str = Field(max_length=MAX_MESSAGE_CONTENT_CHARS)
     status: MessageStatus
     created_at: datetime
     parent_message_id: UUID | None = None

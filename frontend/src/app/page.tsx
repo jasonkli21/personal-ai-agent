@@ -16,6 +16,20 @@ function withMessage(state: State, messageId: string, change: (message: Message)
   if (!state.selected) return state;
   return { ...state, selected: { ...state.selected, messages: state.selected.messages.map((message) => message.id === messageId ? change(message) : message) } };
 }
+function withoutBranch(messages: Message[], rootId: string): Message[] {
+  const removed = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const message of messages) {
+      if (message.parent_message_id && removed.has(message.parent_message_id) && !removed.has(message.id)) {
+        removed.add(message.id);
+        changed = true;
+      }
+    }
+  }
+  return messages.filter((message) => !removed.has(message.id));
+}
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "request-started": return { ...state, requestState: action.requestState, error: null };
@@ -24,7 +38,13 @@ function reducer(state: State, action: Action): State {
     case "failed": return { ...state, requestState: "idle", error: action.error };
     case "chat-started": return { ...state, chatPending: true, error: null };
     case "chat-finished": return { ...state, chatPending: false };
-    case "stream-message-created": return !state.selected || state.selected.messages.some((message) => message.id === action.message.id) ? state : { ...state, selected: { ...state.selected, messages: [...state.selected.messages, action.message] } };
+    case "stream-message-created": {
+      if (!state.selected || state.selected.messages.some((message) => message.id === action.message.id)) return state;
+      const messages = action.message.supersedes_message_id
+        ? withoutBranch(state.selected.messages, action.message.supersedes_message_id)
+        : state.selected.messages;
+      return { ...state, selected: { ...state.selected, messages: [...messages, action.message] } };
+    }
     case "stream-delta": return withMessage(state, action.messageId, (message) => ({ ...message, content: message.content + action.delta, status: "streaming" }));
     case "stream-completed": return withMessage(state, action.message.id, () => action.message);
     case "stream-error": { const next = withMessage(state, action.messageId, (message) => ({ ...message, status: "failed" })); return { ...next, messageErrors: { ...next.messageErrors, [action.messageId]: action.error } }; }
@@ -52,10 +72,16 @@ export default function Home() {
   function composerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }
   function beginEdit(message: Message) { setEditingMessage(message); setEditDraft(message.content); }
   function submitEdit(event: FormEvent) { event.preventDefault(); const content = editDraft.trim(); if (!editingMessage || !state.selected || !content || state.chatPending) return; const message = editingMessage; setEditingMessage(null); void runStream((handlers) => conversationsApi.editAndRetry(state.selected!.conversation.id, message.id, content, handlers)); }
+  function retryFailedResponse(message: Message) {
+    if (!state.selected || state.chatPending || !message.parent_message_id) return;
+    const parent = state.selected.messages.find((candidate) => candidate.id === message.parent_message_id);
+    if (!parent || parent.role !== "user") return;
+    void runStream((handlers) => conversationsApi.editAndRetry(state.selected!.conversation.id, parent.id, parent.content, handlers));
+  }
   const isBusy = state.requestState !== "idle"; const selectedId = state.selected?.conversation.id;
   return <div className={styles.shell}><aside className={styles.sidebar} aria-label="Conversations"><h1 className={styles.brand}>Personal AI</h1><button className={styles.newButton} onClick={() => void createConversation()} disabled={isBusy || state.chatPending}>New conversation</button><nav className={styles.conversationList} aria-label="Conversation list">{state.conversations.map((conversation) => <button key={conversation.id} className={`${styles.conversationButton} ${selectedId === conversation.id ? styles.selected : ""}`} aria-current={selectedId === conversation.id ? "page" : undefined} onClick={() => void openConversation(conversation.id)} disabled={isBusy || state.chatPending}>{conversation.title ?? "Untitled conversation"}</button>)}</nav></aside>
     <main className={styles.main}><section className={styles.content} aria-live="polite">{state.error && <div className={styles.error} role="alert"><p>{state.error}</p><button onClick={() => void loadConversations()}>Try again</button></div>}{!state.error && state.requestState === "loading-list" && <p className={styles.loading}>Loading conversations…</p>}{!state.error && !isBusy && !state.selected && state.conversations.length === 0 && <div className={styles.empty}><h2 ref={mainHeading} tabIndex={-1}>Start a conversation</h2><p>Create a conversation to begin.</p><button onClick={() => void createConversation()}>New conversation</button></div>}{!state.error && state.requestState === "opening" && <p className={styles.loading}>Opening conversation…</p>}
-      {state.selected && <div><h2 ref={mainHeading} tabIndex={-1}>{state.selected.conversation.title ?? "Untitled conversation"}</h2>{state.selected.messages.length === 0 ? <p>This conversation is ready for your first message.</p> : <ol className={styles.messages}>{state.selected.messages.map((message) => <li className={styles.message} key={message.id} data-status={message.status}><span className={styles.messageRole}>{message.role}</span><p>{message.content || (message.status === "streaming" ? "Thinking…" : "")}</p>{message.status === "failed" && <p className={styles.messageError} role="alert">{state.messageErrors[message.id] ?? "This response could not be completed. Please try again."}</p>}<div className={styles.messageActions}>{message.role === "assistant" && message.status === "completed" && <button disabled={state.chatPending} onClick={() => void runStream((handlers) => conversationsApi.regenerate(state.selected!.conversation.id, message.id, handlers))}>Regenerate</button>}{message.role === "assistant" && message.status === "failed" && <button disabled={state.chatPending} onClick={() => void runStream((handlers) => conversationsApi.regenerate(state.selected!.conversation.id, message.id, handlers))}>Retry response</button>}{message.role === "user" && <button disabled={state.chatPending} onClick={() => beginEdit(message)}>Edit and retry</button>}</div></li>)}</ol>}
+      {state.selected && <div><h2 ref={mainHeading} tabIndex={-1}>{state.selected.conversation.title ?? "Untitled conversation"}</h2>{state.selected.messages.length === 0 ? <p>This conversation is ready for your first message.</p> : <ol className={styles.messages}>{state.selected.messages.map((message) => <li className={styles.message} key={message.id} data-status={message.status}><span className={styles.messageRole}>{message.role}</span><p>{message.content || (message.status === "streaming" ? "Thinking…" : "")}</p>{message.status === "failed" && <p className={styles.messageError} role="alert">{state.messageErrors[message.id] ?? "This response could not be completed. Please try again."}</p>}<div className={styles.messageActions}>{message.role === "assistant" && message.status === "completed" && <button disabled={state.chatPending} onClick={() => void runStream((handlers) => conversationsApi.regenerate(state.selected!.conversation.id, message.id, handlers))}>Regenerate</button>}{message.role === "assistant" && message.status === "failed" && <button disabled={state.chatPending} onClick={() => retryFailedResponse(message)}>Retry response</button>}{message.role === "user" && <button disabled={state.chatPending} onClick={() => beginEdit(message)}>Edit and retry</button>}</div></li>)}</ol>}
         {editingMessage && <form className={styles.editForm} onSubmit={submitEdit}><label htmlFor="edit-message">Edit message</label><textarea id="edit-message" value={editDraft} onChange={(event) => setEditDraft(event.target.value)} disabled={state.chatPending} /><div><button type="submit" disabled={state.chatPending || !editDraft.trim()}>Retry edited message</button><button type="button" disabled={state.chatPending} onClick={() => setEditingMessage(null)}>Cancel</button></div></form>}
         <form className={styles.composer} onSubmit={submitMessage}><label htmlFor="composer">Message</label><textarea id="composer" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={composerKeyDown} disabled={state.chatPending} placeholder="Write a message" /><button type="submit" disabled={state.chatPending || !draft.trim()}>{state.chatPending ? "Sending…" : "Send"}</button></form></div>}</section></main></div>;
 }

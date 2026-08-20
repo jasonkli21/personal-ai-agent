@@ -5,6 +5,7 @@ from personal_ai.llm.errors import (
     LLMError,
     LLMInvalidConfigurationError,
     LLMInvalidRequestError,
+    LLMInvalidResponseError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "LLMError",
     "LLMInvalidConfigurationError",
     "LLMInvalidRequestError",
+    "LLMInvalidResponseError",
     "LLMTimeoutError",
     "LLMUnavailableError",
 ]

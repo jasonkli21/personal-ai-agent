@@ -88,6 +88,37 @@ describe("Home", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Regenerate" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conversation-1/messages/assistant-1/regenerate", expect.objectContaining({ method: "POST" })));
   });
+  it("retries a failed response through its parent user message", async () => {
+    const failed = { ...assistantMessage, content: "Partial", status: "failed" as const, error_code: "llm_timeout" };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversations: [conversation] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [userMessage, failed] }));
+    fetchMock.mockResolvedValueOnce(sseResponse([]));
+    render(<Home />);
+    fireEvent.click(await screen.findByRole("button", { name: "Project ideas" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry response" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/conversations/conversation-1/messages/user-1/edit-and-retry",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ content: "Hello" }) }),
+    ));
+  });
+  it("removes a superseded branch even when its replacement stream fails", async () => {
+    const oldAnswer = { ...assistantMessage, content: "Old answer", status: "completed" as const };
+    const descendant = { ...userMessage, id: "user-2", content: "Follow up", parent_message_id: oldAnswer.id };
+    const replacement = { ...assistantMessage, id: "assistant-2", supersedes_message_id: oldAnswer.id };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversations: [conversation] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [userMessage, oldAnswer, descendant] }));
+    fetchMock.mockResolvedValueOnce(sseResponse([
+      `event: message.created\ndata: ${JSON.stringify({ message: replacement })}\n\n`,
+      `event: response.delta\ndata: ${JSON.stringify({ message_id: replacement.id, delta: "Partial replacement" })}\n\n`,
+      `event: response.error\ndata: ${JSON.stringify({ message_id: replacement.id, code: "llm_timeout", message: "Retry safely." })}\n\n`,
+    ]));
+    render(<Home />);
+    fireEvent.click(await screen.findByRole("button", { name: "Project ideas" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Regenerate" }));
+    expect(await screen.findByText("Partial replacement")).toBeInTheDocument();
+    expect(screen.queryByText("Old answer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Follow up")).not.toBeInTheDocument();
+  });
   it("edits a user message and retries it", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ conversations: [conversation] }));
     fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [userMessage] }));

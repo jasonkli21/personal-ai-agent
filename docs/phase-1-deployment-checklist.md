@@ -22,6 +22,8 @@ content, or other personal data.
 - [ ] Confirm `personal-ai-api`, `personal-ai-web`, and `personal-ai-worker` are
   deployed. The worker may remain idle; Phase 1 chat must publish no Pub/Sub
   messages.
+- [ ] Confirm the deploy script created or reused the required `conversations`
+  and `messages` composite indexes before testing queries.
 
 ## Smoke test
 

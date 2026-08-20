@@ -21,3 +21,15 @@ def test_openapi_documents_non_streaming_conversation_routes() -> None:
     assert routes["/v1/conversations"]["post"]["responses"]["201"]
     assert routes["/v1/conversations"]["get"]["responses"]["200"]
     assert routes["/v1/conversations/{conversation_id}"]["get"]["responses"]["200"]
+
+
+def test_openapi_documents_sse_and_safe_stream_errors() -> None:
+    schema = TestClient(app).get("/openapi.json").json()
+    operation = schema["paths"]["/v1/conversations/{conversation_id}/messages"]["post"]
+
+    assert "text/event-stream" in operation["responses"]["200"]["content"]
+    for status_code in ("404", "422", "503"):
+        error_schema = operation["responses"][status_code]["content"]["application/json"][
+            "schema"
+        ]
+        assert error_schema == {"$ref": "#/components/schemas/ErrorResponse"}

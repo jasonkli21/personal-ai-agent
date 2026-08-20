@@ -13,7 +13,13 @@ from personal_ai.api.dependencies import (
     get_llm_client,
     get_message_repository,
 )
-from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
+from personal_ai.entities import (
+    MAX_MESSAGE_CONTENT_CHARS,
+    Conversation,
+    Message,
+    MessageRole,
+    MessageStatus,
+)
 from personal_ai.llm import FakeLLMClient, LLMTimeoutError
 from personal_ai.main import app
 from personal_ai.settings import Settings, get_settings
@@ -231,6 +237,28 @@ def test_model_failure_is_streamed_once_and_persisted(client: TestClient) -> Non
     detail = client.get(f"/v1/conversations/{conversation_id}").json()
     assert detail["messages"][-1]["status"] == "failed"
     assert detail["messages"][-1]["error_code"] == "llm_timeout"
+
+
+def test_oversized_model_response_is_rejected_without_persisting_it(
+    client: TestClient,
+) -> None:
+    app.dependency_overrides[get_llm_client] = lambda: FakeLLMClient(
+        ["partial", "x" * MAX_MESSAGE_CONTENT_CHARS]
+    )
+    conversation_id = client.post("/v1/conversations", json={}).json()["id"]
+
+    response = client.post(
+        f"/v1/conversations/{conversation_id}/messages", json={"content": "Hi"}
+    )
+
+    events = _sse_events(response.text)
+    assert [event for event, _ in events][-1] == "response.error"
+    assert events[-1][1]["code"] == "llm_invalid_response"
+    detail = client.get(f"/v1/conversations/{conversation_id}").json()
+    failed = detail["messages"][-1]
+    assert failed["status"] == "failed"
+    assert failed["content"] == "partial"
+    assert len(failed["content"]) <= MAX_MESSAGE_CONTENT_CHARS
 
 
 def test_history_cap_instructs_the_user_to_start_a_new_chat(client: TestClient) -> None:

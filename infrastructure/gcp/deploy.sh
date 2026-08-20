@@ -33,6 +33,27 @@ if ! gcloud firestore databases describe --database='(default)' >/dev/null 2>&1;
   gcloud firestore databases create --location="$REGION" --database='(default)' --type=firestore-native
 fi
 
+if [[ -z "$(gcloud firestore indexes composite list --database='(default)' \
+  --filter='collectionGroup=conversations AND fields.fieldPath=owner_id AND fields.fieldPath=updated_at' \
+  --format='value(name)' --limit=1)" ]]; then
+  gcloud firestore indexes composite create \
+    --database='(default)' \
+    --collection-group=conversations \
+    --field-config=field-path=owner_id,order=ascending \
+    --field-config=field-path=updated_at,order=descending
+fi
+
+if [[ -z "$(gcloud firestore indexes composite list --database='(default)' \
+  --filter='collectionGroup=messages AND fields.fieldPath=owner_id AND fields.fieldPath=conversation_id AND fields.fieldPath=created_at' \
+  --format='value(name)' --limit=1)" ]]; then
+  gcloud firestore indexes composite create \
+    --database='(default)' \
+    --collection-group=messages \
+    --field-config=field-path=owner_id,order=ascending \
+    --field-config=field-path=conversation_id,order=ascending \
+    --field-config=field-path=created_at,order=ascending
+fi
+
 gcloud pubsub topics describe "$TOPIC" >/dev/null 2>&1 || gcloud pubsub topics create "$TOPIC"
 gcloud iam service-accounts describe "$WORKER_SA@$PROJECT_ID.iam.gserviceaccount.com" >/dev/null 2>&1 || \
   gcloud iam service-accounts create "$WORKER_SA" --display-name="Personal AI Pub/Sub invoker"

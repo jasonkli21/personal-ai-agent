@@ -15,8 +15,8 @@ from personal_ai.api.schemas import (
     SSEResponseDelta,
     SSEResponseError,
 )
-from personal_ai.entities import Message, MessageRole, MessageStatus
-from personal_ai.llm import ChatMessage, LLMClient, LLMError
+from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
+from personal_ai.llm import ChatMessage, LLMClient, LLMError, LLMInvalidResponseError
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
 
 logger = logging.getLogger(__name__)
@@ -173,11 +173,15 @@ class ChatTurnService:
         for message in turn.created:
             yield _sse("message.created", SSEMessageCreated(message=message).model_dump_json())
         parts: list[str] = []
+        content_length = 0
         try:
             async for delta in self._llm.stream(turn.history):
                 if not delta:
                     continue
+                if content_length + len(delta) > MAX_MESSAGE_CONTENT_CHARS:
+                    raise LLMInvalidResponseError("language model response exceeded the size limit")
                 parts.append(delta)
+                content_length += len(delta)
                 yield _sse(
                     "response.delta",
                     SSEResponseDelta(message_id=turn.assistant.id, delta=delta).model_dump_json(),

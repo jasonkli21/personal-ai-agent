@@ -13,11 +13,22 @@ from personal_ai.api.schemas import (
     CreateConversationRequest,
     CreateMessageRequest,
     EditAndRetryRequest,
+    ErrorResponse,
 )
 from personal_ai.entities import Conversation
 from personal_ai.services import ChatTurnService, ConversationService
 
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"])
+
+SSE_RESPONSES = {
+    200: {
+        "description": "Server-sent event stream",
+        "content": {"text/event-stream": {"schema": {"type": "string"}}},
+    },
+    404: {"model": ErrorResponse, "description": "Conversation or message not found"},
+    422: {"model": ErrorResponse, "description": "Invalid request or retry target"},
+    503: {"model": ErrorResponse, "description": "Storage unavailable"},
+}
 
 
 @router.post("", response_model=Conversation, status_code=status.HTTP_201_CREATED)
@@ -59,7 +70,7 @@ def _sse_response(stream: object, *, request_id: str) -> StreamingResponse:
     )
 
 
-@router.post("/{conversation_id}/messages")
+@router.post("/{conversation_id}/messages", response_class=StreamingResponse, responses=SSE_RESPONSES)
 def create_message(
     conversation_id: UUID,
     request: CreateMessageRequest,
@@ -71,7 +82,11 @@ def create_message(
     return _sse_response(service.send(conversation_id, request.content, request_id=request_id), request_id=request_id)
 
 
-@router.post("/{conversation_id}/messages/{message_id}/regenerate")
+@router.post(
+    "/{conversation_id}/messages/{message_id}/regenerate",
+    response_class=StreamingResponse,
+    responses=SSE_RESPONSES,
+)
 def regenerate_message(
     conversation_id: UUID,
     message_id: UUID,
@@ -83,7 +98,11 @@ def regenerate_message(
     return _sse_response(service.regenerate(conversation_id, message_id, request_id=request_id), request_id=request_id)
 
 
-@router.post("/{conversation_id}/messages/{message_id}/edit-and-retry")
+@router.post(
+    "/{conversation_id}/messages/{message_id}/edit-and-retry",
+    response_class=StreamingResponse,
+    responses=SSE_RESPONSES,
+)
 def edit_and_retry_message(
     conversation_id: UUID,
     message_id: UUID,

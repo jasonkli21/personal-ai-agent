@@ -58,7 +58,13 @@ chmod +x infrastructure/gcp/deploy.sh
 infrastructure/gcp/deploy.sh YOUR_PROJECT_ID us-central1 personal-ai-gemini-api-key gemini-2.5-flash
 ```
 
-The script enables required APIs, creates the default Firestore database if absent, creates a Pub/Sub topic and authenticated push subscription, creates or reuses a dedicated API runtime service account, grants it the named-secret and Firestore permissions, then deploys the API, worker, and web service. It injects `AI_API_KEY` using Secret Manager rather than an environment file or command-line value. It prints the web URL and health-check URL, never the secret.
+The script enables required APIs, creates the default Firestore database and
+required composite indexes if absent, creates a Pub/Sub topic and authenticated
+push subscription, creates or reuses a dedicated API runtime service account,
+grants it the named-secret and Firestore permissions, then deploys the API,
+worker, and web service. It injects `AI_API_KEY` using Secret Manager rather
+than an environment file or command-line value. It prints the web URL and
+health-check URL, never the secret.
 
 ### Verify the end-to-end baseline
 

@@ -29,3 +29,9 @@ class LLMInvalidRequestError(LLMError):
     """The provider rejected the requested chat completion."""
 
     code = "llm_invalid_request"
+
+
+class LLMInvalidResponseError(LLMError):
+    """The provider returned output that violates application safety limits."""
+
+    code = "llm_invalid_response"

@@ -13,8 +13,8 @@ The model-key secret must already exist and have a current version. The script c
 ## Firestore repository indexes and local emulator
 
 The Phase 1 conversation repositories use the composite indexes in
-[`firestore.indexes.json`](../../firestore.indexes.json). Create them once per
-project with:
+[`firestore.indexes.json`](../../firestore.indexes.json). `deploy.sh` creates
+them when missing. To create them independently of a full deployment, run:
 
 ```sh
 gcloud firestore indexes composite create \
