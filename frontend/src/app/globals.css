@@ -1,0 +1,5 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, Helvetica, sans-serif; }
+button { min-height: 2.5rem; padding: .5rem .75rem; border: 1px solid #225da8; border-radius: .4rem; background: #225da8; color: #fff; font: inherit; cursor: pointer; }
+button:focus-visible { outline: 3px solid #84adf6; outline-offset: 2px; }
+button:disabled { cursor: wait; opacity: .65; }
