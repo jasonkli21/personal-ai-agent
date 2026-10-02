@@ -264,5 +264,51 @@
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "research_sessions",
+      "fieldPath": "request",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "research_sessions",
+      "fieldPath": "queries",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "research_sessions",
+      "fieldPath": "attempts",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "research_sessions",
+      "fieldPath": "observations",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "research_sessions",
+      "fieldPath": "evidence",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "research_sessions",
+      "fieldPath": "selection",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "research_sessions",
+      "fieldPath": "answer",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "research_sessions",
+      "fieldPath": "citations",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "research_sessions",
+      "fieldPath": "run_token",
+      "indexes": []
+    }
+  ]
 }

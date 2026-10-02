@@ -72,6 +72,26 @@ class Settings(BaseSettings):
     memory_job_lease_seconds: int = Field(default=60, ge=30, le=300)
     memory_job_candidate_limit: int = Field(default=40, ge=1, le=100)
 
+    research_enabled: bool = False
+    research_inspection_enabled: bool = False
+    research_search_adapter: str = Field(default="fake", pattern=r"^(fake|brave)$")
+    research_planner: str = Field(default="deterministic", pattern=r"^deterministic$")
+    research_reranker: str = Field(default="deterministic", pattern=r"^deterministic$")
+    research_provider_storage_approved: bool = False
+    research_api_key: SecretStr = Field(default=SecretStr(""))
+    research_max_queries: int = Field(default=1, ge=1, le=3)
+    research_max_sources: int = Field(default=8, ge=1, le=12)
+    research_max_response_bytes: int = Field(default=131072, ge=1024, le=262144)
+    research_max_redirects: int = Field(default=0, ge=0, le=0)
+    research_max_concurrency: int = Field(default=1, ge=1, le=1)
+    research_attempt_limit: int = Field(default=2, ge=1, le=3)
+    research_evidence_ttl_general_seconds: int = Field(default=86400, ge=60, le=604800)
+    research_evidence_ttl_current_seconds: int = Field(default=3600, ge=60, le=86400)
+    research_max_evidence_context_tokens: int = Field(default=4096, ge=1)
+    research_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    research_provider_timeout_seconds: float = Field(default=10, gt=0, le=30)
+    research_min_request_interval_seconds: float = Field(default=1, ge=1, le=60)
+
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
         available = (
@@ -116,6 +136,14 @@ class Settings(BaseSettings):
             raise ValueError("memory_configuration_invalid")
         if self.memory_consolidation_enabled and not self.memory_lifecycle_worker_enabled:
             raise ValueError("memory_configuration_invalid")
+        if self.research_enabled:
+            if self.research_max_evidence_context_tokens > available:
+                raise ValueError("research_configuration_invalid")
+            if self.research_search_adapter == "brave" and (
+                not self.research_provider_storage_approved
+                or not self.research_api_key.get_secret_value()
+            ):
+                raise ValueError("research_configuration_invalid")
         return self
 
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
