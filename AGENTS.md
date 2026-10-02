@@ -7,7 +7,8 @@
 - Phase 1 chat, Phase 2 context-management, and Phase 3 simple-memory code are implemented locally.
   Read `docs/phase-2-implementation-guide.md` for context contracts and current
   verification gaps. Provider/emulator/deployment closeout remains pending;
-  Phase 3/4 gates remain disabled by default; Phase 4 is implemented locally.
+  Phase 3/4/5 gates remain disabled by default; Phase 4 and Phase 5 are implemented locally.
+  Read `docs/phase-5-implementation-guide.md` for research contracts and external gaps.
   Read `docs/phase-3-implementation-guide.md` and
   `docs/phase-4-implementation-guide.md` for memory/lifecycle contracts and gaps.
   Follow explicit user instructions when advancing

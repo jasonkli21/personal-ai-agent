@@ -1,6 +1,7 @@
 """Versioned immutable observations and expiring evidence, never user memory."""
 
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Literal
 from uuid import UUID
 
@@ -47,13 +48,14 @@ class AdapterAttempt(ResearchRecord):
     id: UUID
     session_id: UUID
     query_id: UUID
-    owner_id: str
+    owner_id: str = Field(min_length=1, max_length=200)
     adapter: Literal["fake", "brave"]
     idempotency_key: str = Field(min_length=1, max_length=200)
     attempt_number: int = Field(ge=1, le=3)
-    status: Literal["completed", "failed"]
+    status: Literal["started", "completed", "failed"]
+    parent_attempt_id: UUID | None = None
     started_at: datetime
-    completed_at: datetime
+    completed_at: datetime | None = None
     error_code: str | None = Field(default=None, max_length=80)
 
 
@@ -61,7 +63,7 @@ class SourceObservation(ResearchRecord):
     id: UUID
     session_id: UUID
     query_id: UUID
-    owner_id: str
+    owner_id: str = Field(min_length=1, max_length=200)
     canonical_url: str = Field(min_length=1, max_length=2048)
     title: str | None = Field(default=None, max_length=300)
     provider: Literal["fake", "brave"]
@@ -71,11 +73,21 @@ class SourceObservation(ResearchRecord):
     status: Literal["accepted", "empty", "unsafe", "oversized", "stale"]
     attempt_id: UUID
 
+    @model_validator(mode="after")
+    def safe_source(self):
+        from personal_ai.search.policy import canonical_url
+
+        if self.status == "accepted" and (
+            canonical_url(self.canonical_url) != self.canonical_url or not self.content_fingerprint
+        ):
+            raise ValueError("invalid attribution")
+        return self
+
 
 class Evidence(ResearchRecord):
     id: UUID
     session_id: UUID
-    owner_id: str
+    owner_id: str = Field(min_length=1, max_length=200)
     source_observation_ids: tuple[UUID, ...] = Field(min_length=1, max_length=12)
     passage: str = Field(min_length=1, max_length=1200)
     content_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -90,14 +102,19 @@ class Evidence(ResearchRecord):
     def expiry(self):
         if self.expires_at <= self.observed_at or not self.passage.strip():
             raise ValueError("invalid evidence")
+        expected = sha256(" ".join(self.passage.split()).encode()).hexdigest()
+        if self.content_fingerprint != expected or len(set(self.source_observation_ids)) != len(
+            self.source_observation_ids
+        ):
+            raise ValueError("invalid content provenance")
         return self
 
 
 class EvidenceSelection(ResearchRecord):
     id: UUID
     session_id: UUID
-    owner_id: str
-    evidence_ids: tuple[UUID, ...]
+    owner_id: str = Field(min_length=1, max_length=200)
+    evidence_ids: tuple[UUID, ...] = Field(max_length=12)
     excluded: dict[str, str]
     scores: dict[str, dict[str, float]]
     selector_policy_version: Literal["select-v1"] = "select-v1"

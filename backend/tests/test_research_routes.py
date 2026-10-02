@@ -129,3 +129,18 @@ def test_bad_request_and_openapi(environment):
         "text/event-stream"
         in paths["/v1/research/{session_id}/run"]["post"]["responses"]["200"]["content"]
     )
+
+
+def test_research_does_not_resolve_chat_or_memory_storage(environment):
+    from personal_ai.api.dependencies import get_memory_repository, get_message_repository
+
+    _, request, client = environment
+
+    def forbidden():
+        raise AssertionError("Research must not touch chat or memory storage")
+
+    app.dependency_overrides[get_memory_repository] = forbidden
+    app.dependency_overrides[get_message_repository] = forbidden
+    created = client.post("/v1/research", json=request.model_dump(mode="json")).json()
+    response = client.post(f"/v1/research/{created['id']}/run")
+    assert '"state": "completed"' in response.text

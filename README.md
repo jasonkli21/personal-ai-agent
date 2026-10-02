@@ -107,6 +107,7 @@ Run these commands from the repository root. They do not need cloud credentials 
 | `make frontend-typecheck` | Frontend TypeScript checks |
 | `make context-eval` | Synthetic Phase 2 context evaluation |
 | `make memory-eval` | Synthetic Phase 3 memory evaluation |
+| `make research-eval` | Synthetic Phase 5 source-grounded research evaluation |
 | `make memory-lifecycle-eval` | Synthetic Phase 4 lifecycle/variant evaluation |
 | `make backend-build` | Backend source distribution and wheel |
 | `make frontend-build` | Next.js production build |
@@ -213,3 +214,20 @@ scoring, immutable lifecycle records, private worker, notification recovery,
 inspection and opt-in checks, and the [release evidence](docs/releases/phase-4-experimental-memory.md)
 for results and remaining external verification gaps. Forgetting changes retrieval
 eligibility; it does not delete data.
+
+## Source-grounded research
+
+Phase 5 is implemented locally and disabled by default. It adds a separate
+`/research` page with bounded single-pass search, expiring attributable evidence,
+validated cited excerpts, saved sessions and gated inspection. Research never
+writes to personal memory. Answers expose source observations and uncertainty;
+strict excerpt synthesis does not promise independent factual verification.
+
+Run `make research-eval` for thirteen synthetic full-pipeline fixtures. For a
+credential-free demo, enable research in both untracked environment files and set
+backend `RESEARCH_STORAGE=memory` and `RESEARCH_SEARCH_ADAPTER=fake`. The page
+labels its synthetic results. See the [Phase 5 guide](docs/phase-5-implementation-guide.md)
+for the exact workflow, contracts, bounds, retention/index policy and real-provider
+gates. Brave requires explicit suitable storage/AI-use rights and an operator
+acknowledgement before enablement. Emulator/provider/deployment checks remain
+pending; see [release evidence](docs/releases/phase-5-source-grounded-research.md).

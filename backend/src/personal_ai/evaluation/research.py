@@ -80,7 +80,13 @@ async def run_fixture(fixture):
         "failure_code": result.failure_code,
         "query_count": len(result.queries),
         "event_count": len(events),
-        "memory_writes": 0,
+        "memory_integration": "absent",
+        "planned_queries": [q.normalized_query for q in result.queries],
+        "source_links": [c.url for c in result.citations],
+        "exclusion_reasons": sorted(set(result.selection.excluded.values()))
+        if result.selection
+        else [],
+        "attempted_calls": sum(a.status == "started" for a in result.attempts),
     }
 
 

@@ -72,6 +72,12 @@ execution contracts. Existing external verification gaps remain open.
 
 ## Phase 5 — Build the reusable search platform
 
+Implemented locally after explicit authorization on 2026-10-02, behind default-off
+gates. The [reviewed task plan](phase-5-implementation-plan.md),
+[guide](phase-5-implementation-guide.md) and
+[release record](releases/phase-5-source-grounded-research.md) document the bounded
+snippet/excerpt scope and remaining external checks. Phase 6 is not authorized.
+
 1. Define research-session, search-query, evidence, and source-adapter contracts.
 2. Implement a basic web-search adapter.
 3. Add evidence extraction, source attribution, timestamps, TTLs, and deduplication.

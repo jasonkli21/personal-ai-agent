@@ -34,7 +34,7 @@ The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the 
 - `agents` coordinates conversation and research flows without owning provider-specific logic.
 - `context` currently selects token-budgeted active conversation turns and
   compatible working summaries for a model call. Phase 3 adds optional labelled
-  personal memory within the same total budget; evidence injection is future work.
+  personal memory within the same total budget; Phase 5 standalone research counts whole evidence blocks through this same assembler.
   Summaries are not memory.
 - `memory` owns durable user knowledge: preferences, episodic observations, semantic summaries, consolidation, and forgetting.
 - `search` plans queries, fetches sources through adapters, extracts content, deduplicates it, and selects candidate evidence.
@@ -85,3 +85,16 @@ A separate private worker app processes Pub/Sub delivery using fenced leases and
 atomic source/state checks. Explicit bounded recovery republishes durable pending
 notifications; no general scheduler is introduced. Defaults remain fixed with all
 mutation gates off. See [Phase 4 implementation](phase-4-implementation-guide.md).
+
+## Delivered Phase 5 research boundary
+
+`agents/research` coordinates one gated request-owned pass with fenced execution.
+`search` owns the deterministic planner, provider-neutral protocols, literal
+snippet extractor and fixed-endpoint Brave integration. `evidence` owns expiring
+observations, conservative dedupe, explained selection and strict excerpt/citation
+validation. The shared context assembler counts the entire research request.
+Storage retains typed immutable provenance in a bounded owner-scoped session
+aggregate with an atomic request-key mapping. API/UI/proxy remain thin; normal
+chat and memory are independent. No publisher-page fetches, research worker jobs,
+entities, recommendations or iterative planning are introduced. See the
+[Phase 5 guide](phase-5-implementation-guide.md).

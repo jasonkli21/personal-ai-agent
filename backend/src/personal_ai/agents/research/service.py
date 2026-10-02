@@ -151,6 +151,18 @@ class ResearchService:
                         break
                     for number in range(1, self.settings.research_attempt_limit + 1):
                         started, error_code, retryable = self.clock(), None, False
+                        begun = AdapterAttempt(
+                            id=uuid4(),
+                            session_id=current.id,
+                            query_id=query.id,
+                            owner_id=current.owner_id,
+                            adapter=self.adapter.name,
+                            idempotency_key=f"{query.id}:{number}:start",
+                            attempt_number=number,
+                            status="started",
+                            started_at=started,
+                        )
+                        await save(attempts=(*current.attempts, begun))
                         try:
                             fetched = await self.adapter.search(
                                 query.normalized_query,
@@ -173,13 +185,16 @@ class ResearchService:
                             error_code = error.code if error.code in allowed else "search_failed"
                             retryable = bool(getattr(error, "retryable", False))
                             fetched = ()
+                        except Exception:  # noqa: BLE001 - record unexpected adapter failure safely
+                            error_code, fetched = "search_failed", ()
                         attempt = AdapterAttempt(
                             id=uuid4(),
                             session_id=current.id,
                             query_id=query.id,
                             owner_id=current.owner_id,
                             adapter=self.adapter.name,
-                            idempotency_key=f"{query.id}:{number}",
+                            idempotency_key=f"{query.id}:{number}:result",
+                            parent_attempt_id=begun.id,
                             attempt_number=number,
                             status="failed" if error_code else "completed",
                             started_at=started,
@@ -200,6 +215,16 @@ class ResearchService:
                             successful[query.id] = attempt
                             break
                         if not retryable or number == self.settings.research_attempt_limit:
+                            await save(
+                                queries=tuple(
+                                    q.model_copy(
+                                        update={"state": "failed", "executed_at": self.clock()}
+                                    )
+                                    if q.id == query.id
+                                    else q
+                                    for q in current.queries
+                                )
+                            )
                             raise ResearchError(error_code)
                     updated_queries = tuple(
                         q.model_copy(update={"state": "completed", "executed_at": self.clock()})

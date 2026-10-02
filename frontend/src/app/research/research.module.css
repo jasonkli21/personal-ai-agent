@@ -1,0 +1,11 @@
+.page { max-width: 820px; margin: auto; padding: 2rem 1.25rem; line-height: 1.6; color: #16243a; }
+.page a { color: #225da8; overflow-wrap: anywhere; }
+.form { display: grid; gap: .65rem; background: #f2f5fa; padding: 1.25rem; border-radius: .7rem; }
+.form label { font-weight: 600; }
+.form textarea, .form select { font: inherit; width: 100%; padding: .6rem; border: 1px solid #8190a8; border-radius: .35rem; }
+.actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .6rem; }
+.result { margin-top: 1.5rem; padding: 1.25rem; border: 1px solid #ccd5e2; border-radius: .7rem; }
+.answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+.result small { display: block; color: #4d5e77; }
+.result li { margin-bottom: .8rem; }
+.inspection { overflow: auto; font-size: .8rem; }

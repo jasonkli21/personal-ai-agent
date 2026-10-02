@@ -68,7 +68,7 @@ class ResearchSession(ResearchRecord):
     run_token: UUID | None = Field(default=None, exclude=True)
     revision: int = Field(default=0, ge=0)
     queries: tuple[SearchQuery, ...] = Field(default=(), max_length=3)
-    attempts: tuple[AdapterAttempt, ...] = Field(default=(), max_length=9)
+    attempts: tuple[AdapterAttempt, ...] = Field(default=(), max_length=18)
     observations: tuple[SourceObservation, ...] = Field(default=(), max_length=12)
     evidence: tuple[Evidence, ...] = Field(default=(), max_length=12)
     selection: EvidenceSelection | None = None
@@ -79,6 +79,10 @@ class ResearchSession(ResearchRecord):
     def provenance(self):
         if self.request_fingerprint != self.request.fingerprint():
             raise ValueError("request fingerprint mismatch")
+        if self.state == "running" and (not self.execution_deadline or not self.run_token):
+            raise ValueError("missing execution fence")
+        if self.updated_at < self.created_at or self.expires_at <= self.created_at:
+            raise ValueError("invalid session timestamps")
         records = (*self.queries, *self.attempts, *self.observations, *self.evidence)
         if self.selection:
             records = (*records, self.selection)
@@ -93,6 +97,22 @@ class ResearchSession(ResearchRecord):
         evidence = {r.id: r for r in self.evidence}
         if any(a.query_id not in queries for a in self.attempts):
             raise ValueError("unknown attempt query")
+        for attempt in self.attempts:
+            if attempt.status == "started":
+                if attempt.completed_at is not None or attempt.parent_attempt_id is not None:
+                    raise ValueError("invalid started attempt")
+            else:
+                parent = attempts.get(attempt.parent_attempt_id)
+                if (
+                    not parent
+                    or parent.status != "started"
+                    or not attempt.completed_at
+                    or parent.query_id != attempt.query_id
+                    or parent.attempt_number != attempt.attempt_number
+                    or parent.started_at != attempt.started_at
+                    or attempt.completed_at < attempt.started_at
+                ):
+                    raise ValueError("invalid terminal attempt")
         for source in self.observations:
             attempt = attempts.get(source.attempt_id)
             if not attempt or attempt.query_id != source.query_id or attempt.status != "completed":
@@ -106,6 +126,8 @@ class ResearchSession(ResearchRecord):
             ):
                 raise ValueError("unknown evidence source")
         selected = set(self.selection.evidence_ids) if self.selection else set()
+        if self.selection and len(selected) != len(self.selection.evidence_ids):
+            raise ValueError("duplicate selection")
         if selected - evidence.keys():
             raise ValueError("unknown selected evidence")
         for citation in self.citations:
@@ -114,9 +136,15 @@ class ResearchSession(ResearchRecord):
                 or citation.source_observation_id
                 not in evidence[citation.evidence_id].source_observation_ids
                 or citation.url != sources[citation.source_observation_id].canonical_url
+                or citation.expires_at != evidence[citation.evidence_id].expires_at
+                or citation.observed_at != evidence[citation.evidence_id].observed_at
             ):
                 raise ValueError("invalid citation")
-        if self.state == "completed" and (not self.answer or not self.citations):
+        if self.state == "completed" and (
+            not self.answer
+            or not self.citations
+            or {c.evidence_id for c in self.citations} != selected
+        ):
             raise ValueError("uncited result")
         return self
 

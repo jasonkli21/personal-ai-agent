@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /** Proxy conversation API calls without exposing the backend URL to the browser. */
-export async function proxyConversationApi(request: NextRequest, path = "") {
+export async function proxyApi(request: NextRequest, path: string) {
   const baseUrl = process.env.API_BASE_URL ?? "http://localhost:8000";
   const upstreamAbort = new AbortController();
   const abort = () => upstreamAbort.abort();
@@ -10,7 +10,7 @@ export async function proxyConversationApi(request: NextRequest, path = "") {
   try {
     if (request.signal.aborted) upstreamAbort.abort();
     upstreamAbort.signal.throwIfAborted();
-    const response = await fetch(`${baseUrl}/v1/conversations${path}`, {
+    const response = await fetch(`${baseUrl}${path}`, {
       method: request.method,
       body: request.method === "POST" ? await request.text() : undefined,
       headers: request.method === "POST" ? { "Content-Type": "application/json" } : undefined,
@@ -69,4 +69,8 @@ export async function proxyConversationApi(request: NextRequest, path = "") {
       { status: 503 },
     );
   }
+}
+
+export function proxyConversationApi(request: NextRequest, path = "") {
+  return proxyApi(request, `/v1/conversations${path}`);
 }

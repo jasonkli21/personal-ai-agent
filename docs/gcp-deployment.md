@@ -110,3 +110,13 @@ Wait for readiness; the bootstrap provisions only Phase 1–2 indexes. See the
 [Phase 4 guide](phase-4-implementation-guide.md) for explicit notification recovery,
 attempt/lease bounds, opt-in checks and current verification limitations. A private
 worker does not authenticate the public chat's fixed `local` owner.
+
+## Phase 5 opt-in research deployment
+
+The bootstrap explicitly sets research/inspection/storage-rights gates to false.
+It does not enable a search key or provision optional research field-index
+exemptions. Before a deliberate synthetic deployment check, follow the
+[Phase 5 guide](phase-5-implementation-guide.md) for licensed snippet storage,
+Secret Manager wiring, index exemptions, provider-wide quotas and retention.
+Research runs in the API request; the worker receives no research jobs.
+The public fixed-owner bootstrap remains unsuitable for personal data.

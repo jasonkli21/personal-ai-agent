@@ -66,8 +66,9 @@ async def test_retry_cap_and_quota_failure():
     service, request = build_fixture(load_fixtures()[0])
     service.adapter.error = SearchError("search_timeout", retryable=True)
     result, _ = await complete(service, request)
-    assert result.state == "failed" and len(result.attempts) == 2
+    assert result.state == "failed" and len(result.attempts) == 4
     assert len(service.adapter.calls) == 2
+    assert result.queries[0].state == "failed"
 
 
 @pytest.mark.anyio
@@ -131,3 +132,56 @@ async def test_synthesis_rejects_unknown_and_changed_quotes():
     assert result.failure_code == "invalid_citations"
     with pytest.raises(ResearchError):
         service.repository.save(evolve(result, revision=result.revision + 1, state="running"))
+
+
+@pytest.mark.anyio
+async def test_native_cancellation_waits_for_inflight_storage_before_terminal_cleanup():
+    from threading import Event
+
+    service, request = build_fixture(load_fixtures()[0])
+    saved = await service.create(request)
+    claimed = await service.prepare_run(saved.id)
+    original = service.repository.save
+    entered, release = Event(), Event()
+    first = True
+
+    def blocking_save(session):
+        nonlocal first
+        if first:
+            first = False
+            entered.set()
+            release.wait(timeout=2)
+        return original(session)
+
+    service.repository.save = blocking_save
+    stream = service.stream(claimed)
+    await anext(stream)
+    pull = asyncio.create_task(anext(stream))
+    await asyncio.to_thread(entered.wait, 1)
+    pull.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pull
+    result = await service.detail(saved.id)
+    assert result.state == "failed" and result.failure_code == "research_cancelled"
+    assert result.queries  # The in-flight planning write finished before cleanup.
+
+
+@pytest.mark.anyio
+async def test_literal_synthesis_rejects_altered_quotes_even_with_a_valid_id():
+    from personal_ai.evidence.pipeline import validate_synthesis
+
+    service, request = build_fixture(load_fixtures()[0])
+    result, _ = await complete(service, request)
+    output = json.dumps(
+        {
+            "excerpts": [
+                {
+                    "evidence_id": str(result.evidence[0].id),
+                    "quote": "The synthetic star is purple.",
+                }
+            ]
+        }
+    )
+    with pytest.raises(ResearchError, match="invalid_citations"):
+        validate_synthesis(result, output)

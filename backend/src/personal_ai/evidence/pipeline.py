@@ -3,7 +3,9 @@
 import json
 import logging
 import re
+from collections import Counter
 from datetime import timedelta
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from personal_ai.agents.research.contracts import Citation, ResearchError
@@ -110,6 +112,9 @@ def select_evidence(session, context, now, deadline, reranker=None):
     excluded, scores, eligible = {}, {}, []
     words = set(re.findall(r"\w+", session.request.question.lower()))
     sources = {s.id: s for s in session.observations}
+    domain_counts = Counter(
+        urlsplit(s.canonical_url).hostname for s in session.observations if s.status == "accepted"
+    )
     for item in session.evidence:
         if item.owner_id != session.owner_id or item.session_id != session.id:
             excluded[str(item.id)] = "foreign"
@@ -130,11 +135,16 @@ def select_evidence(session, context, now, deadline, reranker=None):
                 "relevance": overlap,
                 "provider_order": 1 / (1 + len(eligible)),
                 "freshness": 1.0,
+                "source_diversity": max(
+                    1 / domain_counts[urlsplit(sources[i].canonical_url).hostname]
+                    for i in item.source_observation_ids
+                ),
             }
             eligible.append(item)
     eligible.sort(
         key=lambda e: (
             -scores[str(e.id)]["relevance"],
+            -scores[str(e.id)]["source_diversity"],
             -scores[str(e.id)]["provider_order"],
             str(e.id),
         )

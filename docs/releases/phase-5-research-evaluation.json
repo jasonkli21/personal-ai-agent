@@ -1,0 +1,259 @@
+{
+  "schema_version": "research-eval-v1",
+  "synthetic": true,
+  "passed": true,
+  "results": [
+    {
+      "name": "direct-factual",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "completed",
+      "evidence_count": 1,
+      "citation_count": 1,
+      "failure_code": null,
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [
+        "https://example.org/star"
+      ],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "conflicting-sources",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "completed",
+      "evidence_count": 2,
+      "citation_count": 2,
+      "failure_code": null,
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [
+        "https://example.org/blue",
+        "https://example.net/red"
+      ],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "stale-source",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "insufficient",
+      "evidence_count": 0,
+      "citation_count": 0,
+      "failure_code": "extraction_no_evidence",
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "duplicate-urls-content",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "completed",
+      "evidence_count": 1,
+      "citation_count": 3,
+      "failure_code": null,
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [
+        "https://example.org/star",
+        "https://example.org/star",
+        "https://example.net/star"
+      ],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "unsupported-source",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "insufficient",
+      "evidence_count": 0,
+      "citation_count": 0,
+      "failure_code": "extraction_no_evidence",
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "insufficient-evidence",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "insufficient",
+      "evidence_count": 1,
+      "citation_count": 0,
+      "failure_code": "insufficient_evidence",
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [],
+      "exclusion_reasons": [
+        "irrelevant"
+      ],
+      "attempted_calls": 1
+    },
+    {
+      "name": "citation-placement",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "completed",
+      "evidence_count": 1,
+      "citation_count": 1,
+      "failure_code": null,
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [
+        "https://example.org/star"
+      ],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "external-memory-like-claim",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "completed",
+      "evidence_count": 1,
+      "citation_count": 1,
+      "failure_code": null,
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic user preference?"
+      ],
+      "source_links": [
+        "https://example.org/preference"
+      ],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "empty-results",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "insufficient",
+      "evidence_count": 0,
+      "citation_count": 0,
+      "failure_code": "no_results",
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "extraction-failure",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "insufficient",
+      "evidence_count": 0,
+      "citation_count": 0,
+      "failure_code": "extraction_no_evidence",
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "adapter-failure",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "failed",
+      "evidence_count": 0,
+      "citation_count": 0,
+      "failure_code": "search_quota",
+      "query_count": 1,
+      "event_count": 4,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "invalid-citation",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "insufficient",
+      "evidence_count": 1,
+      "citation_count": 0,
+      "failure_code": "invalid_citations",
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    },
+    {
+      "name": "near-duplicate-negation",
+      "passed": true,
+      "baseline_fresh_evidence": false,
+      "state": "completed",
+      "evidence_count": 2,
+      "citation_count": 2,
+      "failure_code": null,
+      "query_count": 1,
+      "event_count": 6,
+      "memory_integration": "absent",
+      "planned_queries": [
+        "Synthetic star color?"
+      ],
+      "source_links": [
+        "https://example.org/star",
+        "https://example.org/star"
+      ],
+      "exclusion_reasons": [],
+      "attempted_calls": 1
+    }
+  ]
+}

@@ -2,6 +2,12 @@
 
 This is the execution plan for a reusable, source-grounded research platform. It extends the Phase 1–4 chat, context, and memory work; those plans remain authoritative for ownership, streaming, token budgets, and the memory/evidence lifetime boundary.
 
+Local implementation delivered on 2026-10-02 after explicit authorization.
+See the [implementation guide](phase-5-implementation-guide.md) and
+[release evidence](releases/phase-5-source-grounded-research.md) for the tested
+scope and external verification gaps. The reviewed execution decisions below
+resolve/qualify the original task wording.
+
 Read the [project brief](project-brief.md), [architecture notes](architecture.md), and [research-agent notes](research-agent.md) first. Their constraints override convenience decisions here.
 
 ## Scope boundary
@@ -313,3 +319,23 @@ must remain within Phase 5; Phase 6/8 features remain excluded.
 Provider references reviewed: [Brave web-search API](https://api-dashboard.search.brave.com/api-reference/web/search/get),
 [storage-rights FAQ](https://brave.com/search/api/), and
 [terms](https://api-dashboard.search.brave.com/documentation/resources/terms-of-service).
+
+## Integration review amendments (2026-10-02)
+
+- Attempt audit records now append a `started` event before each provider call
+  and a distinct terminal record linked by `parent_attempt_id`. There are at
+  most nine actual calls, represented by eighteen bounded audit records.
+- Known publication timestamps older than the requested freshness window are
+  excluded; missing dates remain unknown. Brave descriptions supply no date.
+- Lexical zero-overlap records are excluded; all other eligible passages must
+  fit or the answer is insufficient. This conservative baseline preserves
+  potentially conflicting passages without claiming semantic conflict detection.
+- Cancellation waits for bounded in-flight writes, then rereads the current
+  fenced revision before terminal cleanup. Process loss still derives failure
+  from the durable deadline and never automatically repeats searches.
+- Explicit disposable `RESEARCH_STORAGE=memory` supports local credential-free
+  UI verification. Real Brave mode requires Firestore and storage-rights gates.
+
+The local acceptance review is recorded in the guide/release record. Full external
+verification remains pending; do not claim cloud/provider acceptance from fakes
+or advance into Phase 6 as part of this request.

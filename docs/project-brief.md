@@ -10,16 +10,15 @@ The end state is one reusable personal research platform with chat, memory, and 
 
 ## Current state
 
-Phase 1 chat, Phase 2 context-management, Phase 3 simple-memory, and Phase 4 experimental-memory code are implemented locally. Offline
-quality checks pass, but real
-Firestore persistence, Gemini, and deployed GCP behavior (including browser
-disconnect propagation) still need verification. Deterministic ASGI disconnect
-and proxy cancellation regression tests now cover the local boundaries.
-Do not equate implemented code with a
-fully verified deployment. The active scope is **Phase 4 verification and handoff**, implemented locally
-after explicit authorization and plan review on 2026-10-02. Memory gates remain disabled by
-default; Phase 1–3 external verification gaps remain open. See the
-[reviewed Phase 4 plan](phase-4-implementation-plan.md).
+Phase 1–4 chat, context and memory code and Phase 5 bounded research are
+implemented locally. Offline checks pass; real Firestore, Gemini, licensed Brave
+and deployed GCP behavior still need verification. Phase 5 was explicitly
+authorized and reviewed on 2026-10-02; its gates remain disabled by default.
+The active scope is **Phase 5 verification and handoff**. See its
+[reviewed plan](phase-5-implementation-plan.md),
+[guide](phase-5-implementation-guide.md) and
+[release evidence](releases/phase-5-source-grounded-research.md).
+Existing earlier-phase external gaps remain open.
 
 Implemented:
 
@@ -47,6 +46,10 @@ Implemented:
 - Versioned scoring, append-only memory lifecycle state, attributable derived records,
   conservative contradiction/forgetting, private fenced jobs and bounded recovery.
 - Twenty deterministic lifecycle fixtures across three variants, with default-off gates.
+- Gated standalone research sessions, atomic owner-scoped replay/fencing,
+  bounded Brave snippets and fakes, literal evidence extraction, TTLs/dedupe,
+  explainable selection, validated cited excerpts and a research UI/inspector.
+- Thirteen synthetic full-pipeline research fixtures and opt-in external checks.
 - Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.
 - Dockerfiles and a GCP bootstrap/deployment script.
 - Architecture, deployment, research-agent, and implementation-plan documents.
@@ -55,10 +58,11 @@ Not implemented:
 
 - Authentication or authorization.
 - User-facing memory management, broad inferred consolidation or contradiction adjudication.
-- Search-provider calls, evidence extraction, entity resolution, ranking, or domain agents.
+- Entity resolution, recommendation ranking, domain agents or iterative research.
 - General scheduled maintenance; Phase 4 provides explicit bounded jobs and recovery.
 
-The research, evidence, ranking, and domain packages remain placeholders.
+Research/search/evidence now implement the bounded Phase 5 pipeline; recommendation
+ranking and domain packages remain placeholders.
 `memory` implements gated extraction, durable provenance, vector retrieval and inspection.
 `context` and `evaluation` now implement conversation budgeting and synthetic
 quality checks; `entities` still contains chat records.
@@ -130,8 +134,8 @@ The [Phase 2 context-window plan](phase-2-implementation-plan.md) is implemented
 locally. Finish its credentialed quality/deployed checks before declaring full
 verification; Phase 3 was explicitly authorized and is now implemented locally.
 See its [guide](phase-3-implementation-guide.md) and
-[release evidence](releases/phase-3-simple-memory.md). Phase 4 is now delivered locally;
-do not advance to Phase 5 without explicit user instruction.
+[release evidence](releases/phase-3-simple-memory.md). Phase 5 is now delivered locally after explicit user authorization;
+do not advance to Phase 6 without explicit user instruction.
 
 Do not add long-term memory in Phase 1. Phase 2 handles context-window management; Phase 3 introduces simple memory only after basic chat is stable.
 
@@ -168,6 +172,6 @@ Resolve these in short architecture decision records before implementation depen
    [architecture](architecture.md), [implementation guide](phase-1-implementation-guide.md),
    and the plan for the active task. Read [GCP deployment](gcp-deployment.md)
    when working on infrastructure.
-2. Follow the authorized reviewed Phase 4 plan; do not advance to Phase 5.
+2. Follow the reviewed Phase 5 plan and guide; do not advance to Phase 6.
 3. Preserve the architectural invariants above.
 4. Implement the smallest testable vertical slice of the current phase, update tests and docs, and do not expand into a later phase without a user decision.

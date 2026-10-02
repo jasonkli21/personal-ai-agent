@@ -1,5 +1,4 @@
 import asyncio
-import json
 
 import httpx
 import pytest
@@ -108,7 +107,3 @@ async def test_rate_wait_is_cancellable_and_no_request_is_sent():
         async with asyncio.timeout(0.01):
             await value.search("Synthetic query", 1)
     brave._NEXT_REQUEST = 0
-
-
-def test_provider_fixture_is_small():
-    assert len(json.dumps({"web": {"results": []}})) < 131072
