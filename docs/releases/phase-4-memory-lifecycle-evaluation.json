@@ -1,0 +1,3219 @@
+{
+  "date": "2026-10-02",
+  "tested_revision": "978c50a542408f34ef74a60979dd57f0d48d16a2",
+  "configuration": "offline-synthetic; production services with fake external boundaries",
+  "fixture_count": 20,
+  "variant_cases": 60,
+  "summary": {
+    "fixed": {
+      "cases": 20,
+      "passed": 20,
+      "rank_changes_from_fixed": 0,
+      "selected_records": 25,
+      "budget_violations": 0
+    },
+    "scored": {
+      "cases": 20,
+      "passed": 20,
+      "rank_changes_from_fixed": 1,
+      "selected_records": 25,
+      "budget_violations": 0
+    },
+    "consolidated": {
+      "cases": 20,
+      "passed": 20,
+      "rank_changes_from_fixed": 6,
+      "selected_records": 21,
+      "budget_violations": 0
+    }
+  },
+  "promotion": "not promoted; defaults unchanged; external checks remain unverified",
+  "results": [
+    {
+      "fixture": "similarity-vs-importance",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "30399177-846b-5f67-bdc3-3a26c813b452",
+        "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1"
+      ],
+      "selected": [
+        "30399177-846b-5f67-bdc3-3a26c813b452",
+        "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1"
+      ],
+      "selected_labels": [
+        "episode",
+        "correction"
+      ],
+      "rank_order": [
+        "30399177-846b-5f67-bdc3-3a26c813b452",
+        "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "episode": "active",
+        "correction": "active"
+      },
+      "jobs": [],
+      "token_total": 71,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "similarity-vs-importance",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "30399177-846b-5f67-bdc3-3a26c813b452",
+        "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1"
+      ],
+      "selected": [
+        "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1",
+        "30399177-846b-5f67-bdc3-3a26c813b452"
+      ],
+      "selected_labels": [
+        "correction",
+        "episode"
+      ],
+      "rank_order": [
+        "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1",
+        "30399177-846b-5f67-bdc3-3a26c813b452"
+      ],
+      "scores": [
+        {
+          "memory_id": "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1",
+          "score": 0.865,
+          "similarity": 0.94,
+          "importance": 1.0,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "30399177-846b-5f67-bdc3-3a26c813b452",
+          "score": 0.7999999999999999,
+          "similarity": 0.99,
+          "importance": 0.4,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "episode": "active",
+        "correction": "active"
+      },
+      "jobs": [],
+      "token_total": 71,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "similarity-vs-importance",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "30399177-846b-5f67-bdc3-3a26c813b452",
+        "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1"
+      ],
+      "selected": [
+        "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1",
+        "30399177-846b-5f67-bdc3-3a26c813b452"
+      ],
+      "selected_labels": [
+        "correction",
+        "episode"
+      ],
+      "rank_order": [
+        "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1",
+        "30399177-846b-5f67-bdc3-3a26c813b452"
+      ],
+      "scores": [
+        {
+          "memory_id": "1f21ca3d-afd0-5b85-ac4f-51bf591f3da1",
+          "score": 0.865,
+          "similarity": 0.94,
+          "importance": 1.0,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "30399177-846b-5f67-bdc3-3a26c813b452",
+          "score": 0.7999999999999999,
+          "similarity": 0.99,
+          "importance": 0.4,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "episode": "active",
+        "correction": "active"
+      },
+      "jobs": [],
+      "token_total": 71,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "recency-frequency-confidence",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+        "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c"
+      ],
+      "selected": [
+        "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+        "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c"
+      ],
+      "selected_labels": [
+        "recent-repeat",
+        "old"
+      ],
+      "rank_order": [
+        "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+        "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "b1d5a9d1-7c4a-503c-af70-492bb8d17df0",
+        "86005451-0dc0-5e8f-abb0-02dbac493d8d",
+        "d871f9db-1806-570c-9da1-5272d7482c14",
+        "94956f04-311f-513f-a918-3e757a704c72",
+        "545e7c8d-2f1c-5168-9b8e-5e4421970116"
+      ],
+      "derived_statuses": {
+        "old": "active",
+        "recent-repeat": "active"
+      },
+      "jobs": [],
+      "token_total": 70,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "recency-frequency-confidence",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+        "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c"
+      ],
+      "selected": [
+        "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+        "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c"
+      ],
+      "selected_labels": [
+        "recent-repeat",
+        "old"
+      ],
+      "rank_order": [
+        "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+        "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c"
+      ],
+      "scores": [
+        {
+          "memory_id": "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+          "score": 0.8843335755341217,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 0.9622238368941451,
+          "frequency": 0.5,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c",
+          "score": 0.7274999999999999,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 0.25,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "b1d5a9d1-7c4a-503c-af70-492bb8d17df0",
+        "86005451-0dc0-5e8f-abb0-02dbac493d8d",
+        "d871f9db-1806-570c-9da1-5272d7482c14",
+        "94956f04-311f-513f-a918-3e757a704c72",
+        "545e7c8d-2f1c-5168-9b8e-5e4421970116"
+      ],
+      "derived_statuses": {
+        "old": "active",
+        "recent-repeat": "active"
+      },
+      "jobs": [],
+      "token_total": 70,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "recency-frequency-confidence",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+        "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c"
+      ],
+      "selected": [
+        "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+        "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c"
+      ],
+      "selected_labels": [
+        "recent-repeat",
+        "old"
+      ],
+      "rank_order": [
+        "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+        "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c"
+      ],
+      "scores": [
+        {
+          "memory_id": "d9ce2849-b1f5-5fb5-8b57-01d543b373c3",
+          "score": 0.8843335755341217,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 0.9622238368941451,
+          "frequency": 0.5,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "f6b2ef3b-7445-5b3e-975a-3dbb6d1b191c",
+          "score": 0.7274999999999999,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 0.25,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "b1d5a9d1-7c4a-503c-af70-492bb8d17df0",
+        "86005451-0dc0-5e8f-abb0-02dbac493d8d",
+        "d871f9db-1806-570c-9da1-5272d7482c14",
+        "94956f04-311f-513f-a918-3e757a704c72",
+        "545e7c8d-2f1c-5168-9b8e-5e4421970116"
+      ],
+      "derived_statuses": {
+        "old": "active",
+        "recent-repeat": "active"
+      },
+      "jobs": [],
+      "token_total": 70,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "score-tie-stable-id",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+        "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56"
+      ],
+      "selected": [
+        "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+        "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+        "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [],
+      "token_total": 72,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "score-tie-stable-id",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+        "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56"
+      ],
+      "selected": [
+        "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+        "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+        "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56"
+      ],
+      "scores": [
+        {
+          "memory_id": "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [],
+      "token_total": 72,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "score-tie-stable-id",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+        "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56"
+      ],
+      "selected": [
+        "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+        "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+        "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56"
+      ],
+      "scores": [
+        {
+          "memory_id": "1d687445-7de2-5fb5-ac0b-2e7d8eacf3bf",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "33eb0e6c-0db7-53b6-a4d6-15230b2d0f56",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [],
+      "token_total": 72,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "repeated-explicit-preference",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "a6666a5c-17cc-5d48-91c0-23588610fb3b",
+        "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860"
+      ],
+      "selected": [
+        "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860",
+        "a6666a5c-17cc-5d48-91c0-23588610fb3b"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860",
+        "a6666a5c-17cc-5d48-91c0-23588610fb3b"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "17426109-6886-5fa7-997e-4eb95211d4b0",
+        "d7b3690d-9215-5a64-bc62-9766a110f91c"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "6a922cc3-31bc-56ef-8efc-7e0037e07ea6",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 72,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "repeated-explicit-preference",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "a6666a5c-17cc-5d48-91c0-23588610fb3b",
+        "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860"
+      ],
+      "selected": [
+        "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860",
+        "a6666a5c-17cc-5d48-91c0-23588610fb3b"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860",
+        "a6666a5c-17cc-5d48-91c0-23588610fb3b"
+      ],
+      "scores": [
+        {
+          "memory_id": "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "a6666a5c-17cc-5d48-91c0-23588610fb3b",
+          "score": 0.8388491919394414,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 0.9923279462629435,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "17426109-6886-5fa7-997e-4eb95211d4b0",
+        "d7b3690d-9215-5a64-bc62-9766a110f91c"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "6a922cc3-31bc-56ef-8efc-7e0037e07ea6",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 72,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "repeated-explicit-preference",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "e3ccaf72-ab3a-5024-859b-edbe5f7c2847",
+        "a6666a5c-17cc-5d48-91c0-23588610fb3b",
+        "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860"
+      ],
+      "selected": [
+        "e3ccaf72-ab3a-5024-859b-edbe5f7c2847"
+      ],
+      "selected_labels": [
+        "derived"
+      ],
+      "rank_order": [
+        "e3ccaf72-ab3a-5024-859b-edbe5f7c2847",
+        "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860",
+        "a6666a5c-17cc-5d48-91c0-23588610fb3b"
+      ],
+      "scores": [
+        {
+          "memory_id": "e3ccaf72-ab3a-5024-859b-edbe5f7c2847",
+          "score": 0.865,
+          "similarity": 1.0,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "a6666a5c-17cc-5d48-91c0-23588610fb3b",
+          "score": 0.8388491919394414,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 0.9923279462629435,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "cda4a518-1f86-5fbb-a8e7-cbb2dfbf9860",
+          "reason": "represented_by_derived_memory"
+        },
+        {
+          "id": "a6666a5c-17cc-5d48-91c0-23588610fb3b",
+          "reason": "represented_by_derived_memory"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "17426109-6886-5fa7-997e-4eb95211d4b0",
+        "d7b3690d-9215-5a64-bc62-9766a110f91c"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "6a922cc3-31bc-56ef-8efc-7e0037e07ea6",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 78,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "repeated-compatible-episodes",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "5c555e62-6d2f-5b1e-96ee-7889a6db606f",
+        "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa"
+      ],
+      "selected": [
+        "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa",
+        "5c555e62-6d2f-5b1e-96ee-7889a6db606f"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa",
+        "5c555e62-6d2f-5b1e-96ee-7889a6db606f"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "f4e4f24a-1430-577b-834e-ceefafc9315b",
+        "a37a3007-4f8d-5d43-aeb3-666aa8aee5d8"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "e8190b52-cf8f-595d-85b4-3b026fffaf5e",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 68,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "repeated-compatible-episodes",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "5c555e62-6d2f-5b1e-96ee-7889a6db606f",
+        "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa"
+      ],
+      "selected": [
+        "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa",
+        "5c555e62-6d2f-5b1e-96ee-7889a6db606f"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa",
+        "5c555e62-6d2f-5b1e-96ee-7889a6db606f"
+      ],
+      "scores": [
+        {
+          "memory_id": "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa",
+          "score": 0.7799999999999999,
+          "similarity": 0.95,
+          "importance": 0.4,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "5c555e62-6d2f-5b1e-96ee-7889a6db606f",
+          "score": 0.7788491919394414,
+          "similarity": 0.95,
+          "importance": 0.4,
+          "recency": 0.9923279462629435,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "f4e4f24a-1430-577b-834e-ceefafc9315b",
+        "a37a3007-4f8d-5d43-aeb3-666aa8aee5d8"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "e8190b52-cf8f-595d-85b4-3b026fffaf5e",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 68,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "repeated-compatible-episodes",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "566b0345-0353-519f-9c87-f1ef5e94738a",
+        "5c555e62-6d2f-5b1e-96ee-7889a6db606f",
+        "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa"
+      ],
+      "selected": [
+        "566b0345-0353-519f-9c87-f1ef5e94738a"
+      ],
+      "selected_labels": [
+        "derived"
+      ],
+      "rank_order": [
+        "566b0345-0353-519f-9c87-f1ef5e94738a",
+        "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa",
+        "5c555e62-6d2f-5b1e-96ee-7889a6db606f"
+      ],
+      "scores": [
+        {
+          "memory_id": "566b0345-0353-519f-9c87-f1ef5e94738a",
+          "score": 0.805,
+          "similarity": 1.0,
+          "importance": 0.4,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa",
+          "score": 0.7799999999999999,
+          "similarity": 0.95,
+          "importance": 0.4,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "5c555e62-6d2f-5b1e-96ee-7889a6db606f",
+          "score": 0.7788491919394414,
+          "similarity": 0.95,
+          "importance": 0.4,
+          "recency": 0.9923279462629435,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "67f16bb4-ca3d-5ed1-bcf5-a9049ff1aaaa",
+          "reason": "represented_by_derived_memory"
+        },
+        {
+          "id": "5c555e62-6d2f-5b1e-96ee-7889a6db606f",
+          "reason": "represented_by_derived_memory"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "f4e4f24a-1430-577b-834e-ceefafc9315b",
+        "a37a3007-4f8d-5d43-aeb3-666aa8aee5d8"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "e8190b52-cf8f-595d-85b4-3b026fffaf5e",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 74,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "mixed-topic-cluster",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+        "8da96d1c-2149-5962-a797-4978f51e0cef"
+      ],
+      "selected": [
+        "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+        "8da96d1c-2149-5962-a797-4978f51e0cef"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+        "8da96d1c-2149-5962-a797-4978f51e0cef"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "051d4d77-be1d-59ca-a77f-741d7cd34250",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 70,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "mixed-topic-cluster",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+        "8da96d1c-2149-5962-a797-4978f51e0cef"
+      ],
+      "selected": [
+        "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+        "8da96d1c-2149-5962-a797-4978f51e0cef"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+        "8da96d1c-2149-5962-a797-4978f51e0cef"
+      ],
+      "scores": [
+        {
+          "memory_id": "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "8da96d1c-2149-5962-a797-4978f51e0cef",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "051d4d77-be1d-59ca-a77f-741d7cd34250",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 70,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "mixed-topic-cluster",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+        "8da96d1c-2149-5962-a797-4978f51e0cef"
+      ],
+      "selected": [
+        "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+        "8da96d1c-2149-5962-a797-4978f51e0cef"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+        "8da96d1c-2149-5962-a797-4978f51e0cef"
+      ],
+      "scores": [
+        {
+          "memory_id": "2130d01c-17b5-55bd-9bf4-e55d7c3f98ac",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "8da96d1c-2149-5962-a797-4978f51e0cef",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "051d4d77-be1d-59ca-a77f-741d7cd34250",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 70,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "clear-explicit-correction",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "7abe2931-2c90-5ecd-a5c9-15c1b55548e9",
+        "852d3eb7-885b-5ad7-a595-bea030012049"
+      ],
+      "selected": [
+        "7abe2931-2c90-5ecd-a5c9-15c1b55548e9"
+      ],
+      "selected_labels": [
+        "newer"
+      ],
+      "rank_order": [
+        "7abe2931-2c90-5ecd-a5c9-15c1b55548e9"
+      ],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "852d3eb7-885b-5ad7-a595-bea030012049",
+          "reason": "superseded"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "2691e41f-bc4d-5251-b96d-89bdf48c3a6f"
+      ],
+      "derived_statuses": {
+        "older": "superseded",
+        "newer": "active"
+      },
+      "jobs": [
+        {
+          "id": "74688880-e707-55cb-b1dc-4675dc6a3f20",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 63,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "clear-explicit-correction",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "7abe2931-2c90-5ecd-a5c9-15c1b55548e9",
+        "852d3eb7-885b-5ad7-a595-bea030012049"
+      ],
+      "selected": [
+        "7abe2931-2c90-5ecd-a5c9-15c1b55548e9"
+      ],
+      "selected_labels": [
+        "newer"
+      ],
+      "rank_order": [
+        "7abe2931-2c90-5ecd-a5c9-15c1b55548e9"
+      ],
+      "scores": [
+        {
+          "memory_id": "7abe2931-2c90-5ecd-a5c9-15c1b55548e9",
+          "score": 0.87,
+          "similarity": 0.95,
+          "importance": 1.0,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "852d3eb7-885b-5ad7-a595-bea030012049",
+          "reason": "superseded"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "2691e41f-bc4d-5251-b96d-89bdf48c3a6f"
+      ],
+      "derived_statuses": {
+        "older": "superseded",
+        "newer": "active"
+      },
+      "jobs": [
+        {
+          "id": "74688880-e707-55cb-b1dc-4675dc6a3f20",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 63,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "clear-explicit-correction",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "7abe2931-2c90-5ecd-a5c9-15c1b55548e9",
+        "852d3eb7-885b-5ad7-a595-bea030012049"
+      ],
+      "selected": [
+        "7abe2931-2c90-5ecd-a5c9-15c1b55548e9"
+      ],
+      "selected_labels": [
+        "newer"
+      ],
+      "rank_order": [
+        "7abe2931-2c90-5ecd-a5c9-15c1b55548e9"
+      ],
+      "scores": [
+        {
+          "memory_id": "7abe2931-2c90-5ecd-a5c9-15c1b55548e9",
+          "score": 0.87,
+          "similarity": 0.95,
+          "importance": 1.0,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "852d3eb7-885b-5ad7-a595-bea030012049",
+          "reason": "superseded"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "2691e41f-bc4d-5251-b96d-89bdf48c3a6f"
+      ],
+      "derived_statuses": {
+        "older": "superseded",
+        "newer": "active"
+      },
+      "jobs": [
+        {
+          "id": "74688880-e707-55cb-b1dc-4675dc6a3f20",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 63,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "ambiguous-negation",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "0e77f2b8-e234-5654-a45a-361fb444637b",
+        "2b5b7bd3-a326-51f9-b0e8-02efcf363348"
+      ],
+      "selected": [
+        "2b5b7bd3-a326-51f9-b0e8-02efcf363348",
+        "0e77f2b8-e234-5654-a45a-361fb444637b"
+      ],
+      "selected_labels": [
+        "newer",
+        "older"
+      ],
+      "rank_order": [
+        "2b5b7bd3-a326-51f9-b0e8-02efcf363348",
+        "0e77f2b8-e234-5654-a45a-361fb444637b"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "101ee3b3-0175-5079-8913-cc6b6211e31d"
+      ],
+      "derived_statuses": {
+        "older": "active",
+        "newer": "active"
+      },
+      "jobs": [
+        {
+          "id": "de04bcf5-edbd-54c6-8f99-4289b04f2c4b",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 76,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "ambiguous-negation",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "0e77f2b8-e234-5654-a45a-361fb444637b",
+        "2b5b7bd3-a326-51f9-b0e8-02efcf363348"
+      ],
+      "selected": [
+        "2b5b7bd3-a326-51f9-b0e8-02efcf363348",
+        "0e77f2b8-e234-5654-a45a-361fb444637b"
+      ],
+      "selected_labels": [
+        "newer",
+        "older"
+      ],
+      "rank_order": [
+        "2b5b7bd3-a326-51f9-b0e8-02efcf363348",
+        "0e77f2b8-e234-5654-a45a-361fb444637b"
+      ],
+      "scores": [
+        {
+          "memory_id": "2b5b7bd3-a326-51f9-b0e8-02efcf363348",
+          "score": 0.87,
+          "similarity": 0.95,
+          "importance": 1.0,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "0e77f2b8-e234-5654-a45a-361fb444637b",
+          "score": 0.8343335755341217,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 0.9622238368941451,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "101ee3b3-0175-5079-8913-cc6b6211e31d"
+      ],
+      "derived_statuses": {
+        "older": "active",
+        "newer": "active"
+      },
+      "jobs": [
+        {
+          "id": "de04bcf5-edbd-54c6-8f99-4289b04f2c4b",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 76,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "ambiguous-negation",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "0e77f2b8-e234-5654-a45a-361fb444637b",
+        "2b5b7bd3-a326-51f9-b0e8-02efcf363348"
+      ],
+      "selected": [
+        "2b5b7bd3-a326-51f9-b0e8-02efcf363348",
+        "0e77f2b8-e234-5654-a45a-361fb444637b"
+      ],
+      "selected_labels": [
+        "newer",
+        "older"
+      ],
+      "rank_order": [
+        "2b5b7bd3-a326-51f9-b0e8-02efcf363348",
+        "0e77f2b8-e234-5654-a45a-361fb444637b"
+      ],
+      "scores": [
+        {
+          "memory_id": "2b5b7bd3-a326-51f9-b0e8-02efcf363348",
+          "score": 0.87,
+          "similarity": 0.95,
+          "importance": 1.0,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "0e77f2b8-e234-5654-a45a-361fb444637b",
+          "score": 0.8343335755341217,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 0.9622238368941451,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "101ee3b3-0175-5079-8913-cc6b6211e31d"
+      ],
+      "derived_statuses": {
+        "older": "active",
+        "newer": "active"
+      },
+      "jobs": [
+        {
+          "id": "de04bcf5-edbd-54c6-8f99-4289b04f2c4b",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 76,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "explicit-temporal-replacement",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "711c449a-1d28-5ce0-aad9-56d756d3f83a",
+        "90250ae3-faf2-55ef-8612-0fbf985abbca"
+      ],
+      "selected": [
+        "90250ae3-faf2-55ef-8612-0fbf985abbca"
+      ],
+      "selected_labels": [
+        "newer"
+      ],
+      "rank_order": [
+        "90250ae3-faf2-55ef-8612-0fbf985abbca"
+      ],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "711c449a-1d28-5ce0-aad9-56d756d3f83a",
+          "reason": "superseded"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "477b2e65-b7d3-52ae-b7a5-706bc960108e"
+      ],
+      "derived_statuses": {
+        "older": "superseded",
+        "newer": "active"
+      },
+      "jobs": [
+        {
+          "id": "ae732756-b69d-588f-8925-c96b3bd699ab",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 63,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "explicit-temporal-replacement",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "711c449a-1d28-5ce0-aad9-56d756d3f83a",
+        "90250ae3-faf2-55ef-8612-0fbf985abbca"
+      ],
+      "selected": [
+        "90250ae3-faf2-55ef-8612-0fbf985abbca"
+      ],
+      "selected_labels": [
+        "newer"
+      ],
+      "rank_order": [
+        "90250ae3-faf2-55ef-8612-0fbf985abbca"
+      ],
+      "scores": [
+        {
+          "memory_id": "90250ae3-faf2-55ef-8612-0fbf985abbca",
+          "score": 0.87,
+          "similarity": 0.95,
+          "importance": 1.0,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "711c449a-1d28-5ce0-aad9-56d756d3f83a",
+          "reason": "superseded"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "477b2e65-b7d3-52ae-b7a5-706bc960108e"
+      ],
+      "derived_statuses": {
+        "older": "superseded",
+        "newer": "active"
+      },
+      "jobs": [
+        {
+          "id": "ae732756-b69d-588f-8925-c96b3bd699ab",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 63,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "explicit-temporal-replacement",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "711c449a-1d28-5ce0-aad9-56d756d3f83a",
+        "90250ae3-faf2-55ef-8612-0fbf985abbca"
+      ],
+      "selected": [
+        "90250ae3-faf2-55ef-8612-0fbf985abbca"
+      ],
+      "selected_labels": [
+        "newer"
+      ],
+      "rank_order": [
+        "90250ae3-faf2-55ef-8612-0fbf985abbca"
+      ],
+      "scores": [
+        {
+          "memory_id": "90250ae3-faf2-55ef-8612-0fbf985abbca",
+          "score": 0.87,
+          "similarity": 0.95,
+          "importance": 1.0,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "711c449a-1d28-5ce0-aad9-56d756d3f83a",
+          "reason": "superseded"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "477b2e65-b7d3-52ae-b7a5-706bc960108e"
+      ],
+      "derived_statuses": {
+        "older": "superseded",
+        "newer": "active"
+      },
+      "jobs": [
+        {
+          "id": "ae732756-b69d-588f-8925-c96b3bd699ab",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 63,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "stale-low-value-memory",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "95317ca5-6073-588c-a3b3-aaa666180967"
+      ],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "95317ca5-6073-588c-a3b3-aaa666180967",
+          "reason": "low_confidence"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "cfa22e3d-9a52-51fe-8960-4d9329cc68e3"
+      ],
+      "derived_statuses": {
+        "stale": "forgotten"
+      },
+      "jobs": [
+        {
+          "id": "c2202207-0b7c-53c0-bab5-52423a418140",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "stale-low-value-memory",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "95317ca5-6073-588c-a3b3-aaa666180967"
+      ],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "95317ca5-6073-588c-a3b3-aaa666180967",
+          "reason": "low_confidence"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "cfa22e3d-9a52-51fe-8960-4d9329cc68e3"
+      ],
+      "derived_statuses": {
+        "stale": "forgotten"
+      },
+      "jobs": [
+        {
+          "id": "c2202207-0b7c-53c0-bab5-52423a418140",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "stale-low-value-memory",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "95317ca5-6073-588c-a3b3-aaa666180967"
+      ],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "95317ca5-6073-588c-a3b3-aaa666180967",
+          "reason": "low_confidence"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "cfa22e3d-9a52-51fe-8960-4d9329cc68e3"
+      ],
+      "derived_statuses": {
+        "stale": "forgotten"
+      },
+      "jobs": [
+        {
+          "id": "c2202207-0b7c-53c0-bab5-52423a418140",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "protected-explicit-correction",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "593e2f43-5adf-50b4-99d7-969ede664273"
+      ],
+      "selected": [
+        "593e2f43-5adf-50b4-99d7-969ede664273"
+      ],
+      "selected_labels": [
+        "protected"
+      ],
+      "rank_order": [
+        "593e2f43-5adf-50b4-99d7-969ede664273"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "protected": "active"
+      },
+      "jobs": [
+        {
+          "id": "1b58edce-6e37-50e9-a632-e98da1adff56",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 63,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "protected-explicit-correction",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "593e2f43-5adf-50b4-99d7-969ede664273"
+      ],
+      "selected": [
+        "593e2f43-5adf-50b4-99d7-969ede664273"
+      ],
+      "selected_labels": [
+        "protected"
+      ],
+      "rank_order": [
+        "593e2f43-5adf-50b4-99d7-969ede664273"
+      ],
+      "scores": [
+        {
+          "memory_id": "593e2f43-5adf-50b4-99d7-969ede664273",
+          "score": 0.7268893804325418,
+          "similarity": 0.95,
+          "importance": 1.0,
+          "recency": 0.045929202883612456,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "protected": "active"
+      },
+      "jobs": [
+        {
+          "id": "1b58edce-6e37-50e9-a632-e98da1adff56",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 63,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "protected-explicit-correction",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "593e2f43-5adf-50b4-99d7-969ede664273"
+      ],
+      "selected": [
+        "593e2f43-5adf-50b4-99d7-969ede664273"
+      ],
+      "selected_labels": [
+        "protected"
+      ],
+      "rank_order": [
+        "593e2f43-5adf-50b4-99d7-969ede664273"
+      ],
+      "scores": [
+        {
+          "memory_id": "593e2f43-5adf-50b4-99d7-969ede664273",
+          "score": 0.7268893804325418,
+          "similarity": 0.95,
+          "importance": 1.0,
+          "recency": 0.045929202883612456,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "protected": "active"
+      },
+      "jobs": [
+        {
+          "id": "1b58edce-6e37-50e9-a632-e98da1adff56",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 63,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "branch-rewrite-before-job",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "742e56de-68fe-5ac5-823b-d2d096186ce3",
+        "a142af3b-40ac-5fb1-9540-8be4203b13ad"
+      ],
+      "selected": [
+        "a142af3b-40ac-5fb1-9540-8be4203b13ad"
+      ],
+      "selected_labels": [
+        "b"
+      ],
+      "rank_order": [
+        "a142af3b-40ac-5fb1-9540-8be4203b13ad"
+      ],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "742e56de-68fe-5ac5-823b-d2d096186ce3",
+          "reason": "branch_mismatch"
+        }
+      ],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "c2e70c97-fb30-57e4-b8f8-f81c0458a000",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "branch-rewrite-before-job",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "742e56de-68fe-5ac5-823b-d2d096186ce3",
+        "a142af3b-40ac-5fb1-9540-8be4203b13ad"
+      ],
+      "selected": [
+        "a142af3b-40ac-5fb1-9540-8be4203b13ad"
+      ],
+      "selected_labels": [
+        "b"
+      ],
+      "rank_order": [
+        "a142af3b-40ac-5fb1-9540-8be4203b13ad"
+      ],
+      "scores": [
+        {
+          "memory_id": "a142af3b-40ac-5fb1-9540-8be4203b13ad",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "742e56de-68fe-5ac5-823b-d2d096186ce3",
+          "reason": "branch_mismatch"
+        }
+      ],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "c2e70c97-fb30-57e4-b8f8-f81c0458a000",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "branch-rewrite-before-job",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "742e56de-68fe-5ac5-823b-d2d096186ce3",
+        "a142af3b-40ac-5fb1-9540-8be4203b13ad"
+      ],
+      "selected": [
+        "a142af3b-40ac-5fb1-9540-8be4203b13ad"
+      ],
+      "selected_labels": [
+        "b"
+      ],
+      "rank_order": [
+        "a142af3b-40ac-5fb1-9540-8be4203b13ad"
+      ],
+      "scores": [
+        {
+          "memory_id": "a142af3b-40ac-5fb1-9540-8be4203b13ad",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "742e56de-68fe-5ac5-823b-d2d096186ce3",
+          "reason": "branch_mismatch"
+        }
+      ],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "c2e70c97-fb30-57e4-b8f8-f81c0458a000",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "duplicate-job-delivery",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+        "e373b5f0-b1fe-5953-bfa3-98090ee21e78"
+      ],
+      "selected": [
+        "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+        "e373b5f0-b1fe-5953-bfa3-98090ee21e78"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+        "e373b5f0-b1fe-5953-bfa3-98090ee21e78"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "9cf8b332-0993-5833-99e2-22b091069546",
+        "b77af377-d201-5712-a970-36a7a5ae606d"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "2588c79a-cf9e-5532-885f-f6e6085153b2",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 72,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "duplicate-job-delivery",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+        "e373b5f0-b1fe-5953-bfa3-98090ee21e78"
+      ],
+      "selected": [
+        "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+        "e373b5f0-b1fe-5953-bfa3-98090ee21e78"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+        "e373b5f0-b1fe-5953-bfa3-98090ee21e78"
+      ],
+      "scores": [
+        {
+          "memory_id": "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "e373b5f0-b1fe-5953-bfa3-98090ee21e78",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "9cf8b332-0993-5833-99e2-22b091069546",
+        "b77af377-d201-5712-a970-36a7a5ae606d"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "2588c79a-cf9e-5532-885f-f6e6085153b2",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 72,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "duplicate-job-delivery",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "a0ac394e-c385-5d43-bac9-737467805afc",
+        "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+        "e373b5f0-b1fe-5953-bfa3-98090ee21e78"
+      ],
+      "selected": [
+        "a0ac394e-c385-5d43-bac9-737467805afc"
+      ],
+      "selected_labels": [
+        "derived"
+      ],
+      "rank_order": [
+        "a0ac394e-c385-5d43-bac9-737467805afc",
+        "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+        "e373b5f0-b1fe-5953-bfa3-98090ee21e78"
+      ],
+      "scores": [
+        {
+          "memory_id": "a0ac394e-c385-5d43-bac9-737467805afc",
+          "score": 0.865,
+          "similarity": 1.0,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "e373b5f0-b1fe-5953-bfa3-98090ee21e78",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "a0faaf04-5186-5af1-a2ab-e85e181fdf7d",
+          "reason": "represented_by_derived_memory"
+        },
+        {
+          "id": "e373b5f0-b1fe-5953-bfa3-98090ee21e78",
+          "reason": "represented_by_derived_memory"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "9cf8b332-0993-5833-99e2-22b091069546",
+        "b77af377-d201-5712-a970-36a7a5ae606d"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "2588c79a-cf9e-5532-885f-f6e6085153b2",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 78,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "cross-owner-near-match",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "47dabd44-6740-5664-9664-771ded3f10e4"
+      ],
+      "selected": [
+        "47dabd44-6740-5664-9664-771ded3f10e4"
+      ],
+      "selected_labels": [
+        "owner"
+      ],
+      "rank_order": [
+        "47dabd44-6740-5664-9664-771ded3f10e4"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "owner": "active",
+        "foreign": "active"
+      },
+      "jobs": [],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "cross-owner-near-match",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "47dabd44-6740-5664-9664-771ded3f10e4"
+      ],
+      "selected": [
+        "47dabd44-6740-5664-9664-771ded3f10e4"
+      ],
+      "selected_labels": [
+        "owner"
+      ],
+      "rank_order": [
+        "47dabd44-6740-5664-9664-771ded3f10e4"
+      ],
+      "scores": [
+        {
+          "memory_id": "47dabd44-6740-5664-9664-771ded3f10e4",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "owner": "active",
+        "foreign": "active"
+      },
+      "jobs": [],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "cross-owner-near-match",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "47dabd44-6740-5664-9664-771ded3f10e4"
+      ],
+      "selected": [
+        "47dabd44-6740-5664-9664-771ded3f10e4"
+      ],
+      "selected_labels": [
+        "owner"
+      ],
+      "rank_order": [
+        "47dabd44-6740-5664-9664-771ded3f10e4"
+      ],
+      "scores": [
+        {
+          "memory_id": "47dabd44-6740-5664-9664-771ded3f10e4",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "owner": "active",
+        "foreign": "active"
+      },
+      "jobs": [],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "forgotten-record-never-resurrected",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "b1ee0baf-93a0-534a-b272-629e54167df2"
+      ],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "b1ee0baf-93a0-534a-b272-629e54167df2",
+          "reason": "low_confidence"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "192d7493-974a-5cb8-9ef6-6b819e8b59a0"
+      ],
+      "derived_statuses": {
+        "stale": "forgotten"
+      },
+      "jobs": [
+        {
+          "id": "201403a3-b6e6-5245-aed7-016c91f61077",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "forgotten-record-never-resurrected",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "b1ee0baf-93a0-534a-b272-629e54167df2"
+      ],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "b1ee0baf-93a0-534a-b272-629e54167df2",
+          "reason": "low_confidence"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "192d7493-974a-5cb8-9ef6-6b819e8b59a0"
+      ],
+      "derived_statuses": {
+        "stale": "forgotten"
+      },
+      "jobs": [
+        {
+          "id": "201403a3-b6e6-5245-aed7-016c91f61077",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "forgotten-record-never-resurrected",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "b1ee0baf-93a0-534a-b272-629e54167df2"
+      ],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "b1ee0baf-93a0-534a-b272-629e54167df2",
+          "reason": "low_confidence"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "192d7493-974a-5cb8-9ef6-6b819e8b59a0"
+      ],
+      "derived_statuses": {
+        "stale": "forgotten"
+      },
+      "jobs": [
+        {
+          "id": "201403a3-b6e6-5245-aed7-016c91f61077",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "derived-over-budget-source-fallback",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "be9acdc6-8a53-5654-b0f0-22532b3d5770",
+        "c61f0e37-3145-52e4-b97a-18e7518a54b6"
+      ],
+      "selected": [
+        "be9acdc6-8a53-5654-b0f0-22532b3d5770"
+      ],
+      "selected_labels": [
+        "a"
+      ],
+      "rank_order": [
+        "be9acdc6-8a53-5654-b0f0-22532b3d5770",
+        "c61f0e37-3145-52e4-b97a-18e7518a54b6"
+      ],
+      "scores": [],
+      "excluded": [
+        {
+          "id": "c61f0e37-3145-52e4-b97a-18e7518a54b6",
+          "reason": "budget"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "b9c50c0c-b116-5b02-b8a4-cfd7845dcde1",
+        "11aca6c6-a38f-59e8-b33a-ac9fd53f056a"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "867a6cfe-b636-5cd3-b85e-b36ab76d03e5",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "derived-over-budget-source-fallback",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "be9acdc6-8a53-5654-b0f0-22532b3d5770",
+        "c61f0e37-3145-52e4-b97a-18e7518a54b6"
+      ],
+      "selected": [
+        "be9acdc6-8a53-5654-b0f0-22532b3d5770"
+      ],
+      "selected_labels": [
+        "a"
+      ],
+      "rank_order": [
+        "be9acdc6-8a53-5654-b0f0-22532b3d5770",
+        "c61f0e37-3145-52e4-b97a-18e7518a54b6"
+      ],
+      "scores": [
+        {
+          "memory_id": "be9acdc6-8a53-5654-b0f0-22532b3d5770",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "c61f0e37-3145-52e4-b97a-18e7518a54b6",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "c61f0e37-3145-52e4-b97a-18e7518a54b6",
+          "reason": "budget"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "b9c50c0c-b116-5b02-b8a4-cfd7845dcde1",
+        "11aca6c6-a38f-59e8-b33a-ac9fd53f056a"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "867a6cfe-b636-5cd3-b85e-b36ab76d03e5",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "derived-over-budget-source-fallback",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "9d26805d-d440-53ec-9d88-94a546401fbe",
+        "be9acdc6-8a53-5654-b0f0-22532b3d5770",
+        "c61f0e37-3145-52e4-b97a-18e7518a54b6"
+      ],
+      "selected": [
+        "be9acdc6-8a53-5654-b0f0-22532b3d5770"
+      ],
+      "selected_labels": [
+        "a"
+      ],
+      "rank_order": [
+        "9d26805d-d440-53ec-9d88-94a546401fbe",
+        "be9acdc6-8a53-5654-b0f0-22532b3d5770",
+        "c61f0e37-3145-52e4-b97a-18e7518a54b6"
+      ],
+      "scores": [
+        {
+          "memory_id": "9d26805d-d440-53ec-9d88-94a546401fbe",
+          "score": 0.865,
+          "similarity": 1.0,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "be9acdc6-8a53-5654-b0f0-22532b3d5770",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "c61f0e37-3145-52e4-b97a-18e7518a54b6",
+          "score": 0.84,
+          "similarity": 0.95,
+          "importance": 0.8,
+          "recency": 1.0,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "9d26805d-d440-53ec-9d88-94a546401fbe",
+          "reason": "budget"
+        },
+        {
+          "id": "c61f0e37-3145-52e4-b97a-18e7518a54b6",
+          "reason": "budget"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "b9c50c0c-b116-5b02-b8a4-cfd7845dcde1",
+        "11aca6c6-a38f-59e8-b33a-ac9fd53f056a"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "867a6cfe-b636-5cd3-b85e-b36ab76d03e5",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "scoring-failure-safe-fixed",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "546485f0-33de-5602-b480-18e5e9045725"
+      ],
+      "selected": [
+        "546485f0-33de-5602-b480-18e5e9045725"
+      ],
+      "selected_labels": [
+        "a"
+      ],
+      "rank_order": [
+        "546485f0-33de-5602-b480-18e5e9045725"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active"
+      },
+      "jobs": [],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "scoring-failure-safe-fixed",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "546485f0-33de-5602-b480-18e5e9045725"
+      ],
+      "selected": [
+        "546485f0-33de-5602-b480-18e5e9045725"
+      ],
+      "selected_labels": [
+        "a"
+      ],
+      "rank_order": [
+        "546485f0-33de-5602-b480-18e5e9045725"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active"
+      },
+      "jobs": [],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "fixed",
+      "diagnostics": [
+        "scorer_failed_fixed_fallback"
+      ],
+      "failure_reason": null
+    },
+    {
+      "fixture": "scoring-failure-safe-fixed",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "546485f0-33de-5602-b480-18e5e9045725"
+      ],
+      "selected": [
+        "546485f0-33de-5602-b480-18e5e9045725"
+      ],
+      "selected_labels": [
+        "a"
+      ],
+      "rank_order": [
+        "546485f0-33de-5602-b480-18e5e9045725"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active"
+      },
+      "jobs": [],
+      "token_total": 62,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "fixed",
+      "diagnostics": [
+        "scorer_failed_fixed_fallback"
+      ],
+      "failure_reason": null
+    },
+    {
+      "fixture": "lifecycle-failure-empty",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active"
+      },
+      "jobs": [],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "empty",
+      "diagnostics": [
+        "retrieval_failed"
+      ],
+      "failure_reason": null
+    },
+    {
+      "fixture": "lifecycle-failure-empty",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active"
+      },
+      "jobs": [],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "empty",
+      "diagnostics": [
+        "retrieval_failed"
+      ],
+      "failure_reason": null
+    },
+    {
+      "fixture": "lifecycle-failure-empty",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active"
+      },
+      "jobs": [],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "empty",
+      "diagnostics": [
+        "retrieval_failed"
+      ],
+      "failure_reason": null
+    },
+    {
+      "fixture": "query-provider-failure",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active"
+      },
+      "jobs": [],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "empty",
+      "diagnostics": [
+        "retrieval_failed"
+      ],
+      "failure_reason": null
+    },
+    {
+      "fixture": "query-provider-failure",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active"
+      },
+      "jobs": [],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "empty",
+      "diagnostics": [
+        "retrieval_failed"
+      ],
+      "failure_reason": null
+    },
+    {
+      "fixture": "query-provider-failure",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [],
+      "selected": [],
+      "selected_labels": [],
+      "rank_order": [],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [],
+      "derived_statuses": {
+        "a": "active"
+      },
+      "jobs": [],
+      "token_total": 16,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "empty",
+      "diagnostics": [
+        "retrieval_failed"
+      ],
+      "failure_reason": null
+    },
+    {
+      "fixture": "active-dependent-forgetting-protection",
+      "fixture_version": 1,
+      "variant": "fixed",
+      "policy_version": "score-v1",
+      "policy_identity": null,
+      "result": "passed",
+      "candidates": [
+        "54f633d1-e528-587f-95b8-c95451827cb9",
+        "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd"
+      ],
+      "selected": [
+        "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd",
+        "54f633d1-e528-587f-95b8-c95451827cb9"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd",
+        "54f633d1-e528-587f-95b8-c95451827cb9"
+      ],
+      "scores": [],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "e9ea3137-b51e-51e9-a6b3-c557d2086d0d",
+        "363a1889-a4c7-5edb-80d1-4dcd8ccb290f"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "109f2dbe-78b8-54bd-9ebe-8a4cff530509",
+          "attempts": 1,
+          "status": "completed"
+        },
+        {
+          "id": "9a6b248c-a9dc-5bb3-b4fa-f9c64c3aeae4",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 68,
+      "input_budget": 27648,
+      "requested_variant": "fixed",
+      "applied_variant": "fixed",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "active-dependent-forgetting-protection",
+      "fixture_version": 1,
+      "variant": "scored",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "54f633d1-e528-587f-95b8-c95451827cb9",
+        "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd"
+      ],
+      "selected": [
+        "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd",
+        "54f633d1-e528-587f-95b8-c95451827cb9"
+      ],
+      "selected_labels": [
+        "a",
+        "b"
+      ],
+      "rank_order": [
+        "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd",
+        "54f633d1-e528-587f-95b8-c95451827cb9"
+      ],
+      "scores": [
+        {
+          "memory_id": "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd",
+          "score": 0.6368893804325417,
+          "similarity": 0.95,
+          "importance": 0.4,
+          "recency": 0.045929202883612456,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "54f633d1-e528-587f-95b8-c95451827cb9",
+          "score": 0.6368365247356482,
+          "similarity": 0.95,
+          "importance": 0.4,
+          "recency": 0.04557683157098921,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [],
+      "lifecycle_event_ids": [
+        "e9ea3137-b51e-51e9-a6b3-c557d2086d0d",
+        "363a1889-a4c7-5edb-80d1-4dcd8ccb290f"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "109f2dbe-78b8-54bd-9ebe-8a4cff530509",
+          "attempts": 1,
+          "status": "completed"
+        },
+        {
+          "id": "9a6b248c-a9dc-5bb3-b4fa-f9c64c3aeae4",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 68,
+      "input_budget": 27648,
+      "requested_variant": "scored",
+      "applied_variant": "scored",
+      "diagnostics": [],
+      "failure_reason": null
+    },
+    {
+      "fixture": "active-dependent-forgetting-protection",
+      "fixture_version": 1,
+      "variant": "consolidated",
+      "policy_version": "score-v1",
+      "policy_identity": "21ac9e89ff87d1cb21aef51f7e92c2dbedfc698b512a2ab56fee0c574b25ccd0",
+      "result": "passed",
+      "candidates": [
+        "3a83e155-2a49-5aa5-bd89-cb759e66240a",
+        "54f633d1-e528-587f-95b8-c95451827cb9",
+        "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd"
+      ],
+      "selected": [
+        "3a83e155-2a49-5aa5-bd89-cb759e66240a"
+      ],
+      "selected_labels": [
+        "derived"
+      ],
+      "rank_order": [
+        "3a83e155-2a49-5aa5-bd89-cb759e66240a",
+        "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd",
+        "54f633d1-e528-587f-95b8-c95451827cb9"
+      ],
+      "scores": [
+        {
+          "memory_id": "3a83e155-2a49-5aa5-bd89-cb759e66240a",
+          "score": 0.6618893804325419,
+          "similarity": 1.0,
+          "importance": 0.4,
+          "recency": 0.045929202883612456,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd",
+          "score": 0.6368893804325417,
+          "similarity": 0.95,
+          "importance": 0.4,
+          "recency": 0.045929202883612456,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        },
+        {
+          "memory_id": "54f633d1-e528-587f-95b8-c95451827cb9",
+          "score": 0.6368365247356482,
+          "similarity": 0.95,
+          "importance": 0.4,
+          "recency": 0.04557683157098921,
+          "frequency": 0.0,
+          "confidence": 0.95,
+          "policy_version": "score-v1",
+          "reason": null
+        }
+      ],
+      "excluded": [
+        {
+          "id": "5891e7af-89ba-53f4-bbab-ac2f68d6b7dd",
+          "reason": "represented_by_derived_memory"
+        },
+        {
+          "id": "54f633d1-e528-587f-95b8-c95451827cb9",
+          "reason": "represented_by_derived_memory"
+        }
+      ],
+      "lifecycle_event_ids": [
+        "e9ea3137-b51e-51e9-a6b3-c557d2086d0d",
+        "363a1889-a4c7-5edb-80d1-4dcd8ccb290f"
+      ],
+      "derived_statuses": {
+        "a": "active",
+        "b": "active"
+      },
+      "jobs": [
+        {
+          "id": "109f2dbe-78b8-54bd-9ebe-8a4cff530509",
+          "attempts": 1,
+          "status": "completed"
+        },
+        {
+          "id": "9a6b248c-a9dc-5bb3-b4fa-f9c64c3aeae4",
+          "attempts": 1,
+          "status": "completed"
+        }
+      ],
+      "token_total": 74,
+      "input_budget": 27648,
+      "requested_variant": "consolidated",
+      "applied_variant": "consolidated",
+      "diagnostics": [],
+      "failure_reason": null
+    }
+  ]
+}

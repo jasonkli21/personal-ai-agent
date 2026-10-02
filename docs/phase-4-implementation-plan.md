@@ -1,6 +1,9 @@
 # Phase 4 implementation plan
 
-This is the execution plan for making the Phase 3 memory subsystem
+This is the scope/acceptance plan for Phase 4, implemented locally on 2026-10-02.
+See the [implementation guide](phase-4-implementation-guide.md) and
+[release evidence](releases/phase-4-experimental-memory.md) for the code map and
+remaining external verification gaps. It makes the Phase 3 memory subsystem
 experimentable. It builds on the delivered Phase 1 chat lifecycle, Phase 2
 bounded context layer, and Phase 3 attributable-memory loop. The [Phase 3
 plan](phase-3-implementation-plan.md) remains authoritative for memory types,
@@ -377,7 +380,7 @@ episodes that support them.
 
 **Acceptance criteria:**
 
-- Tests cover successful episode-to-preference and episode-to-summary cases,
+- Tests cover repeated explicit-preference consolidation and episode-to-summary cases,
   no-plan, mixed-topic rejection, duplicate job, stale source, sensitive-data
   rejection, provider/embedding/storage failure, and full source provenance.
 - A fixture proves a consolidation can improve allowed retrieval selection
@@ -684,8 +687,8 @@ HTTP status, active leases avoid premature acknowledgement, and terminal records
 retain safe reasons. Test publish-loss recovery, crash windows, stale lease holders,
 transaction conflicts and bounded processing in addition to duplicate delivery.
 
-The API image currently exposes an idle `/tasks/research` endpoint and is public,
-while the Cloud Run worker uses the same entry point. Add a separate worker app or
+At planning review, the API image exposed an idle `/tasks/research` endpoint and
+was public, while the Cloud Run worker used the same entry point. Add a separate worker app or
 explicit service-role gate so lifecycle mutation routes do not exist on the public
 API. Use Cloud Run IAM and Pub/Sub authenticated push for the private worker, with
 explicit worker runtime Firestore/required-secret permissions and API publisher
@@ -726,8 +729,10 @@ coverage/rank improvements without claiming universal recall improvement.
 Deliver in roughly four to six coherent commits (adjust for real boundaries):
 contracts/storage and fixtures; scoring/lifecycle policy; queue/worker/consolidation;
 chat/inspection integration; evaluation, operational docs and closeout. Do not commit
-once per plan task. The implementation agent owns its own acceptance review and fixes;
-the planning session performs no implementation or subsequent code review. Update
+once per plan task. The initial implementation handoff used a Luna Extra High agent. The user later
+requested that it stop after its current commit and that the main session finish
+implementation, acceptance fixes and verification; that later ownership instruction
+is authoritative. Update
 phase status, implementation guide and dated release evidence with tested revision,
 commands, outcomes, commit map and explicit remaining external verification gaps.
 Full local implementation includes real adapters and opt-in check entry points;

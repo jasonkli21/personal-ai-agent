@@ -97,3 +97,16 @@ see [Phase 2 configuration and verification](phase-2-implementation-guide.md).
 Use synthetic long conversations for the opt-in provider quality check and verify
 summary-backed streaming plus refresh/restart persistence in the emulator/deployed
 store. These external checks have not been run in the recorded local session.
+
+## Phase 4 private worker and gated indexes
+
+The worker uses `personal_ai.worker:app`, with `/tasks/memory` separate from the
+public API. Bootstrap sets all lifecycle gates false, updates existing authenticated
+push subscriptions and grants distinct worker runtime, API publisher and push invoker
+permissions. Before enabling a synthetic experiment, provision all Phase 4 indexes
+from `firestore.indexes.json`, including derived/typed vector indexes with matching
+dimensions, maintenance, event-sequence, reverse-dependency and pending/retry queries.
+Wait for readiness; the bootstrap provisions only Phase 1–2 indexes. See the
+[Phase 4 guide](phase-4-implementation-guide.md) for explicit notification recovery,
+attempt/lease bounds, opt-in checks and current verification limitations. A private
+worker does not authenticate the public chat's fixed `local` owner.

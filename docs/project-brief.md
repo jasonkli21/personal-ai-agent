@@ -10,14 +10,14 @@ The end state is one reusable personal research platform with chat, memory, and 
 
 ## Current state
 
-Phase 1 chat, Phase 2 context-management, and Phase 3 simple-memory code are implemented locally. Offline
+Phase 1 chat, Phase 2 context-management, Phase 3 simple-memory, and Phase 4 experimental-memory code are implemented locally. Offline
 quality checks pass, but real
 Firestore persistence, Gemini, and deployed GCP behavior (including browser
 disconnect propagation) still need verification. Deterministic ASGI disconnect
 and proxy cancellation regression tests now cover the local boundaries.
 Do not equate implemented code with a
-fully verified deployment. The active scope is **Phase 4 experimental-memory implementation**, explicitly
-authorized on 2026-10-02 after plan review. Memory gates remain disabled by
+fully verified deployment. The active scope is **Phase 4 verification and handoff**, implemented locally
+after explicit authorization and plan review on 2026-10-02. Memory gates remain disabled by
 default; Phase 1–3 external verification gaps remain open. See the
 [reviewed Phase 4 plan](phase-4-implementation-plan.md).
 
@@ -44,6 +44,9 @@ Implemented:
 - Gated source-grounded memory extraction, compatible normalized embeddings,
   owner-scoped durable/vector repositories, advisory retrieval and bounded injection.
 - Fourteen deterministic memory evaluations and read-only supplied-record inspection.
+- Versioned scoring, append-only memory lifecycle state, attributable derived records,
+  conservative contradiction/forgetting, private fenced jobs and bounded recovery.
+- Twenty deterministic lifecycle fixtures across three variants, with default-off gates.
 - Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.
 - Dockerfiles and a GCP bootstrap/deployment script.
 - Architecture, deployment, research-agent, and implementation-plan documents.
@@ -51,9 +54,9 @@ Implemented:
 Not implemented:
 
 - Authentication or authorization.
-- Automatic memory consolidation, contradiction resolution, decay, or forgetting.
+- User-facing memory management, broad inferred consolidation or contradiction adjudication.
 - Search-provider calls, evidence extraction, entity resolution, ranking, or domain agents.
-- Pub/Sub publishing or task processing beyond a worker acknowledgement endpoint.
+- General scheduled maintenance; Phase 4 provides explicit bounded jobs and recovery.
 
 The research, evidence, ranking, and domain packages remain placeholders.
 `memory` implements gated extraction, durable provenance, vector retrieval and inspection.
@@ -88,8 +91,8 @@ The current intended stack is:
 - **Initial model direction:** Gemini for hosted inference and embeddings, behind a replaceable provider interface.
 
 The deployment script configures request-based Cloud Run with zero minimum
-instances. Chat uses Firestore; Pub/Sub is provisioned but chat publishes no
-jobs and the worker only acknowledges delivery. See [GCP deployment](gcp-deployment.md)
+instances. Chat uses Firestore; Pub/Sub is provisioned; gated Phase 4 post-terminal work can publish durable
+lifecycle-job notifications to the private worker. Bootstrap leaves those gates off. See [GCP deployment](gcp-deployment.md)
 for the topology, provisioning script, quota notes, and security boundary.
 
 ## Architectural invariants
@@ -110,7 +113,8 @@ These rules must hold as features are added:
 Follow [implementation plan](implementation-plan.md) in sequence. Phase 0–1
 code paths are delivered; use the [Phase 0–1 plan](phase-1-implementation-plan.md)
 and [implementation guide](phase-1-implementation-guide.md) to assess acceptance.
-The active implementation target is the reviewed Phase 4 plan. Keep the following
+Phase 4 local implementation is delivered; use its [guide](phase-4-implementation-guide.md)
+and [release evidence](releases/phase-4-experimental-memory.md) for behavior and checks. Keep the following
 verification closeout work for delivered Phase 1–3 behavior visible:
 
 1. Verify Firestore Emulator persistence across an API restart.
@@ -126,8 +130,8 @@ The [Phase 2 context-window plan](phase-2-implementation-plan.md) is implemented
 locally. Finish its credentialed quality/deployed checks before declaring full
 verification; Phase 3 was explicitly authorized and is now implemented locally.
 See its [guide](phase-3-implementation-guide.md) and
-[release evidence](releases/phase-3-simple-memory.md); do not advance to Phase 4
-without explicit user instruction.
+[release evidence](releases/phase-3-simple-memory.md). Phase 4 is now delivered locally;
+do not advance to Phase 5 without explicit user instruction.
 
 Do not add long-term memory in Phase 1. Phase 2 handles context-window management; Phase 3 introduces simple memory only after basic chat is stable.
 

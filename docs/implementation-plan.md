@@ -56,7 +56,9 @@ remains pending. Phase 4 was explicitly authorized on 2026-10-02.
 
 ## Phase 4 — Make memory experimental
 
-Planning reviewed on 2026-10-02; implementation is authorized. Follow the
+Implemented locally on 2026-10-02 after explicit authorization and plan review.
+See the [guide](phase-4-implementation-guide.md) and
+[release record](releases/phase-4-experimental-memory.md). Follow the
 [Phase 4 task plan](phase-4-implementation-plan.md), including its reviewed
 execution contracts. Existing external verification gaps remain open.
 

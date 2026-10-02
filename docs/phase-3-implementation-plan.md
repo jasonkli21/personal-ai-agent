@@ -21,7 +21,7 @@ off. [ADR 0009](decisions/0009-simple-attributable-memory.md) clarifies extracti
 semantic summaries, deterministic similarity bands, source-turn provenance,
 optional-work deadlines, index ordering, and provider-free supplied-ID inspection.
 Inspection estimates possible fit; it does not claim semantic relevance or replay
-past requests. Phase 4 has not started.
+past requests. Phase 4 was subsequently implemented locally; see its [guide](phase-4-implementation-guide.md).
 
 ## Scope boundary
 

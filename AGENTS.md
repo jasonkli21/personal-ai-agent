@@ -7,8 +7,10 @@
 - Phase 1 chat, Phase 2 context-management, and Phase 3 simple-memory code are implemented locally.
   Read `docs/phase-2-implementation-guide.md` for context contracts and current
   verification gaps. Provider/emulator/deployment closeout remains pending;
-  Phase 3 gates remain disabled by default; Phase 4 has not started.
-  Read `docs/phase-3-implementation-guide.md` for memory contracts and gaps. Follow explicit user instructions when advancing
+  Phase 3/4 gates remain disabled by default; Phase 4 is implemented locally.
+  Read `docs/phase-3-implementation-guide.md` and
+  `docs/phase-4-implementation-guide.md` for memory/lifecycle contracts and gaps.
+  Follow explicit user instructions when advancing
   scope; do not add later-phase features incidentally.
 - Inspect `git status` before editing and preserve existing user changes.
 
@@ -43,6 +45,7 @@ make backend-test
 make backend-lint
 make context-eval
 make memory-eval
+make memory-lifecycle-eval
 make frontend-test
 make frontend-lint
 make frontend-typecheck

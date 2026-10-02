@@ -109,3 +109,19 @@ planning metadata in `memory`: `mode`, aggregate `tokens`, `diagnostics`, and
 query and makes no prior-use claim. Memory text and vectors are omitted. A missing
 or foreign record returns 404; malformed or oversized ID lists return 422.
 There are no user-facing memory create/edit/delete/list routes in Phase 3.
+
+## Phase 4 lifecycle amendments (2026-10-02)
+
+Public chat/SSE contracts remain unchanged. The supplied-ID inspector also accepts
+`MEMORY_LIFECYCLE_INSPECTION_ENABLED` with the existing context gate; corresponding
+frontend/proxy gates are required. Metadata adds requested/applied variants, policy
+version/identity, lifecycle statuses, event IDs and safe reasons, per-source IDs and
+score components. Overall score and similarity remain null without query relevance;
+selection means estimated fit. Content/vectors and mutation operations remain absent.
+
+The public API has no `/tasks/research` or `/tasks/memory` route. The private
+`personal_ai.worker:app` exposes `/tasks/memory` for authenticated Pub/Sub push only
+under Cloud Run IAM; it decodes a bounded envelope containing a job ID/schema version
+and obtains owner/source authority from durable storage. Disabled/completed/terminal
+work returns 204; active leases and retryable processing return 503. See the
+[Phase 4 guide](phase-4-implementation-guide.md) for gates and failure recovery.

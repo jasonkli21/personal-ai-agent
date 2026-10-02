@@ -4,7 +4,7 @@ Phase 3 simple memory is implemented locally. The [plan](phase-3-implementation-
 remains the scope reference; [ADR 0009](decisions/0009-simple-attributable-memory.md)
 records decisions and clarifications. Gates remain disabled by default. Real
 Gemini extraction/embeddings, emulator memory persistence, Firestore vector index
-readiness and deployed behavior are unverified. Phase 4 has not started.
+readiness and deployed behavior are unverified. Phase 4 is now implemented locally; see its [guide](phase-4-implementation-guide.md).
 
 ## Plan-to-code map
 

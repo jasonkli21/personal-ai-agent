@@ -107,6 +107,7 @@ Run these commands from the repository root. They do not need cloud credentials 
 | `make frontend-typecheck` | Frontend TypeScript checks |
 | `make context-eval` | Synthetic Phase 2 context evaluation |
 | `make memory-eval` | Synthetic Phase 3 memory evaluation |
+| `make memory-lifecycle-eval` | Synthetic Phase 4 lifecycle/variant evaluation |
 | `make backend-build` | Backend source distribution and wheel |
 | `make frontend-build` | Next.js production build |
 
@@ -203,4 +204,12 @@ it makes no provider calls and does not replay prior model requests.
 See the [Phase 3 guide](docs/phase-3-implementation-guide.md),
 [decisions](docs/decisions/0009-simple-attributable-memory.md), and
 [release evidence](docs/releases/phase-3-simple-memory.md) for configuration,
-index ordering, manual checks and remaining gaps. Phase 4 has not started.
+index ordering, manual checks and remaining gaps. Phase 4 is now implemented
+locally; see the Phase 4 guide and release evidence below.
+
+Phase 4 experimental memory is implemented locally with gates disabled and fixed
+retrieval as the default. See the [guide](docs/phase-4-implementation-guide.md) for
+scoring, immutable lifecycle records, private worker, notification recovery,
+inspection and opt-in checks, and the [release evidence](docs/releases/phase-4-experimental-memory.md)
+for results and remaining external verification gaps. Forgetting changes retrieval
+eligibility; it does not delete data.

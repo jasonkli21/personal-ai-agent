@@ -74,3 +74,14 @@ bounded extraction validates exact user excerpts before embedding and atomic sto
 Memory and inspection gates default off. No worker lifecycle is added. See
 [Phase 3 implementation](phase-3-implementation-guide.md) and
 [ADR 0009](decisions/0009-simple-attributable-memory.md).
+
+## Delivered Phase 4 lifecycle boundary
+
+`memory` now owns versioned deterministic scoring, separate derived-record provenance,
+append-only lifecycle events, projections and bounded jobs. All variants retain the
+shared assembler's allocation and source validation rules. The retained post-terminal
+task accounts for actual injected IDs and persists optional jobs before notification.
+A separate private worker app processes Pub/Sub delivery using fenced leases and
+atomic source/state checks. Explicit bounded recovery republishes durable pending
+notifications; no general scheduler is introduced. Defaults remain fixed with all
+mutation gates off. See [Phase 4 implementation](phase-4-implementation-guide.md).

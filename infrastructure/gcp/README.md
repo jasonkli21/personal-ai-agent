@@ -43,3 +43,7 @@ Memory KNN requires a composite vector index matching the configured dimension;
 provision it and wait for READY before intentionally enabling retrieval. The
 bootstrap does not provision the optional memory index. See the
 [Phase 3 guide](../../docs/phase-3-implementation-guide.md#provision-vector-indexes-before-enabling-retrieval).
+
+The Phase 4 worker is a separate private ASGI app. All memory experiment gates remain
+disabled in bootstrap. See [Phase 4 deployment/recovery](../../docs/phase-4-implementation-guide.md)
+for required indexes, IAM identities, optional synthetic checks and bounded republish.
