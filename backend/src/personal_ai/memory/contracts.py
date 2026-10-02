@@ -188,6 +188,12 @@ class RetrievalResult:
     selected: tuple[ScoredMemory, ...] = ()
     excluded: tuple[tuple[UUID, str], ...] = ()
     diagnostics: tuple[str, ...] = ()
+    requested_variant: str | None = None
+    applied_variant: str | None = None
+    policy_version: str | None = None
+    scores: tuple[object, ...] = ()
+    lifecycle_event_ids: tuple[UUID, ...] = ()
+    inspection_metadata: tuple[tuple[UUID, dict], ...] = ()
 
 
 @dataclass(frozen=True)

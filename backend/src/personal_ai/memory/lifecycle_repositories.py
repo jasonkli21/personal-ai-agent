@@ -101,7 +101,23 @@ class InMemoryMemoryLifecycleRepository:
             items = self.events.get((owner_id, memory_id), [])
             return tuple(sorted(items, key=lambda e: (e.occurred_at, str(e.id)))[-limit:])
 
-    def apply_event(self, event: MemoryLifecycleEvent) -> MemoryLifecycleOutcome:
+    def find_event(self, *, owner_id: str, memory_id: UUID, idempotency_key: str):
+        with self._lock:
+            event = self.events_by_key.get(idempotency_key)
+            if event is None:
+                return None
+            if event.owner_id != owner_id or event.memory_id != memory_id:
+                raise ResourceNotFoundError("memory event not found")
+            return event
+
+    def apply_event(
+        self,
+        event: MemoryLifecycleEvent,
+        *,
+        completed_assistant_id: UUID | None = None,
+        job: MemoryJob | None = None,
+        lease_token: UUID | None = None,
+    ) -> MemoryLifecycleOutcome:
         with self._lock_sources(), self._lock:
             old = self.events_by_key.get(event.idempotency_key)
             if old:
@@ -114,12 +130,30 @@ class InMemoryMemoryLifecycleRepository:
                 )
             if event.id != event_idempotency_id(event.idempotency_key):
                 raise ValueError("event_identity_invalid")
+            if event.job_id is not None:
+                current_job = (
+                    self._fenced_job(job, lease_token, event.occurred_at)
+                    if job is not None and lease_token is not None and job.id == event.job_id
+                    else None
+                )
+                if current_job is None or current_job.owner_id != event.owner_id:
+                    return MemoryLifecycleOutcome(status="conflict", reason="stale_lease")
+            elif job is not None or lease_token is not None:
+                raise ValueError("job_fence_unexpected")
+            if completed_assistant_id is not None:
+                assistant = getattr(self.messages, "_messages", {}).get(completed_assistant_id)
+                if (assistant is None or assistant.owner_id != event.owner_id
+                        or assistant.role is not MessageRole.ASSISTANT
+                        or assistant.status is not MessageStatus.COMPLETED):
+                    return MemoryLifecycleOutcome(status="conflict", reason="assistant_incomplete")
             if not self._valid_target(
                 event.owner_id, event.memory_id, require_active=event.event_type != "reactivated"
             ):
                 return MemoryLifecycleOutcome(status="conflict", reason="source_inactive")
             for related_id in event.related_memory_ids:
                 self._get_memory(event.owner_id, related_id)
+                if not self._valid_target(event.owner_id, related_id):
+                    return MemoryLifecycleOutcome(status="conflict", reason="related_source_inactive")
             current = self.states.get(
                 (event.owner_id, event.memory_id), _base_state(event.owner_id, event.memory_id)
             )
@@ -152,6 +186,13 @@ class InMemoryMemoryLifecycleRepository:
         with self._lock:
             job = self.jobs.get(job_id)
             if job is None or job.owner_id != owner_id:
+                raise ResourceNotFoundError("memory job not found")
+            return job
+
+    def get_job_by_id(self, *, job_id: UUID) -> MemoryJob:
+        with self._lock:
+            job = self.jobs.get(job_id)
+            if job is None:
                 raise ResourceNotFoundError("memory job not found")
             return job
 
@@ -384,6 +425,56 @@ class InMemoryMemoryLifecycleRepository:
                 sorted(self.derived_sources.get((owner_id, memory_id), set()), key=str)[:limit]
             )
 
+    def rebuild_state(self, *, owner_id: str, memory_id: UUID):
+        with self._lock_sources(), self._lock:
+            self._get_memory(owner_id, memory_id)
+            current = _base_state(owner_id, memory_id)
+            events = sorted(
+                self.events.get((owner_id, memory_id), []),
+                key=lambda event: (event.expected_state_version, str(event.id)),
+            )
+            for item in events:
+                current = transition(current, item)
+            self.states[(owner_id, memory_id)] = current
+            return current
+
+    def discover_forgetting_candidates(self, *, owner_id: str, older_than: datetime, limit: int = 4):
+        if not 1 <= limit <= 100:
+            raise ValueError("candidate_limit_invalid")
+        cutoff = _utc(older_than)
+        with self._lock:
+            eligible = [
+                memory
+                for memory in self.memories.records.values()
+                if memory.owner_id == owner_id
+                and memory.status == "active"
+                and memory.memory_type in ("episodic_observation", "semantic_summary")
+                and memory.effective_at <= cutoff
+                and self.states.get(
+                    (owner_id, memory.id), _base_state(owner_id, memory.id)
+                ).retrieval_status == "active"
+            ]
+        eligible.sort(key=lambda item: (item.effective_at, str(item.id)))
+        return tuple(item.id for item in eligible[:limit])
+
+    def discover_maintenance_candidates(self, *, owner_id: str, limit: int = 4):
+        if not 1 <= limit <= 4:
+            raise ValueError("candidate_limit_invalid")
+        with self._lock:
+            eligible = [
+                memory
+                for memory in self.memories.records.values()
+                if memory.owner_id == owner_id
+                and memory.status == "active"
+                and memory.memory_type in ("preference", "explicit_correction")
+                and self._valid_source(memory)
+                and self.states.get(
+                    (owner_id, memory.id), _base_state(owner_id, memory.id)
+                ).retrieval_status == "active"
+            ]
+        eligible.sort(key=lambda item: (-item.effective_at.timestamp(), str(item.id)))
+        return tuple(item.id for item in eligible[:limit])
+
 
 class FirestoreMemoryLifecycleRepository:
     """Firestore event/state/job adapter; lifecycle mutations are transactional."""
@@ -441,6 +532,21 @@ class FirestoreMemoryLifecycleRepository:
             return tuple(MemoryLifecycleEvent.model_validate(item.to_dict()) for item in snapshots)
         except (ValueError, TypeError, KeyError) as error:
             raise StorageUnavailableError("memory lifecycle event invalid") from error
+
+    def find_event(self, *, owner_id: str, memory_id: UUID, idempotency_key: str):
+        identifier = event_idempotency_id(idempotency_key)
+        snapshot = self.memories._run(
+            lambda: self.events.document(str(identifier)).get(retry=None, timeout=5)
+        )
+        if not snapshot.exists:
+            return None
+        try:
+            event = MemoryLifecycleEvent.model_validate(snapshot.to_dict())
+        except (ValueError, TypeError, KeyError) as error:
+            raise StorageUnavailableError("memory lifecycle event invalid") from error
+        if event.owner_id != owner_id or event.memory_id != memory_id:
+            raise ResourceNotFoundError("memory event not found")
+        return event
 
     def _read_original_tx(self, transaction, memory: Memory):
         """Revalidate conversation reservation, source messages and ancestors in this transaction."""
@@ -553,7 +659,14 @@ class FirestoreMemoryLifecycleRepository:
                 return False
         return True
 
-    def apply_event(self, event: MemoryLifecycleEvent) -> MemoryLifecycleOutcome:
+    def apply_event(
+        self,
+        event: MemoryLifecycleEvent,
+        *,
+        completed_assistant_id: UUID | None = None,
+        job: MemoryJob | None = None,
+        lease_token: UUID | None = None,
+    ) -> MemoryLifecycleOutcome:
         if event.id != event_idempotency_id(event.idempotency_key):
             raise ValueError("event_identity_invalid")
         event_ref = self.events.document(str(event.id))
@@ -572,6 +685,40 @@ class FirestoreMemoryLifecycleRepository:
                     raise ValueError("idempotency_key_reused")
                 state = self._read_state(event.owner_id, event.memory_id, transaction=transaction)
                 return MemoryLifecycleOutcome(status="replayed", state=state, event_id=event.id)
+            if completed_assistant_id is not None:
+                assistant_ref = self.client.collection("messages").document(
+                    str(completed_assistant_id)
+                )
+                assistant_snapshot = next(transaction.get(assistant_ref), None)
+                if assistant_snapshot is None or not assistant_snapshot.exists:
+                    return MemoryLifecycleOutcome(status="conflict", reason="assistant_incomplete")
+                try:
+                    assistant = Message.model_validate(assistant_snapshot.to_dict())
+                except (ValueError, TypeError, KeyError):
+                    return MemoryLifecycleOutcome(status="conflict", reason="assistant_incomplete")
+                if (assistant.owner_id != event.owner_id or assistant.role is not MessageRole.ASSISTANT
+                        or assistant.status is not MessageStatus.COMPLETED):
+                    return MemoryLifecycleOutcome(status="conflict", reason="assistant_incomplete")
+            if event.job_id is not None:
+                if job is None or lease_token is None or job.id != event.job_id:
+                    return MemoryLifecycleOutcome(status="conflict", reason="stale_lease")
+                job_snapshot = next(transaction.get(self.jobs.document(str(event.job_id))), None)
+                if job_snapshot is None or not job_snapshot.exists:
+                    return MemoryLifecycleOutcome(status="conflict", reason="stale_lease")
+                try:
+                    current_job = MemoryJob.model_validate(job_snapshot.to_dict())
+                except (ValueError, TypeError, KeyError) as error:
+                    raise StorageUnavailableError("memory job invalid") from error
+                if (
+                    current_job.owner_id != event.owner_id
+                    or current_job.status != "leased"
+                    or current_job.lease_token != lease_token
+                    or current_job.lease_expires_at is None
+                    or current_job.lease_expires_at <= _utc(event.occurred_at)
+                ):
+                    return MemoryLifecycleOutcome(status="conflict", reason="stale_lease")
+            elif job is not None or lease_token is not None:
+                raise ValueError("job_fence_unexpected")
             if current_snapshot is None or not current_snapshot.exists:
                 state = _base_state(event.owner_id, event.memory_id)
             else:
@@ -588,6 +735,10 @@ class FirestoreMemoryLifecycleRepository:
                 return MemoryLifecycleOutcome(status="conflict", reason="source_inactive")
             for related_id in event.related_memory_ids:
                 self._read_record_tx(transaction, event.owner_id, related_id)
+                if not self._valid_record_tx(transaction, event.owner_id, related_id):
+                    return MemoryLifecycleOutcome(
+                        status="conflict", reason="related_source_inactive"
+                    )
             try:
                 updated = transition(state, event)
             except ValueError as error:
@@ -639,6 +790,17 @@ class FirestoreMemoryLifecycleRepository:
         if job.owner_id != owner_id:
             raise ResourceNotFoundError("memory job not found")
         return job
+
+    def get_job_by_id(self, *, job_id: UUID) -> MemoryJob:
+        snapshot = self.memories._run(
+            lambda: self.jobs.document(str(job_id)).get(retry=None, timeout=5)
+        )
+        if not snapshot.exists:
+            raise ResourceNotFoundError("memory job not found")
+        try:
+            return MemoryJob.model_validate(snapshot.to_dict())
+        except (ValueError, TypeError, KeyError) as error:
+            raise StorageUnavailableError("memory job invalid") from error
 
     def claim_job(self, *, owner_id: str, job_id: UUID, now: datetime, lease_seconds: int):
         now = _utc(now)
@@ -743,18 +905,25 @@ class FirestoreMemoryLifecycleRepository:
     def pending_for_publish(self, *, now: datetime, limit: int = 50):
         if not 1 <= limit <= 100:
             raise ValueError("job_limit_invalid")
-        query = self.jobs.where(filter=firestore.FieldFilter("publish_pending", "==", True))
-        snapshots = self.memories._run(
-            lambda: list(query.limit(limit).stream(retry=None, timeout=5))
-        )
-        records = [MemoryJob.model_validate(item.to_dict()) for item in snapshots]
         now = _utc(now)
-        return tuple(
-            job
-            for job in records
-            if job.status in ("pending", "retry")
-            and (job.next_attempt_at is None or job.next_attempt_at <= now)
-        )
+        records = {}
+        for status in ("pending", "retry"):
+            query = self.jobs.where(filter=firestore.FieldFilter("status", "==", status))
+            query = query.where(filter=firestore.FieldFilter("publish_pending", "==", True))
+            if status == "retry":
+                query = query.where(
+                    filter=firestore.FieldFilter("next_attempt_at", "<=", now.isoformat())
+                )
+            query = query.order_by("created_at", direction=firestore.Query.ASCENDING)
+            query = query.limit(limit)
+            snapshots = self.memories._run(
+                lambda query=query: list(query.stream(retry=None, timeout=5))
+            )
+            for snapshot in snapshots:
+                job = MemoryJob.model_validate(snapshot.to_dict())
+                if job.status == status and (job.next_attempt_at is None or job.next_attempt_at <= now):
+                    records[job.id] = job
+        return tuple(sorted(records.values(), key=lambda item: (item.created_at, str(item.id)))[:limit])
 
     def mark_published(self, *, owner_id: str, job_id: UUID, updated_at: datetime):
         job = self.get_job(owner_id=owner_id, job_id=job_id)
@@ -780,6 +949,7 @@ class FirestoreMemoryLifecycleRepository:
             dimensions=anchor.embedding_dimensions,
             limit=limit,
             timeout=5,
+            memory_type=anchor.memory_type,
         )
         selected = []
         for candidate in result:
@@ -791,6 +961,31 @@ class FirestoreMemoryLifecycleRepository:
             selected.insert(0, memory_id)
         return tuple(selected[:limit])
 
+    def discover_maintenance_candidates(self, *, owner_id: str, limit: int = 4):
+        if not 1 <= limit <= 4:
+            raise ValueError("candidate_limit_invalid")
+        found = {}
+        for memory_type in ("preference", "explicit_correction"):
+            query = self.client.collection("memories")
+            for field, value in (
+                ("owner_id", owner_id),
+                ("status", "active"),
+                ("memory_type", memory_type),
+            ):
+                query = query.where(filter=firestore.FieldFilter(field, "==", value))
+            query = query.order_by("effective_at", direction=firestore.Query.DESCENDING)
+            query = query.limit(min(100, limit * 4))
+            snapshots = self.memories._run(
+                lambda query=query: list(query.stream(retry=None, timeout=5))
+            )
+            for snapshot in snapshots:
+                memory = self.memories._record(snapshot)
+                state = self.get_state(owner_id=owner_id, memory_id=memory.id)
+                if state.retrieval_status == "active" and source_messages(memory, self.messages):
+                    found[memory.id] = memory
+        ordered = sorted(found.values(), key=lambda item: (-item.effective_at.timestamp(), str(item.id)))
+        return tuple(item.id for item in ordered[:limit])
+
     def dependencies(self, *, owner_id: str, memory_id: UUID, limit: int = 100):
         if not 1 <= limit <= 100:
             raise ValueError("dependency_limit_invalid")
@@ -800,6 +995,70 @@ class FirestoreMemoryLifecycleRepository:
             lambda: list(query.limit(limit).stream(retry=None, timeout=5))
         )
         return tuple(UUID(item.to_dict()["derived_memory_id"]) for item in snapshots)
+
+    def rebuild_state(self, *, owner_id: str, memory_id: UUID):
+        self._get_record(owner_id=owner_id, memory_id=memory_id)
+        query = self.events.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
+        query = query.where(filter=firestore.FieldFilter("memory_id", "==", str(memory_id)))
+        query = query.order_by("expected_state_version", direction=firestore.Query.ASCENDING)
+        records = []
+        cursor = None
+        while len(records) < 10_000:
+            page = query.limit(100)
+            if cursor is not None:
+                page = page.start_after(cursor)
+            snapshots = self.memories._run(
+                lambda page=page: list(page.stream(retry=None, timeout=5))
+            )
+            if not snapshots:
+                break
+            records.extend(MemoryLifecycleEvent.model_validate(item.to_dict()) for item in snapshots)
+            cursor = snapshots[-1]
+        if len(records) >= 10_000:
+            raise StorageUnavailableError("memory lifecycle history exceeds rebuild bound")
+        rebuilt = _base_state(owner_id, memory_id)
+        for event in sorted(records, key=lambda item: (item.expected_state_version, str(item.id))):
+            rebuilt = transition(rebuilt, event)
+        reference = self.states.document(self._state_ref_id(owner_id, memory_id))
+
+        @firestore.transactional
+        def write(transaction):
+            current_snapshot = next(transaction.get(reference), None)
+            current = (
+                _base_state(owner_id, memory_id)
+                if current_snapshot is None or not current_snapshot.exists
+                else MemoryLifecycleState.model_validate(current_snapshot.to_dict())
+            )
+            if current.state_version > rebuilt.state_version:
+                return False
+            transaction.set(reference, rebuilt.model_dump(mode="json"))
+            return True
+
+        changed = self.memories._run(lambda: write(self.client.transaction()))
+        return rebuilt if changed else self.get_state(owner_id=owner_id, memory_id=memory_id)
+
+    def discover_forgetting_candidates(self, *, owner_id: str, older_than: datetime, limit: int = 4):
+        if not 1 <= limit <= 100:
+            raise ValueError("candidate_limit_invalid")
+        cutoff = _utc(older_than)
+        found = {}
+        for memory_type in ("episodic_observation", "semantic_summary"):
+            query = self.client.collection("memories")
+            for field, value in (
+                ("owner_id", owner_id), ("status", "active"), ("memory_type", memory_type)
+            ):
+                query = query.where(filter=firestore.FieldFilter(field, "==", value))
+            query = query.where(filter=firestore.FieldFilter("effective_at", "<=", cutoff))
+            query = query.order_by("effective_at", direction=firestore.Query.ASCENDING).limit(limit)
+            snapshots = self.memories._run(
+                lambda query=query: list(query.stream(retry=None, timeout=5))
+            )
+            for snapshot in snapshots:
+                record = self.memories._record(snapshot)
+                if self.get_state(owner_id=owner_id, memory_id=record.id).retrieval_status == "active":
+                    found[record.id] = record
+        ordered = sorted(found.values(), key=lambda item: (item.effective_at, str(item.id)))
+        return tuple(item.id for item in ordered[:limit])
 
     def commit_consolidation(
         self, *, job: MemoryJob, token: UUID, derived: DerivedMemory, now: datetime

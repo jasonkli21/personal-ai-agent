@@ -58,13 +58,6 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "service": "api"}
 
 
-@app.post("/tasks/research")
-async def receive_research_task(request: Request) -> dict[str, str]:
-    """Acknowledge Pub/Sub push delivery; task processing is added in later phases."""
-    await request.body()
-    return {"status": "accepted", "service": "research-worker"}
-
-
 @app.exception_handler(ContextError)
 async def context_error(_: Request, error: ContextError) -> JSONResponse:
     message = (

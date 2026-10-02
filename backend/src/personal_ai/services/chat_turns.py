@@ -38,6 +38,7 @@ class _PreparedTurn:
     assistant: Message
     history: tuple[ChatMessage, ...]
     request_id: str
+    selected_memory_ids: tuple[UUID, ...] = ()
 
 
 class _ManagedStream:
@@ -101,6 +102,7 @@ class ChatTurnService:
         context_assembler: ContextAssembler,
         memory_retriever=None,
         memory_extraction=None,
+        memory_lifecycle=None,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
@@ -109,6 +111,7 @@ class ChatTurnService:
         self._context = context_assembler
         self._memory_retriever = memory_retriever
         self._memory_extraction = memory_extraction
+        self._memory_lifecycle = memory_lifecycle
         self._post_completion_tasks: set[asyncio.Task[None]] = set()
         self._model = model
         self._stale_stream_after_seconds = stale_stream_after_seconds
@@ -273,6 +276,7 @@ class ChatTurnService:
                 assistant,
                 assembled.messages,
                 request_id,
+                assembled.selected_memory_ids,
             )
         )
 
@@ -287,12 +291,19 @@ class ChatTurnService:
     def _schedule_memory_extraction(
         self, completed: list[Message], turn: _PreparedTurn
     ) -> None:
-        if self._memory_extraction is None or not completed:
+        if (self._memory_extraction is None and self._memory_lifecycle is None) or not completed:
             return
 
         async def run() -> None:
             try:
-                await anyio.to_thread.run_sync(self._memory_extraction.run, completed[0])
+                if self._memory_lifecycle is not None:
+                    await anyio.to_thread.run_sync(
+                        self._memory_lifecycle.after_completed,
+                        completed[0],
+                        turn.selected_memory_ids,
+                    )
+                elif self._memory_extraction is not None:
+                    await anyio.to_thread.run_sync(self._memory_extraction.run, completed[0])
             except Exception as error:  # noqa: BLE001 - optional post-completion work
                 logger.info(
                     "Memory post-turn failed request_id=%s error_class=%s",

@@ -70,7 +70,7 @@ class InMemoryMemoryRepository:
             raise ResourceNotFoundError("memory not found")
         return record
 
-    def search(self, *, owner_id, embedding, model, dimensions, limit, timeout=5):
+    def search(self, *, owner_id, embedding, model, dimensions, limit, timeout=5, memory_type=None):
         query = vector(embedding, dimensions)
         with self._lock:
             scores = [
@@ -83,6 +83,7 @@ class InMemoryMemoryRepository:
                 and m.status == "active"
                 and m.embedding_model == model
                 and m.embedding_dimensions == dimensions
+                and (memory_type is None or m.memory_type == memory_type)
             ]
         return sorted(scores, key=lambda s: (-s.similarity, str(s.memory.id)))[:limit]
 
@@ -268,7 +269,7 @@ class FirestoreMemoryRepository:
 
         return self._run(operation)
 
-    def search(self, *, owner_id, embedding, model, dimensions, limit, timeout=5):
+    def search(self, *, owner_id, embedding, model, dimensions, limit, timeout=5, memory_type=None):
         query = self.collection
         for field, value in (
             ("owner_id", owner_id),
@@ -277,6 +278,8 @@ class FirestoreMemoryRepository:
             ("embedding_dimensions", dimensions),
         ):
             query = query.where(filter=firestore.FieldFilter(field, "==", value))
+        if memory_type is not None:
+            query = query.where(filter=firestore.FieldFilter("memory_type", "==", memory_type))
         nearest = query.find_nearest(
             vector_field="embedding",
             query_vector=Vector(vector(embedding, dimensions)),

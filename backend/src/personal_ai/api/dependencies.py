@@ -10,6 +10,8 @@ from personal_ai.context.repositories import FirestoreSummaryRepository
 from personal_ai.llm import GeminiLLMClient, LLMClient
 from personal_ai.llm.context import GeminiConversationSummarizer, GeminiTokenCounter
 from personal_ai.llm.memory import GeminiMemoryAdapter
+from personal_ai.memory.lifecycle_jobs import MemoryLifecycleCoordinator, PubSubMemoryJobPublisher
+from personal_ai.memory.lifecycle_repositories import FirestoreMemoryLifecycleRepository
 from personal_ai.memory.repositories import FirestoreMemoryRepository
 from personal_ai.memory.services import MemoryExtractionService, MemoryRetriever
 from personal_ai.services import ChatTurnService, ConversationService
@@ -91,6 +93,16 @@ def get_memory_adapter(settings: Annotated[Settings, Depends(get_settings)]):
     return GeminiMemoryAdapter(settings)
 
 
+def get_lifecycle_repository(
+    settings: Annotated[Settings, Depends(get_settings)],
+    memory_repository: Annotated[object, Depends(get_memory_repository)],
+    messages: Annotated[MessageRepository, Depends(get_message_repository)],
+):
+    if not settings.memory_lifecycle_inspection_enabled or memory_repository is None:
+        return None
+    return FirestoreMemoryLifecycleRepository(memory_repository, messages)
+
+
 def get_chat_turn_service(
     conversations: Annotated[ConversationRepository, Depends(get_conversation_repository)],
     messages: Annotated[MessageRepository, Depends(get_message_repository)],
@@ -100,14 +112,26 @@ def get_chat_turn_service(
     context: Annotated[ContextAssembler, Depends(get_context_assembler)],
     memory_repository: Annotated[object, Depends(get_memory_repository)],
     memory_adapter: Annotated[object, Depends(get_memory_adapter)],
+    lifecycle_repository: Annotated[object, Depends(get_lifecycle_repository)],
 ) -> ChatTurnService:
     """Compose the durable streaming chat lifecycle."""
-    retriever = extraction = None
+    retriever = extraction = lifecycle_coordinator = None
     if settings.memory_enabled and memory_repository is not None:
-        retriever = MemoryRetriever(settings, memory_repository, messages, memory_adapter)
+        lifecycle_repository = lifecycle_repository or FirestoreMemoryLifecycleRepository(
+            memory_repository, messages
+        )
+        retriever = MemoryRetriever(
+            settings, memory_repository, messages, memory_adapter, lifecycle_repository
+        )
         if settings.memory_extraction_enabled:
             extraction = MemoryExtractionService(
                 settings, memory_repository, messages, memory_adapter, memory_adapter,
+            )
+        if settings.memory_lifecycle_worker_enabled:
+            publisher = PubSubMemoryJobPublisher(settings) if settings.memory_lifecycle_topic else None
+            lifecycle_coordinator = MemoryLifecycleCoordinator(
+                settings, lifecycle_repository, memory_repository,
+                extraction=extraction, publisher=publisher,
             )
     return ChatTurnService(
         conversations,
@@ -115,7 +139,9 @@ def get_chat_turn_service(
         llm,
         owner_id=owner_id,
         context_assembler=context,
-        memory_retriever=retriever, memory_extraction=extraction,
+        memory_retriever=retriever,
+        memory_extraction=None if lifecycle_coordinator is not None else extraction,
+        memory_lifecycle=lifecycle_coordinator,
         model=settings.ai_model,
         stale_stream_after_seconds=settings.request_timeout_seconds + 60,
     )

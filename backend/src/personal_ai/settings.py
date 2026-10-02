@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     memory_forgetting_enabled: bool = False
     memory_lifecycle_worker_enabled: bool = False
     memory_lifecycle_inspection_enabled: bool = False
+    memory_lifecycle_topic: str = Field(default="personal-ai-async", min_length=1, max_length=200)
     memory_job_max_attempts: int = Field(default=3, ge=1, le=10)
     memory_job_execution_seconds: int = Field(default=30, ge=1, le=30)
     memory_job_lease_seconds: int = Field(default=60, ge=30, le=300)
@@ -110,6 +111,8 @@ class Settings(BaseSettings):
         if (
             self.memory_contradiction_automation_enabled or self.memory_forgetting_enabled
         ) and not self.memory_lifecycle_worker_enabled:
+            raise ValueError("memory_configuration_invalid")
+        if self.memory_consolidation_enabled and not self.memory_lifecycle_worker_enabled:
             raise ValueError("memory_configuration_invalid")
         return self
 

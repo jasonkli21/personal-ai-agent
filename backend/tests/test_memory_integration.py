@@ -12,6 +12,7 @@ from personal_ai.api.dependencies import (
     get_chat_turn_service,
     get_context_assembler,
     get_conversation_repository,
+    get_lifecycle_repository,
     get_memory_adapter,
     get_memory_repository,
     get_message_repository,
@@ -162,6 +163,75 @@ def test_successful_post_completion_extraction_and_failure_isolated(environment,
         messages.list_active(owner_id="local", conversation_id=pending.conversation_id)[-1].status
         == MessageStatus.COMPLETED
     )
+
+
+def test_lifecycle_accounting_receives_only_injected_ids_after_terminal_send(environment):
+    from threading import Event
+
+    client, _, _, repo, pending, service, _, _ = environment
+    received = []
+    finished = Event()
+
+    class LifecycleRecorder:
+        def after_completed(self, completed, selected_memory_ids):
+            received.append((completed, tuple(selected_memory_ids)))
+            finished.set()
+
+    service._memory_lifecycle = LifecycleRecorder()
+    response = client.post(
+        f"/v1/conversations/{pending.conversation_id}/messages", json={"content": pending.content}
+    )
+    assert events(response)[-1] == "response.completed"
+    assert finished.wait(timeout=1)
+    completed, selected_ids = received[0]
+    assert completed.status is MessageStatus.COMPLETED
+    assert selected_ids == tuple(repo.records)
+
+
+def test_lifecycle_inspector_is_read_only_and_reports_safe_event_metadata(environment):
+    from datetime import UTC, datetime
+
+    from personal_ai.memory.lifecycle_jobs import make_event
+    from personal_ai.memory.lifecycle_repositories import InMemoryMemoryLifecycleRepository
+
+    client, settings, messages, repo, pending, _, _, embedder = environment
+    messages.create(pending)
+    lifecycle = InMemoryMemoryLifecycleRepository(repo, messages)
+    memory = next(iter(repo.records.values()))
+    applied = lifecycle.apply_event(make_event(
+        owner_id=memory.owner_id,
+        memory_id=memory.id,
+        event_type="retrieved",
+        reason_code="synthetic_completion",
+        policy_version="score-v1",
+        idempotency_key="inspection-synthetic-event",
+        expected_state_version=0,
+        occurred_at=datetime.now(UTC),
+    ))
+    assert applied.status == "applied"
+    previous = app.dependency_overrides.get(get_lifecycle_repository)
+    app.dependency_overrides[get_lifecycle_repository] = lambda: lifecycle
+    settings.memory_lifecycle_inspection_enabled = True
+    before_records, before_calls = dict(repo.records), list(embedder.calls)
+    try:
+        response = client.get(
+            f"/v1/conversations/{pending.conversation_id}/context",
+            params={"memory_ids": str(memory.id)},
+        )
+    finally:
+        settings.memory_lifecycle_inspection_enabled = False
+        if previous is None:
+            app.dependency_overrides.pop(get_lifecycle_repository, None)
+        else:
+            app.dependency_overrides[get_lifecycle_repository] = previous
+    assert response.status_code == 200
+    record = response.json()["memory"]["records"][0]
+    assert record["lifecycle"]["retrieval_count"] == 1
+    assert record["events"][0]["reason_code"] == "synthetic_completion"
+    assert record["score"] is None
+    assert record["score_reason"] == "similarity_unavailable_in_inspector"
+    assert "content" not in record and memory.content not in response.text
+    assert repo.records == before_records and embedder.calls == before_calls
 
 
 def test_regenerate_and_edit_retrieve_post_mutation_path(environment, monkeypatch):

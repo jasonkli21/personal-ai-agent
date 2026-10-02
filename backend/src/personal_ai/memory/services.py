@@ -7,6 +7,7 @@ from time import monotonic
 
 from personal_ai.context.contracts import complete_turns, fingerprint
 from personal_ai.memory.contracts import (
+    DerivedMemory,
     ExtractionResult,
     Memory,
     RetrievalResult,
@@ -15,6 +16,7 @@ from personal_ai.memory.contracts import (
     vector,
 )
 from personal_ai.memory.policy import candidate_reason, content_reason
+from personal_ai.storage.errors import ResourceNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +129,48 @@ class MemoryExtractionService:
 
 
 class MemoryRetriever:
-    def __init__(self, settings, repository, messages, embedder):
+    def __init__(self, settings, repository, messages, embedder, lifecycle_repository=None):
         self.settings, self.repository, self.messages = settings, repository, messages
         self.embedder = embedder
+        self.lifecycle = lifecycle_repository
+
+    def _state(self, owner_id, memory_id):
+        from personal_ai.memory.lifecycle import MemoryLifecycleState
+
+        if self.lifecycle is None:
+            return MemoryLifecycleState(owner_id=owner_id, memory_id=memory_id)
+        return self.lifecycle.get_state(owner_id=owner_id, memory_id=memory_id)
+
+    def _valid_derived(self, record, owner_id, deadline):
+        if not isinstance(record, DerivedMemory) or record.owner_id != owner_id:
+            return False, "malformed_record"
+        if record.embedding_model != self.settings.memory_embedding_model or record.embedding_dimensions != self.settings.memory_embedding_dimensions:
+            return False, "incompatible_embedding"
+        if content_reason(record.content, self.settings):
+            return False, "sensitive_or_external"
+        for source in record.sources:
+            if monotonic() >= deadline:
+                raise TimeoutError("memory_timeout")
+            try:
+                memory = self.repository.get(owner_id=owner_id, memory_id=source.memory_id,
+                                             timeout=max(0.001, deadline - monotonic()))
+            except ResourceNotFoundError:
+                return False, "source_unavailable"
+            if (memory.source_fingerprint != source.source_fingerprint
+                    or memory.source_conversation_id != source.source_conversation_id
+                    or memory.source_turn_id != source.source_turn_id
+                    or memory.source_message_ids != source.source_message_ids
+                    or memory.memory_type not in ("preference", "episodic_observation")
+                    or content_reason(memory.content, self.settings)):
+                return False, "source_mismatch"
+            state = self._state(owner_id, memory.id)
+            if state.retrieval_status != "active":
+                return False, "source_inactive"
+            if source.excerpt != memory.content or source_messages(
+                memory, self.messages, timeout=max(0.001, deadline - monotonic())
+            ) is None:
+                return False, "branch_mismatch"
+        return True, None
 
     def retrieve(self, owner_id, query, active_messages, *, timeout=None):
         if not self.settings.memory_enabled:
@@ -137,6 +178,7 @@ class MemoryRetriever:
         deadline = monotonic() + min(
             timeout or self.settings.memory_timeout_seconds, self.settings.memory_timeout_seconds
         )
+        requested = self.settings.memory_experiment_variant
         try:
             # Sensitive queries are not sent to an embedding provider either.
             if content_reason(query, self.settings):
@@ -147,7 +189,7 @@ class MemoryRetriever:
             if len(embeddings) != 1:
                 raise ValueError("embedding_invalid")
             embedding = vector(embeddings[0], self.settings.memory_embedding_dimensions)
-            candidates = tuple(
+            originals = tuple(
                 self.repository.search(
                     owner_id=owner_id,
                     embedding=embedding,
@@ -157,14 +199,29 @@ class MemoryRetriever:
                     timeout=max(0.001, deadline - monotonic()),
                 )
             )[: self.settings.memory_retrieval_candidate_limit]
+            candidates = list(originals)
+            if requested == "consolidated" and hasattr(self.repository, "search_derived"):
+                candidates.extend(
+                    self.repository.search_derived(
+                        owner_id=owner_id,
+                        embedding=embedding,
+                        model=self.settings.memory_embedding_model,
+                        dimensions=self.settings.memory_embedding_dimensions,
+                        limit=self.settings.memory_retrieval_candidate_limit,
+                        timeout=max(0.001, deadline - monotonic()),
+                    )
+                )
+            candidates = tuple(sorted(candidates, key=lambda s: (-s.similarity, str(s.memory.id)))
+                               [: self.settings.memory_retrieval_candidate_limit * (2 if requested == "consolidated" else 1)])
             valid, excluded = [], []
+            states = {}
             for scored in candidates:
                 if monotonic() >= deadline:
                     raise TimeoutError("memory_timeout")
                 m, reason = scored.memory, None
                 if m.owner_id != owner_id:
                     reason = "owner_mismatch"
-                elif m.status != "active":
+                elif getattr(m, "status", "active") != "active":
                     reason = "inactive"
                 elif (
                     m.embedding_model != self.settings.memory_embedding_model
@@ -176,6 +233,11 @@ class MemoryRetriever:
                     or scored.similarity < self.settings.memory_min_similarity
                 ):
                     reason = "low_similarity"
+                elif isinstance(m, DerivedMemory):
+                    if requested != "consolidated":
+                        reason = "variant_excludes_derived"
+                    else:
+                        reason = self._valid_derived(m, owner_id, deadline)[1]
                 else:
                     try:
                         Memory.model_validate(m.model_dump())
@@ -183,38 +245,66 @@ class MemoryRetriever:
                     except (ValueError, TypeError):
                         excluded.append((m.id, "malformed_record"))
                         continue
-                    source = source_messages(
-                        m, self.messages, timeout=max(0.001, deadline - monotonic())
-                    )
+                    source = source_messages(m, self.messages,
+                                             timeout=max(0.001, deadline - monotonic()))
                     reason = (
-                        "branch_mismatch"
-                        if source is None
-                        else candidate_reason(
-                            m.model_copy(
-                                update={
-                                    "effective_at": (
-                                        m.effective_at if m.effective_at != m.observed_at else None
-                                    )
-                                }
-                            ),
-                            source,
-                            self.settings,
+                        "branch_mismatch" if source is None else candidate_reason(
+                            m.model_copy(update={"effective_at": (
+                                m.effective_at if m.effective_at != m.observed_at else None
+                            )}), source, self.settings,
                         )
                     )
+                if reason is None:
+                    state = self._state(owner_id, m.id)
+                    states[m.id] = state
+                    if state.retrieval_status != "active":
+                        reason = state.retrieval_status
                 if reason:
                     excluded.append((m.id, reason))
                 else:
                     valid.append(scored)
-            # Similarity bands of width .05 permit small correction/time preferences.
-            valid.sort(
-                key=lambda s: (
-                    -math.floor(s.similarity / 0.05 + 1e-8),
-                    s.memory.memory_type != "explicit_correction",
-                    -s.memory.effective_at.timestamp(),
-                    -s.similarity,
-                    str(s.memory.id),
-                )
-            )
+            # Fixed ordering exactly preserves Phase 3's similarity-band policy.
+            valid.sort(key=lambda s: (
+                -math.floor(s.similarity / 0.05 + 1e-8),
+                s.memory.memory_type != "explicit_correction",
+                -s.memory.effective_at.timestamp(), -s.similarity, str(s.memory.id),
+            ))
+            fixed_order = tuple(valid)
+            policy_version = self.settings.memory_scoring_policy_version
+            scores = ()
+            applied = requested
+            if requested in ("scored", "consolidated"):
+                try:
+                    from personal_ai.memory.lifecycle import ScorePolicy, score_memory
+
+                    policy = ScorePolicy(
+                        version=self.settings.memory_scoring_policy_version,
+                        similarity_weight=self.settings.memory_score_similarity_weight,
+                        importance_weight=self.settings.memory_score_importance_weight,
+                        recency_weight=self.settings.memory_score_recency_weight,
+                        frequency_weight=self.settings.memory_score_frequency_weight,
+                        confidence_weight=self.settings.memory_score_confidence_weight,
+                        half_life_days=self.settings.memory_recency_half_life_days,
+                    )
+                    score_rows = [score_memory(item, states[item.memory.id], policy,
+                                               now=datetime.now(UTC)) for item in valid]
+                    if any(row.score is None for row in score_rows):
+                        raise ValueError("score_input_invalid")
+                    by_id = {row.memory_id: row for row in score_rows}
+                    if requested == "scored":
+                        valid.sort(key=lambda item: (-by_id[item.memory.id].score,
+                                                     str(item.memory.id)))
+                    else:
+                        valid.sort(key=lambda item: (
+                            0 if item.memory.memory_type == "explicit_correction" else
+                            1 if isinstance(item.memory, DerivedMemory) else 2,
+                            -by_id[item.memory.id].score, str(item.memory.id),
+                        ))
+                    scores = tuple(by_id[item.memory.id] for item in valid)
+                except Exception as error:  # noqa: BLE001 - fixed fallback stays provenance-checked
+                    logger.info("Memory scoring fallback error_class=%s", type(error).__name__)
+                    valid = [item for item in fixed_order if not isinstance(item.memory, DerivedMemory)]
+                    applied = "fixed"
             selected = valid[: self.settings.memory_retrieval_limit]
             excluded.extend(
                 (s.memory.id, "retrieval_limit")
@@ -222,7 +312,11 @@ class MemoryRetriever:
             )
             if monotonic() > deadline:
                 raise TimeoutError("memory_timeout")
-            return RetrievalResult(candidates, tuple(selected), tuple(excluded))
+            return RetrievalResult(tuple(candidates), tuple(selected), tuple(excluded),
+                                   diagnostics=(("scorer_failed_fixed_fallback",)
+                                                if applied == "fixed" and requested != "fixed" else ()),
+                                   requested_variant=requested, applied_variant=applied,
+                                   policy_version=policy_version, scores=scores)
         except Exception as error:  # noqa: BLE001 - retrieval is advisory
             logger.info("Memory retrieval failed error_class=%s", type(error).__name__)
             return RetrievalResult(diagnostics=("retrieval_failed",))

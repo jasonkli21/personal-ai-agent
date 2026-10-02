@@ -7,7 +7,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
   const { conversationId } = await params;
   const ids = request.nextUrl.searchParams.getAll("memory_ids");
-  if (ids.length && process.env.MEMORY_INSPECTION_ENABLED !== "true") {
+  if (ids.length && process.env.MEMORY_INSPECTION_ENABLED !== "true" &&
+      process.env.MEMORY_LIFECYCLE_INSPECTION_ENABLED !== "true") {
     return NextResponse.json({ error: { code: "not_found", message: "The requested resource was not found." } }, { status: 404 });
   }
   const search = new URLSearchParams();

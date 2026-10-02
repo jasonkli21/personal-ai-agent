@@ -42,7 +42,7 @@ def seeded():
     )
 
 
-def event(memory, *, kind="retrieved", key="stable", version=0, related=(), now=None):
+def event(memory, *, kind="retrieved", key="stable", version=0, related=(), now=None, job_id=None):
     now = now or datetime.now(UTC)
     return MemoryLifecycleEvent(
         id=event_idempotency_id(key),
@@ -55,6 +55,7 @@ def event(memory, *, kind="retrieved", key="stable", version=0, related=(), now=
         occurred_at=now,
         idempotency_key=key,
         related_memory_ids=related,
+        job_id=job_id,
         expected_state_version=version,
     )
 
@@ -155,6 +156,41 @@ def test_job_dedupe_retry_and_expired_lease_fencing():
     )
     stored = repo.get_job(owner_id=job.owner_id, job_id=job.id)
     assert stored.status == "retry" and stored.publish_pending
+
+
+def test_expired_worker_lease_cannot_apply_a_lifecycle_event():
+    _, messages, memories, records = seeded()
+    memory = records[0]
+    repo = InMemoryMemoryLifecycleRepository(memories, messages)
+    now = datetime.now(UTC)
+    key = "fenced-maintenance"
+    job = MemoryJob(
+        id=job_idempotency_id(key),
+        owner_id=memory.owner_id,
+        job_type="maintenance",
+        candidate_memory_ids=(memory.id,),
+        policy_version="score-v1",
+        policy_snapshot={},
+        idempotency_key=key,
+        created_at=now,
+        updated_at=now,
+    )
+    repo.create_job(job)
+    first = repo.claim_job(owner_id=job.owner_id, job_id=job.id, now=now, lease_seconds=60)
+    later = now + timedelta(seconds=61)
+    second = repo.claim_job(owner_id=job.owner_id, job_id=job.id, now=later, lease_seconds=60)
+    assert first and second and first.lease_token != second.lease_token
+    stale_event = event(
+        memory,
+        kind="forgotten",
+        key="stale-worker-forget",
+        job_id=job.id,
+        now=later,
+    )
+    outcome = repo.apply_event(stale_event, job=first, lease_token=first.lease_token)
+    assert outcome.status == "conflict" and outcome.reason == "stale_lease"
+    assert not repo.events
+    assert repo.get_state(owner_id=job.owner_id, memory_id=memory.id).retrieval_status == "active"
 
 
 def test_invalid_job_lease_and_wrong_owner_are_rejected():

@@ -123,6 +123,7 @@ class ContextAssembler:
         from personal_ai.memory.policy import content_reason
 
         chosen, excluded, blocks = [], list(retrieval.excluded), []
+        represented_sources: set[UUID] = set()
         tokens, final = 0, result.messages
         total_tokens = result.budget.selected_total
         instruction = (
@@ -132,14 +133,18 @@ class ContextAssembler:
         )
         for scored in retrieval.selected:
             m = scored.memory
+            if m.id in represented_sources:
+                excluded.append((m.id, "represented_by_derived_memory"))
+                continue
             if (
                 m.owner_id != pending.owner_id
-                or m.status != "active"
+                or getattr(m, "status", "active") != "active"
                 or content_reason(m.content, self.settings)
             ):
                 excluded.append((m.id, "ineligible"))
                 continue
-            line = f"[{m.memory_type}; effective {m.effective_at.isoformat()}] {m.content}"
+            label = "derived historical summary" if hasattr(m, "source_memory_ids") else m.memory_type
+            line = f"[{label}; effective {m.effective_at.isoformat()}] {m.content}"
             block = ChatMessage("system", instruction + "\n".join([*blocks, line]))
             try:
                 memory_count = self.counter.count((block,)).tokens
@@ -161,6 +166,8 @@ class ContextAssembler:
                 excluded.append((m.id, "budget"))
                 continue
             chosen.append(m.id)
+            if hasattr(m, "source_memory_ids"):
+                represented_sources.update(m.source_memory_ids)
             blocks.append(line)
             final, tokens = candidate, memory_count
             total_tokens = total.tokens
