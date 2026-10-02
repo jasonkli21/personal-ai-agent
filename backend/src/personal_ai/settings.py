@@ -93,6 +93,18 @@ class Settings(BaseSettings):
     research_provider_timeout_seconds: float = Field(default=10, gt=0, le=30)
     research_min_request_interval_seconds: float = Field(default=1, ge=1, le=60)
 
+    decision_enabled: bool = False
+    decision_inspection_enabled: bool = False
+    entity_resolution_policy_version: str = Field(default="resolve-v1", min_length=1, max_length=100)
+    entity_match_threshold: float = Field(default=0.9, ge=0, le=1)
+    decision_constraint_policy_version: str = Field(
+        default="constraint-v1", min_length=1, max_length=100
+    )
+    decision_ranking_policy_version: str = Field(default="rank-v1", min_length=1, max_length=100)
+    decision_feature_preference_weight: float = Field(default=1.0, ge=0, le=1)
+    decision_max_candidates: int = Field(default=12, ge=1, le=24)
+    decision_max_comparison_rows: int = Field(default=12, ge=1, le=24)
+
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
         available = (
@@ -146,6 +158,15 @@ class Settings(BaseSettings):
                 or not self.research_api_key.get_secret_value()
             ):
                 raise ValueError("research_configuration_invalid")
+        decision_weights = (self.decision_feature_preference_weight,)
+        if (
+            self.entity_resolution_policy_version != "resolve-v1"
+            or self.decision_constraint_policy_version != "constraint-v1"
+            or self.decision_ranking_policy_version != "rank-v1"
+            or any(not math.isfinite(weight) for weight in decision_weights)
+            or self.decision_max_candidates > self.decision_max_comparison_rows
+        ):
+            raise ValueError("decision_configuration_invalid")
         return self
 
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)

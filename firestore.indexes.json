@@ -262,6 +262,55 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "canonical_entities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "entity_type", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "entity_aliases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "entity_id", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "entity_claims",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "entity_id", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "evidence_entity_links",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "evidence_id", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "entity_matches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "subject_id", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "candidate_evaluations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "decision_id", "order": "ASCENDING"},
+        {"fieldPath": "entity_id", "order": "ASCENDING"}
+      ]
     }
   ],
   "fieldOverrides": [
@@ -308,6 +357,51 @@
     {
       "collectionGroup": "research_sessions",
       "fieldPath": "run_token",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "entity_claims",
+      "fieldPath": "evidence_refs",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "entity_claims",
+      "fieldPath": "typed_value",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "entity_claims",
+      "fieldPath": "original_value",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "decision_snapshots",
+      "fieldPath": "constraint_set",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "decision_snapshots",
+      "fieldPath": "preferences",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "decision_evidence_snapshots",
+      "fieldPath": "evidence_refs",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "candidate_evaluations",
+      "fieldPath": "attribute_statuses",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "candidate_evaluations",
+      "fieldPath": "constraint_outcomes",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "candidate_evaluations",
+      "fieldPath": "feature_values",
       "indexes": []
     }
   ]

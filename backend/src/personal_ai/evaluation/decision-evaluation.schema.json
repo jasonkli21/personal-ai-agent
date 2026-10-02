@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "decision-eval-v1",
+  "type": "object",
+  "required": ["schema_version", "synthetic", "tested_at", "revision", "policy_versions", "passed", "results"],
+  "properties": {
+    "schema_version": {"const": "decision-eval-v1"},
+    "synthetic": {"const": true},
+    "tested_at": {"type": "string", "format": "date-time"},
+    "revision": {"type": "string", "minLength": 1},
+    "policy_versions": {
+      "type": "object",
+      "required": ["identity", "resolution", "constraints", "ranking"],
+      "properties": {
+        "identity": {"const": "identity-v1"},
+        "resolution": {"const": "resolve-v1"},
+        "constraints": {"const": "constraint-v1"},
+        "ranking": {"const": "rank-v1"}
+      },
+      "additionalProperties": false
+    },
+    "passed": {"type": "boolean"},
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["fixture", "evidence_snapshot_id", "entity_policy", "constraint_policy", "ranking_policy", "result", "passed"],
+        "properties": {
+          "fixture": {"type": "string"},
+          "evidence_snapshot_id": {"type": ["string", "null"]},
+          "entity_policy": {"type": "string"},
+          "constraint_policy": {"type": "string"},
+          "ranking_policy": {"type": "string"},
+          "result": {"type": "string"},
+          "passed": {"type": "boolean"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

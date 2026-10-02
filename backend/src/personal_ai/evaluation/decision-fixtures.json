@@ -1,0 +1,31 @@
+{
+  "schema_version": "decision-fixtures-v1",
+  "synthetic": true,
+  "baseline": {
+    "phase_5_behavior": "sourced_summary",
+    "canonical_recommendation": false
+  },
+  "policy_versions": {
+    "identity": "identity-v1",
+    "resolution": "resolve-v1",
+    "constraints": "constraint-v1",
+    "ranking": "rank-v1"
+  },
+  "fixtures": [
+    {"name": "exact-stable-identifier", "identity": "exact_match", "constraint": "pass", "ranking": "eligible"},
+    {"name": "alias-plus-fresh-attribute", "identity": "matched", "constraint": "pass", "ranking": "eligible"},
+    {"name": "near-name-alone-abstains", "identity": "review_or_separate", "constraint": "unranked_identity", "ranking": "no_auto_merge"},
+    {"name": "ambiguous-exact-identifiers", "identity": "review", "constraint": "not_applicable", "ranking": "no_auto_merge"},
+    {"name": "stale-identity-claim-excluded", "identity": "no_match_or_review", "constraint": "unknown", "ranking": "research_needed"},
+    {"name": "conflicting-current-values", "identity": "separate", "constraint": "unknown", "ranking": "research_needed"},
+    {"name": "missing-required-attribute", "identity": "separate", "constraint": "unknown", "ranking": "research_needed"},
+    {"name": "maximum-budget-boundary", "identity": "separate", "constraint": "pass_at_boundary", "ranking": "eligible"},
+    {"name": "known-unit-conversion", "identity": "separate", "constraint": "pass_after_conversion", "ranking": "eligible"},
+    {"name": "unknown-currency-conversion", "identity": "separate", "constraint": "unknown", "ranking": "research_needed"},
+    {"name": "date-location-availability", "identity": "separate", "constraint": "all_operators", "ranking": "eligible"},
+    {"name": "equal-score-stable-tie", "identity": "separate", "constraint": "pass", "ranking": "stable_name_then_id"},
+    {"name": "preference-cannot-resurrect-excluded", "identity": "separate", "constraint": "fail", "ranking": "excluded"},
+    {"name": "empty-eligible-set", "identity": "separate", "constraint": "all_fail", "ranking": "no_verified_match"},
+    {"name": "ranking-failure-keeps-eligible", "identity": "separate", "constraint": "pass", "ranking": "eligible_unranked"}
+  ]
+}
