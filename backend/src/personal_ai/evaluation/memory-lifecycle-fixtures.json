@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "policy_version": "score-v1",
+  "variants": ["fixed", "scored", "consolidated"],
+  "fixtures": [
+    {"name": "similarity-vs-importance", "family": "ranking", "required_fact": "anchor", "forbidden": [], "outcome": "rank_only"},
+    {"name": "recency-frequency-confidence", "family": "ranking", "required_fact": "recent-repeat", "forbidden": [], "outcome": "rank_only"},
+    {"name": "score-tie-stable-id", "family": "ranking", "required_fact": "stable-order", "forbidden": [], "outcome": "deterministic"},
+    {"name": "repeated-explicit-preference", "family": "consolidation", "required_fact": "derived-preference", "forbidden": [], "outcome": "consolidate"},
+    {"name": "mixed-topic-cluster", "family": "consolidation", "required_fact": "none", "forbidden": ["derived-memory"], "outcome": "reject"},
+    {"name": "clear-explicit-correction", "family": "contradiction", "required_fact": "newer", "forbidden": ["older-active"], "outcome": "supersede-when-enabled"},
+    {"name": "ambiguous-negation", "family": "contradiction", "required_fact": "both-active", "forbidden": ["automatic-supersession"], "outcome": "review-only"},
+    {"name": "explicit-temporal-replacement", "family": "contradiction", "required_fact": "newer", "forbidden": ["older-active"], "outcome": "supersede-when-enabled"},
+    {"name": "stale-low-value-memory", "family": "forgetting", "required_fact": "forgotten", "forbidden": [], "outcome": "forget-when-enabled"},
+    {"name": "protected-explicit-correction", "family": "forgetting", "required_fact": "active", "forbidden": ["forgotten"], "outcome": "protected"},
+    {"name": "branch-rewrite-before-job", "family": "jobs", "required_fact": "no-derived-record", "forbidden": ["new-active-derived"], "outcome": "no-op"},
+    {"name": "duplicate-job-delivery", "family": "jobs", "required_fact": "single-operation", "forbidden": ["duplicate-event"], "outcome": "idempotent"},
+    {"name": "cross-owner-near-match", "family": "ownership", "required_fact": "owner-only", "forbidden": ["foreign-memory"], "outcome": "exclude"},
+    {"name": "forgotten-record-never-resurrected", "family": "eligibility", "required_fact": "empty-or-other", "forbidden": ["forgotten"], "outcome": "exclude"}
+  ]
+}

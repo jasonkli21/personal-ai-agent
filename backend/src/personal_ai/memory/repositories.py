@@ -11,7 +11,7 @@ from google.cloud.firestore_v1.vector import Vector
 
 from personal_ai.context.contracts import fingerprint
 from personal_ai.entities import Message
-from personal_ai.memory.contracts import Memory, ScoredMemory, identity, vector
+from personal_ai.memory.contracts import DerivedMemory, Memory, ScoredMemory, identity, vector
 from personal_ai.storage.errors import (
     ConversationConflictError,
     ResourceNotFoundError,
@@ -33,6 +33,7 @@ class InMemoryMemoryRepository:
     def __init__(self, messages):
         self.messages = messages
         self.records: dict[UUID, Memory] = {}
+        self.derived_records: dict[UUID, DerivedMemory] = {}
         self._lock = RLock()
 
     def create(self, memory, *, timeout=5):
@@ -82,6 +83,30 @@ class InMemoryMemoryRepository:
                 and m.status == "active"
                 and m.embedding_model == model
                 and m.embedding_dimensions == dimensions
+            ]
+        return sorted(scores, key=lambda s: (-s.similarity, str(s.memory.id)))[:limit]
+
+    def get_derived(self, *, owner_id, memory_id, timeout=5):
+        record = self.derived_records.get(memory_id)
+        if record is None or record.owner_id != owner_id:
+            raise ResourceNotFoundError("memory not found")
+        return record
+
+    def search_derived(self, *, owner_id, embedding, model, dimensions, limit, timeout=5):
+        query = vector(embedding, dimensions)
+        with self._lock:
+            scores = [
+                ScoredMemory(
+                    record,
+                    sum(
+                        a * b
+                        for a, b in zip(query, vector(record.embedding, dimensions), strict=True)
+                    ),
+                )
+                for record in self.derived_records.values()
+                if record.owner_id == owner_id
+                and record.embedding_model == model
+                and record.embedding_dimensions == dimensions
             ]
         return sorted(scores, key=lambda s: (-s.similarity, str(s.memory.id)))[:limit]
 
@@ -270,4 +295,51 @@ class FirestoreMemoryRepository:
             except (ValueError, TypeError, KeyError) as error:
                 raise StorageUnavailableError("memory record invalid") from error
             result.append(ScoredMemory(memory, 1 - distance))
+        return sorted(result, key=lambda s: (-s.similarity, str(s.memory.id)))
+
+    def get_derived(self, *, owner_id, memory_id, timeout=5):
+        snapshot = self._run(
+            lambda: (
+                self.client.collection("derived_memories")
+                .document(str(memory_id))
+                .get(retry=None, timeout=timeout)
+            )
+        )
+        if not snapshot.exists:
+            raise ResourceNotFoundError("memory not found")
+        data = snapshot.to_dict()
+        data["embedding"] = tuple(data["embedding"])
+        try:
+            record = DerivedMemory.model_validate(data)
+        except (ValueError, TypeError, KeyError) as error:
+            raise StorageUnavailableError("derived memory record invalid") from error
+        if record.owner_id != owner_id:
+            raise ResourceNotFoundError("memory not found")
+        return record
+
+    def search_derived(self, *, owner_id, embedding, model, dimensions, limit, timeout=5):
+        query = self.client.collection("derived_memories")
+        for field, value in (
+            ("owner_id", owner_id),
+            ("embedding_model", model),
+            ("embedding_dimensions", dimensions),
+        ):
+            query = query.where(filter=firestore.FieldFilter(field, "==", value))
+        nearest = query.find_nearest(
+            vector_field="embedding",
+            query_vector=Vector(vector(embedding, dimensions)),
+            distance_measure=DistanceMeasure.COSINE,
+            limit=limit,
+            distance_result_field="vector_distance",
+        )
+        result = []
+        for snapshot in self._run(lambda: list(nearest.stream(retry=None, timeout=timeout))):
+            data = snapshot.to_dict()
+            distance = data.pop("vector_distance")
+            data["embedding"] = tuple(data["embedding"])
+            try:
+                record = DerivedMemory.model_validate(data)
+            except (ValueError, TypeError, KeyError) as error:
+                raise StorageUnavailableError("derived memory record invalid") from error
+            result.append(ScoredMemory(record, 1 - distance))
         return sorted(result, key=lambda s: (-s.similarity, str(s.memory.id)))

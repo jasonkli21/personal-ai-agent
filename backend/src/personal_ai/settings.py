@@ -1,5 +1,6 @@
 """Typed application configuration loaded from the environment."""
 
+import math
 from functools import lru_cache
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, model_validator
@@ -49,18 +50,66 @@ class Settings(BaseSettings):
     memory_max_context_tokens: int = Field(default=512, gt=0)
     memory_timeout_seconds: float = Field(default=5, gt=0, le=30)
     memory_sensitive_terms: tuple[str, ...] = ()
+    memory_experiment_variant: str = Field(
+        default="fixed", pattern=r"^(fixed|scored|consolidated)$"
+    )
+    memory_scoring_policy_version: str = Field(default="score-v1", min_length=1, max_length=100)
+    memory_score_similarity_weight: float = Field(default=0.50, ge=0, le=1)
+    memory_score_importance_weight: float = Field(default=0.15, ge=0, le=1)
+    memory_score_recency_weight: float = Field(default=0.15, ge=0, le=1)
+    memory_score_frequency_weight: float = Field(default=0.10, ge=0, le=1)
+    memory_score_confidence_weight: float = Field(default=0.10, ge=0, le=1)
+    memory_recency_half_life_days: float = Field(default=90, gt=0, le=36500)
+    memory_consolidation_enabled: bool = False
+    memory_consolidation_max_sources: int = Field(default=4, ge=2, le=4)
+    memory_contradiction_automation_enabled: bool = False
+    memory_forgetting_enabled: bool = False
+    memory_lifecycle_worker_enabled: bool = False
+    memory_lifecycle_inspection_enabled: bool = False
+    memory_job_max_attempts: int = Field(default=3, ge=1, le=10)
+    memory_job_execution_seconds: int = Field(default=30, ge=1, le=30)
+    memory_job_lease_seconds: int = Field(default=60, ge=30, le=300)
+    memory_job_candidate_limit: int = Field(default=40, ge=1, le=100)
 
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
-        available = self.max_context_tokens - self.max_response_tokens - self.context_safety_margin_tokens
+        available = (
+            self.max_context_tokens - self.max_response_tokens - self.context_safety_margin_tokens
+        )
         if available <= 0 or self.max_summary_tokens >= available:
             raise ValueError("context_budget_invalid")
         if self.summary_trigger_tokens > available:
             raise ValueError("context_budget_invalid")
         if self.memory_retrieval_limit > self.memory_retrieval_candidate_limit:
             raise ValueError("memory_configuration_invalid")
-        if (self.memory_enabled or "memory_max_context_tokens" in self.model_fields_set) \
-                and self.memory_max_context_tokens > available:
+        weights = (
+            self.memory_score_similarity_weight,
+            self.memory_score_importance_weight,
+            self.memory_score_recency_weight,
+            self.memory_score_frequency_weight,
+            self.memory_score_confidence_weight,
+        )
+        if (any(not math.isfinite(weight) for weight in weights) or sum(weights) <= 0
+                or self.memory_job_execution_seconds >= self.memory_job_lease_seconds):
+            raise ValueError("memory_configuration_invalid")
+        if (
+            self.memory_enabled or "memory_max_context_tokens" in self.model_fields_set
+        ) and self.memory_max_context_tokens > available:
+            raise ValueError("memory_configuration_invalid")
+        gated = (
+            self.memory_consolidation_enabled,
+            self.memory_contradiction_automation_enabled,
+            self.memory_forgetting_enabled,
+            self.memory_lifecycle_worker_enabled,
+            self.memory_lifecycle_inspection_enabled,
+        )
+        if any(gated) and not self.memory_enabled:
+            raise ValueError("memory_configuration_invalid")
+        if self.memory_experiment_variant != "fixed" and not self.memory_enabled:
+            raise ValueError("memory_configuration_invalid")
+        if (
+            self.memory_contradiction_automation_enabled or self.memory_forgetting_enabled
+        ) and not self.memory_lifecycle_worker_enabled:
             raise ValueError("memory_configuration_invalid")
         return self
 
