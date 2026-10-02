@@ -90,6 +90,8 @@ class Settings(BaseSettings):
             self.memory_score_frequency_weight,
             self.memory_score_confidence_weight,
         )
+        if self.memory_scoring_policy_version != "score-v1":
+            raise ValueError("memory_configuration_invalid")
         if (any(not math.isfinite(weight) for weight in weights) or sum(weights) <= 0
                 or self.memory_job_execution_seconds >= self.memory_job_lease_seconds):
             raise ValueError("memory_configuration_invalid")

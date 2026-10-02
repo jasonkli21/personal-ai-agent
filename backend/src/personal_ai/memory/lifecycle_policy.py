@@ -33,8 +33,14 @@ FORGETTING_POLICY_VERSION = "forget-v1"
 CONTRADICTION_POLICY_VERSION = "contradiction-v1"
 SUBJECT_SUFFIX = re.compile(r"\bfor\s+([^.!?]{1,100})[.!?]*$", re.IGNORECASE)
 EXPLICIT_PREFIXES = (
-    "correction:", "actually, i", "actually i", "i now prefer", "i now choose",
-    "i no longer prefer", "i no longer choose", "i have switched to",
+    "correction:",
+    "actually, i",
+    "actually i",
+    "i now prefer",
+    "i now choose",
+    "i no longer prefer",
+    "i no longer choose",
+    "i have switched to",
 )
 
 
@@ -47,7 +53,9 @@ class ConsolidationPlan:
 
 def _importance(memory: Memory, lifecycle: MemoryLifecycleRepository) -> float:
     state = lifecycle.get_state(owner_id=memory.owner_id, memory_id=memory.id)
-    return state.importance if state.importance is not None else IMPORTANCE_BY_TYPE[memory.memory_type]
+    return (
+        state.importance if state.importance is not None else IMPORTANCE_BY_TYPE[memory.memory_type]
+    )
 
 
 class DeterministicMemoryConsolidator:
@@ -69,26 +77,48 @@ class DeterministicMemoryConsolidator:
     ) -> ConsolidationPlan:
         if len(source_ids) < 2 or len(source_ids) > settings.memory_consolidation_max_sources:
             return ConsolidationPlan("no_plan", "source_count")
+        from time import monotonic
+
+        deadline = monotonic() + timeout
+
+        def remaining():
+            left = deadline - monotonic()
+            if left <= 0:
+                raise TimeoutError("consolidation_timeout")
+            return left
+
         records: list[Memory] = []
         for memory_id in source_ids:
             try:
-                memory = memories.get(owner_id=owner_id, memory_id=memory_id, timeout=timeout)
+                memory = memories.get(owner_id=owner_id, memory_id=memory_id, timeout=remaining())
                 state = lifecycle.get_state(owner_id=owner_id, memory_id=memory_id)
             except ResourceNotFoundError:
                 return ConsolidationPlan("rejected", "source_unavailable")
-            if (not isinstance(memory, Memory) or memory.owner_id != owner_id
-                    or memory.status != "active" or state.retrieval_status != "active"
-                    or source_messages(memory, messages, timeout=timeout) is None):
+            if (
+                not isinstance(memory, Memory)
+                or memory.owner_id != owner_id
+                or memory.status != "active"
+                or state.retrieval_status != "active"
+                or source_messages(memory, messages, timeout=remaining()) is None
+            ):
                 return ConsolidationPlan("rejected", "source_inactive")
             if content_reason(memory.content, settings):
                 return ConsolidationPlan("rejected", "sensitive_or_external")
             turn = messages.list_active(
-                owner_id=owner_id, conversation_id=memory.source_conversation_id, timeout=timeout
+                owner_id=owner_id,
+                conversation_id=memory.source_conversation_id,
+                timeout=remaining(),
             )
             if candidate_reason(
-                memory.model_copy(update={"effective_at": (
-                    memory.effective_at if memory.effective_at != memory.observed_at else None
-                )}),
+                memory.model_copy(
+                    update={
+                        "effective_at": (
+                            memory.effective_at
+                            if memory.effective_at != memory.observed_at
+                            else None
+                        )
+                    }
+                ),
                 turn,
                 settings,
             ):
@@ -97,9 +127,10 @@ class DeterministicMemoryConsolidator:
         records.sort(key=lambda item: str(item.id))
         if len({record.memory_type for record in records}) != 1:
             return ConsolidationPlan("no_plan", "mixed_types")
-        if len({record.embedding_model for record in records}) != 1 or len(
-            {record.embedding_dimensions for record in records}
-        ) != 1:
+        if (
+            len({record.embedding_model for record in records}) != 1
+            or len({record.embedding_dimensions for record in records}) != 1
+        ):
             return ConsolidationPlan("rejected", "incompatible_embedding")
         if len({normalize(record.content) for record in records}) != 1:
             return ConsolidationPlan("no_plan", "different_assertions")
@@ -107,16 +138,22 @@ class DeterministicMemoryConsolidator:
         if source_type == "preference":
             target_type = "preference"
             rationale = "repeated_explicit_preference"
-            if not all(normalize(record.content).startswith((
-                "i prefer", "i like", "i dislike", "i always choose"
-            )) for record in records):
+            if not all(
+                normalize(record.content).startswith(
+                    ("i prefer", "i like", "i dislike", "i always choose")
+                )
+                for record in records
+            ):
                 return ConsolidationPlan("rejected", "preference_not_explicit")
         elif source_type == "episodic_observation":
             target_type = "semantic_summary"
             rationale = "compatible_episode_history"
-            if not all(normalize(record.content).startswith((
-                "i visited", "i tried", "i attended", "i experienced"
-            )) for record in records):
+            if not all(
+                normalize(record.content).startswith(
+                    ("i visited", "i tried", "i attended", "i experienced")
+                )
+                for record in records
+            ):
                 return ConsolidationPlan("rejected", "episode_not_explicit")
         else:
             return ConsolidationPlan("no_plan", "unsupported_source_type")
@@ -146,7 +183,7 @@ class DeterministicMemoryConsolidator:
         canonical_ids = tuple(sorted((record.id for record in records), key=str))
         if job.candidate_memory_ids != canonical_ids:
             return ConsolidationPlan("rejected", "job_source_mismatch")
-        vectors = embedder.embed([content], timeout=timeout)
+        vectors = embedder.embed([content], timeout=remaining())
         if len(vectors) != 1:
             return ConsolidationPlan("rejected", "embedding_invalid")
         dimensions = records[0].embedding_dimensions
@@ -186,21 +223,23 @@ def parse_assertion(memory: Memory) -> ParsedAssertion | None:
     """Parse the deliberately narrow '... for <subject>' statement grammar."""
     text = normalize(memory.content)
     explicit = any(text.startswith(item) for item in EXPLICIT_PREFIXES)
+    if re.search(r"\b(no|not|never|longer|unless|except|sometimes|may|might)\b", text):
+        return None
     body = text
     if body.startswith("correction:"):
-        body = body[len("correction:"):].lstrip(" :,")
+        body = body[len("correction:") :].lstrip(" :,")
     if body.startswith("actually,"):
-        body = body[len("actually,"):].lstrip()
+        body = body[len("actually,") :].lstrip()
     elif body.startswith("actually "):
-        body = body[len("actually "):].lstrip()
+        body = body[len("actually ") :].lstrip()
     if body.startswith("i now prefer "):
-        body = body[len("i now prefer "):]
+        body = body[len("i now prefer ") :]
     elif body.startswith("i prefer "):
-        body = body[len("i prefer "):]
+        body = body[len("i prefer ") :]
     elif body.startswith("i now choose "):
-        body = body[len("i now choose "):]
+        body = body[len("i now choose ") :]
     elif body.startswith("i choose "):
-        body = body[len("i choose "):]
+        body = body[len("i choose ") :]
     suffix = SUBJECT_SUFFIX.search(body)
     if suffix is None:
         return None
@@ -208,7 +247,7 @@ def parse_assertion(memory: Memory) -> ParsedAssertion | None:
     value = normalize(body[: suffix.start()])
     if not subject or not value:
         return None
-    return ParsedAssertion(subject, value, explicit or "now" in normalize(memory.content))
+    return ParsedAssertion(subject, value, explicit)
 
 
 def contradiction_decision(older: Memory, newer: Memory) -> Literal["supersede", "review", "none"]:
@@ -226,14 +265,19 @@ def contradiction_decision(older: Memory, newer: Memory) -> Literal["supersede",
         return "none"
     old_assertion, new_assertion = parse_assertion(older), parse_assertion(newer)
     if old_assertion is None or new_assertion is None:
-        return "review" if (newer.memory_type == "explicit_correction"
-                             or any(normalize(newer.content).startswith(p) for p in EXPLICIT_PREFIXES)) else "none"
+        return (
+            "review"
+            if (
+                newer.memory_type == "explicit_correction"
+                or any(normalize(newer.content).startswith(p) for p in EXPLICIT_PREFIXES)
+            )
+            else "none"
+        )
     if old_assertion.subject_key != new_assertion.subject_key:
         return "none"
     if old_assertion.value_key == new_assertion.value_key:
         return "none"
-    explicit = (new_assertion.explicit_replacement
-                or newer.memory_type == "explicit_correction")
+    explicit = new_assertion.explicit_replacement or newer.memory_type == "explicit_correction"
     return "supersede" if explicit else "review"
 
 
@@ -283,9 +327,16 @@ def make_event(
     job_id: UUID | None = None,
 ) -> MemoryLifecycleEvent:
     return MemoryLifecycleEvent(
-        id=event_idempotency_id(idempotency_key), owner_id=owner_id, memory_id=memory_id,
-        event_type=event_type, reason_code=reason_code, policy_version=policy_version,
-        actor="system", occurred_at=occurred_at, idempotency_key=idempotency_key,
-        related_memory_ids=related_memory_ids, expected_state_version=expected_state_version,
+        id=event_idempotency_id(idempotency_key),
+        owner_id=owner_id,
+        memory_id=memory_id,
+        event_type=event_type,
+        reason_code=reason_code,
+        policy_version=policy_version,
+        actor="system",
+        occurred_at=occurred_at,
+        idempotency_key=idempotency_key,
+        related_memory_ids=related_memory_ids,
+        expected_state_version=expected_state_version,
         job_id=job_id,
     )

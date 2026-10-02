@@ -122,6 +122,8 @@ class MemoryJob(BaseModel):
     def lease_shape(self):
         if self.status == "leased" and (self.lease_expires_at is None or self.lease_token is None):
             raise ValueError("lease_invalid")
+        if len(set(self.candidate_memory_ids)) != len(self.candidate_memory_ids):
+            raise ValueError("job_source_duplicate")
         return self
 
 
@@ -137,7 +139,7 @@ class ScorePolicy:
 
     def __post_init__(self):
         weights = self.weights
-        if not self.version or any(not math.isfinite(weight) or weight < 0 for weight in weights):
+        if self.version != "score-v1" or any(not math.isfinite(weight) or not 0 <= weight <= 1 for weight in weights):
             raise ValueError("score_policy_invalid")
         if sum(weights) <= 0 or not math.isfinite(self.half_life_days) or self.half_life_days <= 0:
             raise ValueError("score_policy_invalid")
@@ -203,6 +205,9 @@ def score_memory(
             memory.id, None, None, None, None, None, None, policy.version, "similarity_invalid"
         )
     similarity = min(1.0, max(0.0, similarity))
+    if state.importance_policy_version not in (None, "score-v1"):
+        return MemoryScore(memory.id, None, similarity, None, None, None, None,
+                           policy.version, "importance_policy_invalid")
     importance = state.importance
     if importance is None:
         importance = IMPORTANCE_BY_TYPE.get(memory.memory_type)
@@ -280,7 +285,7 @@ def transition(state: MemoryLifecycleState, event: MemoryLifecycleEvent) -> Memo
         changes["effective_status_at"] = state.effective_status_at
     else:
         raise ValueError("event_type_invalid")
-    return state.model_copy(update=changes)
+    return MemoryLifecycleState.model_validate({**state.model_dump(), **changes})
 
 
 class MemoryLifecycleRepository(Protocol):

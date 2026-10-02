@@ -75,7 +75,12 @@ async def receive_memory_task(request: Request) -> Response:
         return Response(status_code=204)
 
     try:
-        envelope_data: Any = await request.json()
+        if int(request.headers.get("content-length", "0")) > 4096:
+            return Response(status_code=204)
+        body = await request.body()
+        if len(body) > 4096:
+            return Response(status_code=204)
+        envelope_data: Any = json.loads(body)
         envelope = _PubSubEnvelope.model_validate(envelope_data)
         payload = base64.b64decode(envelope.message.data, validate=True)
         notification = MemoryJobNotification.model_validate_json(payload)
@@ -85,10 +90,7 @@ async def receive_memory_task(request: Request) -> Response:
         return Response(status_code=204)
 
     try:
-        worker, republisher = _components(settings)
-        # Bounded recovery republishes durable jobs whose first notification failed.
-        # If publishing fails, keep the delivery retryable so recovery runs again.
-        republisher.republish_pending(limit=20)
+        worker, _ = _components(settings)
         result = worker.process(notification.job_id)
     except ResourceNotFoundError:
         return Response(status_code=204)

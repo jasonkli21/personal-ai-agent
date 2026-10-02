@@ -132,7 +132,7 @@ gcloud run deploy personal-ai-web \
   --region="$REGION" \
   --allow-unauthenticated \
   --min-instances=0 \
-  --set-env-vars="API_BASE_URL=$API_URL,CONTEXT_INSPECTION_ENABLED=false,MEMORY_INSPECTION_ENABLED=false"
+  --set-env-vars="API_BASE_URL=$API_URL,CONTEXT_INSPECTION_ENABLED=false,MEMORY_INSPECTION_ENABLED=false,MEMORY_LIFECYCLE_INSPECTION_ENABLED=false"
 
 WEB_URL=$(gcloud run services describe personal-ai-web --region="$REGION" --format='value(status.url)')
 echo "Deployment complete: $WEB_URL"

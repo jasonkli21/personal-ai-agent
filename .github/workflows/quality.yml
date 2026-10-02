@@ -32,6 +32,7 @@ jobs:
       - run: python -m pytest
       - run: python -m personal_ai.evaluation.context
       - run: python -m personal_ai.evaluation.memory
+      - run: python -m personal_ai.evaluation.memory_lifecycle
       - run: uv build --no-build-isolation
 
   frontend:

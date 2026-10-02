@@ -79,77 +79,188 @@
       "collectionGroup": "memories",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "owner_id", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "embedding_model", "order": "ASCENDING" },
-        { "fieldPath": "embedding_dimensions", "order": "ASCENDING" },
-        { "fieldPath": "memory_type", "order": "ASCENDING" },
-        { "fieldPath": "embedding", "vectorConfig": { "dimension": 768, "flat": {} } }
+        {
+          "fieldPath": "owner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "embedding_model",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "embedding_dimensions",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "memory_type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "embedding",
+          "vectorConfig": {
+            "dimension": 768,
+            "flat": {}
+          }
+        }
       ]
     },
     {
       "collectionGroup": "derived_memories",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "owner_id", "order": "ASCENDING" },
-        { "fieldPath": "embedding_model", "order": "ASCENDING" },
-        { "fieldPath": "embedding_dimensions", "order": "ASCENDING" },
-        { "fieldPath": "embedding", "vectorConfig": { "dimension": 768, "flat": {} } }
+        {
+          "fieldPath": "owner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "embedding_model",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "embedding_dimensions",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "embedding",
+          "vectorConfig": {
+            "dimension": 768,
+            "flat": {}
+          }
+        }
       ]
     },
     {
       "collectionGroup": "memories",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "owner_id", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "memory_type", "order": "ASCENDING" },
-        { "fieldPath": "effective_at", "order": "ASCENDING" }
+        {
+          "fieldPath": "owner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "memory_type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effective_at",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "memory_lifecycle_events",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "owner_id", "order": "ASCENDING" },
-        { "fieldPath": "memory_id", "order": "ASCENDING" },
-        { "fieldPath": "occurred_at", "order": "ASCENDING" }
+        {
+          "fieldPath": "owner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "memory_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "occurred_at",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "memory_lifecycle_events",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "owner_id", "order": "ASCENDING" },
-        { "fieldPath": "memory_id", "order": "ASCENDING" },
-        { "fieldPath": "expected_state_version", "order": "ASCENDING" }
+        {
+          "fieldPath": "owner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "memory_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expected_state_version",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "derived_memory_sources",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "owner_id", "order": "ASCENDING" },
-        { "fieldPath": "source_memory_id", "order": "ASCENDING" }
+        {
+          "fieldPath": "owner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "source_memory_id",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "memory_lifecycle_jobs",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "publish_pending", "order": "ASCENDING" },
-        { "fieldPath": "created_at", "order": "ASCENDING" }
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "publish_pending",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "memory_lifecycle_jobs",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "publish_pending", "order": "ASCENDING" },
-        { "fieldPath": "next_attempt_at", "order": "ASCENDING" },
-        { "fieldPath": "created_at", "order": "ASCENDING" }
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "publish_pending",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "next_attempt_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "memory_lifecycle_events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "owner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "memory_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expected_state_version",
+          "order": "DESCENDING"
+        }
       ]
     }
   ],

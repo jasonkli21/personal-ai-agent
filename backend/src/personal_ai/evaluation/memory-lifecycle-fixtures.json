@@ -1,21 +1,407 @@
 {
   "schema_version": 1,
   "policy_version": "score-v1",
-  "variants": ["fixed", "scored", "consolidated"],
+  "variants": [
+    "fixed",
+    "scored",
+    "consolidated"
+  ],
   "fixtures": [
-    {"name": "similarity-vs-importance", "family": "ranking", "required_fact": "anchor", "forbidden": [], "outcome": "rank_only"},
-    {"name": "recency-frequency-confidence", "family": "ranking", "required_fact": "recent-repeat", "forbidden": [], "outcome": "rank_only"},
-    {"name": "score-tie-stable-id", "family": "ranking", "required_fact": "stable-order", "forbidden": [], "outcome": "deterministic"},
-    {"name": "repeated-explicit-preference", "family": "consolidation", "required_fact": "derived-preference", "forbidden": [], "outcome": "consolidate"},
-    {"name": "mixed-topic-cluster", "family": "consolidation", "required_fact": "none", "forbidden": ["derived-memory"], "outcome": "reject"},
-    {"name": "clear-explicit-correction", "family": "contradiction", "required_fact": "newer", "forbidden": ["older-active"], "outcome": "supersede-when-enabled"},
-    {"name": "ambiguous-negation", "family": "contradiction", "required_fact": "both-active", "forbidden": ["automatic-supersession"], "outcome": "review-only"},
-    {"name": "explicit-temporal-replacement", "family": "contradiction", "required_fact": "newer", "forbidden": ["older-active"], "outcome": "supersede-when-enabled"},
-    {"name": "stale-low-value-memory", "family": "forgetting", "required_fact": "forgotten", "forbidden": [], "outcome": "forget-when-enabled"},
-    {"name": "protected-explicit-correction", "family": "forgetting", "required_fact": "active", "forbidden": ["forgotten"], "outcome": "protected"},
-    {"name": "branch-rewrite-before-job", "family": "jobs", "required_fact": "no-derived-record", "forbidden": ["new-active-derived"], "outcome": "no-op"},
-    {"name": "duplicate-job-delivery", "family": "jobs", "required_fact": "single-operation", "forbidden": ["duplicate-event"], "outcome": "idempotent"},
-    {"name": "cross-owner-near-match", "family": "ownership", "required_fact": "owner-only", "forbidden": ["foreign-memory"], "outcome": "exclude"},
-    {"name": "forgotten-record-never-resurrected", "family": "eligibility", "required_fact": "empty-or-other", "forbidden": ["forgotten"], "outcome": "exclude"}
+    {
+      "name": "similarity-vs-importance",
+      "records": [
+        {
+          "label": "episode",
+          "content": "I visited a quiet lodge.",
+          "memory_type": "episodic_observation",
+          "similarity": 0.99
+        },
+        {
+          "label": "correction",
+          "content": "Correction: I prefer quiet rooms for overnight stays.",
+          "memory_type": "explicit_correction",
+          "similarity": 0.94
+        }
+      ],
+      "expected": {
+        "fixed": [
+          "episode",
+          "correction"
+        ],
+        "scored": [
+          "correction",
+          "episode"
+        ],
+        "consolidated": [
+          "correction",
+          "episode"
+        ]
+      }
+    },
+    {
+      "name": "recency-frequency-confidence",
+      "records": [
+        {
+          "label": "old",
+          "content": "I prefer mountain cabins for retreats.",
+          "memory_type": "preference",
+          "age_days": 180
+        },
+        {
+          "label": "recent-repeat",
+          "content": "I prefer forest cabins for retreats.",
+          "memory_type": "preference",
+          "age_days": 5,
+          "retrieval_count": 5
+        }
+      ],
+      "expected": {
+        "fixed": [
+          "recent-repeat",
+          "old"
+        ],
+        "scored": [
+          "recent-repeat",
+          "old"
+        ],
+        "consolidated": [
+          "recent-repeat",
+          "old"
+        ]
+      }
+    },
+    {
+      "name": "score-tie-stable-id",
+      "records": [
+        {
+          "label": "a",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        },
+        {
+          "label": "b",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        }
+      ],
+      "stable_tie": true
+    },
+    {
+      "name": "repeated-explicit-preference",
+      "records": [
+        {
+          "label": "a",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        },
+        {
+          "label": "b",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference",
+          "age_days": 1
+        }
+      ],
+      "action": "consolidate",
+      "derived": true
+    },
+    {
+      "name": "repeated-compatible-episodes",
+      "records": [
+        {
+          "label": "a",
+          "content": "I visited a calm museum.",
+          "memory_type": "episodic_observation"
+        },
+        {
+          "label": "b",
+          "content": "I visited a calm museum.",
+          "memory_type": "episodic_observation",
+          "age_days": 1
+        }
+      ],
+      "action": "consolidate",
+      "derived": true
+    },
+    {
+      "name": "mixed-topic-cluster",
+      "records": [
+        {
+          "label": "a",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        },
+        {
+          "label": "b",
+          "content": "I prefer notebooks for sketching.",
+          "memory_type": "preference"
+        }
+      ],
+      "action": "consolidate",
+      "derived": false
+    },
+    {
+      "name": "clear-explicit-correction",
+      "records": [
+        {
+          "label": "older",
+          "content": "I prefer city hotels for overnight stays.",
+          "memory_type": "preference",
+          "age_days": 5
+        },
+        {
+          "label": "newer",
+          "content": "Correction: I prefer quiet rooms for overnight stays.",
+          "memory_type": "explicit_correction"
+        }
+      ],
+      "action": "maintenance",
+      "statuses": {
+        "older": "superseded",
+        "newer": "active"
+      },
+      "forbidden_labels": [
+        "older"
+      ]
+    },
+    {
+      "name": "ambiguous-negation",
+      "records": [
+        {
+          "label": "older",
+          "content": "I prefer city hotels for overnight stays.",
+          "memory_type": "preference",
+          "age_days": 5
+        },
+        {
+          "label": "newer",
+          "content": "Correction: I do not always prefer quiet rooms for overnight stays.",
+          "memory_type": "explicit_correction"
+        }
+      ],
+      "action": "maintenance",
+      "statuses": {
+        "older": "active",
+        "newer": "active"
+      },
+      "review": true
+    },
+    {
+      "name": "explicit-temporal-replacement",
+      "records": [
+        {
+          "label": "older",
+          "content": "I prefer city hotels for overnight stays.",
+          "memory_type": "preference",
+          "age_days": 5
+        },
+        {
+          "label": "newer",
+          "content": "I now prefer quiet rooms for overnight stays.",
+          "memory_type": "explicit_correction"
+        }
+      ],
+      "action": "maintenance",
+      "statuses": {
+        "older": "superseded",
+        "newer": "active"
+      },
+      "forbidden_labels": [
+        "older"
+      ]
+    },
+    {
+      "name": "stale-low-value-memory",
+      "records": [
+        {
+          "label": "stale",
+          "content": "I visited an old museum.",
+          "memory_type": "episodic_observation",
+          "age_days": 400,
+          "confidence": 0.4
+        }
+      ],
+      "action": "maintenance",
+      "statuses": {
+        "stale": "forgotten"
+      },
+      "forbidden_labels": [
+        "stale"
+      ]
+    },
+    {
+      "name": "protected-explicit-correction",
+      "records": [
+        {
+          "label": "protected",
+          "content": "Correction: I prefer quiet rooms for overnight stays.",
+          "memory_type": "explicit_correction",
+          "age_days": 400
+        }
+      ],
+      "action": "maintenance",
+      "statuses": {
+        "protected": "active"
+      }
+    },
+    {
+      "name": "branch-rewrite-before-job",
+      "records": [
+        {
+          "label": "a",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        },
+        {
+          "label": "b",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        }
+      ],
+      "action": "consolidate",
+      "rewrite": true,
+      "derived": false,
+      "forbidden_labels": [
+        "a"
+      ]
+    },
+    {
+      "name": "duplicate-job-delivery",
+      "records": [
+        {
+          "label": "a",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        },
+        {
+          "label": "b",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        }
+      ],
+      "action": "consolidate",
+      "derived": true,
+      "duplicate": true
+    },
+    {
+      "name": "cross-owner-near-match",
+      "records": [
+        {
+          "label": "owner",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        },
+        {
+          "label": "foreign",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference",
+          "owner": "foreign"
+        }
+      ],
+      "expected": {
+        "fixed": [
+          "owner"
+        ],
+        "scored": [
+          "owner"
+        ],
+        "consolidated": [
+          "owner"
+        ]
+      },
+      "forbidden_labels": [
+        "foreign"
+      ]
+    },
+    {
+      "name": "forgotten-record-never-resurrected",
+      "records": [
+        {
+          "label": "stale",
+          "content": "I visited an old museum.",
+          "memory_type": "episodic_observation",
+          "age_days": 400,
+          "confidence": 0.4
+        }
+      ],
+      "action": "maintenance",
+      "statuses": {
+        "stale": "forgotten"
+      },
+      "forbidden_labels": [
+        "stale"
+      ],
+      "score_failure": true
+    },
+    {
+      "name": "derived-over-budget-source-fallback",
+      "records": [
+        {
+          "label": "a",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        },
+        {
+          "label": "b",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        }
+      ],
+      "action": "consolidate",
+      "derived": true,
+      "memory_budget": 58
+    },
+    {
+      "name": "scoring-failure-safe-fixed",
+      "records": [
+        {
+          "label": "a",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        }
+      ],
+      "score_failure": true
+    },
+    {
+      "name": "lifecycle-failure-empty",
+      "records": [
+        {
+          "label": "a",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        }
+      ],
+      "lifecycle_failure": true
+    },
+    {
+      "name": "query-provider-failure",
+      "records": [
+        {
+          "label": "a",
+          "content": "I prefer quiet rooms for overnight stays.",
+          "memory_type": "preference"
+        }
+      ],
+      "query_failure": true
+    },
+    {
+      "name": "active-dependent-forgetting-protection",
+      "records": [
+        {
+          "label": "a",
+          "content": "I visited a calm museum.",
+          "memory_type": "episodic_observation",
+          "age_days": 400
+        },
+        {
+          "label": "b",
+          "content": "I visited a calm museum.",
+          "memory_type": "episodic_observation",
+          "age_days": 401
+        }
+      ],
+      "action": "consolidate",
+      "derived": true,
+      "protect_dependency": true
+    }
   ]
 }

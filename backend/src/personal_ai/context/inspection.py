@@ -82,6 +82,7 @@ class ContextInspector:
                 "requested_variant": retrieval.requested_variant,
                 "applied_variant": retrieval.applied_variant,
                 "policy_version": retrieval.policy_version,
+                "policy_identity": retrieval.policy_identity,
                 "lifecycle_event_ids": [str(item) for item in retrieval.lifecycle_event_ids],
                 "records": [{
                     "id": str(s.memory.id), "type": s.memory.memory_type,

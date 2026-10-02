@@ -133,6 +133,9 @@ class ContextAssembler:
         )
         for scored in retrieval.selected:
             m = scored.memory
+            if len(chosen) >= self.settings.memory_retrieval_limit:
+                excluded.append((m.id, "retrieval_limit"))
+                continue
             if m.id in represented_sources:
                 excluded.append((m.id, "represented_by_derived_memory"))
                 continue

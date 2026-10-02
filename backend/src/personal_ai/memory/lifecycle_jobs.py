@@ -68,7 +68,7 @@ class MemoryLifecycleCoordinator:
                 extraction_result = self.extraction.run(completed)
             except Exception as error:  # noqa: BLE001 - post-turn memory is optional
                 logger.info("Memory extraction failed error_class=%s", type(error).__name__)
-        if self.settings.memory_lifecycle_worker_enabled:
+        if self.settings.memory_enabled and self.settings.memory_lifecycle_worker_enabled:
             for memory_id in dict.fromkeys(selected_memory_ids):
                 self._record_injected(completed, memory_id)
             created = tuple(getattr(extraction_result, "created", ()))
@@ -84,31 +84,43 @@ class MemoryLifecycleCoordinator:
                     if self.settings.memory_consolidation_enabled and len(candidates) >= 2:
                         queued.add(("consolidation", candidates))
                 except Exception as error:  # noqa: BLE001 - discovery is bounded optional work
-                    logger.info("Memory candidate discovery failed error_class=%s", type(error).__name__)
+                    logger.info(
+                        "Memory candidate discovery failed error_class=%s", type(error).__name__
+                    )
             maintenance_candidates = []
             if self.settings.memory_contradiction_automation_enabled:
                 try:
-                    maintenance_candidates.extend(self.lifecycle.discover_maintenance_candidates(
-                        owner_id=completed.owner_id,
-                        limit=self.settings.memory_consolidation_max_sources,
-                    ))
+                    maintenance_candidates.extend(
+                        self.lifecycle.discover_maintenance_candidates(
+                            owner_id=completed.owner_id,
+                            limit=self.settings.memory_consolidation_max_sources,
+                        )
+                    )
                 except Exception as error:  # noqa: BLE001 - discovery failure cannot affect chat
-                    logger.info("Memory contradiction discovery failed error_class=%s", type(error).__name__)
+                    logger.info(
+                        "Memory contradiction discovery failed error_class=%s", type(error).__name__
+                    )
             if self.settings.memory_forgetting_enabled:
                 try:
-                    maintenance_candidates.extend(self.lifecycle.discover_forgetting_candidates(
-                        owner_id=completed.owner_id,
-                        older_than=completed.created_at - timedelta(days=365),
-                        limit=self.settings.memory_consolidation_max_sources,
-                    ))
+                    maintenance_candidates.extend(
+                        self.lifecycle.discover_forgetting_candidates(
+                            owner_id=completed.owner_id,
+                            older_than=completed.created_at - timedelta(days=365),
+                            limit=self.settings.memory_consolidation_max_sources,
+                        )
+                    )
                 except Exception as error:  # noqa: BLE001 - discovery failure cannot affect chat
-                    logger.info("Memory forgetting discovery failed error_class=%s", type(error).__name__)
+                    logger.info(
+                        "Memory forgetting discovery failed error_class=%s", type(error).__name__
+                    )
             if maintenance_candidates:
                 candidates = tuple(dict.fromkeys(maintenance_candidates))[
                     : self.settings.memory_consolidation_max_sources
                 ]
                 queued.add(("maintenance", tuple(sorted(candidates, key=str))))
-            for job_type, candidate_ids in sorted(queued, key=lambda item: (item[0], tuple(map(str, item[1])))):
+            for job_type, candidate_ids in sorted(
+                queued, key=lambda item: (item[0], tuple(map(str, item[1])))
+            ):
                 self._enqueue(completed, job_type, candidate_ids)
 
     def _record_injected(self, completed, memory_id: UUID):
@@ -186,14 +198,26 @@ class MemoryLifecycleCoordinator:
     def _publish(self, job):
         if self.publisher is None:
             return
-        self.publisher.publish(job, timeout=self.settings.request_timeout_seconds)
+        from personal_ai.memory.lifecycle_repositories import rpc_timeout
+
+        self.publisher.publish(job, timeout=rpc_timeout())
         self.lifecycle.mark_published(
-            owner_id=job.owner_id, job_id=job.id, updated_at=datetime.now(UTC)
+            owner_id=job.owner_id, job_id=job.id, updated_at=job.updated_at
         )
 
     def republish_pending(self, *, limit: int = 50):
-        if self.publisher is None:
+        if (
+            self.publisher is None
+            or not self.settings.memory_enabled
+            or not self.settings.memory_lifecycle_worker_enabled
+        ):
             return 0
+        from personal_ai.memory.lifecycle_repositories import lifecycle_deadline
+
+        with lifecycle_deadline(self.settings.memory_job_execution_seconds):
+            return self._republish_pending(limit=limit)
+
+    def _republish_pending(self, *, limit):
         jobs = self.lifecycle.pending_for_publish(now=datetime.now(UTC), limit=limit)
         published = 0
         for job in jobs:
@@ -205,16 +229,26 @@ class MemoryLifecycleCoordinator:
 class MemoryLifecycleWorker:
     """Bounded processor that derives all authority from durable job/source state."""
 
-    def __init__(self, settings, lifecycle, memories, messages, embedder, *, clock=None,
-                 consolidator=None):
+    def __init__(
+        self, settings, lifecycle, memories, messages, embedder, *, clock=None, consolidator=None
+    ):
         self.settings, self.lifecycle, self.memories, self.messages = (
-            settings, lifecycle, memories, messages
+            settings,
+            lifecycle,
+            memories,
+            messages,
         )
         self.embedder = embedder
         self.clock = clock or (lambda: datetime.now(UTC))
         self.consolidator = consolidator or DeterministicMemoryConsolidator()
 
     def process(self, job_id: UUID) -> Literal["completed", "busy", "retry", "disabled"]:
+        from personal_ai.memory.lifecycle_repositories import lifecycle_deadline
+
+        with lifecycle_deadline(self.settings.memory_job_execution_seconds):
+            return self._process(job_id)
+
+    def _process(self, job_id):
         if not self.settings.memory_enabled or not self.settings.memory_lifecycle_worker_enabled:
             return "disabled"
         job = self.lifecycle.get_job_by_id(job_id=job_id)
@@ -232,6 +266,18 @@ class MemoryLifecycleWorker:
         assert token is not None
         deadline = monotonic() + self.settings.memory_job_execution_seconds
         try:
+            versions = {
+                "derivation_policy_version": DERIVATION_POLICY_VERSION,
+                "contradiction_policy_version": CONTRADICTION_POLICY_VERSION,
+                "forgetting_policy_version": FORGETTING_POLICY_VERSION,
+            }
+            if any(
+                claimed.policy_snapshot.get(key, expected) != expected
+                for key, expected in versions.items()
+            ):
+                raise ValueError("unsupported_job_policy")
+            if claimed.policy_version != "score-v1":
+                raise ValueError("unsupported_job_policy")
             if claimed.job_type == "consolidation":
                 result = self._consolidate(claimed, token, deadline)
             else:
@@ -248,12 +294,20 @@ class MemoryLifecycleWorker:
             return "retry"
         except (OSError, RuntimeError, StorageError, LLMError, GoogleAPICallError, RetryError):
             self.lifecycle.fail_job(
-                claimed, token=token, now=self.clock(), reason="dependency_unavailable", retryable=True
+                claimed,
+                token=token,
+                now=self.clock(),
+                reason="dependency_unavailable",
+                retryable=True,
             )
             return "retry"
         except (ValueError, TypeError):
             self.lifecycle.fail_job(
-                claimed, token=token, now=self.clock(), reason="invalid_job_or_source", retryable=False
+                claimed,
+                token=token,
+                now=self.clock(),
+                reason="invalid_job_or_source",
+                retryable=False,
             )
             return "completed"
         except Exception as error:  # noqa: BLE001 - unexpected worker faults are safely retryable
@@ -295,8 +349,9 @@ class MemoryLifecycleWorker:
         for memory_id in job.candidate_memory_ids:
             self._remaining(deadline)
             try:
-                memory = self.memories.get(owner_id=job.owner_id, memory_id=memory_id,
-                                           timeout=self._remaining(deadline))
+                memory = self.memories.get(
+                    owner_id=job.owner_id, memory_id=memory_id, timeout=self._remaining(deadline)
+                )
             except ResourceNotFoundError:
                 continue
             if isinstance(memory, Memory):
@@ -305,7 +360,9 @@ class MemoryLifecycleWorker:
             for second in records:
                 if first.id == second.id:
                     continue
-                newer, older = (first, second) if first.effective_at > second.effective_at else (second, first)
+                newer, older = (
+                    (first, second) if first.effective_at > second.effective_at else (second, first)
+                )
                 decision = contradiction_decision(older, newer)
                 if decision == "none":
                     continue
@@ -313,15 +370,17 @@ class MemoryLifecycleWorker:
                     continue
                 event_type = "superseded" if decision == "supersede" else "review_required"
                 key = f"{job.id}:{event_type}:{older.id}:{newer.id}"
-                if self.lifecycle.find_event(owner_id=job.owner_id, memory_id=older.id,
-                                             idempotency_key=key):
+                if self.lifecycle.find_event(
+                    owner_id=job.owner_id, memory_id=older.id, idempotency_key=key
+                ):
                     return "replayed"
                 state = self.lifecycle.get_state(owner_id=job.owner_id, memory_id=older.id)
                 event = make_event(
                     owner_id=job.owner_id,
                     memory_id=older.id,
                     event_type=event_type,
-                    reason_code="clear_newer_correction" if decision == "supersede"
+                    reason_code="clear_newer_correction"
+                    if decision == "supersede"
                     else "ambiguous_contradiction",
                     policy_version=CONTRADICTION_POLICY_VERSION,
                     idempotency_key=key,
@@ -331,6 +390,8 @@ class MemoryLifecycleWorker:
                     job_id=job.id,
                 )
                 outcome = self.lifecycle.apply_event(event, job=job, lease_token=token)
+                if outcome.reason == "state_version_conflict":
+                    raise RuntimeError("state_version_conflict")
                 if outcome.reason == "stale_lease":
                     return "stale_lease"
                 if outcome.status == "applied":
@@ -360,14 +421,18 @@ class MemoryLifecycleWorker:
                         active_dependency = True
                         break
                 decision = forgetting_decision(
-                    memory, state, now=self.clock(), dependencies=dependencies,
+                    memory,
+                    state,
+                    now=self.clock(),
+                    dependencies=dependencies,
                     dependency_lookup_complete=complete,
                 )
                 if not decision.eligible or active_dependency:
                     continue
                 key = f"{job.id}:forgotten:{memory.id}"
-                if self.lifecycle.find_event(owner_id=job.owner_id, memory_id=memory.id,
-                                             idempotency_key=key):
+                if self.lifecycle.find_event(
+                    owner_id=job.owner_id, memory_id=memory.id, idempotency_key=key
+                ):
                     return "replayed"
                 event = make_event(
                     owner_id=job.owner_id,
@@ -381,6 +446,8 @@ class MemoryLifecycleWorker:
                     job_id=job.id,
                 )
                 outcome = self.lifecycle.apply_event(event, job=job, lease_token=token)
+                if outcome.reason == "state_version_conflict":
+                    raise RuntimeError("state_version_conflict")
                 if outcome.reason == "stale_lease":
                     return "stale_lease"
                 if outcome.status in ("applied", "replayed"):

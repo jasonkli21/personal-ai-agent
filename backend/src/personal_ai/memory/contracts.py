@@ -157,6 +157,16 @@ class DerivedMemory(BaseModel):
             raise ValueError("source_invalid")
         if any(normalize(source.excerpt) not in normalize(self.content) for source in self.sources):
             raise ValueError("source_coverage_invalid")
+        if self.source_memory_ids != tuple(sorted(self.source_memory_ids, key=str)):
+            raise ValueError("source_order_invalid")
+        key = sha256("\0".join([self.owner_id, self.derivation_policy_version] + [
+            f"{item.memory_id}:{item.source_fingerprint}" for item in self.sources
+        ]).encode()).hexdigest()
+        if self.source_set_identity != key or self.id != uuid5(NAMESPACE_URL, "personal-ai-derived-memory:" + key):
+            raise ValueError("derived_identity_invalid")
+        expected_content = "Historical personal context from repeated user statements:\n" + "\n".join(item.excerpt for item in self.sources)
+        if self.content != expected_content or self.derivation_policy_version != "extractive-v1":
+            raise ValueError("unsupported_derivation")
         vector(self.embedding, self.embedding_dimensions)
         return self
 
@@ -192,6 +202,7 @@ class RetrievalResult:
     applied_variant: str | None = None
     policy_version: str | None = None
     scores: tuple[object, ...] = ()
+    policy_identity: str | None = None
     lifecycle_event_ids: tuple[UUID, ...] = ()
     inspection_metadata: tuple[tuple[UUID, dict], ...] = ()
 

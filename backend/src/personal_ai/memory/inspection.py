@@ -96,6 +96,8 @@ def inspect_records(
             reason = state.retrieval_status
         sources_valid = True
         if isinstance(memory, DerivedMemory):
+            if settings.memory_experiment_variant != "consolidated":
+                reason = "variant_excludes_derived"
             for source in memory.sources:
                 try:
                     original = repository.get(owner_id=owner_id, memory_id=source.memory_id)
@@ -113,6 +115,7 @@ def inspect_records(
                     or original.source_conversation_id != source.source_conversation_id
                     or original.source_turn_id != source.source_turn_id
                     or (source_state is not None and source_state.retrieval_status != "active")
+                    or source.excerpt != original.content
                     or content_reason(original.content, settings)
                     or source_messages(original, messages) is None
                 ):
@@ -190,6 +193,7 @@ def inspect_records(
         requested_variant=settings.memory_experiment_variant,
         applied_variant=settings.memory_experiment_variant,
         policy_version=policy.version,
+        policy_identity=policy.identity,
         scores=tuple(scores),
         lifecycle_event_ids=tuple(event_ids),
         inspection_metadata=tuple(metadata),

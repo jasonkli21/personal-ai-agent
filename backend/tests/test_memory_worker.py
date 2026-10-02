@@ -72,7 +72,7 @@ def test_authenticated_push_payload_dispatches_only_durable_job_id(monkeypatch):
     with TestClient(worker_app) as client:
         response = client.post("/tasks/memory", json=push_body(job_id))
     assert response.status_code == 204
-    assert calls == [("republish", 20), ("process", job_id)]
+    assert calls == [("process", job_id)]
 
 
 def test_retryable_worker_result_returns_retry_status_and_invalid_payload_is_acked(monkeypatch):
