@@ -58,3 +58,14 @@ streaming, summary, extraction, research-output, timeout, and cancellation
 checks for the candidate model and record the model ID, configuration, date,
 revision, results, and remaining gaps. Do not treat a generation-model switch
 as an embedding-vector migration.
+
+## Subsequent Phase 6 authorization
+
+The status above records the repository and user-authorization state at the
+time of this documentation reconciliation. Later on 2026-10-02, Phase 6 was
+explicitly authorized and implemented locally. Current Phase 6 behavior,
+offline checks, default-off gates, and remaining external verification gaps are
+recorded in the [Phase 6 guide](phase-6-implementation-guide.md) and
+[release evidence](releases/phase-6-decision-support.md). This update does not
+change the historical Phase 5 verification record or claim that emulator,
+provider, or deployment checks have passed.

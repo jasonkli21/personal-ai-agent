@@ -2,10 +2,10 @@
 
 This plan builds a usable personal chat system first, then progressively turns it into a memory and research-agent platform. Each phase should be evaluated before the next one adds complexity.
 
-Phases 1–5 are implemented locally. Implementation is paused after Phase 5;
-Phase 6 is not authorized. External provider, emulator, and deployed
-verification gaps are recorded separately from implementation status in the
-phase guides and release records.
+Phases 1–6 are implemented locally. Phase 6 was explicitly authorized on
+2026-10-02. Decision gates remain disabled by default. External provider,
+emulator, and deployed verification gaps are recorded separately from
+implementation status in the phase guides and release records.
 
 For task-level dependencies, requirements, and acceptance criteria, see the
 [Phase 0–1 implementation plan](phase-1-implementation-plan.md) and the
@@ -81,7 +81,7 @@ Implemented locally after explicit authorization on 2026-10-02, behind default-o
 gates. The [reviewed task plan](phase-5-implementation-plan.md),
 [guide](phase-5-implementation-guide.md) and
 [release record](releases/phase-5-source-grounded-research.md) document the bounded
-snippet/excerpt scope and remaining external checks. Phase 6 is not authorized.
+snippet/excerpt scope and remaining external checks.
 
 1. Define research-session, search-query, evidence, and source-adapter contracts.
 2. Implement a basic web-search adapter.
@@ -94,11 +94,14 @@ snippet/excerpt scope and remaining external checks. Phase 6 is not authorized.
 
 ## Phase 6 — Add entities, constraints, and ranking
 
-The shared decision contracts must keep evidence-backed research entities
-separate from authoritative domain-application state. A decision may reference a
-Phase 5 research session when one supplied its evidence, but reusable constraint
-and ranking results must not require one. See the
-[Phase 6 task plan](phase-6-implementation-plan.md) for the contract gate.
+Implemented locally after explicit authorization on 2026-10-02. The
+[Phase 6 task plan](phase-6-implementation-plan.md), [guide](phase-6-implementation-guide.md),
+[ADR 0012](decisions/0012-evidence-grounded-decision-support.md), and
+[release record](releases/phase-6-decision-support.md) document contracts,
+policy behavior, offline results, and remaining external verification gaps.
+Evidence-backed research entities remain separate from authoritative
+domain-application state; a Phase 5 session is optional when another validated
+evidence source supplies a decision.
 
 1. Define canonical entities and entity-resolution interfaces.
 2. Implement deterministic hard constraints, such as budget, date, availability, dimensions, or location.

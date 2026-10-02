@@ -1,4 +1,4 @@
-# API contract (Phases 1–5)
+# API contract (Phases 1–6)
 
 This document defines the implemented HTTP boundary. All `/v1` routes operate
 for the current logical owner,
@@ -167,3 +167,33 @@ excerpts with adjacent numbered citations, not unrestricted factual synthesis.
 Each citation exposes original normalized URL, optional title, observation time,
 evidence expiry and source/evidence IDs. Known old publication dates are excluded;
 missing dates remain unknown. See [Phase 5 plan](phase-5-implementation-plan.md).
+
+## Phase 6 decision support (`decision-v1`)
+
+Decision routes require `DECISION_ENABLED`; inspection additionally requires
+`DECISION_INSPECTION_ENABLED`. Browser calls pass through the Next.js
+`/api/decisions` proxy. Both backend gates and frontend gates default off.
+The temporary `local` owner is not identity or authentication.
+
+| Route | Contract |
+| --- | --- |
+| `POST /v1/decisions` | Validated candidate proposals, typed constraints/preferences, an idempotency key, and exactly one evidence path: a completed Phase 5 `research_session_id` or explicitly supplied source references and fingerprint-checked excerpts. Returns 201 `DecisionResult`. |
+| `GET /v1/decisions/{UUID}` | Owner-scoped immutable result, evidence snapshot, entities, claims, resolution matches, and candidate evaluations. |
+| `GET /v1/decisions/{UUID}/inspection` | Requires both decision and inspection gates; read-only selected/excluded evaluations, attribute and constraint outcomes, score components, policy versions, resolution trace, and source links. No raw memory or hidden model reasoning. |
+
+The response distinguishes `recommended`, `eligible_unranked`,
+`research_needed`, and `no_verified_match`. Every selected result has eligible
+candidate, claim, and exact evidence-reference provenance. Unknown, stale,
+conflicting, unverified, or unsupported required values do not pass hard
+constraints. Currency conversion is not guessed. Preferences only rank eligible
+candidates; a ranking failure retains the eligible set without a score or rank.
+Decision snapshots are append-only and include the evidence metadata and
+versioned identity, constraint, ranking, and evidence-snapshot policies.
+
+Malformed inputs return 422; missing or foreign-owner records return 404;
+idempotency conflicts and unusable evidence return safe 409/422 responses;
+storage failures return 503. The decision result page presents supported claim
+values, observation/expiry times, requirement outcomes, and source links. The
+development inspector is separately gated and read-only. See the
+[Phase 6 guide](phase-6-implementation-guide.md) and
+[decision-support ADR](decisions/0012-evidence-grounded-decision-support.md).

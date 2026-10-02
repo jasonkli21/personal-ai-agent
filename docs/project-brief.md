@@ -10,11 +10,11 @@ The end state is one reusable AI/research substrate with chat, memory, and evide
 
 ## Current state
 
-Phase 1–4 chat, context and memory code and Phase 5 bounded research are
-implemented locally. Offline checks pass; real Firestore, Gemini, licensed Brave
-and deployed GCP behavior still need verification. Phase 5 was explicitly
-authorized and reviewed on 2026-10-02; its gates remain disabled by default.
-Implementation is **paused after Phase 5**; Phase 6 has not been authorized.
+Phase 1–4 chat, context and memory, Phase 5 bounded research, and Phase 6
+evidence-backed decision support are implemented locally. Phase 6 was explicitly
+authorized on 2026-10-02; its decision and inspection gates remain disabled by
+default. Offline checks use synthetic evidence and fakes. Real Firestore,
+Gemini, licensed Brave, and deployed GCP behavior still need verification.
 See the Phase 5 [reviewed plan](phase-5-implementation-plan.md),
 [guide](phase-5-implementation-guide.md) and
 [release evidence](releases/phase-5-source-grounded-research.md).
@@ -50,6 +50,14 @@ Implemented:
   bounded Brave snippets and fakes, literal evidence extraction, TTLs/dedupe,
   explainable selection, validated cited excerpts and a research UI/inspector.
 - Thirteen synthetic full-pipeline research fixtures and opt-in external checks.
+- Owner-scoped canonical research entities, append-only evidence-backed claims,
+  conservative resolution, deterministic hard constraints, and explainable
+  preference ranking with immutable decision snapshots.
+- Session-backed and explicitly supplied evidence decision paths, a persisted
+  Firestore repository, 15 deterministic decision fixtures, a source-grounded
+  result view, and separately gated development inspection.
+- Decision creation and inspection gates default off; current `local` ownership
+  remains a development boundary, not authentication.
 - Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.
 - Dockerfiles and a GCP bootstrap/deployment script.
 - Architecture, deployment, research-agent, and implementation-plan documents.
@@ -58,11 +66,11 @@ Not implemented:
 
 - Authentication or authorization.
 - User-facing memory management, broad inferred consolidation or contradiction adjudication.
-- Entity resolution, recommendation ranking, domain agents or iterative research.
+- Phase 7 domain-specific adapters and policies or Phase 8 iterative research.
 - General scheduled maintenance; Phase 4 provides explicit bounded jobs and recovery.
 
-Research/search/evidence now implement the bounded Phase 5 pipeline; recommendation
-ranking and domain packages remain placeholders.
+Research/search/evidence implement the bounded Phase 5 pipeline; Phase 6 adds
+shared evidence-backed decision support. Domain packages remain placeholders.
 `memory` implements gated extraction, durable provenance, vector retrieval and inspection.
 `context` and `evaluation` now implement conversation budgeting and synthetic
 quality checks; `entities` still contains chat records.
@@ -105,7 +113,7 @@ These rules must hold as features are added:
 
 1. **The LLM is replaceable.** Provider-specific code stays inside `llm` and adapter modules.
 2. **Memory and external evidence are different data classes.** Memory represents durable, attributable user knowledge; evidence represents an observation from an external source at a point in time.
-3. **Freshness is explicit.** Delivered Phase 5 evidence has source, observation time, and expiry or freshness policy. Phase 6 may add entity links. Never treat old price, availability, or opening-hours data as permanent fact.
+3. **Freshness is explicit.** Phase 5 evidence has source, observation time, and expiry or freshness policy. Phase 6 links claims to those observations without making a price, availability, or opening-hours value permanent entity truth.
 4. **Conclusions are not facts.** Recommendations must preserve the evidence and reasoning that support them rather than becoming unqualified memory.
 5. **Hard constraints precede preferences.** Filter on requirements such as budget, dates, location, availability, or dimensions before applying soft preference ranking.
 6. **Memory may guide investigation.** It can influence query planning and ranking, but must not override current constraints or fresh evidence.
@@ -134,7 +142,10 @@ The [Phase 2 context-window plan](phase-2-implementation-plan.md) is implemented
 locally. Finish its credentialed quality/deployed checks before declaring full
 verification; Phase 3 was explicitly authorized and is now implemented locally.
 See its [guide](phase-3-implementation-guide.md) and
-[release evidence](releases/phase-3-simple-memory.md). Phase 5 is delivered locally after explicit user authorization; external verification remains open. Do not advance to Phase 6 without explicit user instruction.
+[release evidence](releases/phase-3-simple-memory.md). Phases 5 and 6 are
+implemented locally after explicit user authorization; their external
+verification gaps remain open. Do not advance to Phase 7 without a completion
+review and explicit user direction.
 
 Do not add long-term memory in Phase 1. Phase 2 handles context-window management; Phase 3 introduces simple memory only after basic chat is stable.
 
@@ -171,6 +182,6 @@ Resolve these in short architecture decision records before implementation depen
    [architecture](architecture.md), [implementation guide](phase-1-implementation-guide.md),
    and the plan for the active task. Read [GCP deployment](gcp-deployment.md)
    when working on infrastructure.
-2. Use the Phase 5 guide and release record for delivered behavior and remaining verification gaps. Do not advance to Phase 6 without explicit authorization.
+2. Use the Phase 5 and Phase 6 guides and release records for delivered behavior and remaining verification gaps. Do not add Phase 7 domain work without explicit authorization.
 3. Preserve the architectural invariants above.
 4. Once a phase is authorized, implement its smallest testable vertical slice, update tests and docs, and do not expand into a later phase without a user decision.

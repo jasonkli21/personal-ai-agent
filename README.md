@@ -16,15 +16,16 @@ The GCP layout and deployment path are documented in [GCP deployment](docs/gcp-d
 ## Repository layout
 
 ```text
-frontend/                    Next.js interface for chat and research
+frontend/                    Next.js interface for chat, research and decisions
 backend/                     FastAPI application and domain packages
   src/personal_ai/
     agents/                  Conversation and research orchestration
     memory/                  Preference, episodic, and semantic memory
     search/                  Search pipeline and provider adapters
     evidence/                Fresh, attributable source observations
-    entities/                Chat records; Phase 6 entity work is planned
-    ranking/                 Phase 6 placeholder for constraints and scoring
+    entities/                Chat records and canonical research candidates/claims
+    decisions/               Evidence-backed decision contracts and persistence
+    ranking/                 Deterministic constraints and explainable ranking
     domains/                 Phase 7 travel/shopping placeholders
     evaluation/              Reproducible system and agent evaluation
 infrastructure/              Local and cloud deployment configuration
@@ -108,6 +109,7 @@ Run these commands from the repository root. They do not need cloud credentials 
 | `make context-eval` | Synthetic Phase 2 context evaluation |
 | `make memory-eval` | Synthetic Phase 3 memory evaluation |
 | `make research-eval` | Synthetic Phase 5 source-grounded research evaluation |
+| `make decision-eval` | Synthetic Phase 6 decision evaluation |
 | `make memory-lifecycle-eval` | Synthetic Phase 4 lifecycle/variant evaluation |
 | `make backend-build` | Backend source distribution and wheel |
 | `make frontend-build` | Next.js production build |
@@ -235,3 +237,21 @@ for the exact workflow, contracts, bounds, retention/index policy and real-provi
 gates. Brave requires explicit suitable storage/AI-use rights and an operator
 acknowledgement before enablement. Emulator/provider/deployment checks remain
 pending; see [release evidence](docs/releases/phase-5-source-grounded-research.md).
+
+## Evidence-backed decision support
+
+Phase 6 adds canonical research candidates, immutable evidence-backed claims,
+conservative entity resolution, deterministic hard constraints, and
+explainable preference ranking. A decision can consume a completed Phase 5
+session or explicitly supplied excerpt evidence; both paths validate ownership
+and provenance. Decision creation and inspection default off.
+
+Run `make decision-eval` for 15 synthetic cases covering identity ambiguity,
+freshness/conflicts, typed constraints, tie-breaking, preference limits, and
+ranking fallback. With both backend and frontend `DECISION_ENABLED=true`, open
+`/decisions` and enter a saved decision ID to review evidence-backed facts and
+source links. The development-only `/development/decisions` inspector also
+requires `DECISION_INSPECTION_ENABLED=true` in both applications. Real
+Firestore transaction/index readiness remains unverified, and the fixed
+`local` owner is not authentication. See the [Phase 6 guide](docs/phase-6-implementation-guide.md)
+and [release evidence](docs/releases/phase-6-decision-support.md).

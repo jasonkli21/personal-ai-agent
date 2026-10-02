@@ -247,3 +247,18 @@ Before declaring Phase 6 done, verify all task acceptance criteria and answer:
 5. Has the shared platform stayed domain-neutral and deterministic?
 
 Only after all answers are yes should work advance to Phase 7.
+
+## Local delivery status — 2026-10-02
+
+P6.0–P6.8 are implemented locally: the accepted contract/ADR, canonical entity
+and claim repository, conservative resolution, freshness/conflict states,
+constraint-first policy, explainable ranking, result/inspection API and UI, and
+15-fixture deterministic evaluation are present. Both evidence paths are
+covered. Offline verification and current gaps are recorded in the
+[Phase 6 guide](phase-6-implementation-guide.md) and
+[release evidence](releases/phase-6-decision-support.md).
+
+The implementation satisfies the completion questions for local code and
+synthetic evaluation. Real Firestore transactions/index readiness, provider
+rights and behavior, and deployed checks remain unverified. All decision gates
+remain disabled by default; this local handoff does not authorize Phase 7.

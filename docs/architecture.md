@@ -8,15 +8,16 @@ Browser -> Cloud Run: Next.js web -> /api proxy -> Cloud Run: FastAPI API
                                                 |               |-> optional memory
                                                 |-- research SSE -> search -> evidence
                                                 |                   |-> shared context -> LLM
-                                                '--> Firestore: chat, memory, research
+                                                '--> Firestore: chat, memory, research, decisions
 
 Gated Phase 4 post-terminal work -> durable memory job -> Pub/Sub
                                                      -> private Cloud Run worker
 
 Future separate domain applications -> explicit core API (after an auth boundary)
   domain apps own authoritative records, business rules, and rich UI
-  Phase 6/7 core work may add reusable entities, constraints, ranking, and
-  thin travel/shopping intelligence; these are not delivered Phase 5 behavior.
+  Phase 6 adds reusable research entities, constraints, and ranking. Phase 7
+  may add thin travel/shopping intelligence; neither becomes authoritative
+  domain-app state.
 ```
 
 The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the API and worker. The deployment target is Cloud Run, with Firestore as the durable store, Pub/Sub for gated durable memory work, and Secret Manager for configured credentials. Repository contracts hide Firestore details from services; `llm` hides model-provider details. See [GCP deployment](gcp-deployment.md) for the runnable topology and cost boundaries.
@@ -31,8 +32,9 @@ The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the 
 - `memory` owns durable user knowledge: preferences, episodic observations, semantic summaries, consolidation, and forgetting.
 - `search` plans queries, fetches sources through adapters, extracts content, deduplicates it, and selects candidate evidence.
 - `evidence` records what an external source stated, where it came from, when it was observed, and when it expires.
-- `entities` currently contains chat records. Phase 6 plans canonical identity for products, hotels, places, merchants, and other research candidates.
-- `ranking` is a Phase 6 placeholder for deterministic hard constraints followed by explainable soft ranking.
+- `entities` contains chat records and owner-scoped canonical research identities with immutable, evidence-backed claims.
+- `decisions` owns evidence snapshots, candidate evaluations, and read-only inspection contracts.
+- `ranking` applies deterministic freshness/conflict handling and hard constraints before explainable soft ranking.
 - `domains` contains Phase 7 placeholders for thin travel and shopping intelligence; future applications can own their separate state and UI.
 - `evaluation` measures behavior across memory, research, and domain recommendation cases before experiments are promoted.
 
@@ -42,7 +44,7 @@ Memory and evidence are deliberately different. A user preference can last month
 
 ## Persistence boundary
 
-Current repository contracts cover conversations, messages, memories, and bounded research-session aggregates with nested queries, observations, and evidence. Phase 6 will define canonical entity and decision records. These research records must remain separate from an external application's authoritative trip, booking, or purchase state. Firestore remains the current store; its memory vector search is a separate portability concern from canonical-record persistence.
+Repository contracts cover conversations, messages, memories, bounded research-session aggregates, canonical entities/aliases/claims, and immutable decision/evidence snapshots with candidate evaluations. These research records remain separate from an external application's authoritative trip, booking, or purchase state. Firestore remains the current store; its memory vector search is a separate portability concern from canonical-record persistence.
 
 
 ## Delivered Phase 2 request boundary
@@ -90,3 +92,17 @@ aggregate with an atomic request-key mapping. API/UI/proxy remain thin; normal
 chat and memory are independent. No publisher-page fetches, research worker jobs,
 entities, recommendations or iterative planning are introduced. See the
 [Phase 5 guide](phase-5-implementation-guide.md).
+
+## Delivered Phase 6 decision boundary
+
+`entities` keeps canonical research identity separate from time-sensitive
+claims. `decisions` validates either selected Phase 5 session evidence or
+explicitly supplied evidence with owner, URL, excerpt-fingerprint, and expiry
+checks. `ranking` abstains on ambiguous identity, stale/conflicting/missing
+required claims, or unsupported conversions; deterministic hard constraints
+run before preferences. Persisted snapshots retain exact source references and
+policy versions. The result view links claims back to their sources, and a
+separate inspection gate exposes policy and candidate diagnostics without raw
+memory or hidden model reasoning. All decision gates default off. See the
+[Phase 6 guide](phase-6-implementation-guide.md), [ADR 0012](decisions/0012-evidence-grounded-decision-support.md),
+and [release evidence](releases/phase-6-decision-support.md).

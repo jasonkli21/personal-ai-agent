@@ -31,10 +31,10 @@ recovery. Other asynchronous work needs its own concrete requirement.
 
 | Concern | Technology | Initial responsibility |
 | --- | --- | --- |
-| UI | Next.js + React + TypeScript on Cloud Run | Chat and research interface |
+| UI | Next.js + React + TypeScript on Cloud Run | Chat, research and decision-result interface |
 | API | FastAPI + Uvicorn on Cloud Run | HTTP API, orchestration, streaming |
 | Async worker | FastAPI on Cloud Run + authenticated Pub/Sub push | Gated durable memory-lifecycle jobs |
-| Durable data | Firestore Native mode | Conversations, memories, and bounded research-session aggregates; entities are planned for Phase 6 |
+| Durable data | Firestore Native mode | Conversations, memories, bounded research sessions, canonical research entities/claims, and decision snapshots |
 | Secrets | Secret Manager | Gemini key now; other provider keys only when deliberately configured |
 | Delivery | Docker + Cloud Run source deployment | Build and deploy each service |
 
@@ -148,3 +148,16 @@ exemptions. Before a deliberate synthetic deployment check, follow the
 Secret Manager wiring, index exemptions, provider-wide quotas and retention.
 Research runs in the API request; the worker receives no research jobs.
 The public fixed-owner bootstrap remains unsuitable for personal data.
+
+## Phase 6 opt-in decision deployment
+
+Decision creation and result retrieval are gated by `DECISION_ENABLED`; the
+development inspector also requires `DECISION_INSPECTION_ENABLED`. Both remain
+false by default, and this deployment script does not enable them. Before an
+opt-in synthetic emulator or cloud check, provision the Phase 6 composite
+indexes from `firestore.indexes.json` for canonical entities, aliases, claims,
+matches, decision evaluations, and evidence-to-claim lookup, then wait for
+readiness. Firestore transaction behavior and index readiness have not yet
+been verified against an emulator or deployed project. Decision snapshots
+retain source attribution metadata subject to the source provider's storage,
+retention, and deletion terms. The fixed `local` owner remains unauthenticated.

@@ -15,32 +15,33 @@ resolution, recommendations, or Pub/Sub research jobs. See the
 [Phase 5 guide](phase-5-implementation-guide.md) and
 [release record](releases/phase-5-source-grounded-research.md).
 
-## Later decision-support direction
+## Delivered Phase 6 decision flow
 
-The following flow is a roadmap, not delivered Phase 5 behavior:
+Phase 6 consumes the bounded Phase 5 result or other explicitly supplied,
+validated evidence. It does not plan or run new searches as part of a decision.
+The current flow is:
 
 ```text
-Question
-  -> constraint extraction
-  -> research plan
-  -> source retrieval
-  -> evidence extraction and freshness checks
-  -> entity resolution
-  -> hard filters
-  -> preference-aware soft ranking
-  -> evidence-backed synthesis
+validated candidate proposals and evidence
+  -> owner, source, excerpt-fingerprint, and freshness checks
+  -> conservative canonical entity resolution
+  -> immutable claims and conflict/completeness status
+  -> deterministic hard constraints
+  -> preference ranking of eligible candidates
+  -> persisted decision snapshot and cited result view
 ```
 
-The future research loop may iterate: after each pass, inspect what is missing or unreliable, create a focused follow-up query, and stop only when the evidence is sufficient for the requested decision.
+Phase 8 may later iterate: inspect missing or unreliable evidence, create a
+focused follow-up query, and stop within a bounded budget.
 
 ## Shared platform contracts
 
 - **Search adapters** return source-native results; they do not decide recommendations.
-- **Evidence** preserves source URL or provider identity, observation time, and expiry. Phase 6 may link it to entities without converting an observation into permanent fact.
-- **Entity resolution** creates a canonical object from differently named or partially overlapping source records.
-- **Constraints** are executable requirements such as a budget cap, dates, or product dimensions. Application code evaluates them deterministically.
-- **Ranking** considers softer trade-offs, including durable preferences recovered from memory.
-- **Synthesis** explains the answer and cites its current evidence; it does not elevate previous conclusions into facts.
+- **Evidence** preserves source URL or provider identity, observation time, and expiry. Phase 6 links claims to these observations without converting them into permanent entity facts.
+- **Entity resolution** accepts unique stable identifiers or a sufficiently supported fresh attribute match; name similarity alone cannot select an entity.
+- **Constraints** are executable requirements such as a budget cap, dates, availability, or dimensions. Application code evaluates them deterministically before ranking.
+- **Ranking** scores explicit preferences only for eligible candidates. Memory-derived preference integration is not part of Phase 6.
+- **Presentation** uses persisted results and source links. It does not add model-written factual claims or elevate prior recommendations into facts.
 
 ## Domain modules
 
