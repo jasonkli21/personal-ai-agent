@@ -1,18 +1,23 @@
-"""Route tests for the non-streaming Phase 1 conversation surface."""
+"""Route tests for the Phase 1 conversation surface."""
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from personal_ai.api.dependencies import (
+    get_context_assembler,
     get_conversation_repository,
     get_current_owner_id,
     get_llm_client,
     get_message_repository,
+    get_summary_repository,
 )
+from personal_ai.context import ContextAssembler
+from personal_ai.context.repositories import InMemorySummaryRepository
+from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.entities import (
     MAX_MESSAGE_CONTENT_CHARS,
     Conversation,
@@ -20,7 +25,7 @@ from personal_ai.entities import (
     MessageRole,
     MessageStatus,
 )
-from personal_ai.llm import FakeLLMClient, LLMTimeoutError
+from personal_ai.llm import ChatMessage, FakeLLMClient, LLMTimeoutError
 from personal_ai.main import app
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage import InMemoryConversationRepository, InMemoryMessageRepository
@@ -33,7 +38,12 @@ def client() -> Iterator[TestClient]:
     conversations = InMemoryConversationRepository()
     messages = InMemoryMessageRepository(conversations)
     llm = FakeLLMClient(["Hello", " there"])
+    summaries = InMemorySummaryRepository()
     app.dependency_overrides = {
+        get_summary_repository: lambda: summaries,
+        get_context_assembler: lambda: ContextAssembler(
+            app.dependency_overrides[get_settings](), EstimatedTokenCounter(), summaries,
+        ),
         get_conversation_repository: lambda: conversations,
         get_message_repository: lambda: messages,
         get_current_owner_id: lambda: "local",
@@ -261,18 +271,145 @@ def test_oversized_model_response_is_rejected_without_persisting_it(
     assert len(failed["content"]) <= MAX_MESSAGE_CONTENT_CHARS
 
 
-def test_history_cap_instructs_the_user_to_start_a_new_chat(client: TestClient) -> None:
+def test_message_count_cap_is_replaced_by_context_budget(client: TestClient) -> None:
     app.dependency_overrides[get_settings] = lambda: Settings(
-        ai_provider="gemini", ai_model="test-model", ai_api_key="test-key", max_phase_1_history_messages=1
+        ai_provider="gemini", ai_model="test-model", max_phase_1_history_messages=1,
     )
     conversation_id = client.post("/v1/conversations", json={}).json()["id"]
-    assert client.post(
+    for content in ("first", "second"):
+        response = client.post(f"/v1/conversations/{conversation_id}/messages", json={"content": content})
+        assert response.status_code == 200
+        assert _sse_events(response.text)[-1][0] == "response.completed"
+
+
+@pytest.mark.parametrize("deltas", [[], [" \t\n"]])
+def test_empty_or_whitespace_model_output_fails_and_keeps_next_turn_usable(
+    client: TestClient, deltas: list[str]
+) -> None:
+    llm = FakeLLMClient(deltas)
+    app.dependency_overrides[get_llm_client] = lambda: llm
+    conversation_id = client.post("/v1/conversations", json={}).json()["id"]
+
+    first = client.post(
         f"/v1/conversations/{conversation_id}/messages", json={"content": "first"}
-    ).status_code == 200
+    )
 
-    response = client.post(f"/v1/conversations/{conversation_id}/messages", json={"content": "second"})
+    events = _sse_events(first.text)
+    assert events[-1][0] == "response.error"
+    assert events[-1][1]["code"] == "llm_invalid_response"
+    detail = client.get(f"/v1/conversations/{conversation_id}").json()
+    failed = detail["messages"][-1]
+    assert failed["status"] == "failed"
+    assert failed["error_code"] == "llm_invalid_response"
 
-    assert response.status_code == 422
+    next_llm = FakeLLMClient(["usable"])
+    app.dependency_overrides[get_llm_client] = lambda: next_llm
+    second = client.post(
+        f"/v1/conversations/{conversation_id}/messages", json={"content": "second"}
+    )
+    assert _sse_events(second.text)[-1][0] == "response.completed"
+    assert next_llm.requests == [
+        (
+            ChatMessage(role=MessageRole.USER, content="second"),
+        )
+    ]
+
+
+def test_regenerate_and_edit_retry_send_only_the_replacement_active_prefix(
+    client: TestClient,
+) -> None:
+    llm = FakeLLMClient(["answer"])
+    app.dependency_overrides[get_llm_client] = lambda: llm
+    conversation_id = client.post("/v1/conversations", json={}).json()["id"]
+    first = client.post(
+        f"/v1/conversations/{conversation_id}/messages", json={"content": "first"}
+    )
+    first_assistant_id = _sse_events(first.text)[-1][1]["message"]["id"]
+    client.post(
+        f"/v1/conversations/{conversation_id}/messages", json={"content": "second"}
+    )
+    assert len(llm.requests) == 2
+
+    regenerated = client.post(
+        f"/v1/conversations/{conversation_id}/messages/{first_assistant_id}/regenerate"
+    )
+    assert _sse_events(regenerated.text)[-1][0] == "response.completed"
+    assert llm.requests[2] == (ChatMessage(role=MessageRole.USER, content="first"),)
+
+    first_user_id = client.get(f"/v1/conversations/{conversation_id}").json()["messages"][0]["id"]
+    edited = client.post(
+        f"/v1/conversations/{conversation_id}/messages/{first_user_id}/edit-and-retry",
+        json={"content": "edited"},
+    )
+    assert _sse_events(edited.text)[-1][0] == "response.completed"
+    assert llm.requests[3] == (ChatMessage(role=MessageRole.USER, content="edited"),)
+
+
+def test_edit_and_retry_capacity_uses_the_replacement_prefix(client: TestClient) -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        ai_provider="gemini",
+        ai_model="test-model",
+        ai_api_key="test-key",
+        max_phase_1_history_messages=3,
+    )
+    conversation_id = client.post("/v1/conversations", json={}).json()["id"]
+    first = client.post(
+        f"/v1/conversations/{conversation_id}/messages", json={"content": "first"}
+    )
+    first_user_id = _sse_events(first.text)[0][1]["message"]["id"]
+    client.post(
+        f"/v1/conversations/{conversation_id}/messages", json={"content": "second"}
+    )
+
+    edited = client.post(
+        f"/v1/conversations/{conversation_id}/messages/{first_user_id}/edit-and-retry",
+        json={"content": "short replacement"},
+    )
+
+    assert edited.status_code == 200
+    assert _sse_events(edited.text)[-1][0] == "response.completed"
+
+
+def test_concurrent_mutation_returns_conflict_and_preserves_the_active_turn(
+    client: TestClient,
+) -> None:
+    conversation_id = client.post("/v1/conversations", json={}).json()["id"]
+    conversations = app.dependency_overrides[get_conversation_repository]()
+    messages = app.dependency_overrides[get_message_repository]()
+    now = datetime.now(UTC)
+    user = Message(
+        id=uuid4(),
+        conversation_id=UUID(conversation_id),
+        owner_id="local",
+        role=MessageRole.USER,
+        content="first",
+        status=MessageStatus.COMPLETED,
+        created_at=now,
+    )
+    assistant = Message(
+        id=uuid4(),
+        conversation_id=UUID(conversation_id),
+        owner_id="local",
+        role=MessageRole.ASSISTANT,
+        content="",
+        status=MessageStatus.STREAMING,
+        created_at=now,
+        parent_message_id=user.id,
+    )
+    conversations.get(owner_id="local", conversation_id=UUID(conversation_id))
+    messages.create(user)
+    messages.create(assistant)
+
+    response = client.post(
+        f"/v1/conversations/{conversation_id}/messages", json={"content": "second"}
+    )
+
+    assert response.status_code == 409
     assert response.json() == {
-        "error": {"code": "history_limit_exceeded", "message": "Please start a new chat."}
+        "error": {
+            "code": "conversation_busy",
+            "message": "A response is already in progress. Please retry.",
+        }
     }
+    active = client.get(f"/v1/conversations/{conversation_id}").json()["messages"]
+    assert [message["content"] for message in active] == ["first", ""]

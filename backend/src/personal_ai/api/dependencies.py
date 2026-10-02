@@ -4,7 +4,11 @@ from typing import Annotated
 
 from fastapi import Depends
 
+from personal_ai.context import ContextAssembler
+from personal_ai.context.contracts import ConversationSummaryRepository
+from personal_ai.context.repositories import FirestoreSummaryRepository
 from personal_ai.llm import GeminiLLMClient, LLMClient
+from personal_ai.llm.context import GeminiConversationSummarizer, GeminiTokenCounter
 from personal_ai.services import ChatTurnService, ConversationService
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage import FirestoreConversationRepository, FirestoreMessageRepository
@@ -22,14 +26,20 @@ def get_conversation_repository(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ConversationRepository:
     """Build the production conversation repository from application settings."""
-    return FirestoreConversationRepository(project_id=settings.firestore_project_id)
+    return FirestoreConversationRepository(
+        project_id=settings.firestore_project_id,
+        emulator_host=settings.firestore_emulator_host,
+    )
 
 
 def get_message_repository(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> MessageRepository:
     """Build the production message repository from application settings."""
-    return FirestoreMessageRepository(project_id=settings.firestore_project_id)
+    return FirestoreMessageRepository(
+        project_id=settings.firestore_project_id,
+        emulator_host=settings.firestore_emulator_host,
+    )
 
 
 def get_conversation_service(
@@ -48,12 +58,30 @@ def get_llm_client(
     return GeminiLLMClient(settings)
 
 
+def get_summary_repository(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ConversationSummaryRepository:
+    return FirestoreSummaryRepository(
+        project_id=settings.firestore_project_id, emulator_host=settings.firestore_emulator_host,
+    )
+
+
+def get_context_assembler(
+    settings: Annotated[Settings, Depends(get_settings)],
+    summaries: Annotated[ConversationSummaryRepository, Depends(get_summary_repository)],
+) -> ContextAssembler:
+    return ContextAssembler(
+        settings, GeminiTokenCounter(settings), summaries, GeminiConversationSummarizer(settings),
+    )
+
+
 def get_chat_turn_service(
     conversations: Annotated[ConversationRepository, Depends(get_conversation_repository)],
     messages: Annotated[MessageRepository, Depends(get_message_repository)],
     llm: Annotated[LLMClient, Depends(get_llm_client)],
     settings: Annotated[Settings, Depends(get_settings)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
+    context: Annotated[ContextAssembler, Depends(get_context_assembler)],
 ) -> ChatTurnService:
     """Compose the durable streaming chat lifecycle."""
     return ChatTurnService(
@@ -61,6 +89,7 @@ def get_chat_turn_service(
         messages,
         llm,
         owner_id=owner_id,
-        max_history_messages=settings.max_phase_1_history_messages,
+        context_assembler=context,
         model=settings.ai_model,
+        stale_stream_after_seconds=settings.request_timeout_seconds + 60,
     )

@@ -1,1 +1,1 @@
-"""Evaluation cases, metrics, and reporting utilities."""
+"""Offline synthetic regression evaluations."""

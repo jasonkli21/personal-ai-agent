@@ -13,6 +13,10 @@ class ResourceNotFoundError(StorageError):
     """The resource is absent or does not belong to the requested owner."""
 
 
+class ConversationConflictError(StorageError):
+    """The active branch changed or an in-flight turn blocks the mutation."""
+
+
 class StorageUnavailableError(StorageError):
     """The backing store could not complete an operation."""
 

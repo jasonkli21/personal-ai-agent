@@ -134,10 +134,34 @@ the delivered code, tests, and commits. See
 [research-agent notes](docs/research-agent.md) for the future search-agent
 model.
 
-Phase 1 code is implemented; real persistence/provider/deployment and
-client-disconnect verification remain open. The
+Phase 1 code and local disconnect regression tests are implemented; real
+persistence/provider/deployment and deployed browser cancellation verification
+remain open. The
 [verification closeout plan](docs/phase-1-verification-plan.md) outlines that
-work. Phase 2 context-window management is planned, not started.
+work. Phase 2 context-window management is implemented locally; see the
+[implementation guide](docs/phase-2-implementation-guide.md) and
+[verification record](docs/releases/phase-2-context-management.md).
+
+## Context-window management
+
+Every model turn uses a token budget, a compatible working summary when useful,
+and complete recent active-branch turns. The newest prompt is never dropped or
+truncated. An oversized prompt remains persisted without an assistant and can
+be shortened with **Edit and retry**. Summaries are lossy conversation context,
+not long-term memory, and do not promise perfect recall.
+
+Backend example settings include a 32,768-token application capacity, 4,096-token
+response reserve, 1,024-token safety margin, 12,000-token summary trigger, and
+2,048-token summary ceiling. Validate these against `AI_MODEL` when changing it.
+`MAX_PHASE_1_HISTORY_MESSAGES` has been replaced by the token budget.
+Production counting uses Gemini; offline planning/inspection clearly labels estimates.
+
+Run `make context-eval` for the five synthetic offline regression fixtures.
+For the read-only development view, enable `CONTEXT_INSPECTION_ENABLED=true`
+in both local environment files, restart the servers, and open
+`http://localhost:3000/development/context`. Both applications default to false;
+the deployment script keeps the view disabled. Provider quality verification is
+opt-in as described in the implementation guide.
 
 ## Deploy and verify Phase 1
 

@@ -17,5 +17,6 @@ def test_settings_load_from_example_file() -> None:
     assert settings.firestore_project_id == "example-personal-ai"
     assert settings.firestore_emulator_host == "localhost:8080"
     assert settings.request_timeout_seconds == 30
-    assert settings.max_phase_1_history_messages == 40
+    assert settings.max_context_tokens == 32768
+    assert not settings.context_inspection_enabled
     assert settings.allowed_web_origins == ["http://localhost:3000"]

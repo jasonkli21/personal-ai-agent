@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from personal_ai.entities.conversation import MessageRole
 
@@ -11,7 +11,7 @@ from personal_ai.entities.conversation import MessageRole
 class ChatMessage:
     """A single ordered, active-path chat message supplied to an LLM."""
 
-    role: MessageRole
+    role: MessageRole | Literal["system"]
     content: str
 
 
@@ -20,3 +20,9 @@ class LLMClient(Protocol):
 
     def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
         """Yield text deltas in provider order."""
+
+
+SYSTEM_INSTRUCTION = (
+    "You are a helpful personal AI chat assistant. "
+    "Answer directly and clearly based on this conversation."
+)

@@ -54,6 +54,16 @@ if [[ -z "$(gcloud firestore indexes composite list --database='(default)' \
     --field-config=field-path=created_at,order=ascending
 fi
 
+if [[ -z "$(gcloud firestore indexes composite list --database='(default)' \
+  --filter='collectionGroup=conversation_summaries AND fields.fieldPath=owner_id AND fields.fieldPath=conversation_id' \
+  --format='value(name)' --limit=1)" ]]; then
+  gcloud firestore indexes composite create \
+    --database='(default)' \
+    --collection-group=conversation_summaries \
+    --field-config=field-path=owner_id,order=ascending \
+    --field-config=field-path=conversation_id,order=ascending
+fi
+
 gcloud pubsub topics describe "$TOPIC" >/dev/null 2>&1 || gcloud pubsub topics create "$TOPIC"
 gcloud iam service-accounts describe "$WORKER_SA@$PROJECT_ID.iam.gserviceaccount.com" >/dev/null 2>&1 || \
   gcloud iam service-accounts create "$WORKER_SA" --display-name="Personal AI Pub/Sub invoker"
@@ -64,7 +74,7 @@ gcloud run deploy personal-ai-api \
   --allow-unauthenticated \
   --min-instances=0 \
   --service-account="$API_RUNTIME_SA" \
-  --set-env-vars="AI_PROVIDER=gemini,AI_MODEL=$AI_MODEL,DATABASE_BACKEND=firestore,FIRESTORE_PROJECT_ID=$PROJECT_ID" \
+  --set-env-vars="AI_PROVIDER=gemini,AI_MODEL=$AI_MODEL,DATABASE_BACKEND=firestore,FIRESTORE_PROJECT_ID=$PROJECT_ID,CONTEXT_INSPECTION_ENABLED=false" \
   --set-secrets="AI_API_KEY=$MODEL_SECRET_NAME:latest"
 
 API_URL=$(gcloud run services describe personal-ai-api --region="$REGION" --format='value(status.url)')
@@ -96,7 +106,7 @@ gcloud run deploy personal-ai-web \
   --region="$REGION" \
   --allow-unauthenticated \
   --min-instances=0 \
-  --set-env-vars="API_BASE_URL=$API_URL"
+  --set-env-vars="API_BASE_URL=$API_URL,CONTEXT_INSPECTION_ENABLED=false"
 
 WEB_URL=$(gcloud run services describe personal-ai-web --region="$REGION" --format='value(status.url)')
 echo "Deployment complete: $WEB_URL"

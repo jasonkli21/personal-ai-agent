@@ -7,6 +7,7 @@ import pytest
 
 from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
 from personal_ai.storage import (
+    ConversationConflictError,
     InMemoryConversationRepository,
     InMemoryMessageRepository,
     ResourceNotFoundError,
@@ -167,3 +168,104 @@ def test_message_lookup_hides_records_owned_by_someone_else() -> None:
 
     with pytest.raises(ResourceNotFoundError):
         repository.get(owner_id=OWNER, conversation_id=conversation_id, message_id=stored.id)
+
+
+def test_prepare_message_turn_supersedes_and_creates_replacement_atomically() -> None:
+    conversations = InMemoryConversationRepository()
+    stored_conversation = conversation(200)
+    conversations.create(stored_conversation)
+    repository = InMemoryMessageRepository(conversations)
+    user = message(201, stored_conversation.id, offset=1)
+    old_answer = message(202, stored_conversation.id, parent_message_id=user.id, offset=2)
+    repository.create(user)
+    repository.create(old_answer)
+    replacement = Message(
+        id=UUID(int=203), conversation_id=stored_conversation.id, owner_id=OWNER,
+        role=MessageRole.ASSISTANT, content="", status=MessageStatus.STREAMING,
+        created_at=BASE_TIME + timedelta(seconds=3), parent_message_id=user.id,
+        supersedes_message_id=old_answer.id,
+    )
+
+    prepared = repository.prepare_message_turn(
+        owner_id=OWNER,
+        conversation_id=stored_conversation.id,
+        expected_active_ids=[user.id, old_answer.id],
+        supersede_from_message_id=old_answer.id,
+        messages=[replacement],
+        updated_at=BASE_TIME + timedelta(seconds=3),
+    )
+
+    assert prepared == [replacement]
+    assert repository.get(
+        owner_id=OWNER, conversation_id=stored_conversation.id, message_id=old_answer.id
+    ).status is MessageStatus.SUPERSEDED
+    assert repository.list_active(owner_id=OWNER, conversation_id=stored_conversation.id) == [
+        user, replacement
+    ]
+
+
+def test_failed_turn_preparation_preserves_active_branch_and_creates_nothing() -> None:
+    conversation_id = UUID(int=210)
+    repository = InMemoryMessageRepository()
+    user = message(211, conversation_id, offset=1)
+    old_answer = message(212, conversation_id, parent_message_id=user.id, offset=2)
+    repository.create(user)
+    repository.create(old_answer)
+    replacement = Message(
+        id=UUID(int=213), conversation_id=conversation_id, owner_id=OWNER,
+        role=MessageRole.ASSISTANT, content="", status=MessageStatus.STREAMING,
+        created_at=BASE_TIME + timedelta(seconds=3), parent_message_id=user.id,
+        supersedes_message_id=old_answer.id,
+    )
+
+    with pytest.raises(ConversationConflictError):
+        repository.prepare_message_turn(
+            owner_id=OWNER,
+            conversation_id=conversation_id,
+            expected_active_ids=[user.id],
+            supersede_from_message_id=old_answer.id,
+            messages=[replacement],
+            updated_at=BASE_TIME + timedelta(seconds=3),
+        )
+
+    assert repository.list_active(owner_id=OWNER, conversation_id=conversation_id) == [
+        user, old_answer
+    ]
+    with pytest.raises(ResourceNotFoundError):
+        repository.get(owner_id=OWNER, conversation_id=conversation_id, message_id=replacement.id)
+
+
+def test_turn_preparation_rejects_an_active_stream_and_status_update_is_conditional() -> None:
+    conversation_id = UUID(int=220)
+    repository = InMemoryMessageRepository()
+    user = message(221, conversation_id, offset=1)
+    streaming = message(
+        222, conversation_id, parent_message_id=user.id,
+        status=MessageStatus.STREAMING, offset=2,
+    )
+    repository.create(user)
+    repository.create(streaming)
+    next_user = message(223, conversation_id, parent_message_id=streaming.id, offset=3)
+
+    with pytest.raises(ConversationConflictError):
+        repository.prepare_message_turn(
+            owner_id=OWNER,
+            conversation_id=conversation_id,
+            expected_active_ids=[user.id, streaming.id],
+            supersede_from_message_id=None,
+            messages=[next_user],
+            updated_at=BASE_TIME + timedelta(seconds=3),
+        )
+
+    assert repository.update_status(
+        owner_id=OWNER,
+        conversation_id=conversation_id,
+        message_id=streaming.id,
+        status=MessageStatus.COMPLETED,
+        content="late response",
+        updated_at=BASE_TIME + timedelta(seconds=4),
+        expected_status=MessageStatus.COMPLETED,
+    ) is None
+    assert repository.get(
+        owner_id=OWNER, conversation_id=conversation_id, message_id=streaming.id
+    ).status is MessageStatus.STREAMING

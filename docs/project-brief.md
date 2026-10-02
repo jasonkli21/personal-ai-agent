@@ -10,11 +10,14 @@ The end state is one reusable personal research platform with chat, memory, and 
 
 ## Current state
 
-Phase 1 chat code is implemented. Offline quality checks pass, but real
-Firestore persistence, Gemini, deployed GCP behavior, and client-disconnect
-integration still need verification. Do not equate implemented code with a
-fully verified deployment. The active scope is **Phase 1 verification and
-handoff maintenance**; Phase 2 is planned, not started.
+Phase 1 chat and Phase 2 context-management code are implemented locally. Offline
+quality checks pass, but real
+Firestore persistence, Gemini, and deployed GCP behavior (including browser
+disconnect propagation) still need verification. Deterministic ASGI disconnect
+and proxy cancellation regression tests now cover the local boundaries.
+Do not equate implemented code with a
+fully verified deployment. The active scope is **Phase 2 verification and handoff**;
+Phase 3 has not started.
 
 Implemented:
 
@@ -27,7 +30,13 @@ Implemented:
   and safe error mapping.
 - SSE chat streaming, persisted completion/failure states, regenerate, and
   edit-and-retry flows with preserved superseded history.
-- A fixed history cap (40 messages by default) and response-size bounds.
+- Provider-authoritative token budgets, complete-turn context selection, and
+  response-size bounds.
+- Branch-safe append-only working summaries, synchronous bounded refresh, and
+  disabled-by-default read-only context inspection.
+- Synthetic Phase 1/2 context evaluations and opt-in provider quality checks.
+- Atomic turn/replacement preparation, overlap rejection, conditional terminal
+  updates, and recovery of abandoned streaming placeholders.
 - Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.
 - Dockerfiles and a GCP bootstrap/deployment script.
 - Architecture, deployment, research-agent, and implementation-plan documents.
@@ -35,18 +44,21 @@ Implemented:
 Not implemented:
 
 - Authentication or authorization.
-- Token-aware context selection, conversation summaries, or context inspection.
 - Embedding calls.
 - Memory extraction, retrieval, consolidation, contradiction handling, or forgetting.
 - Search-provider calls, evidence extraction, entity resolution, ranking, or domain agents.
 - Pub/Sub publishing or task processing beyond a worker acknowledgement endpoint.
 
-The research, context, memory, evidence, ranking, evaluation, and domain
-packages are placeholders; `entities` currently contains chat records.
+The research, memory, evidence, ranking, and domain packages remain placeholders.
+`context` and `evaluation` now implement conversation budgeting and synthetic
+quality checks; `entities` still contains chat records.
 See the [implementation guide](phase-1-implementation-guide.md) for delivered
 code and the [verification record](releases/phase-1-vertical-slice.md) for
 dated evidence. The [verification closeout plan](phase-1-verification-plan.md)
-outlines the remaining work.
+outlines the remaining Phase 1 external checks. The
+[Phase 2 implementation guide](phase-2-implementation-guide.md) and
+[Phase 2 release record](releases/phase-2-context-management.md) describe the
+current context-management behavior and evidence.
 
 ## Non-goals and constraints
 
@@ -91,16 +103,18 @@ These rules must hold as features are added:
 Follow [implementation plan](implementation-plan.md) in sequence. Phase 0–1
 code paths are delivered; use the [Phase 0–1 plan](phase-1-implementation-plan.md)
 and [implementation guide](phase-1-implementation-guide.md) to assess acceptance.
-The immediate target is closing the remaining Phase 1 verification gaps:
+The immediate target is verification closeout for delivered Phase 1/2 behavior:
 
 1. Verify Firestore Emulator persistence across an API restart.
-2. Add deterministic automated client-disconnect integration coverage.
+2. Maintain the disconnect, storage-failure, and concurrency regression suite;
+   verify browser cancellation through the deployed proxy.
 3. Run the opt-in Gemini smoke test and credentialed GCP deployment checklist
    when the required environment is available.
 4. Record results, revision, and remaining gaps without storing secrets or chats.
 
-The next feature phase, once explicitly advanced, is the
-[Phase 2 context-window plan](phase-2-implementation-plan.md).
+The [Phase 2 context-window plan](phase-2-implementation-plan.md) is implemented
+locally. Finish its credentialed quality/deployed checks before declaring full
+verification; advance to Phase 3 only on explicit user instruction.
 
 Do not add long-term memory in Phase 1. Phase 2 handles context-window management; Phase 3 introduces simple memory only after basic chat is stable.
 
@@ -136,6 +150,6 @@ Resolve these in short architecture decision records before implementation depen
    [architecture](architecture.md), [implementation guide](phase-1-implementation-guide.md),
    and the plan for the active task. Read [GCP deployment](gcp-deployment.md)
    when working on infrastructure.
-2. Default to Phase 1 verification unless the user explicitly advances the phase.
+2. Default to Phase 2 verification unless the user explicitly advances the phase.
 3. Preserve the architectural invariants above.
 4. Implement the smallest testable vertical slice of the current phase, update tests and docs, and do not expand into a later phase without a user decision.

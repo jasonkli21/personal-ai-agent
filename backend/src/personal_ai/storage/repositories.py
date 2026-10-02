@@ -1,5 +1,6 @@
 """Storage contracts for the Phase 1 conversation surface."""
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -28,6 +29,28 @@ class MessageRepository(Protocol):
 
     def create(self, message: Message) -> Message: ...
 
+    def recover_stale_turn(
+        self,
+        *,
+        owner_id: str,
+        conversation_id: UUID,
+        stale_before: datetime,
+        updated_at: datetime,
+    ) -> None: ...
+
+    def prepare_message_turn(
+        self,
+        *,
+        owner_id: str,
+        conversation_id: UUID,
+        expected_active_ids: Sequence[UUID],
+        supersede_from_message_id: UUID | None,
+        messages: Sequence[Message],
+        updated_at: datetime,
+        preparation_id: UUID | None = None,
+        complete_preparation: bool = False,
+    ) -> list[Message]: ...
+
     def get(self, *, owner_id: str, conversation_id: UUID, message_id: UUID) -> Message: ...
 
     def list_active(self, *, owner_id: str, conversation_id: UUID) -> list[Message]: ...
@@ -43,7 +66,8 @@ class MessageRepository(Protocol):
         model: str | None = None,
         error_code: str | None = None,
         updated_at: datetime,
-    ) -> Message: ...
+        expected_status: MessageStatus | None = None,
+    ) -> Message | None: ...
 
     def supersede_path(
         self,

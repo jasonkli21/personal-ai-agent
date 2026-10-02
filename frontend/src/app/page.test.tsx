@@ -64,7 +64,7 @@ describe("Home", () => {
   });
   it("renders stream errors and prevents duplicate submissions while pending", async () => {
     let finishStream: (() => void) | undefined;
-    const pendingStream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(`event: message.created\ndata: ${JSON.stringify({ message: assistantMessage })}\n\nevent: response.error\ndata: ${JSON.stringify({ message_id: assistantMessage.id, code: "provider_error", message: "The response failed safely." })}\n\n`)); finishStream = () => controller.close(); } });
+    const pendingStream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(`event: message.created\ndata: ${JSON.stringify({ message: assistantMessage })}\n\n`)); finishStream = () => controller.enqueue(new TextEncoder().encode(`event: response.error\ndata: ${JSON.stringify({ message_id: assistantMessage.id, code: "provider_error", message: "The response failed safely." })}\n\n`)); } });
     fetchMock.mockResolvedValueOnce(jsonResponse({ conversations: [conversation] }));
     fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [] }));
     fetchMock.mockResolvedValueOnce(new Response(pendingStream, { headers: { "Content-Type": "text/event-stream" } }));
@@ -74,8 +74,9 @@ describe("Home", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByRole("button", { name: "Sending…" })).toBeDisabled();
     await waitFor(() => expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled());
-    expect(screen.getByRole("alert")).toHaveTextContent("The response failed safely.");
     finishStream?.();
+    expect(await screen.findByRole("alert")).toHaveTextContent("The response failed safely.");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeDisabled());
   });
   it("regenerates completed assistant messages", async () => {
     const completed = { ...assistantMessage, content: "New answer", status: "completed" as const };
@@ -130,4 +131,58 @@ describe("Home", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry edited message" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conversation-1/messages/user-1/edit-and-retry", expect.objectContaining({ method: "POST" })));
   });
+
+  it("preserves partial text and offers retry when the stream ends prematurely", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversations: [conversation] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [] }));
+    fetchMock.mockResolvedValueOnce(sseResponse([
+      `event: message.created\ndata: ${JSON.stringify({ message: userMessage })}\n\n`,
+      `event: message.created\ndata: ${JSON.stringify({ message: assistantMessage })}\n\n`,
+      `event: response.delta\ndata: ${JSON.stringify({ message_id: assistantMessage.id, delta: "Partial answer" })}\n\n`,
+    ]));
+    render(<Home />);
+    fireEvent.click(await screen.findByRole("button", { name: "Project ideas" }));
+    fireEvent.change(await screen.findByLabelText("Message"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Partial answer")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("interrupted");
+    expect(await screen.findByRole("button", { name: "Retry response" })).toBeEnabled();
+  });
+
+  it("aborts an active request when the chat unmounts", async () => {
+    let signal: AbortSignal | undefined;
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversations: [conversation] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [] }));
+    fetchMock.mockImplementationOnce((_url, init) => {
+      signal = init.signal;
+      return Promise.resolve(new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`event: message.created\ndata: ${JSON.stringify({ message: assistantMessage })}\n\n`));
+          signal!.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")), { once: true });
+        },
+      })));
+    });
+    const view = render(<Home />);
+    fireEvent.click(await screen.findByRole("button", { name: "Project ideas" }));
+    fireEvent.change(await screen.findByLabelText("Message"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByRole("button", { name: "Sending…" });
+    view.unmount();
+    expect(signal?.aborted).toBe(true);
+  });
+  it("reloads a persisted user after preparation overflow and keeps edit-and-retry available", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversations: [conversation] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { code: "context_message_too_large", message: "Edit it to a shorter message and retry." } }, 422));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [userMessage] }));
+    render(<Home />);
+    fireEvent.click(await screen.findByRole("button", { name: "Project ideas" }));
+    fireEvent.change(await screen.findByLabelText("Message"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Edit it to a shorter message and retry.");
+    expect(screen.getByText("Hello")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit and retry" })).toBeEnabled();
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+  });
+
 });

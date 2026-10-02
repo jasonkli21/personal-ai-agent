@@ -1,7 +1,7 @@
-# Phase 1 API contract
+# Conversation API contract (Phases 1–2)
 
-This document defines the HTTP boundary before the conversation routes are
-implemented. All `/v1` routes operate for the current logical Phase 1 owner,
+This document defines the implemented HTTP boundary. All `/v1` routes operate
+for the current logical owner,
 `local`; they are not authenticated.
 
 ## Conventions
@@ -23,6 +23,7 @@ implemented. All `/v1` routes operate for the current logical Phase 1 owner,
 | `POST` | `/v1/conversations` | Optional `title` | A `Conversation` |
 | `GET` | `/v1/conversations` | — | `{"conversations": [Conversation]}` |
 | `GET` | `/v1/conversations/{conversation_id}` | — | `{"conversation": Conversation, "messages": [Message]}` |
+| `GET` | `/v1/conversations/{conversation_id}/context` | — | Development-only read-only selection report; 404 when disabled |
 | `POST` | `/v1/conversations/{conversation_id}/messages` | `{"content": "..."}` | SSE stream |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/regenerate` | — | SSE stream replacing a completed assistant message |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/edit-and-retry` | `{"content": "..."}` | SSE stream after replacing a user message |
@@ -35,6 +36,31 @@ implemented. All `/v1` routes operate for the current logical Phase 1 owner,
 
 Titles may be derived deterministically from the first user message. Phase 1
 does not make a model call to create titles.
+
+Phase 2 preparation has two atomic persistence stages: persist the user/branch
+mutation and reserve the conversation, then assemble/count/refresh context before
+creating an assistant placeholder and releasing that reservation. Preparation
+failure leaves an auditable completed user without a misleading streaming
+assistant. Regenerate supersedes its previous response before assembling its
+retained prefix; edit/retry preserves old records as superseded audit history.
+
+Concurrent mutations, preparation reservations, or an active response return
+HTTP 409 with `conversation_busy`. Expired reservations and streaming
+placeholders recover on the next mutation after the configured provider timeout
+plus 60 seconds. Late requests cannot release a new reservation or overwrite a
+terminal assistant status.
+
+Before streaming, mandatory overflow returns HTTP 422 `context_message_too_large`;
+invalid operator configuration returns HTTP 503 `context_budget_invalid`, and
+provider counting failure returns a safe HTTP 503 provider code. The persisted
+user remains editable. Summary refresh failure falls back to smaller recent
+context when it fits. Successful SSE event names/order remain unchanged.
+
+The inspector reconstructs the latest completed user's possible input. It
+reports capacity/reserves/margins, selected/excluded metadata and reasons,
+summary provenance, aggregate estimated token counts, diagnostics, and overflow.
+It never invokes a provider or changes storage/timestamps. It omits raw content,
+settings secrets, and provider objects; normal deployments return 404.
 
 ## Server-sent events
 

@@ -1,0 +1,129 @@
+"""Exercise the locked SDK transport with offline HTTP responses."""
+
+import asyncio
+import json
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from google import genai
+
+from personal_ai.context.assembler import SUMMARY_INSTRUCTION, summary_request
+from personal_ai.evaluation.context import build_fixture, fixture_settings, load_fixtures
+from personal_ai.llm import ChatMessage, GeminiLLMClient, LLMUnavailableError
+from personal_ai.llm.client import SYSTEM_INSTRUCTION
+from personal_ai.llm.context import GeminiConversationSummarizer, GeminiTokenCounter
+
+
+def test_authoritative_counter_counts_exact_system_and_summary_request_shape_via_sdk_transport():
+    captured = []
+
+    def handler(request):
+        captured.append(request)
+        return httpx.Response(200, json={"totalTokens": 123})
+
+    client = genai.Client(
+        api_key="offline-fake",
+        http_options={"client_args": {"transport": httpx.MockTransport(handler)}},
+    )
+    try:
+        messages = (
+            ChatMessage("system", "Historical working summary: synthetic fact"),
+            ChatMessage("user", "newest"),
+        )
+        count = GeminiTokenCounter(fixture_settings(), client).count(messages)
+        assert count.tokens == 123 and count.kind == "provider"
+        request = captured[0]
+        assert request.url.path.endswith("/models/fixture-model:countTokens")
+        body = json.loads(request.content)["generateContentRequest"]
+        assert (
+            body["systemInstruction"]["parts"][0]["text"]
+            == SYSTEM_INSTRUCTION + "\n\n" + messages[0].content
+        )
+        assert body["contents"] == [{"role": "user", "parts": [{"text": "newest"}]}]
+    finally:
+        client.close()
+
+
+def test_summary_generation_adapter_sets_output_ceiling_and_preserves_prompt_instructions():
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {"content": {"role": "model", "parts": [{"text": "Launch color is amber."}]}}
+                ]
+            },
+        )
+
+    client = genai.Client(
+        api_key="offline-fake",
+        http_options={"client_args": {"transport": httpx.MockTransport(handler)}},
+    )
+    active, _, _ = build_fixture(load_fixtures()[2])
+    try:
+        settings = fixture_settings()
+        draft = GeminiConversationSummarizer(settings, client).summarize(active[:2], None)
+        assert draft.content == "Launch color is amber."
+        assert captured[0]["generationConfig"]["maxOutputTokens"] == settings.max_summary_tokens
+        system = captured[0]["systemInstruction"]["parts"][0]["text"]
+        assert SUMMARY_INSTRUCTION in system
+        assert "uncertainty" in system and "corrections" in system
+        assert (
+            captured[0]["contents"][0]["parts"][0]["text"]
+            == summary_request(active[:2], None)[1].content
+        )
+    finally:
+        client.close()
+
+
+def test_provider_count_failure_is_translated_without_leaking_response():
+    client = genai.Client(
+        api_key="offline-fake",
+        http_options={
+            "client_args": {
+                "transport": httpx.MockTransport(
+                    lambda _: httpx.Response(503, json={"error": {"message": "private"}})
+                )
+            },
+            "retry_options": {"attempts": 1},
+        },
+    )
+    try:
+        with pytest.raises(LLMUnavailableError) as error:
+            GeminiTokenCounter(fixture_settings(), client).count([ChatMessage("user", "test")])
+        assert "private" not in str(error.value)
+    finally:
+        client.close()
+
+
+def test_stream_adapter_keeps_summary_in_system_context_and_enforces_response_reserve():
+    captured = []
+
+    class Models:
+        async def generate_content_stream(self, **kwargs):
+            captured.append(kwargs)
+
+            async def chunks():
+                yield SimpleNamespace(text="answer")
+
+            return chunks()
+
+    settings = fixture_settings(ai_api_key="offline-fake")
+    client = GeminiLLMClient(settings, client=SimpleNamespace(aio=SimpleNamespace(models=Models())))
+
+    async def scenario():
+        return [
+            chunk
+            async for chunk in client.stream(
+                [ChatMessage("system", "Historical summary"), ChatMessage("user", "newest")]
+            )
+        ]
+
+    assert asyncio.run(scenario()) == ["answer"]
+    assert captured[0]["config"]["max_output_tokens"] == settings.max_response_tokens
+    assert captured[0]["contents"] == [{"role": "user", "parts": [{"text": "newest"}]}]
+    assert "Historical summary" in captured[0]["config"]["system_instruction"]

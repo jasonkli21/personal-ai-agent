@@ -30,6 +30,7 @@ jobs:
       - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python -m ruff check .
       - run: python -m pytest
+      - run: python -m personal_ai.evaluation.context
       - run: uv build --no-build-isolation
 
   frontend:

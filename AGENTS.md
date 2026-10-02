@@ -4,10 +4,11 @@
 
 - Read `docs/project-brief.md`, `docs/architecture.md`, and
   `docs/phase-1-implementation-guide.md`, then the plan relevant to the task.
-- Phase 1 chat code is implemented; the current scope is verification closeout
-  and handoff maintenance. See `docs/phase-1-verification-plan.md` for open work.
-  Phase 2 is planned, not started. Follow explicit user instructions when
-  advancing scope; do not add later-phase features incidentally.
+- Phase 1 chat and Phase 2 context-management code are implemented locally.
+  Read `docs/phase-2-implementation-guide.md` for context contracts and current
+  verification gaps. Provider/emulator/deployment closeout remains pending;
+  Phase 3 has not started. Follow explicit user instructions when advancing
+  scope; do not add later-phase features incidentally.
 - Inspect `git status` before editing and preserve existing user changes.
 
 ## Boundaries
@@ -16,6 +17,8 @@
   go through the Next.js API proxy.
 - Keep provider SDKs inside `backend/src/personal_ai/llm`; services depend on
   `LLMClient`. Keep Firestore details behind repository contracts.
+- Route every model turn through the shared token-budgeted context assembler.
+  Summaries are lossy, branch-scoped working context, not long-term memory.
 - Preserve parent/supersedes links and superseded message records. Regenerate
   and edit/retry must use only the active branch as model context.
 - The fixed `local` owner is not authenticated identity. Do not claim the
@@ -37,6 +40,7 @@ From the repo root:
 ```sh
 make backend-test
 make backend-lint
+make context-eval
 make frontend-test
 make frontend-lint
 make frontend-typecheck

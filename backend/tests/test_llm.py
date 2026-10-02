@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
 import pytest
 
@@ -82,8 +83,106 @@ def test_invalid_configuration_is_safe_error() -> None:
         asyncio.run(_collect(client.stream(_messages())))
 
 
-def test_history_limit_is_an_invalid_request() -> None:
-    client = GeminiLLMClient(_settings(max_phase_1_history_messages=1))
-
+def test_empty_chat_is_an_invalid_request_without_provider_call() -> None:
+    client = GeminiLLMClient(_settings())
     with pytest.raises(LLMInvalidRequestError):
-        asyncio.run(_collect(client.stream(_messages() * 2)))
+        asyncio.run(_collect(client.stream([])))
+
+
+def test_closing_gemini_stream_closes_provider_iterator_but_not_injected_client() -> None:
+    class ProviderStream:
+        def __init__(self) -> None:
+            self.finalized = False
+
+        async def __aiter__(self):
+            try:
+                yield SimpleNamespace(text="first")
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                self.finalized = True
+
+    class Client:
+        def __init__(self, stream: ProviderStream) -> None:
+            self.stream = stream
+            self.closed = False
+
+        class _Models:
+            def __init__(self, stream: ProviderStream) -> None:
+                self.stream = stream
+
+            async def generate_content_stream(self, **_: object) -> ProviderStream:
+                return self.stream
+
+        class _Aio:
+            def __init__(self, models: object) -> None:
+                self.models = models
+
+        @property
+        def aio(self):
+            return self._Aio(self._Models(self.stream))
+
+        def close(self) -> None:
+            self.closed = True
+
+    async def scenario() -> tuple[ProviderStream, Client]:
+        provider_stream = ProviderStream()
+        injected_client = Client(provider_stream)
+        iterator = GeminiLLMClient(_settings(), client=injected_client).stream(_messages())
+        assert await anext(iterator) == "first"
+        await iterator.aclose()
+        return provider_stream, injected_client
+
+    provider_stream, injected_client = asyncio.run(scenario())
+
+    assert provider_stream.finalized
+    assert not injected_client.closed
+
+
+def test_closing_gemini_stream_closes_per_request_owned_client(monkeypatch) -> None:
+    class ProviderStream:
+        async def __aiter__(self):
+            try:
+                yield SimpleNamespace(text="first")
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                self.finalized = True
+
+    class AsyncClient:
+        def __init__(self, models: object) -> None:
+            self.models = models
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class Client:
+        def __init__(self) -> None:
+            self.models = Models()
+            self.aio = AsyncClient(self.models)
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Models:
+        def __init__(self) -> None:
+            self.stream = ProviderStream()
+
+        async def generate_content_stream(self, **_: object) -> ProviderStream:
+            return self.stream
+
+    owned_client = Client()
+    monkeypatch.setattr(GeminiLLMClient, "_build_client", lambda _: owned_client)
+
+    async def scenario() -> None:
+        iterator = GeminiLLMClient(_settings()).stream(_messages())
+        assert await anext(iterator) == "first"
+        await iterator.aclose()
+
+    asyncio.run(scenario())
+
+    assert owned_client.models.stream.finalized
+    assert owned_client.aio.closed
+    assert owned_client.closed

@@ -82,3 +82,18 @@ Keep a billing budget and usage alerts enabled. External model, web-search, trav
 ## Security boundary
 
 The bootstrap makes the web and API endpoints public so the two-service health check runs without identity infrastructure. It is unsuitable for sensitive personal data. Before storing real chats or provider keys, implement Phase 9 authentication and authorization, restrict API ingress as appropriate, and add secrets through Secret Manager rather than environment files.
+
+
+## Phase 2 deployment checks
+
+The deploy script provisions the `conversation_summaries` owner/conversation
+index and explicitly sets `CONTEXT_INSPECTION_ENABLED=false` for API and web.
+Confirm `/development/context`, `/api/conversations/UUID/context`, and the API's
+`/v1/conversations/UUID/context` return 404 with the flag disabled. Summary refresh
+runs synchronously in the API and introduces no Pub/Sub work.
+
+Validate the configured model against the application context/output ceilings;
+see [Phase 2 configuration and verification](phase-2-implementation-guide.md).
+Use synthetic long conversations for the opt-in provider quality check and verify
+summary-backed streaming plus refresh/restart persistence in the emulator/deployed
+store. These external checks have not been run in the recorded local session.

@@ -1,10 +1,10 @@
 # Phase 1 vertical-slice verification record
 
-**Latest local verification:** 2026-10-01
+**Latest local verification:** 2026-10-01, review remediation on `7fb4ca2` (uncommitted working tree)
 
-**Tested revision:** `7301bdd` (working tree had a README-only modification)
+**Initial tested revision:** `7301bdd` (working tree had a README-only modification)
 
-## Local verification
+## Initial local verification
 
 The complete automated Phase 1 suite was run without cloud credentials or a
 model key:
@@ -28,7 +28,7 @@ checks used `backend/.venv/bin/python`. This validates the suites, not a clean
 installation or production build.
 
 The 2026-08-19 baseline at `b9265ac` recorded 30 backend passes (one skipped)
-and 8 frontend passes. The latest counts include subsequent review hardening.
+and 8 frontend passes. Those counts included the earlier review hardening.
 
 ## Cloud verification
 
@@ -37,8 +37,8 @@ session because no GCP access or provider key was supplied. The required
 post-deploy procedure is in the [deployment checklist](../phase-1-deployment-checklist.md).
 This record contains no keys, URLs, or chat content.
 
-Firestore Emulator persistence and automated client-disconnect integration
-also remain unverified. See the [verification closeout plan](../phase-1-verification-plan.md).
+Firestore Emulator persistence remains unverified. Automated client-disconnect
+integration was subsequently added and verified locally in the remediation below. See the [verification closeout plan](../phase-1-verification-plan.md).
 
 ## Locked dependency and build verification — 2026-10-01
 
@@ -60,3 +60,32 @@ Docker was unavailable locally, so container builds were not run. CI now
 includes both Docker builds and Python 3.11/3.12 backend checks; their results
 are not yet recorded. Provider, emulator, and deployed verification remain
 open. No Phase 2 implementation was started.
+
+
+## Independent-review remediation — 2026-10-01
+
+Verified the Phase 1 fixes in the working tree on top of `7fb4ca2`:
+
+- Backend: 69 passed, one credentialed Gemini manual test skipped; Ruff passed.
+- Actual ASGI 2.3/2.4 regressions cover abandoned response bodies, disconnects,
+  asynchronous provider teardown, partial failures, and terminal-state protection.
+- The real Gemini adapter with an injected offline SDK stream verifies that a
+  timeout after partial output persists a failed turn and closes the provider.
+  Provider iteration stays in one task across yields, preserving SDK timeout scopes.
+- Offline storage tests cover atomic replacement/rollback, concurrent snapshots,
+  stale recovery, lazy query errors, and configured emulator transport selection.
+- Frontend: 27 tests passed; ESLint, TypeScript, and Next.js production build passed.
+  Coverage includes incomplete SSE streams, malformed frames, reader cleanup,
+  UI unmount cancellation, and upstream proxy abort propagation.
+- Backend lockfile validation and source-distribution/wheel build passed with
+  the locked build tools; `anyio` is now an explicit runtime dependency.
+- Documentation links, workflow YAML parsing, deployment shell syntax, and
+  diff whitespace checks passed.
+
+Backend checks used `/tmp/personal-ai-build-check/bin/python`; frontend checks
+used the bundled Node runtime and installed locked dependencies. These are local
+results, not credentialed integration or clean container-build results.
+
+See [review remediation](../phase-1-review-fixes.md) for the finding-to-fix map.
+Docker/CI, real emulator persistence across restart, credentialed Gemini, and
+synthetic deployed browser verification remain pending. Phase 2 was not started.

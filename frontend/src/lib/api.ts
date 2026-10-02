@@ -77,6 +77,7 @@ async function streamRequest(path: string, init: RequestInit, handlers: StreamHa
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let terminal = false;
   const consume = (frame: string) => {
     const lines = frame.split(/\r?\n/);
     const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
@@ -84,32 +85,56 @@ async function streamRequest(path: string, init: RequestInit, handlers: StreamHa
     if (!event || !data) return;
     try {
       switch (event) {
-        case "message.created": handlers.onMessageCreated((JSON.parse(data) as MessageCreatedEvent).message); break;
+        case "message.created": {
+          const payload = JSON.parse(data) as MessageCreatedEvent;
+          if (!payload.message || typeof payload.message.id !== "string") throw new Error("Invalid message");
+          handlers.onMessageCreated(payload.message);
+          break;
+        }
         case "response.delta": {
           const payload = JSON.parse(data) as ResponseDeltaEvent;
+          if (typeof payload.message_id !== "string" || typeof payload.delta !== "string") throw new Error("Invalid delta");
           handlers.onDelta(payload.message_id, payload.delta);
           break;
         }
-        case "response.completed": handlers.onCompleted((JSON.parse(data) as ResponseCompletedEvent).message); break;
-        case "response.error": handlers.onError(JSON.parse(data) as ResponseErrorEvent); break;
+        case "response.completed": {
+          const payload = JSON.parse(data) as ResponseCompletedEvent;
+          if (!payload.message || typeof payload.message.id !== "string" || payload.message.role !== "assistant" || payload.message.status !== "completed" || typeof payload.message.content !== "string") throw new Error("Invalid completion");
+          handlers.onCompleted(payload.message);
+          terminal = true;
+          break;
+        }
+        case "response.error": {
+          const payload = JSON.parse(data) as ResponseErrorEvent;
+          if (typeof payload.message_id !== "string" || typeof payload.code !== "string" || typeof payload.message !== "string") throw new Error("Invalid error");
+          handlers.onError(payload);
+          terminal = true;
+          break;
+        }
       }
     } catch {
       throw new ApiError("The response stream could not be read. Please try again.");
     }
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    let boundary = buffer.search(/\r?\n\r?\n/);
-    while (boundary >= 0) {
-      consume(buffer.slice(0, boundary));
-      buffer = buffer.slice(boundary + (buffer[boundary] === "\r" ? 4 : 2));
-      boundary = buffer.search(/\r?\n\r?\n/);
+  try {
+    while (!terminal) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let boundary = buffer.search(/\r?\n\r?\n/);
+      while (boundary >= 0 && !terminal) {
+        consume(buffer.slice(0, boundary));
+        buffer = buffer.slice(boundary + (buffer[boundary] === "\r" ? 4 : 2));
+        boundary = buffer.search(/\r?\n\r?\n/);
+      }
+      if (done && !terminal) throw new ApiError("The response was interrupted. Please retry.");
     }
-    if (done) break;
+  } catch (error) {
+    throw error instanceof ApiError ? error : new ApiError("The response stream could not be read. Please try again.");
+  } finally {
+    try { await reader.cancel(); } catch { /* The connection may already be closed. */ }
+    reader.releaseLock();
   }
-  if (buffer.trim()) consume(buffer);
 }
 
 export const conversationsApi = {
@@ -122,13 +147,13 @@ export const conversationsApi = {
   get(conversationId: string) {
     return request<ConversationDetail>(`/conversations/${encodeURIComponent(conversationId)}`);
   },
-  send(conversationId: string, content: string, handlers: StreamHandlers) {
-    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages`, { method: "POST", body: JSON.stringify({ content }) }, handlers);
+  send(conversationId: string, content: string, handlers: StreamHandlers, signal?: AbortSignal) {
+    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages`, { method: "POST", body: JSON.stringify({ content }), signal }, handlers);
   },
-  regenerate(conversationId: string, messageId: string, handlers: StreamHandlers) {
-    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/regenerate`, { method: "POST" }, handlers);
+  regenerate(conversationId: string, messageId: string, handlers: StreamHandlers, signal?: AbortSignal) {
+    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/regenerate`, { method: "POST", signal }, handlers);
   },
-  editAndRetry(conversationId: string, messageId: string, content: string, handlers: StreamHandlers) {
-    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/edit-and-retry`, { method: "POST", body: JSON.stringify({ content }) }, handlers);
+  editAndRetry(conversationId: string, messageId: string, content: string, handlers: StreamHandlers, signal?: AbortSignal) {
+    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/edit-and-retry`, { method: "POST", body: JSON.stringify({ content }), signal }, handlers);
   },
 };

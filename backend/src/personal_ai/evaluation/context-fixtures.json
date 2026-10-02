@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "fixtures": [
+    {"name": "short-control", "turns": 2, "active_branch": "main", "required_old_facts": [], "expected_included_keys": ["1-user", "1-assistant", "pending"], "expected_excluded_keys": [], "reject": false},
+    {"name": "beyond-fixed-cap", "turns": 30, "active_branch": "main", "required_old_facts": ["Launch color is amber"], "expected_included_keys": ["29-user", "29-assistant", "pending"], "expected_excluded_keys": ["0-user", "0-assistant"], "reject": false},
+    {"name": "old-fact", "turns": 12, "active_branch": "main", "required_old_facts": ["Launch color is amber", "Timing remains uncertain"], "expected_included_keys": ["11-user", "11-assistant", "pending"], "expected_excluded_keys": ["0-user", "0-assistant"], "reject": false},
+    {"name": "edited-branch", "turns": 12, "branch": true, "active_branch": "edited", "required_old_facts": ["Corrected city is Bergen"], "expected_included_keys": ["11-user", "11-assistant", "pending"], "expected_excluded_keys": ["obsolete", "0-user", "0-assistant"], "reject": false},
+    {"name": "oversized-newest", "turns": 1, "active_branch": "main", "pending_words": 500, "required_old_facts": [], "expected_included_keys": [], "expected_excluded_keys": [], "reject": true}
+  ]
+}

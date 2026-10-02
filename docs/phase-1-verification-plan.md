@@ -27,9 +27,15 @@ Emulator; no model key is needed for the persistence-only check.
 API restart; report assertions and results without copying message content.
 This verifies adapter persistence, not real Gemini generation or cloud indexes.
 
-## 2. Add deterministic client-disconnect integration coverage
+## 2. Maintain client-disconnect integration coverage
 
 **Prerequisites:** fake LLM/repositories; no cloud access, model key, or emulator.
+
+**Implementation status:** local ASGI and proxy tests have been added in the
+[review remediation](phase-1-review-fixes.md). They cover disconnect during
+initial events, delta delivery, provider waits, and before iterator start,
+plus preservation of terminal states. Run the backend and frontend suites to
+retain this evidence; deployed browser cancellation is still pending.
 
 - Use a controllable async fake LLM that yields a known first delta, then waits
   on a synchronization event and records cancellation/finalization.

@@ -36,8 +36,9 @@ evidence still depends on manual or environment-specific work and is not claimed
 as complete:
 
 - The Firestore Emulator create/retrieve check has not been recorded.
-- Provider-stream cancellation is implemented, but an automated client-
-  disconnect integration test has not been added.
+- Automated ASGI disconnect and proxy cancellation tests now cover local
+  boundaries; real browser cancellation through the deployed proxy remains
+  unverified.
 - The credentialed Gemini and deployed GCP smoke tests have not been run in the
   recorded repository session.
 
@@ -62,6 +63,12 @@ test suites continue to run with no cloud project or model key.
 
 The primary commit identifies when a plan part first became usable. Later
 cross-cutting fixes are called out in the relevant sections below.
+
+The independent-review fixes extend these paths with transactional turn
+preparation, concurrency checks, stale-stream recovery, conditional terminal
+updates, protected stream teardown, and strict terminal-event handling. See
+[review remediation](phase-1-review-fixes.md) for code/test mappings and the
+remaining verification boundary.
 
 ## P0.1 — Phase 1 decisions
 
@@ -218,6 +225,9 @@ Verification: route tests cover empty lists, create/list/get, malformed and
 unknown IDs, active-branch filtering, ownership isolation, and storage errors.
 
 Commit: `1451402`.
+
+The later [Phase 2 guide](phase-2-implementation-guide.md) replaces the historical
+message-count cap below with token budgeting and two-stage context preparation.
 
 ## P1.4 — Streamed chat-turn lifecycle
 

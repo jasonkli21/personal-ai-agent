@@ -1,5 +1,10 @@
 # Phase 2 implementation plan
 
+**Implementation status:** delivered locally on 2026-10-01. See the
+[implementation guide](phase-2-implementation-guide.md) and
+[verification record](releases/phase-2-context-management.md). Provider quality,
+emulator persistence, Docker CI, and deployed checks remain unverified.
+
 This is the execution plan for keeping a long conversation coherent while
 respecting a model's context window. It builds on the delivered Phase 1 chat
 vertical slice; [the Phase 1 plan](phase-1-implementation-plan.md) remains the

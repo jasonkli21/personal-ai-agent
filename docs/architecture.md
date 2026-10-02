@@ -32,7 +32,9 @@ The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the 
 ## Core boundaries
 
 - `agents` coordinates conversation and research flows without owning provider-specific logic.
-- `context` prepares messages, relevant memory, and selected evidence for a model call.
+- `context` currently selects token-budgeted active conversation turns and
+  compatible working summaries for a model call. Memory/evidence injection is
+  future work; summaries are not memory.
 - `memory` owns durable user knowledge: preferences, episodic observations, semantic summaries, consolidation, and forgetting.
 - `search` plans queries, fetches sources through adapters, extracts content, deduplicates it, and selects candidate evidence.
 - `evidence` records what an external source stated, where it came from, when it was observed, and when it expires.
@@ -48,3 +50,14 @@ Memory and evidence are deliberately different. A user preference can last month
 ## Initial persistence vocabulary
 
 Keep storage interfaces ready for conversations, messages, memories, research sessions, search queries, evidence, and canonical entities. This is intentionally a vocabulary, not a database implementation.
+
+
+## Delivered Phase 2 request boundary
+
+Chat services reserve and persist the user/branch mutation, then invoke the
+provider-neutral context assembler before creating a streaming assistant.
+`context` owns budget allocation, complete-turn selection, summary provenance,
+and read-only inspection. Gemini counting and bounded summary-generation SDK
+calls stay inside `llm`; Firestore summary records stay behind repository
+contracts. The worker/Pub/Sub path remains idle. See
+[Phase 2 implementation](phase-2-implementation-guide.md).

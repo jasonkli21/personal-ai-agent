@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
+
+import anyio
 
 from personal_ai.api.schemas import (
     SSEMessageCreated,
@@ -15,15 +17,13 @@ from personal_ai.api.schemas import (
     SSEResponseDelta,
     SSEResponseError,
 )
+from personal_ai.context import ContextAssembler
 from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
 from personal_ai.llm import ChatMessage, LLMClient, LLMError, LLMInvalidResponseError
+from personal_ai.storage import ConversationConflictError
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
 
 logger = logging.getLogger(__name__)
-
-
-class HistoryLimitExceededError(Exception):
-    """The active chat context is too large for the Phase 1 safety cap."""
 
 
 class InvalidRetryTargetError(Exception):
@@ -38,6 +38,40 @@ class _PreparedTurn:
     request_id: str
 
 
+class _ManagedStream:
+    """Async iterator that finalizes a prepared turn when abandoned before start."""
+
+    def __init__(self, iterator: AsyncIterator[str], on_abandon: Callable[[], object]) -> None:
+        self._iterator = iterator.__aiter__()
+        self._on_abandon = on_abandon
+        self._started = False
+        self._closed = False
+
+    def __aiter__(self) -> _ManagedStream:
+        return self
+
+    async def __anext__(self) -> str:
+        if self._closed:
+            raise StopAsyncIteration
+        self._started = True
+        try:
+            return await self._iterator.__anext__()
+        except StopAsyncIteration:
+            self._closed = True
+            raise
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._started:
+            close = getattr(self._iterator, "aclose", None)
+            if close is not None:
+                await close()
+        else:
+            self._on_abandon()
+
+
 class ChatTurnService:
     """Create append-only turns, stream model output, and finalize state."""
 
@@ -48,157 +82,270 @@ class ChatTurnService:
         llm: LLMClient,
         *,
         owner_id: str,
-        max_history_messages: int,
         model: str,
+        stale_stream_after_seconds: float = 360,
+        context_assembler: ContextAssembler,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
         self._llm = llm
         self._owner_id = owner_id
-        self._max_history_messages = max_history_messages
+        self._context = context_assembler
         self._model = model
+        self._stale_stream_after_seconds = stale_stream_after_seconds
+
+    def _active(self, conversation_id: UUID) -> list[Message]:
+        self._conversations.get(owner_id=self._owner_id, conversation_id=conversation_id)
+        self._recover_stale_turn(conversation_id)
+        active = self._messages.list_active(
+            owner_id=self._owner_id, conversation_id=conversation_id
+        )
+        self._ensure_no_streaming_turn(active)
+        return active
 
     def send(self, conversation_id: UUID, content: str, *, request_id: str) -> AsyncIterator[str]:
-        """Persist a new user/assistant pair and stream the assistant response."""
-        self._conversations.get(owner_id=self._owner_id, conversation_id=conversation_id)
-        active = self._messages.list_active(
-            owner_id=self._owner_id, conversation_id=conversation_id
-        )
-        self._ensure_history_capacity(active, extra_messages=1)
-        now = datetime.now(UTC)
+        active = self._active(conversation_id)
         user = self._new_message(
             conversation_id=conversation_id,
             role=MessageRole.USER,
             content=content,
             status=MessageStatus.COMPLETED,
+            now=datetime.now(UTC),
             parent_message_id=active[-1].id if active else None,
-            now=now,
         )
-        self._messages.create(user)
-        assistant = self._new_message(
-            conversation_id=conversation_id,
-            role=MessageRole.ASSISTANT,
-            content="",
-            status=MessageStatus.STREAMING,
-            parent_message_id=user.id,
-            now=now,
-        )
-        self._messages.create(assistant)
-        return self._stream(
-            _PreparedTurn((user, assistant), assistant, self._history(active + [user]), request_id)
-        )
+        return self._prepare_context_stream(active, user, (user,), None, None, request_id)
 
     def regenerate(
-        self, conversation_id: UUID, message_id: UUID, *, request_id: str
+        self,
+        conversation_id: UUID,
+        message_id: UUID,
+        *,
+        request_id: str,
     ) -> AsyncIterator[str]:
-        """Replace a completed assistant response while retaining its audit record."""
-        self._conversations.get(owner_id=self._owner_id, conversation_id=conversation_id)
-        replaced = self._messages.get(
-            owner_id=self._owner_id, conversation_id=conversation_id, message_id=message_id
-        )
-        if replaced.role is not MessageRole.ASSISTANT or replaced.status is not MessageStatus.COMPLETED:
-            raise InvalidRetryTargetError("Only completed assistant messages can be regenerated.")
-        now = datetime.now(UTC)
-        self._messages.supersede_path(
+        active = self._active(conversation_id)
+        target = self._messages.get(
             owner_id=self._owner_id,
             conversation_id=conversation_id,
             message_id=message_id,
-            updated_at=now,
         )
-        active = self._messages.list_active(
-            owner_id=self._owner_id, conversation_id=conversation_id
-        )
-        self._ensure_history_capacity(active, extra_messages=0)
-        assistant = self._new_message(
-            conversation_id=conversation_id,
-            role=MessageRole.ASSISTANT,
-            content="",
-            status=MessageStatus.STREAMING,
-            parent_message_id=replaced.parent_message_id,
-            supersedes_message_id=replaced.id,
-            now=now,
-        )
-        self._messages.create(assistant)
-        history = active + [assistant]
-        # The streaming placeholder has no content and must not be sent to the model.
-        return self._stream(
-            _PreparedTurn((assistant,), assistant, self._history(history[:-1]), request_id)
-        )
+        index = next((i for i, m in enumerate(active) if m.id == message_id), -1)
+        if (
+            target.role is not MessageRole.ASSISTANT
+            or target.status is not MessageStatus.COMPLETED
+            or index < 1
+        ):
+            raise InvalidRetryTargetError("Only active completed assistants can be regenerated.")
+        user = active[index - 1]
+        if user.role is not MessageRole.USER or target.parent_message_id != user.id:
+            raise InvalidRetryTargetError("Assistant has no active user parent.")
+        return self._prepare_context_stream(active, user, (), target.id, target.id, request_id)
 
     def edit_and_retry(
-        self, conversation_id: UUID, message_id: UUID, content: str, *, request_id: str
+        self,
+        conversation_id: UUID,
+        message_id: UUID,
+        content: str,
+        *,
+        request_id: str,
     ) -> AsyncIterator[str]:
-        """Replace a user prompt and every active descendant with a new turn."""
-        self._conversations.get(owner_id=self._owner_id, conversation_id=conversation_id)
-        replaced = self._messages.get(
-            owner_id=self._owner_id, conversation_id=conversation_id, message_id=message_id
-        )
-        if replaced.role is not MessageRole.USER or replaced.status is not MessageStatus.COMPLETED:
-            raise InvalidRetryTargetError("Only completed user messages can be edited and retried.")
-        now = datetime.now(UTC)
-        self._messages.supersede_path(
+        active = self._active(conversation_id)
+        target = self._messages.get(
             owner_id=self._owner_id,
             conversation_id=conversation_id,
             message_id=message_id,
-            updated_at=now,
         )
-        active = self._messages.list_active(
-            owner_id=self._owner_id, conversation_id=conversation_id
-        )
-        self._ensure_history_capacity(active, extra_messages=1)
+        if (
+            target.role is not MessageRole.USER
+            or target.status is not MessageStatus.COMPLETED
+            or not any(m.id == target.id for m in active)
+        ):
+            raise InvalidRetryTargetError("Only active completed user messages can be retried.")
         user = self._new_message(
             conversation_id=conversation_id,
             role=MessageRole.USER,
             content=content,
             status=MessageStatus.COMPLETED,
-            parent_message_id=replaced.parent_message_id,
-            supersedes_message_id=replaced.id,
-            now=now,
+            now=datetime.now(UTC),
+            parent_message_id=target.parent_message_id,
+            supersedes_message_id=target.id,
         )
-        self._messages.create(user)
-        assistant = self._new_message(
-            conversation_id=conversation_id,
-            role=MessageRole.ASSISTANT,
-            content="",
-            status=MessageStatus.STREAMING,
-            parent_message_id=user.id,
-            now=now,
+        return self._prepare_context_stream(active, user, (user,), target.id, None, request_id)
+
+    def _prepare_context_stream(
+        self,
+        active: Sequence[Message],
+        user: Message,
+        created_users: tuple[Message, ...],
+        supersede_from: UUID | None,
+        assistant_supersedes: UUID | None,
+        request_id: str,
+    ) -> AsyncIterator[str]:
+        reservation = uuid4()
+        self._messages.prepare_message_turn(
+            owner_id=self._owner_id,
+            conversation_id=user.conversation_id,
+            expected_active_ids=[m.id for m in active],
+            supersede_from_message_id=supersede_from,
+            messages=created_users,
+            updated_at=datetime.now(UTC),
+            preparation_id=reservation,
         )
-        self._messages.create(assistant)
+        post_active = self._messages.list_active(
+            owner_id=self._owner_id,
+            conversation_id=user.conversation_id,
+        )
+        try:
+            assembled = self._context.assemble(post_active[:-1], user)
+            assistant = self._new_message(
+                conversation_id=user.conversation_id,
+                role=MessageRole.ASSISTANT,
+                content="",
+                status=MessageStatus.STREAMING,
+                now=datetime.now(UTC),
+                parent_message_id=user.id,
+                supersedes_message_id=assistant_supersedes,
+            )
+            self._messages.prepare_message_turn(
+                owner_id=self._owner_id,
+                conversation_id=user.conversation_id,
+                expected_active_ids=[m.id for m in post_active],
+                supersede_from_message_id=None,
+                messages=(assistant,),
+                updated_at=datetime.now(UTC),
+                preparation_id=reservation,
+                complete_preparation=True,
+            )
+        except BaseException:
+            # Release only our lease. Recovery handles unavailable storage/process death;
+            # an expired request must never release a newer request's reservation.
+            try:
+                self._messages.prepare_message_turn(
+                    owner_id=self._owner_id,
+                    conversation_id=user.conversation_id,
+                    expected_active_ids=[m.id for m in post_active],
+                    supersede_from_message_id=None,
+                    messages=(),
+                    updated_at=datetime.now(UTC),
+                    preparation_id=reservation,
+                    complete_preparation=True,
+                )
+            except Exception as error:  # noqa: BLE001 - preserve the original safe failure
+                logger.error(
+                    "Context reservation cleanup failed request_id=%s error_class=%s",
+                    request_id,
+                    type(error).__name__,
+                )
+            raise
+        logger.info(
+            "Context prepared request_id=%s counter_kind=%s tokens=%s selected_count=%s",
+            request_id,
+            assembled.budget.counter_kind,
+            assembled.budget.selected_total,
+            len(assembled.selected_message_ids),
+        )
         return self._stream(
-            _PreparedTurn((user, assistant), assistant, self._history(active + [user]), request_id)
+            _PreparedTurn(
+                (*created_users, assistant),
+                assistant,
+                assembled.messages,
+                request_id,
+            )
         )
 
-    async def _stream(self, turn: _PreparedTurn) -> AsyncIterator[str]:
-        for message in turn.created:
-            yield _sse("message.created", SSEMessageCreated(message=message).model_dump_json())
+    def _stream(self, turn: _PreparedTurn) -> AsyncIterator[str]:
+        return _ManagedStream(
+            self._stream_events(turn),
+            lambda: self._abandon_before_start(turn),
+        )
+
+    def _abandon_before_start(self, turn: _PreparedTurn) -> None:
+        self._fail(turn.assistant, "client_cancelled", "")
+        logger.info("Chat stream abandoned before start request_id=%s", turn.request_id)
+
+    def _recover_stale_turn(self, conversation_id: UUID) -> None:
+        now = datetime.now(UTC)
+        self._messages.recover_stale_turn(
+            owner_id=self._owner_id,
+            conversation_id=conversation_id,
+            stale_before=now - timedelta(seconds=self._stale_stream_after_seconds),
+            updated_at=now,
+        )
+
+    async def _stream_events(self, turn: _PreparedTurn) -> AsyncIterator[str]:
         parts: list[str] = []
         content_length = 0
+        terminal = False
         try:
-            async for delta in self._llm.stream(turn.history):
-                if not delta:
-                    continue
-                if content_length + len(delta) > MAX_MESSAGE_CONTENT_CHARS:
-                    raise LLMInvalidResponseError("language model response exceeded the size limit")
-                parts.append(delta)
-                content_length += len(delta)
-                yield _sse(
-                    "response.delta",
-                    SSEResponseDelta(message_id=turn.assistant.id, delta=delta).model_dump_json(),
-                )
+            # Keep creation events inside the protected lifecycle. A disconnect
+            # while sending either event must fail the already-persisted turn.
+            for message in turn.created:
+                yield _sse("message.created", SSEMessageCreated(message=message).model_dump_json())
+            events: asyncio.Queue[str | Exception | None] = asyncio.Queue(maxsize=1)
+            demand = asyncio.Semaphore(0)
+            provider_iterator = self._llm.stream(turn.history).__aiter__()
+            # One task owns the entire iterator: SDK timeout scopes and cleanup
+            # may depend on task identity remaining stable across every yield.
+            provider_task = asyncio.create_task(
+                _produce_deltas(provider_iterator, events, demand, request_id=turn.request_id)
+            )
+            try:
+                while True:
+                    demand.release()
+                    event = await events.get()
+                    if event is None:
+                        break
+                    if isinstance(event, Exception):
+                        raise event
+                    delta = event
+                    if not delta:
+                        continue
+                    if content_length + len(delta) > MAX_MESSAGE_CONTENT_CHARS:
+                        raise LLMInvalidResponseError(
+                            "language model response exceeded the size limit"
+                        )
+                    parts.append(delta)
+                    content_length += len(delta)
+                    yield _sse(
+                        "response.delta",
+                        SSEResponseDelta(
+                            message_id=turn.assistant.id, delta=delta
+                        ).model_dump_json(),
+                    )
+            finally:
+                await _cancel_provider_task(provider_task, request_id=turn.request_id)
+
+            content = "".join(parts)
+            if not content.strip():
+                raise LLMInvalidResponseError("language model response was empty")
             completed = self._messages.update_status(
                 owner_id=self._owner_id,
                 conversation_id=turn.assistant.conversation_id,
                 message_id=turn.assistant.id,
                 status=MessageStatus.COMPLETED,
-                content="".join(parts),
+                content=content,
                 model=self._model,
+                expected_status=MessageStatus.STREAMING,
                 updated_at=datetime.now(UTC),
             )
-            yield _sse("response.completed", SSEResponseCompleted(message=completed).model_dump_json())
+            if completed is None:
+                terminal = True
+                yield self._stale_turn_event(turn.assistant)
+                return
+            terminal = True
+            yield _sse(
+                "response.completed", SSEResponseCompleted(message=completed).model_dump_json()
+            )
         except asyncio.CancelledError:
-            self._fail(turn.assistant, "client_cancelled", "".join(parts))
-            logger.info("Chat stream cancelled request_id=%s error_class=CancelledError", turn.request_id)
+            if not terminal:
+                self._fail(turn.assistant, "client_cancelled", "".join(parts))
+            logger.info(
+                "Chat stream cancelled request_id=%s error_class=CancelledError", turn.request_id
+            )
+            raise
+        except GeneratorExit:
+            if not terminal:
+                self._fail(turn.assistant, "client_cancelled", "".join(parts))
+                logger.info("Chat stream closed request_id=%s", turn.request_id)
             raise
         except LLMError as error:
             logger.warning(
@@ -206,21 +353,31 @@ class ChatTurnService:
                 turn.request_id,
                 type(error).__name__,
             )
-            yield self._error_event(turn.assistant, error.code, "".join(parts))
+            event = self._error_event(turn.assistant, error.code, "".join(parts))
+            terminal = True
+            yield event
         except Exception:  # noqa: BLE001
-            logger.error("Chat stream failed request_id=%s error_class=UnexpectedError", turn.request_id)
-            yield self._error_event(turn.assistant, "llm_unavailable", "".join(parts))
+            logger.error(
+                "Chat stream failed request_id=%s error_class=UnexpectedError", turn.request_id
+            )
+            event = self._error_event(turn.assistant, "llm_unavailable", "".join(parts))
+            terminal = True
+            yield event
 
     def _error_event(self, assistant: Message, code: str, content: str) -> str:
         failed = self._fail(assistant, code, content)
+        if failed is None:
+            return self._stale_turn_event(assistant)
         return _sse(
             "response.error",
             SSEResponseError(
-                message_id=failed.id, code=code, message="The response could not be completed. Please retry."
+                message_id=failed.id,
+                code=code,
+                message="The response could not be completed. Please retry.",
             ).model_dump_json(),
         )
 
-    def _fail(self, assistant: Message, code: str, content: str) -> Message:
+    def _fail(self, assistant: Message, code: str, content: str) -> Message | None:
         return self._messages.update_status(
             owner_id=self._owner_id,
             conversation_id=assistant.conversation_id,
@@ -228,21 +385,25 @@ class ChatTurnService:
             status=MessageStatus.FAILED,
             content=content,
             error_code=code,
+            expected_status=MessageStatus.STREAMING,
             updated_at=datetime.now(UTC),
         )
 
-    def _ensure_history_capacity(self, active: Sequence[Message], *, extra_messages: int) -> None:
-        if len(active) + extra_messages > self._max_history_messages:
-            raise HistoryLimitExceededError(
-                "This chat has reached its message limit. Please start a new chat."
-            )
-
-    def _history(self, messages: Sequence[Message]) -> tuple[ChatMessage, ...]:
-        return tuple(
-            ChatMessage(role=message.role, content=message.content)
-            for message in messages
-            if message.status is MessageStatus.COMPLETED
+    @staticmethod
+    def _stale_turn_event(assistant: Message) -> str:
+        return _sse(
+            "response.error",
+            SSEResponseError(
+                message_id=assistant.id,
+                code="turn_interrupted",
+                message="The response was interrupted. Please refresh and retry.",
+            ).model_dump_json(),
         )
+
+    @staticmethod
+    def _ensure_no_streaming_turn(active: Sequence[Message]) -> None:
+        if any(message.status is MessageStatus.STREAMING for message in active):
+            raise ConversationConflictError("a response is already in progress")
 
     def _new_message(
         self,
@@ -256,10 +417,80 @@ class ChatTurnService:
         supersedes_message_id: UUID | None = None,
     ) -> Message:
         return Message(
-            id=uuid4(), conversation_id=conversation_id, owner_id=self._owner_id, role=role,
-            content=content, status=status, created_at=now, parent_message_id=parent_message_id,
+            id=uuid4(),
+            conversation_id=conversation_id,
+            owner_id=self._owner_id,
+            role=role,
+            content=content,
+            status=status,
+            created_at=now,
+            parent_message_id=parent_message_id,
             supersedes_message_id=supersedes_message_id,
         )
+
+
+async def _produce_deltas(
+    iterator: AsyncIterator[str],
+    events: asyncio.Queue[str | Exception | None],
+    demand: asyncio.Semaphore,
+    *,
+    request_id: str,
+) -> None:
+    """Own provider iteration and teardown in a single task with backpressure."""
+    failure: Exception | None = None
+    try:
+        while True:
+            await demand.acquire()
+            try:
+                delta = await anext(iterator)
+            except StopAsyncIteration:
+                break
+            await events.put(delta)
+    except asyncio.CancelledError:
+        raise
+    # The consumer applies the normal safe model/storage error mapping.
+    except Exception as error:  # noqa: BLE001
+        failure = error
+    finally:
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            with anyio.CancelScope(shield=True):
+                with anyio.move_on_after(1) as timeout_scope:
+                    try:
+                        await close()
+                    # Teardown must not replace a model failure or cancellation.
+                    except (Exception, asyncio.CancelledError) as error:  # noqa: BLE001
+                        logger.error(
+                            "Provider stream cleanup failed request_id=%s error_class=%s",
+                            request_id,
+                            type(error).__name__,
+                        )
+                if timeout_scope.cancel_called:
+                    logger.error("Provider stream cleanup timed out request_id=%s", request_id)
+    # Never queue a terminal event on cancellation: the disconnected consumer
+    # may no longer be draining the queue. The finally block above still runs.
+    await events.put(failure)
+
+
+async def _cancel_provider_task(task: asyncio.Task[None], *, request_id: str) -> None:
+    """Cancel and briefly join provider iteration outside the ASGI cancel scope."""
+    if not task.done():
+        task.cancel()
+    with anyio.CancelScope(shield=True):
+        with anyio.move_on_after(1) as timeout_scope:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            # Cleanup errors must not replace the request cancellation.
+            except Exception as error:  # noqa: BLE001
+                logger.error(
+                    "Provider task cleanup failed request_id=%s error_class=%s",
+                    request_id,
+                    type(error).__name__,
+                )
+        if timeout_scope.cancel_called:
+            logger.error("Provider task cleanup timed out request_id=%s", request_id)
 
 
 def _sse(event: str, data: str) -> str:

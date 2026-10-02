@@ -52,12 +52,12 @@ content, or other personal data.
 
 | Item | Result | Evidence |
 | --- | --- | --- |
-| Local backend tests | Passed 2026-10-01 | 32 passed, 1 credentialed manual test skipped |
+| Local backend tests | Passed 2026-10-01 | 69 passed, 1 credentialed manual test skipped |
 | Local backend lint | Passed 2026-10-01 | Ruff reported all checks passed |
-| Local frontend tests | Passed 2026-10-01 | 10 passed |
+| Local frontend tests | Passed 2026-10-01 | 27 passed |
 | Local frontend lint/type-check | Passed 2026-10-01 | ESLint and `tsc --noEmit` completed successfully |
 | Firestore Emulator persistence across API restart | Not run | See verification closeout plan |
-| Automated client-disconnect integration | Not implemented | See verification closeout plan |
+| Automated client-disconnect integration | Passed locally 2026-10-01 | ASGI send/disconnect, provider teardown, proxy abort, and frontend interruption regressions; deployed browser check remains pending |
 | Credentialed Gemini smoke test | Not run | Opt-in manual test remains skipped |
 | Credentialed deployed smoke test | Not run | Requires user-supplied GCP access and a Gemini key; use Smoke test above. |
 

@@ -1,0 +1,99 @@
+"""Read-only selection metadata; inspection never invokes a provider."""
+
+from collections.abc import Sequence
+from dataclasses import asdict
+
+from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.contracts import BudgetReport, ContextError, ConversationSummaryRepository
+from personal_ai.context.tokens import EstimatedTokenCounter
+from personal_ai.entities import Message
+from personal_ai.llm.client import ChatMessage
+from personal_ai.settings import Settings
+
+
+class ContextInspector:
+    def __init__(self, settings: Settings, summaries: ConversationSummaryRepository) -> None:
+        self.settings = settings
+        self.summaries = summaries
+
+    def inspect(self, active: Sequence[Message]) -> dict:
+        report = {
+            "counter_kind": "estimated",
+            "selected": [],
+            "excluded": [],
+            "summary": None,
+            "budget": None,
+            "overflow": None,
+            "diagnostics": [],
+        }
+        users = [
+            i
+            for i, m in enumerate(active)
+            if m.role.value == "user" and m.status.value == "completed"
+        ]
+        if not users:
+            return report
+        index = users[-1]
+        pending = active[index]
+        counter = EstimatedTokenCounter()
+        assembler = ContextAssembler(self.settings, counter, self.summaries)
+
+        def metadata(message: Message) -> dict:
+            return {
+                "id": str(message.id),
+                "role": message.role.value,
+                "created_at": message.created_at.isoformat(),
+                "characters": len(message.content),
+            }
+
+        try:
+            result = assembler.assemble(active[:index], pending, refresh=False)
+        except ContextError as error:
+            count = counter.count((ChatMessage(pending.role, pending.content),))
+            report.update(
+                {
+                    "overflow": error.code,
+                    "budget": asdict(
+                        BudgetReport(
+                            self.settings.max_context_tokens,
+                            self.settings.max_response_tokens,
+                            self.settings.context_safety_margin_tokens,
+                            assembler.input_budget(),
+                            count.tokens,
+                            0,
+                            0,
+                            count.tokens,
+                            "estimated",
+                        )
+                    ),
+                    "excluded": [{**metadata(m), "reason": "mandatory_overflow"} for m in active],
+                }
+            )
+            return report
+        selected = set(result.selected_message_ids)
+        excluded = dict(result.excluded)
+        summary = result.summary
+        report.update(
+            {
+                "budget": asdict(result.budget),
+                "selected": [metadata(m) for m in active if m.id in selected],
+                "excluded": [
+                    {**metadata(m), "reason": excluded.get(m.id, "after_latest_user")}
+                    for m in active
+                    if m.id not in selected
+                ],
+                "summary": {
+                    "id": str(summary.id),
+                    "source_message_ids": [str(i) for i in summary.source_message_ids],
+                    "source_fingerprint": summary.source_fingerprint,
+                    "covers_through_message_id": str(summary.covers_through_message_id),
+                    "summary_token_count": summary.summary_token_count,
+                    "source_token_count": summary.source_token_count,
+                    "counter_kind": summary.counter_kind,
+                }
+                if summary
+                else None,
+                "diagnostics": result.diagnostics,
+            }
+        )
+        return report

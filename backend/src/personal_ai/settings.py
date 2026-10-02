@@ -2,8 +2,12 @@
 
 from functools import lru_cache
 
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ContextBudgetInvalidError(Exception):
+    """Invalid operator configuration, without exposing environment values."""
 
 
 class Settings(BaseSettings):
@@ -26,7 +30,22 @@ class Settings(BaseSettings):
     firestore_project_id: str | None = None
     firestore_emulator_host: str | None = None
     request_timeout_seconds: float = Field(default=30, gt=0, le=300)
-    max_phase_1_history_messages: int = Field(default=40, ge=1, le=200)
+    max_context_tokens: int = Field(default=32_768, gt=0)
+    max_response_tokens: int = Field(default=4_096, gt=0)
+    context_safety_margin_tokens: int = Field(default=1_024, ge=0)
+    summary_trigger_tokens: int = Field(default=12_000, gt=0)
+    max_summary_tokens: int = Field(default=2_048, gt=0)
+    context_inspection_enabled: bool = False
+
+    @model_validator(mode="after")
+    def validate_context_budget(self) -> "Settings":
+        available = self.max_context_tokens - self.max_response_tokens - self.context_safety_margin_tokens
+        if available <= 0 or self.max_summary_tokens >= available:
+            raise ValueError("context_budget_invalid")
+        if self.summary_trigger_tokens > available:
+            raise ValueError("context_budget_invalid")
+        return self
+
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
 
     @property
@@ -38,4 +57,9 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Provide a single settings instance for dependency injection."""
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as error:
+        if "context_budget_invalid" in str(error):
+            raise ContextBudgetInvalidError("context_budget_invalid") from error
+        raise
