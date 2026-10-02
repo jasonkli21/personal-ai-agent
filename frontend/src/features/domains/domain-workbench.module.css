@@ -1,0 +1,63 @@
+.shell { max-width: 1440px; margin: 0 auto; padding: 1.5rem clamp(1rem, 3vw, 2.5rem) 4rem; color: #15221e; }
+.intro { max-width: 820px; margin: 1rem auto 2rem; }
+.intro h1 { margin: .2rem 0 .6rem; font-size: clamp(2rem, 5vw, 3rem); letter-spacing: -.035em; }
+.intro p { line-height: 1.6; }
+.eyebrow { color: #49665a; font-size: .78rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.policyNotice, .demoNotice { max-width: 980px; margin: 1rem auto; padding: 1rem 1.25rem; border: 1px solid #c6d7ce; border-left: 5px solid #35745a; border-radius: .6rem; background: #f2f8f4; line-height: 1.5; }
+.policyNotice h2 { margin: 0 0 .4rem; font-size: 1.05rem; }
+.policyNotice p { margin: .35rem 0; }
+.policyNotice a, .sources a, .provenance a { color: #145d49; text-underline-offset: .16em; }
+.demoNotice { background: #fff8e9; border-color: #e8d5ad; border-left-color: #a77716; }
+.forms { max-width: 980px; margin: 1.5rem auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.lookup, .example, .savedForm { display: grid; align-content: start; gap: .65rem; padding: 1rem; border: 1px solid #d4ded9; border-radius: .75rem; background: #fff; }
+.lookup h2, .example h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
+.lookup input, .example select, .savedForm input, .loadSaved input { min-width: 0; padding: .65rem .7rem; border: 1px solid #84958d; border-radius: .4rem; font: inherit; }
+.lookup button, .example button, .savedForm button, .error button { justify-self: start; padding: .6rem .85rem; border: 0; border-radius: .4rem; background: #245f4b; color: white; font: inherit; font-weight: 650; cursor: pointer; }
+.lookup button:disabled, .example button:disabled, .savedForm button:disabled { opacity: .55; cursor: not-allowed; }
+.muted { color: #4f5e57; font-size: .88rem; line-height: 1.45; }
+.lookup p, .example p { margin: .15rem 0; }
+.savedForm { max-width: 980px; margin: 0 auto 1rem; grid-template-columns: 1fr minmax(12rem, 1fr) auto; align-items: end; }
+.result { margin: 2rem auto; }
+.resultHeading { display: flex; justify-content: space-between; align-items: start; gap: 1rem; margin: 1rem 0; }
+.resultHeading p { margin: .45rem 0; }
+.state { display: inline-block; padding: .45rem .7rem; border-radius: 999px; background: #e4f1e9; font-weight: 700; }
+.state[data-state="research_needed"], .state[data-state="eligible_unranked"] { background: #fff0ce; }
+.state[data-state="no_verified_match"] { background: #fde5e2; }
+.loadSaved { width: min(100%, 20rem); display: grid; gap: .3rem; font-size: .82rem; color: #4f5e57; }
+.filters, .provenance { margin: 1rem 0; padding: .9rem 1rem; border: 1px solid #d4ded9; border-radius: .6rem; background: #fbfcfb; }
+.filters > summary, .provenance > summary, .rationale > summary, .sources > summary { cursor: pointer; font-weight: 700; }
+.constraints { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; padding-left: 1.2rem; }
+.filterControls { display: flex; flex-wrap: wrap; gap: .6rem 1.2rem; }
+.filterControls label { display: inline-flex; gap: .45rem; align-items: center; }
+.tableScroll { max-width: 100%; overflow: auto; border: 1px solid #cfd9d4; border-radius: .65rem; }
+.tableScroll:focus-visible { outline: 3px solid #407e67; outline-offset: 2px; }
+.tableScroll table { width: 100%; min-width: 760px; border-collapse: collapse; background: white; }
+.tableScroll caption { padding: .7rem; text-align: left; font-weight: 700; }
+.tableScroll th, .tableScroll td { min-width: 170px; max-width: 340px; padding: .7rem; border-top: 1px solid #d9e1dd; border-right: 1px solid #e5ebe8; text-align: left; vertical-align: top; }
+.tableScroll thead th { position: sticky; top: 0; background: #f0f5f2; z-index: 1; }
+.tableScroll tbody th { min-width: 210px; background: #fafcfb; }
+.cell { display: grid; gap: .4rem; line-height: 1.45; overflow-wrap: anywhere; }
+.badge { width: fit-content; padding: .15rem .45rem; border-radius: 999px; background: #e8f1eb; font-size: .75rem; font-weight: 700; }
+.badge[data-status="conflicting"], .badge[data-status="unverified"] { background: #ffedc7; }
+.badge[data-status="stale"], .badge[data-status="missing"] { background: #f5e6e3; }
+.sources { margin-top: .15rem; font-size: .83rem; }
+.sources ul { padding-left: 1.1rem; }
+.sources li { margin: .55rem 0; }
+.sources p { margin: .2rem 0; color: #4f5e57; }
+.selected { display: block; width: fit-content; margin: .35rem 0; color: #145d49; font-size: .8rem; font-weight: 700; }
+.rationale { margin-top: .55rem; font-size: .84rem; font-weight: 400; }
+.rationale p { line-height: 1.45; }
+.empty, .loading, .error { max-width: 980px; margin: 1rem auto; padding: .8rem; border-radius: .5rem; line-height: 1.5; }
+.empty { background: #f3f6f4; }
+.loading { background: #eef4fa; }
+.error { background: #fff0ed; border: 1px solid #e1aaa0; }
+.footer { max-width: 980px; margin: 2rem auto 0; padding-top: .5rem; border-top: 1px solid #d6dfdb; color: #53625b; font-size: .84rem; line-height: 1.5; }
+
+@media (max-width: 700px) {
+  .forms { grid-template-columns: 1fr; }
+  .savedForm { grid-template-columns: 1fr; align-items: stretch; }
+  .resultHeading { display: grid; }
+  .loadSaved { width: 100%; }
+  .tableScroll table { min-width: 680px; }
+  .tableScroll th, .tableScroll td { min-width: 150px; padding: .55rem; }
+}

@@ -18,6 +18,8 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       <body><nav aria-label="Feature navigation" style={{ padding: ".75rem 1rem", display: "flex", gap: "1rem" }}>
         {process.env.RESEARCH_ENABLED === "true" && <Link href="/research">Research</Link>}
         {process.env.DECISION_ENABLED === "true" && <Link href="/decisions">Decision support</Link>}
+        {process.env.DECISION_ENABLED === "true" && process.env.TRAVEL_ENABLED === "true" && <Link href="/travel">Travel</Link>}
+        {process.env.DECISION_ENABLED === "true" && process.env.SHOPPING_ENABLED === "true" && <Link href="/shopping">Shopping</Link>}
         {process.env.DECISION_ENABLED === "true" && process.env.DECISION_INSPECTION_ENABLED === "true" && <Link href="/development/decisions">Decision inspector</Link>}
       </nav>{children}</body>
     </html>
