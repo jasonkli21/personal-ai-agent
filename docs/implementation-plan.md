@@ -2,9 +2,9 @@
 
 This plan builds a usable personal chat system first, then progressively turns it into a memory and research-agent platform. Each phase should be evaluated before the next one adds complexity.
 
-Phases 1–6 are implemented locally. Phase 6 was explicitly authorized on
-2026-10-02. Decision gates remain disabled by default. External provider,
-emulator, and deployed verification gaps are recorded separately from
+Phases 1–7 are implemented locally. Phases 6 and 7 were explicitly authorized
+on 2026-10-02. Decision and domain gates remain disabled by default. External
+provider, emulator, and deployed verification gaps are recorded separately from
 implementation status in the phase guides and release records.
 
 For task-level dependencies, requirements, and acceptance criteria, see the
@@ -112,6 +112,12 @@ evidence source supplies a decision.
 **Outcome:** research turns into structured decision support instead of a generic web summary.
 
 ## Phase 7 — Build travel and shopping agents
+
+Implemented locally on 2026-10-02. See the [Phase 7 implementation guide](phase-7-implementation-guide.md),
+[provider ADRs](decisions/0013-nominatim-travel-place-source.md),
+[synthetic evaluation](releases/phase-7-travel-shopping.md), and the detailed
+[Phase 7 task plan](phase-7-implementation-plan.md). Provider, emulator, and
+deployed checks remain open.
 
 This phase validates thin AI-side travel and shopping modules with synthetic
 data. It does not require rich applications to live in this repository. Future

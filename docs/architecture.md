@@ -16,8 +16,8 @@ Gated Phase 4 post-terminal work -> durable memory job -> Pub/Sub
 Future separate domain applications -> explicit core API (after an auth boundary)
   domain apps own authoritative records, business rules, and rich UI
   Phase 6 adds reusable research entities, constraints, and ranking. Phase 7
-  may add thin travel/shopping intelligence; neither becomes authoritative
-  domain-app state.
+  travel/shopping modules extend those shared contracts; neither becomes
+  authoritative domain-app state.
 ```
 
 The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the API and worker. The deployment target is Cloud Run, with Firestore as the durable store, Pub/Sub for gated durable memory work, and Secret Manager for configured credentials. Repository contracts hide Firestore details from services; `llm` hides model-provider details. See [GCP deployment](gcp-deployment.md) for the runnable topology and cost boundaries.
@@ -35,7 +35,11 @@ The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the 
 - `entities` contains chat records and owner-scoped canonical research identities with immutable, evidence-backed claims.
 - `decisions` owns evidence snapshots, candidate evaluations, and read-only inspection contracts.
 - `ranking` applies deterministic freshness/conflict handling and hard constraints before explainable soft ranking.
-- `domains` contains Phase 7 placeholders for thin travel and shopping intelligence; future applications can own their separate state and UI.
+- `domains` registers thin travel and shopping schemas, provider mappings,
+  hard-constraint additions, ranking features, and comparison views on top of
+  shared Phase 5–6 services. Place/catalog adapters and domain gates are
+  independently configurable; these modules do not own authoritative trip or
+  purchase records.
 - `evaluation` measures behavior across memory, research, and domain recommendation cases before experiments are promoted.
 
 ## Data-lifetime rule
@@ -106,3 +110,20 @@ separate inspection gate exposes policy and candidate diagnostics without raw
 memory or hidden model reasoning. All decision gates default off. See the
 [Phase 6 guide](phase-6-implementation-guide.md), [ADR 0012](decisions/0012-evidence-grounded-decision-support.md),
 and [release evidence](releases/phase-6-decision-support.md).
+
+## Delivered Phase 7 domain boundary
+
+`domains` maps registered travel and shopping facts into the same evidence,
+entity, claim, constraint, and decision contracts. A domain adds typed display
+fields and ranking features only after the shared evaluator filters hard
+requirements. Immutable domain claim extensions and provider observations
+retain claim/evidence IDs, source policy, attribution, adapter version, and
+expiry in a bounded Firestore transaction. Comparison snapshots include
+visible constraints and policy versions. The browser proxy and pages require
+both the shared decision gate and an independent domain gate; comparison
+inspection has another gate. Nominatim is limited to submitted place searches,
+and Open Food Facts is limited to exact barcode identity lookup. Neither
+provider supplies current stays/offers in this implementation. See the
+[Phase 7 guide](phase-7-implementation-guide.md),
+[provider ADRs](decisions/0013-nominatim-travel-place-source.md), and
+[release evidence](releases/phase-7-travel-shopping.md).

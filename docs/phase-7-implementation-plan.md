@@ -105,7 +105,8 @@ successful recommendations.
 
 ### P7.1 — Define thin-domain extension contracts
 
-**Dependencies:** P7.0  
+**Dependencies:** P7.0
+
 **Decision required:** yes
 
 **Goal:** prevent domain code from duplicating platform logic.
@@ -238,7 +239,27 @@ Before declaring Phase 7 done, verify all task acceptance criteria and answer:
 1. Do travel and shopping reuse the same evidence, entity, constraint, and ranking boundaries?
 2. Are every price, availability, review, and recommendation appropriately attributed and fresh enough for its use?
 3. Can users compare candidates, filters, evidence, and rationale without reading hidden model reasoning?
+
 4. Do fixtures prove variant/place identity safety and constraint-first behavior?
 5. Has the phase avoided transactions, broad scraping, and iterative research?
+
+## Implementation status — 2026-10-02
+
+The offline Phase 7 implementation is delivered. Both domains use the shared
+Phase 5–6 evidence and decision path; registrations, provider observation and
+claim extensions, comparison snapshots, routes, workbench views, fake adapters,
+and 10 synthetic fixtures are implemented. The release record
+[`phase-7-travel-shopping.md`](releases/phase-7-travel-shopping.md) records
+the tested revision and offline results.
+
+The implementation is intentionally bounded by the available approved source
+surface: Nominatim supplies place identity/location, Open Food Facts supplies
+exact-barcode product identity, and synthetic data exercises stay and merchant
+offer decisions. It has no live hotel, flight, restaurant, merchant-offer,
+stock, shipping, return-policy, or review adapter. Those facts remain unknown
+without fresh source evidence and cannot satisfy the corresponding fail-closed
+requirements. Real provider, Firestore emulator, and deployment checks remain
+open. This is the external-verification boundary for the completion review, not
+evidence that a provider lookup can support a booking or purchase.
 
 Only after all answers are yes should work advance to Phase 8.

@@ -10,14 +10,19 @@ The end state is one reusable AI/research substrate with chat, memory, and evide
 
 ## Current state
 
-Phase 1–4 chat, context and memory, Phase 5 bounded research, and Phase 6
-evidence-backed decision support are implemented locally. Phase 6 was explicitly
-authorized on 2026-10-02; its decision and inspection gates remain disabled by
-default. Offline checks use synthetic evidence and fakes. Real Firestore,
-Gemini, licensed Brave, and deployed GCP behavior still need verification.
+Phase 1–4 chat, context and memory, Phase 5 bounded research, Phase 6
+evidence-backed decision support, and Phase 7 travel/shopping comparison
+modules are implemented locally. Phases 6 and 7 were explicitly authorized on
+2026-10-02; their decision and domain gates remain disabled by default. Offline
+checks use synthetic evidence and fakes. Real Firestore, Gemini, provider-rights,
+and deployed GCP behavior still need verification.
 See the Phase 5 [reviewed plan](phase-5-implementation-plan.md),
 [guide](phase-5-implementation-guide.md) and
 [release evidence](releases/phase-5-source-grounded-research.md).
+See the Phase 7 [implementation plan](phase-7-implementation-plan.md),
+[guide](phase-7-implementation-guide.md), and
+[release evidence](releases/phase-7-travel-shopping.md) for the bounded provider
+scope and verification gaps.
 Existing earlier-phase external gaps remain open.
 
 Implemented:
@@ -56,6 +61,11 @@ Implemented:
 - Session-backed and explicitly supplied evidence decision paths, a persisted
   Firestore repository, 15 deterministic decision fixtures, a source-grounded
   result view, and separately gated development inspection.
+- Versioned travel and shopping modules that reuse shared evidence, identity,
+  constraints, ranking, and decision snapshots; bounded Nominatim place lookup
+  and exact-barcode Open Food Facts catalog lookup remain independently gated.
+- Ten synthetic travel/shopping fixtures, domain-specific feature evaluation,
+  attributable comparison views, and a gated browser workbench.
 - Decision creation and inspection gates default off; current `local` ownership
   remains a development boundary, not authentication.
 - Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.
@@ -66,14 +76,16 @@ Not implemented:
 
 - Authentication or authorization.
 - User-facing memory management, broad inferred consolidation or contradiction adjudication.
-- Phase 7 domain-specific adapters and policies or Phase 8 iterative research.
+- Phase 8 iterative research.
 - General scheduled maintenance; Phase 4 provides explicit bounded jobs and recovery.
 
 Research/search/evidence implement the bounded Phase 5 pipeline; Phase 6 adds
-shared evidence-backed decision support. Domain packages remain placeholders.
+shared evidence-backed decision support and Phase 7 adds thin travel/shopping
+extensions.
 `memory` implements gated extraction, durable provenance, vector retrieval and inspection.
 `context` and `evaluation` now implement conversation budgeting and synthetic
-quality checks; `entities` still contains chat records.
+quality checks; `entities` contains both chat records and canonical research
+entities.
 See the [implementation guide](phase-1-implementation-guide.md) for delivered
 code and the [verification record](releases/phase-1-vertical-slice.md) for
 dated evidence. The [verification closeout plan](phase-1-verification-plan.md)
@@ -144,8 +156,9 @@ verification; Phase 3 was explicitly authorized and is now implemented locally.
 See its [guide](phase-3-implementation-guide.md) and
 [release evidence](releases/phase-3-simple-memory.md). Phases 5 and 6 are
 implemented locally after explicit user authorization; their external
-verification gaps remain open. Do not advance to Phase 7 without a completion
-review and explicit user direction.
+verification gaps remain open. Phase 7 is implemented locally; its provider,
+emulator, and deployment checks remain open. Do not add Phase 8 iterative
+research without a completion review and explicit user direction.
 
 Do not add long-term memory in Phase 1. Phase 2 handles context-window management; Phase 3 introduces simple memory only after basic chat is stable.
 
@@ -173,7 +186,8 @@ Resolve these in short architecture decision records before implementation depen
   Phase 1 collections, owner scoping, and indexes are implemented; see the
   [API contract](api-contract.md) and [ADR 0002](decisions/0002-firestore-native-persistence.md).
 - Additional search providers and their data, pricing, and attribution requirements. Phase 5's gated Brave snippet adapter and storage-rights policy are implemented locally.
-- Travel and shopping providers, only when those domain phases begin.
+- Additional travel and shopping providers, after separate policy review and
+  attribution/retention decisions.
 - Operational safeguards: budgets, usage alerts, logging retention, backups, export, and deletion behavior.
 
 ## How to start a new session
@@ -182,6 +196,6 @@ Resolve these in short architecture decision records before implementation depen
    [architecture](architecture.md), [implementation guide](phase-1-implementation-guide.md),
    and the plan for the active task. Read [GCP deployment](gcp-deployment.md)
    when working on infrastructure.
-2. Use the Phase 5 and Phase 6 guides and release records for delivered behavior and remaining verification gaps. Do not add Phase 7 domain work without explicit authorization.
+2. Use the Phase 5, Phase 6, and Phase 7 guides and release records for delivered behavior and remaining verification gaps. Do not add Phase 8 behavior without explicit authorization.
 3. Preserve the architectural invariants above.
 4. Once a phase is authorized, implement its smallest testable vertical slice, update tests and docs, and do not expand into a later phase without a user decision.

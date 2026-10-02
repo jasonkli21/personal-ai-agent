@@ -1,4 +1,4 @@
-# API contract (Phases 1–6)
+# API contract (Phases 1–7)
 
 This document defines the implemented HTTP boundary. All `/v1` routes operate
 for the current logical owner,
@@ -197,3 +197,40 @@ values, observation/expiry times, requirement outcomes, and source links. The
 development inspector is separately gated and read-only. See the
 [Phase 6 guide](phase-6-implementation-guide.md) and
 [decision-support ADR](decisions/0012-evidence-grounded-decision-support.md).
+
+## Phase 7 domain comparisons (`domain-module-v1`)
+
+Every domain route requires both `DECISION_ENABLED` and its domain-specific
+backend gate (`TRAVEL_ENABLED` or `SHOPPING_ENABLED`). The Next.js proxy
+enforces the same server-side gates; direct browser-to-API calls are not used.
+`GET /v1/domains` lists only enabled modules. The fixed `local` owner remains
+unauthenticated.
+
+| Route | Contract |
+| --- | --- |
+| `GET /v1/domains/{domain}/fixtures` | Lists bounded synthetic examples (`travel` or `shopping`). |
+| `POST /v1/domains/{domain}/lookup` | `domain-lookup-v1`: idempotency key, one bounded query, optional shared hard constraints/preferences, and result limit. Travel accepts a place query; shopping accepts an exact 8–14 digit barcode. Returns a saved comparison. |
+| `POST /v1/domains/{domain}/comparisons` | `domain-comparison-v1`: a Phase 6 decision request plus provider-observation extensions correlated to its evidence. |
+| `POST /v1/domains/{domain}/fixtures/{fixture_id}/compare` | Runs one deterministic synthetic decision fixture through the shared platform. |
+| `GET /v1/domains/{domain}/comparisons/{id}` | Returns the immutable comparison snapshot, registered field schema, core decision evidence/results, provider observations, and typed domain claim extensions. |
+| `GET /v1/domains/{domain}/comparisons/{id}/inspection` | Requires `DOMAIN_INSPECTION_ENABLED`; returns read-only source-policy and ID metadata, not raw private memory or hidden reasoning. |
+
+The comparison snapshot records the shared constraints and preferences,
+candidate IDs/order, result state, source links, freshness/conflict/missing
+statuses, rationale, and shared/domain policy versions. Local UI filters do not
+write a decision or rerun a provider. Malformed input returns 422; unavailable
+or disabled domain/comparison IDs return 404; provider, idempotency, and storage
+errors use bounded safe error codes.
+
+`TRAVEL_PLACES_ADAPTER=osm_nominatim` supports one user-submitted place or area
+lookup per request, with a Firestore-shared one-request-per-second limiter,
+application User-Agent/contact, seven-day place TTL, OSM attribution, and an
+explicit notice that submitted text goes to the provider. It does not provide
+autocomplete, bulk lookup, lodging, or current availability.
+`SHOPPING_PRODUCTS_ADAPTER=open_food_facts` supports exact barcode lookup,
+requests only bounded product identity fields, shares a Firestore rate record
+with a four-second minimum interval, and uses a thirty-day catalog TTL. It does
+not provide merchant offers, stock, shipping, or delivery. Both adapters and
+their policy-approval gates default off; adapter policy links and setup are in
+the [Phase 7 guide](phase-7-implementation-guide.md) and
+[ADRs](decisions/0013-nominatim-travel-place-source.md).
