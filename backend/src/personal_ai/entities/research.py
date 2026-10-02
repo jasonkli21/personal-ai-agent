@@ -204,7 +204,9 @@ class EntityClaim(DecisionRecord):
     original_value: str = Field(min_length=1, max_length=500)
     unit: str | None = Field(default=None, max_length=30)
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
-    evidence_refs: tuple[EvidenceReference, ...] = Field(min_length=1, max_length=12)
+    # Each of up to 12 deduplicated evidence passages may retain up to 12
+    # source observations from Phase 5; keep the complete attribution graph.
+    evidence_refs: tuple[EvidenceReference, ...] = Field(min_length=1, max_length=144)
     evidence_ids: tuple[UUID, ...] = Field(min_length=1, max_length=12)
     observed_at: datetime
     expires_at: datetime
@@ -231,21 +233,14 @@ class EntityClaim(DecisionRecord):
         return self
 
 
-class EvidenceEntityLink(DecisionRecord):
-    """Owner-scoped reverse index preserving the evidence-to-claim chain."""
-
-    id: UUID
-    owner_id: str
-    evidence_id: UUID
-    entity_id: UUID
-    claim_id: UUID
-    created_at: datetime
 
 
 class EntityMatch(DecisionRecord):
     id: UUID
+    decision_id: UUID
     subject_id: UUID
     owner_id: str
+    candidate_entity_id: UUID
     candidate_entity_ids: tuple[UUID, ...] = Field(max_length=100)
     selected_entity_id: UUID | None = None
     outcome: Literal["matched", "review", "no_match"]

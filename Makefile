@@ -1,4 +1,4 @@
-.PHONY: research-eval memory-lifecycle-eval memory-eval context-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend
+.PHONY: research-eval decision-eval memory-lifecycle-eval memory-eval context-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend
 .DEFAULT_GOAL := backend-test
 
 backend-build:
@@ -52,3 +52,7 @@ memory-lifecycle-eval:
 research-eval:
 
 	cd backend && python -m personal_ai.evaluation.research
+
+decision-eval:
+
+	cd backend && python -m personal_ai.evaluation.decision

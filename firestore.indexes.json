@@ -289,11 +289,11 @@
       ]
     },
     {
-      "collectionGroup": "evidence_entity_links",
+      "collectionGroup": "entity_claims",
       "queryScope": "COLLECTION",
       "fields": [
         {"fieldPath": "owner_id", "order": "ASCENDING"},
-        {"fieldPath": "evidence_id", "order": "ASCENDING"}
+        {"fieldPath": "evidence_ids", "arrayConfig": "CONTAINS"}
       ]
     },
     {
@@ -302,6 +302,14 @@
       "fields": [
         {"fieldPath": "owner_id", "order": "ASCENDING"},
         {"fieldPath": "subject_id", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "entity_matches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "decision_id", "order": "ASCENDING"}
       ]
     },
     {
@@ -362,6 +370,11 @@
     {
       "collectionGroup": "entity_claims",
       "fieldPath": "evidence_refs",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "entity_claims",
+      "fieldPath": "evidence_ids",
       "indexes": []
     },
     {

@@ -1,11 +1,14 @@
 """Deterministic freshness, hard-constraint, and explainable ranking policies."""
 
+import re
 import unicodedata
-from datetime import datetime
-from decimal import Decimal
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from math import asin, cos, radians, sin, sqrt
 from uuid import UUID, uuid5
+
+from pydantic import ValidationError
 
 from personal_ai.decisions.contracts import (
     AttributeStatus,
@@ -17,6 +20,7 @@ from personal_ai.decisions.contracts import (
 )
 from personal_ai.entities.research import (
     AvailabilityValue,
+    BooleanValue,
     CanonicalEntity,
     DateTimeValue,
     DateValue,
@@ -111,7 +115,120 @@ def literal_supported(original_value: str, passage: str) -> bool:
     """Conservatively accept only values literally present in attributed text."""
     normalize = lambda text: " ".join(unicodedata.normalize("NFKC", text).casefold().split())
     needle = normalize(original_value)
-    return bool(needle) and needle in normalize(passage)
+    haystack = normalize(passage)
+    if not needle:
+        return False
+    start = 0
+    while (position := haystack.find(needle, start)) >= 0:
+        end = position + len(needle)
+        left_ok = not needle[0].isalnum() or position == 0 or not haystack[position - 1].isalnum()
+        right_ok = not needle[-1].isalnum() or end == len(haystack) or not haystack[end].isalnum()
+        if left_ok and right_ok:
+            return True
+        start = position + 1
+    return False
+
+
+_NUMBER_PATTERN = r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+
+
+def literal_matches_typed_value(original_value: str, value: TypedValue) -> bool:
+    """Validate a proposed typed value against a conservatively parsed source literal."""
+    literal = unicodedata.normalize("NFKC", original_value).strip()
+    normalized = " ".join(literal.casefold().split())
+    semantic_literal = literal.rstrip(" .,:;")
+    normalized_semantic = " ".join(semantic_literal.casefold().split())
+
+    if isinstance(value, TextValue):
+        target = " ".join(unicodedata.normalize("NFKC", value.value).casefold().split())
+        return normalized == target
+    if isinstance(value, AvailabilityValue):
+        return normalized_semantic == value.value
+    if isinstance(value, BooleanValue):
+        return normalized_semantic in ({"true", "yes"} if value.value else {"false", "no"})
+
+    numbers = re.findall(rf"(?<![\w.]){_NUMBER_PATTERN}(?![\w.])", literal)
+    if isinstance(value, NumberValue):
+        if len(numbers) != 1:
+            return False
+        try:
+            return Decimal(numbers[0].replace(",", "")) == value.value
+        except InvalidOperation:
+            return False
+
+    if isinstance(value, MoneyValue):
+        if len(numbers) != 1:
+            return False
+        codes = re.findall(r"(?<![A-Z])([A-Z]{3})(?![A-Z])", literal.upper())
+        # Currency symbols are accepted only when they uniquely identify the
+        # currency; dollar and yen symbols deliberately remain ambiguous.
+        symbol_currency = {"€": "EUR", "£": "GBP"}.get(literal[:1])
+        if value.currency not in codes and symbol_currency != value.currency:
+            return False
+        try:
+            return Decimal(numbers[0].replace(",", "")) == value.amount
+        except InvalidOperation:
+            return False
+
+    if isinstance(value, QuantityValue):
+        if len(numbers) != 1:
+            return False
+        unit_match = re.search(r"([A-Za-z]+)\s*$", semantic_literal)
+        if unit_match is None:
+            return False
+        try:
+            parsed = QuantityValue(
+                amount=Decimal(numbers[0].replace(",", "")),
+                unit=unit_match.group(1),
+            )
+        except (InvalidOperation, ValidationError):
+            return False
+        return values_equal(parsed, value) is True
+
+    if isinstance(value, DateValue):
+        try:
+            return date.fromisoformat(semantic_literal) == value.value
+        except ValueError:
+            return False
+
+    if isinstance(value, DateTimeValue):
+        try:
+            parsed = datetime.fromisoformat(semantic_literal)
+        except ValueError:
+            return False
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return False
+        return parsed.astimezone(UTC) == value.value
+
+    if isinstance(value, DateWindowValue):
+        match = re.fullmatch(
+            r"\s*(\d{4}-\d{2}-\d{2})\s*(?:to|through|–|—)\s*(\d{4}-\d{2}-\d{2})\s*",
+            semantic_literal,
+            flags=re.IGNORECASE,
+        )
+        if match is None:
+            return False
+        try:
+            return (
+                date.fromisoformat(match.group(1)) == value.start
+                and date.fromisoformat(match.group(2)) == value.end
+            )
+        except ValueError:
+            return False
+
+    if isinstance(value, LocationValue):
+        match = re.fullmatch(
+            r"\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*",
+            semantic_literal,
+        )
+        if match is None:
+            return False
+        return (
+            round(float(match.group(1)), 7) == round(value.latitude, 7)
+            and round(float(match.group(2)), 7) == round(value.longitude, 7)
+        )
+
+    return False
 
 
 def _claim_value_match(left: EntityClaim, right: EntityClaim) -> bool:
@@ -121,6 +238,7 @@ def _claim_value_match(left: EntityClaim, right: EntityClaim) -> bool:
 
 def resolve_candidate(
     *,
+    decision_id: UUID,
     subject_id: UUID,
     owner_id: str,
     proposal: CandidateProposal,
@@ -155,7 +273,8 @@ def resolve_candidate(
     if len(exact) == 1:
         entity, feature = exact[0]
         match = EntityMatch(
-            id=match_id, subject_id=subject_id, owner_id=owner_id,
+            id=match_id, decision_id=decision_id, subject_id=subject_id, owner_id=owner_id,
+            candidate_entity_id=entity.id,
             candidate_entity_ids=(entity.id,), selected_entity_id=entity.id,
             outcome="matched", confidence=1.0, feature_values={feature: 1.0},
             evidence_ids=tuple(ref.evidence_id for ref in evidence_refs), created_at=now,
@@ -164,7 +283,8 @@ def resolve_candidate(
     if len(exact) > 1:
         ids = tuple(sorted((entity.id for entity, _ in exact), key=str))
         return EntityMatch(
-            id=match_id, subject_id=subject_id, owner_id=owner_id,
+            id=match_id, decision_id=decision_id, subject_id=subject_id, owner_id=owner_id,
+            candidate_entity_id=new_entity_id,
             candidate_entity_ids=ids, outcome="review", confidence=1.0,
             feature_values={"identifier_collision": 1.0},
             evidence_ids=tuple(ref.evidence_id for ref in evidence_refs), created_at=now,
@@ -204,7 +324,7 @@ def resolve_candidate(
         features = {"name_similarity": round(similarity, 6)}
         if shared_attributes:
             features["independent_attribute_match"] = 1.0
-        if score >= 0.4:
+        if score >= 0.5:
             scored.append((score, entity, features))
 
     scored.sort(key=lambda item: (-item[0], str(item[1].id)))
@@ -212,7 +332,8 @@ def resolve_candidate(
         score, entity, features = scored[0]
         if features.get("independent_attribute_match"):
             match = EntityMatch(
-                id=match_id, subject_id=subject_id, owner_id=owner_id,
+                id=match_id, decision_id=decision_id, subject_id=subject_id, owner_id=owner_id,
+                candidate_entity_id=entity.id,
                 candidate_entity_ids=(entity.id,), selected_entity_id=entity.id,
                 outcome="matched", confidence=score, feature_values=features,
                 evidence_ids=tuple(ref.evidence_id for ref in evidence_refs), created_at=now,
@@ -224,7 +345,8 @@ def resolve_candidate(
         best = top[0][0]
         ambiguous = len(top) > 1 and top[1][0] == best
         return EntityMatch(
-            id=match_id, subject_id=subject_id, owner_id=owner_id,
+            id=match_id, decision_id=decision_id, subject_id=subject_id, owner_id=owner_id,
+            candidate_entity_id=new_entity_id,
             candidate_entity_ids=tuple(item[1].id for item in top), outcome="review",
             confidence=best,
             feature_values={
@@ -236,7 +358,8 @@ def resolve_candidate(
         ), new_entity_id
 
     return EntityMatch(
-        id=match_id, subject_id=subject_id, owner_id=owner_id,
+        id=match_id, decision_id=decision_id, subject_id=subject_id, owner_id=owner_id,
+        candidate_entity_id=new_entity_id,
         candidate_entity_ids=(), outcome="no_match", confidence=0.0,
         feature_values={}, evidence_ids=tuple(ref.evidence_id for ref in evidence_refs), created_at=now,
     ), new_entity_id
@@ -270,7 +393,7 @@ def _status(
         else:
             status, reason = "verified", "fresh_attributed_claim"
     elif unverified:
-        status, reason = "unverified", "literal_support_not_established"
+        status, reason = "unverified", "source_value_not_validated"
     elif relevant:
         status, reason = "stale", "all_claims_expired_or_retracted"
     else:
@@ -362,12 +485,16 @@ def evaluate_candidates(
     now: datetime,
     preference_weight: float,
     score_enabled: bool = True,
+    identity_matches=(),
 ):
     """Filter first, then score only eligible candidates with a stable tie-break."""
     from personal_ai.decisions.contracts import CandidateEvaluation
 
     draft = []
     unknown_required = False
+    identity_by_entity: dict[UUID, list[EntityMatch]] = {}
+    for match in identity_matches:
+        identity_by_entity.setdefault(match.candidate_entity_id, []).append(match)
     for entity in entities:
         claims = claims_by_entity.get(entity.id, ())
         relevant = {(item.attribute, item.scope) for item in constraints} | {
@@ -380,6 +507,19 @@ def evaluate_candidates(
         status_lookup = {(item.attribute, item.scope): item for item in statuses}
         outcomes: list[ConstraintOutcome] = []
         exclusions: list[str] = []
+        candidate_matches = identity_by_entity.get(entity.id, [])
+        identity_outcome = (
+            "review" if any(match.outcome == "review" for match in candidate_matches)
+            else "matched" if any(match.outcome == "matched" for match in candidate_matches)
+            else "no_match"
+        )
+        identity_confidence = max((match.confidence for match in candidate_matches), default=0.0)
+        identity_candidate_ids = tuple(sorted({
+            candidate_id for match in candidate_matches for candidate_id in match.candidate_entity_ids
+        }, key=str))
+        if identity_outcome == "review":
+            exclusions.append("identity_ambiguous")
+            unknown_required = True
         verified_claims = tuple(
             claim for claim in claims
             if claim.claim_status == "verified" and claim.expires_at > now
@@ -421,6 +561,9 @@ def evaluate_candidates(
             ))
         draft.append({
             "entity": entity,
+            "identity_outcome": identity_outcome,
+            "identity_confidence": identity_confidence,
+            "identity_candidate_ids": identity_candidate_ids,
             "claims": claims,
             "statuses": statuses,
             "outcomes": tuple(outcomes),
@@ -475,12 +618,19 @@ def evaluate_candidates(
     else:
         eligible.sort(key=lambda item: (normalize_name(item["entity"].canonical_name), str(item["entity"].id)))
 
-    ranks = {item["entity"].id: index + 1 for index, item in enumerate(eligible)}
+    ranks = (
+        {item["entity"].id: index + 1 for index, item in enumerate(eligible)}
+        if score_enabled
+        else {}
+    )
     results = tuple(
         CandidateEvaluation(
             id=uuid5(decision_id, f"candidate-evaluation:{item['entity'].id}"),
             decision_id=decision_id,
             entity_id=item["entity"].id,
+            identity_outcome=item["identity_outcome"],
+            identity_confidence=item["identity_confidence"],
+            identity_candidate_entity_ids=item["identity_candidate_ids"],
             claim_ids=tuple(sorted((claim.id for claim in item["claims"]), key=str)),
             eligibility=item["eligible"],
             attribute_statuses=item["statuses"],

@@ -27,10 +27,29 @@ from personal_ai.entities.research import (
     QuantityValue,
     TextValue,
 )
-from personal_ai.ranking.policy import evaluate_candidates, resolve_candidate
+from personal_ai.ranking.policy import (
+    evaluate_candidates,
+    literal_matches_typed_value,
+    literal_supported,
+    resolve_candidate,
+)
 from personal_ai.settings import Settings
 
 NOW = datetime(2026, 10, 2, tzinfo=UTC)
+
+
+def test_claim_literal_matching_is_boundary_aware_and_conservative_about_currency():
+    assert not literal_supported("red", "Infrared finish")
+    assert literal_supported("red", "The finish is red.")
+    assert not literal_matches_typed_value(
+        "$40", MoneyValue(amount=Decimal(40), currency="USD")
+    )
+    assert literal_matches_typed_value(
+        "$40 USD", MoneyValue(amount=Decimal(40), currency="USD")
+    )
+    assert not literal_matches_typed_value(
+        "$40 USD", MoneyValue(amount=Decimal(400), currency="USD")
+    )
 
 
 def evidence(*, owner="local", evidence_id=None, observed=NOW, expires=None):
@@ -66,7 +85,7 @@ def test_resolution_requires_independent_identity_support_and_abstains_on_ambigu
     stored = entity("Blue widget", identifiers={"catalog": "abc-1"})
     proposal = CandidateProposal(entity_type="object", canonical_name="Blue widget", identifiers={"catalog": "abc-1"})
     matched, selected = resolve_candidate(
-        subject_id=uuid4(), owner_id="local", proposal=proposal, proposed_claims=(),
+        decision_id=uuid4(), subject_id=uuid4(), owner_id="local", proposal=proposal, proposed_claims=(),
         evidence_refs=(ref,), entities=(stored,), aliases=(), claims_by_entity={},
         new_entity_id=uuid4(), now=NOW, threshold=0.9, match_id=uuid4(),
     )
@@ -74,7 +93,7 @@ def test_resolution_requires_independent_identity_support_and_abstains_on_ambigu
 
     near = CandidateProposal(entity_type="object", canonical_name="Blue widget pro")
     review, new_id = resolve_candidate(
-        subject_id=uuid4(), owner_id="local", proposal=near, proposed_claims=(),
+        decision_id=uuid4(), subject_id=uuid4(), owner_id="local", proposal=near, proposed_claims=(),
         evidence_refs=(ref,), entities=(stored,), aliases=(), claims_by_entity={},
         new_entity_id=uuid4(), now=NOW, threshold=0.9, match_id=uuid4(),
     )
@@ -82,7 +101,7 @@ def test_resolution_requires_independent_identity_support_and_abstains_on_ambigu
 
     duplicate = entity("Different label", identifiers={"catalog": "abc-1"})
     ambiguous, _ = resolve_candidate(
-        subject_id=uuid4(), owner_id="local", proposal=proposal, proposed_claims=(),
+        decision_id=uuid4(), subject_id=uuid4(), owner_id="local", proposal=proposal, proposed_claims=(),
         evidence_refs=(ref,), entities=(stored, duplicate), aliases=(), claims_by_entity={},
         new_entity_id=uuid4(), now=NOW, threshold=0.9, match_id=uuid4(),
     )
@@ -106,7 +125,7 @@ def test_alias_and_fresh_independent_claim_can_resolve_but_stale_claim_cannot():
         created_at=NOW,
     )
     matched, selected = resolve_candidate(
-        subject_id=uuid4(), owner_id="local", proposal=proposal, proposed_claims=(new_claim,),
+        decision_id=uuid4(), subject_id=uuid4(), owner_id="local", proposal=proposal, proposed_claims=(new_claim,),
         evidence_refs=(ref,), entities=(stored,), aliases=(alias,),
         claims_by_entity={stored.id: (old_claim,)}, new_entity_id=uuid4(), now=NOW,
         threshold=0.9, match_id=uuid4(),
@@ -116,7 +135,7 @@ def test_alias_and_fresh_independent_claim_can_resolve_but_stale_claim_cannot():
     stale_ref = evidence(observed=NOW - timedelta(days=4), expires=NOW - timedelta(days=1))
     stale_claim = claim("color", TextValue(value="blue"), stale_ref, entity_id=stored.id)
     abstained, selected = resolve_candidate(
-        subject_id=uuid4(), owner_id="local", proposal=proposal, proposed_claims=(new_claim,),
+        decision_id=uuid4(), subject_id=uuid4(), owner_id="local", proposal=proposal, proposed_claims=(new_claim,),
         evidence_refs=(ref,), entities=(stored,), aliases=(alias,),
         claims_by_entity={stored.id: (stale_claim,)}, new_entity_id=uuid4(), now=NOW,
         threshold=0.9, match_id=uuid4(),

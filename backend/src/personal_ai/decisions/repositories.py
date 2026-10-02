@@ -23,7 +23,17 @@ class DecisionRepository(Protocol):
 
     def list_aliases(self, owner_id: str, entity_ids: tuple[UUID, ...]) -> tuple[EntityAlias, ...]: ...
 
-    def list_claims(self, owner_id: str, entity_ids: tuple[UUID, ...]) -> tuple[EntityClaim, ...]: ...
+    def list_claims(
+        self,
+        owner_id: str,
+        entity_ids: tuple[UUID, ...],
+        attributes: tuple[str, ...] = (),
+        limit: int = 500,
+    ) -> tuple[EntityClaim, ...]: ...
+
+    def find_claims_by_evidence(
+        self, owner_id: str, evidence_id: UUID, limit: int = 100
+    ) -> tuple[EntityClaim, ...]: ...
 
     def create(self, result: DecisionResult) -> DecisionResult: ...
 
@@ -49,7 +59,7 @@ class InMemoryDecisionRepository:
                 and entity.status == "active"
                 and entity.owner_scope in {f"owner:{owner_id}", "shared"}
             ]
-            return tuple(sorted(matches, key=lambda entity: str(entity.id))[:limit])
+            return tuple(sorted(matches, key=lambda entity: str(entity.id))[: limit + 1])
 
     def list_aliases(self, owner_id, entity_ids):
         with self.lock:
@@ -59,13 +69,22 @@ class InMemoryDecisionRepository:
                 if alias.entity_id in allowed and alias.owner_id in {owner_id, "*"}
             ), key=lambda alias: str(alias.id)))
 
-    def list_claims(self, owner_id, entity_ids):
+    def list_claims(self, owner_id, entity_ids, attributes=(), limit=500):
         with self.lock:
             allowed = set(entity_ids)
-            return tuple(sorted((
+            matches = sorted((
                 claim for claim in self.claims.values()
                 if claim.entity_id in allowed and claim.owner_id == owner_id
-            ), key=lambda claim: str(claim.id)))
+                and (not attributes or claim.attribute in attributes)
+            ), key=lambda claim: (str(claim.entity_id), claim.attribute, str(claim.id)))
+            return tuple(matches[: limit + 1])
+
+    def find_claims_by_evidence(self, owner_id, evidence_id, limit=100):
+        with self.lock:
+            return tuple(sorted((
+                claim for claim in self.claims.values()
+                if claim.owner_id == owner_id and evidence_id in claim.evidence_ids
+            ), key=lambda claim: str(claim.id))[:limit])
 
     def create(self, result):
         with self.lock:
@@ -87,6 +106,10 @@ class InMemoryDecisionRepository:
                 old_claim = self.claims.get(claim.id)
                 if old_claim and old_claim != claim:
                     raise DecisionError("claim_immutability_conflict")
+            for alias in result.aliases:
+                old_alias = self.aliases.get(alias.id)
+                if old_alias and old_alias != alias:
+                    raise DecisionError("decision_record_conflict")
             for entity in result.entities:
                 self.entities.setdefault(entity.id, entity)
             for alias in result.aliases:

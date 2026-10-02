@@ -165,6 +165,11 @@ class DecisionCreateRequest(DecisionRecord):
         ids = [item.evidence_id for item in self.supplied_evidence]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate evidence id")
+        attributes = {
+            item.attribute for item in self.constraints
+        } | {item.attribute for item in self.preferences}
+        if len(attributes) > 30:
+            raise ValueError("too many distinct comparison attributes")
         constraint_ids = [item.id for item in self.constraints]
         if len(constraint_ids) != len(set(constraint_ids)):
             raise ValueError("duplicate constraint id")
@@ -188,7 +193,7 @@ class EvidenceSnapshot(DecisionRecord):
     id: UUID
     decision_id: UUID
     owner_id: str
-    evidence_refs: tuple[EvidenceReference, ...] = Field(max_length=36)
+    evidence_refs: tuple[EvidenceReference, ...] = Field(max_length=250)
     policy_version: Literal["evidence-snapshot-v1"] = "evidence-snapshot-v1"
     created_at: datetime
 
@@ -196,8 +201,11 @@ class EvidenceSnapshot(DecisionRecord):
     def evidence_is_owner_scoped(self):
         if any(ref.owner_id != self.owner_id for ref in self.evidence_refs):
             raise ValueError("foreign owner evidence reference")
-        if len({ref.evidence_id for ref in self.evidence_refs}) != len(self.evidence_refs):
-            raise ValueError("duplicate evidence reference")
+        source_pairs = {
+            (ref.evidence_id, ref.source_observation_id) for ref in self.evidence_refs
+        }
+        if len(source_pairs) != len(self.evidence_refs):
+            raise ValueError("duplicate source reference")
         return self
 
 
@@ -236,7 +244,7 @@ class Recommendation(DecisionRecord):
     selected_entity_id: UUID | None = None
     candidate_order: tuple[UUID, ...] = Field(default=(), max_length=24)
     supporting_claim_ids: tuple[UUID, ...] = Field(default=(), max_length=40)
-    evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=36)
+    evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=250)
     explanation_codes: tuple[str, ...] = Field(default=(), max_length=40)
 
     @model_validator(mode="after")
@@ -261,6 +269,7 @@ class DecisionSnapshot(DecisionRecord):
     candidate_ids: tuple[UUID, ...] = Field(max_length=24)
     evidence_snapshot_id: UUID
     policy_versions: PolicyVersions
+    recommendation: Recommendation
     state: Literal["recommended", "eligible_unranked", "research_needed", "no_verified_match"]
     selected_entity_id: UUID | None = None
     created_at: datetime
@@ -271,6 +280,11 @@ class DecisionSnapshot(DecisionRecord):
             raise ValueError("selection must reference a candidate")
         if (self.state == "recommended") != (self.selected_entity_id is not None):
             raise ValueError("recommendation state and selection disagree")
+        if (
+            self.recommendation.status != self.state
+            or self.recommendation.selected_entity_id != self.selected_entity_id
+        ):
+            raise ValueError("snapshot recommendation does not match decision state")
         if len(set(self.candidate_ids)) != len(self.candidate_ids):
             raise ValueError("duplicate candidate entity")
         return self
@@ -281,7 +295,7 @@ class AttributeStatus(DecisionRecord):
     scope: str | None = None
     status: Literal["verified", "conflicting", "stale", "missing", "unverified"]
     claim_ids: tuple[UUID, ...] = Field(default=(), max_length=40)
-    evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=36)
+    evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=250)
     reason: str = Field(min_length=1, max_length=100)
 
 
@@ -291,14 +305,14 @@ class ConstraintOutcome(DecisionRecord):
     outcome: Literal["pass", "fail", "unknown"]
     reason: str = Field(min_length=1, max_length=100)
     claim_ids: tuple[UUID, ...] = Field(default=(), max_length=40)
-    evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=36)
+    evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=250)
 
 
 class FeatureScore(DecisionRecord):
     name: str
     value: float | None = Field(ge=0, le=1)
     weight: float = Field(ge=0, le=1)
-    evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=36)
+    evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=250)
     missing_treatment: Literal["zero", "omit"] = "zero"
 
 
@@ -306,6 +320,9 @@ class CandidateEvaluation(DecisionRecord):
     id: UUID
     decision_id: UUID
     entity_id: UUID
+    identity_outcome: Literal["matched", "review", "no_match"] = "no_match"
+    identity_confidence: float = Field(default=0, ge=0, le=1)
+    identity_candidate_entity_ids: tuple[UUID, ...] = Field(default=(), max_length=100)
     claim_ids: tuple[UUID, ...] = Field(default=(), max_length=40)
     eligibility: bool
     attribute_statuses: tuple[AttributeStatus, ...] = Field(default=(), max_length=40)
@@ -321,6 +338,8 @@ class CandidateEvaluation(DecisionRecord):
             raise ValueError("eligible candidate cannot have exclusion reasons")
         if not self.eligibility and self.rank is not None:
             raise ValueError("ineligible candidate cannot be ranked")
+        if self.eligibility and self.identity_outcome == "review":
+            raise ValueError("ambiguous identity cannot be eligible")
         return self
 
 
@@ -347,6 +366,7 @@ class DecisionResult(DecisionRecord):
         if (
             self.recommendation.status != self.decision.state
             or self.recommendation.selected_entity_id != self.decision.selected_entity_id
+            or self.recommendation != self.decision.recommendation
         ):
             raise ValueError("recommendation does not match persisted decision")
         if any(
@@ -354,15 +374,26 @@ class DecisionResult(DecisionRecord):
             for entity in self.entities
         ):
             raise ValueError("foreign owner entity")
-        evidence_ids = {ref.evidence_id for ref in self.evidence_snapshot.evidence_refs}
+        evidence_source_pairs = {
+            (ref.evidence_id, ref.source_observation_id)
+            for ref in self.evidence_snapshot.evidence_refs
+        }
         claims_by_id = {claim.id: claim for claim in self.claims}
         for claim in self.claims:
             if claim.owner_id != self.decision.owner_id or claim.entity_id not in entity_ids or any(
-                ref.evidence_id not in evidence_ids for ref in claim.evidence_refs
+                (ref.evidence_id, ref.source_observation_id) not in evidence_source_pairs
+                for ref in claim.evidence_refs
             ):
                 raise ValueError("claim provenance is not in the decision snapshot")
         if any(
-            alias.entity_id not in entity_ids or alias.owner_id != self.decision.owner_id
+            alias.entity_id not in entity_ids
+            or (
+                alias.owner_id != self.decision.owner_id
+                and not (
+                    alias.owner_id == "*"
+                    and next(entity for entity in self.entities if entity.id == alias.entity_id).owner_scope == "shared"
+                )
+            )
             for alias in self.aliases
         ):
             raise ValueError("alias provenance is not owner-scoped")
@@ -390,7 +421,8 @@ class DecisionResult(DecisionRecord):
                 raise ValueError("recommendation requires eligible claim and evidence provenance")
             if (
                 self.recommendation.candidate_order[0] != evaluation.entity_id
-                or set(self.recommendation.supporting_claim_ids) != set(evaluation.claim_ids)
+                or not set(self.recommendation.supporting_claim_ids).issubset(evaluation.claim_ids)
+                or not self.recommendation.supporting_claim_ids
             ):
                 raise ValueError("recommendation omits selected candidate provenance")
             claim_evidence_ids = {
@@ -398,9 +430,12 @@ class DecisionResult(DecisionRecord):
                 for claim_id in self.recommendation.supporting_claim_ids
                 for ref in claims_by_id[claim_id].evidence_refs
             }
-            if not claim_evidence_ids.issubset(self.recommendation.evidence_ids):
-                raise ValueError("recommendation omits evidence provenance")
-        if any(match.owner_id != self.decision.owner_id for match in self.matches):
+            if claim_evidence_ids != set(self.recommendation.evidence_ids):
+                raise ValueError("recommendation evidence provenance does not match its claims")
+        if any(
+            match.owner_id != self.decision.owner_id or match.decision_id != self.decision.id
+            for match in self.matches
+        ):
             raise ValueError("foreign owner entity match")
         return self
 
