@@ -30,4 +30,6 @@ coverage/
 # Local data and generated artifacts
 data/
 artifacts/
+dist/
+*.tsbuildinfo
 *.sqlite3

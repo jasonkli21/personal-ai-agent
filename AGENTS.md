@@ -28,7 +28,8 @@
 ## Setup and checks
 
 Follow the root README for installation. Use Python 3.11+ with the backend
-virtual environment activated, Node 22 on `PATH`, and pnpm 11.19.0. Install
+virtual environment activated, uv 0.11.13, Node 22 on `PATH`, and pnpm 11.19.0. Install
+backend dependencies with the README's locked uv sync steps. Install
 frontend dependencies with `pnpm install --frozen-lockfile`.
 
 From the repo root:
@@ -42,7 +43,11 @@ make frontend-typecheck
 ```
 
 Run checks relevant to the change; run all five for changes spanning both
-applications. For deployment-script edits also run
+applications. For dependency or build changes also run `make backend-build`
+and/or `make frontend-build`, plus the affected Docker build when Docker is
+available. CI checks backend packaging on Python 3.11/3.12 and both images.
+See `docs/dependency-management.md` for lockfile maintenance.
+For deployment-script edits also run
 `bash -n infrastructure/gcp/deploy.sh`. Finish with `git diff --check`.
 Documentation-only edits need link/content review and `git diff --check`.
 

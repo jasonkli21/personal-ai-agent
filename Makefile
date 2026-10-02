@@ -1,4 +1,13 @@
-.PHONY: backend-test backend-lint frontend-test frontend-lint frontend-typecheck run-backend run-frontend
+.PHONY: backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend
+.DEFAULT_GOAL := backend-test
+
+backend-build:
+
+	cd backend && uv build --no-build-isolation
+
+frontend-build:
+
+	cd frontend && pnpm run build
 
 backend-test:
 

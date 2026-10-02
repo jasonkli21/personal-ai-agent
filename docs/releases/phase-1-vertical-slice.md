@@ -39,3 +39,24 @@ This record contains no keys, URLs, or chat content.
 
 Firestore Emulator persistence and automated client-disconnect integration
 also remain unverified. See the [verification closeout plan](../phase-1-verification-plan.md).
+
+## Locked dependency and build verification — 2026-10-01
+
+Verified the build-management changes on top of `dcef20a` before their commit:
+
+- Resolved and checked `backend/uv.lock`; installed its dev/build dependencies
+  into a fresh temporary Python 3.11 environment. Backend tests: 32 passed,
+  one credentialed test skipped; Ruff passed.
+- Built the backend source distribution and wheel with locked build tools.
+- Installed the production dependencies and noneditable application into a
+  separate fresh environment using the Docker sync sequence. Application,
+  Gemini adapter, and Firestore adapter imports passed; pytest was absent.
+- Frontend pnpm 11.19.0 frozen-lockfile install passed. All 10 tests, ESLint,
+  TypeScript, and the Next.js production build passed.
+- Documentation links, workflow YAML parsing, deployment shell syntax, and
+  diff whitespace checks passed.
+
+Docker was unavailable locally, so container builds were not run. CI now
+includes both Docker builds and Python 3.11/3.12 backend checks; their results
+are not yet recorded. Provider, emulator, and deployed verification remain
+open. No Phase 2 implementation was started.

@@ -41,19 +41,21 @@ the public bootstrap deployment for sensitive personal data.
 
 ### Prerequisites
 
-- Python 3.11 or newer, with `pip` and virtual-environment support (the Docker image uses Python 3.12).
+- Python 3.11 or newer (the Docker image uses Python 3.12) and uv 0.11.13.
 - Node.js 22 and pnpm 11.19.0 (the version pinned by `frontend/package.json`).
 - No GCP account, cloud credentials, Firestore Emulator, or Gemini API key is required for the quality checks.
 
 ### Install dependencies
 
-Create and activate an isolated Python environment, then install the backend development dependencies:
+Install the backend from its committed lockfile, including locked build tools,
+then activate the isolated environment:
 
 ```sh
-python -m venv backend/.venv
+cd backend
+uv sync --locked --only-group build --no-install-project
+uv sync --locked --extra dev --group build --no-build-isolation
+cd ..
 source backend/.venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e "./backend[dev]"
 ```
 
 Install the frontend dependencies from the committed lockfile:
@@ -103,6 +105,8 @@ Run these commands from the repository root. They do not need cloud credentials 
 | `make frontend-test` | Frontend Vitest suite |
 | `make frontend-lint` | Frontend ESLint checks |
 | `make frontend-typecheck` | Frontend TypeScript checks |
+| `make backend-build` | Backend source distribution and wheel |
+| `make frontend-build` | Next.js production build |
 
 For local development, run `make run-backend` and `make run-frontend` in separate terminals. The API listens on port 8000 and the web app on port 3000.
 
@@ -113,7 +117,10 @@ unavailable, confirm the backend is running and `API_BASE_URL` remains
 `http://localhost:8000`; if the turn fails with invalid configuration, set the
 model key and verify `AI_PROVIDER=gemini` and `AI_MODEL` in `backend/.env`.
 
-To verify that a check detects a failure, temporarily change either health-test assertion or the frontend expected application name, run its corresponding command, and then revert that temporary edit. CI runs the same five quality checks on pull requests and pushes to `main`; it does not deploy or use secrets.
+To verify that a check detects a failure, temporarily change either health-test assertion or the frontend expected application name, run its corresponding command, and then revert that temporary edit. CI runs the five quality checks, backend packaging on Python 3.11/3.12, the Next.js production build, and both Docker builds on pull requests and pushes to `main`; it does not deploy or use secrets.
+
+See [dependency and build management](docs/dependency-management.md) for lockfile
+updates, Docker build commands, and the limits of build reproducibility.
 
 For AI coding sessions, follow [AGENTS.md](AGENTS.md), then start with the
 [project brief](docs/project-brief.md). It

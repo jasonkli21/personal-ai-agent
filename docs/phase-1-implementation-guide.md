@@ -360,6 +360,8 @@ make backend-lint
 make frontend-test
 make frontend-lint
 make frontend-typecheck
+make backend-build
+make frontend-build
 bash -n infrastructure/gcp/deploy.sh
 git diff --check
 ```
@@ -367,3 +369,7 @@ git diff --check
 For behavior that requires credentials, use the opt-in Gemini manual test and
 the Phase 1 deployment checklist rather than placing credentials in test or
 source files.
+
+Dependency and build setup now uses the committed uv and pnpm lockfiles; see
+[dependency management](dependency-management.md). CI additionally builds the
+backend packages on Python 3.11/3.12 and both Docker images.
