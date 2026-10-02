@@ -89,7 +89,7 @@ P5.0 Fixtures/baseline ─> P5.1 Contracts ─> P5.2 Session/evidence storage �
 P2 context budgets + P3/P4 memory boundary ────────────────────────────────────────────────────────────────────────────────────────────────────────────────> P5.7
 ```
 
-Tasks marked **decision required** stop for input only if the stated default is unsuitable. All other work must remain within this phase.
+The user authorized review and implementation on 2026-10-02, including routine decisions and commits. The defaults below are accepted for this implementation; no further approval gate is required.
 
 ---
 
@@ -243,3 +243,73 @@ Before declaring Phase 5 done, verify all task acceptance criteria and answer:
 6. Has work avoided entities, recommendation ranking, domain modules, iterative loops, and authentication?
 
 Only after all answers are yes should work advance to Phase 6.
+
+## Reviewed execution decisions (2026-10-02)
+
+Review against the delivered Phase 2–4 code identified these gaps and resolutions:
+
+1. **Execution and replay:** `POST /v1/research` atomically creates a pending session
+   using an owner-scoped idempotency key and normalized request fingerprint.
+   Reusing a key with different input returns 409. `POST /v1/research/{id}/run`
+   claims a fenced, single execution and streams milestones; a concurrent run
+   returns 409. Terminal replay performs no searches. Disconnect/cancellation
+   fails the claimed session; process loss is exposed as failed after the durable
+   execution deadline. There is no background scheduler or implicit resume.
+2. **Physical persistence:** store the six required record types and synthesis
+   metadata in one bounded `research_sessions` aggregate, with transactional
+   `research_request_keys` mappings. Atomic compare-and-set replaces the aggregate
+   under a run token. Nested records remain independently typed, immutable and
+   attributable. This replaces separate per-record collections/indexes for this
+   bounded phase and prevents partial provenance writes. No raw provider response
+   or full page is retained. Exempt nested payloads from Firestore indexing.
+3. **Source policy:** use Brave web-search snippets only, through a fixed HTTPS
+   endpoint, without fetching result URLs or following redirects. Production use
+   requires `RESEARCH_PROVIDER_STORAGE_APPROVED=true` and an operator-confirmed
+   subscription granting storage/AI use rights. The standard terms alone do not
+   authorize durable result storage. Link to the original URL; reject unsafe URLs
+   from evidence even though they are never fetched. No crawler/robots client is
+   needed because this implementation never requests publisher pages.
+4. **Bounds:** default to one normalized query (up to three through an injected
+   planner), eight total sources, 128 KiB decoded response per attempt, 1,200
+   characters per passage, 2 attempts per query, serial execution and one whole
+   session deadline. Rate-limit the adapter process; distributed deployment must
+   separately respect subscription quotas. Redirect/concurrency settings are
+   fixed at zero/one until fetch/concurrency support is reviewed.
+5. **Freshness:** explicit `general` (24 hours) and `current` (1 hour) request
+   intents; observation time means API retrieval time, never publication time.
+   Honor known publication dates without inventing them. Session result expiry
+   is the earliest selected evidence expiry. Detail views derive `expired` and
+   withhold the answer; expired records remain auditable.
+6. **Extraction/dedupe:** strip markup to bounded literal passages. Merge exact
+   normalized content with all observation links. Collapse canonical URL repeats
+   only when content also matches; differing passages remain visible. Record
+   conservative near-duplicate relationships without discarding them, since
+   negation/numbers can encode material disagreements.
+7. **Grounding:** arbitrary prose citation validation cannot prove entailment.
+   Use a strict JSON synthesis contract selecting exact excerpts from the
+   selected evidence; require every selected record to be represented and reject
+   unknown IDs, altered quotations, direct links or malformed output. Render
+   validated excerpts with numbered source links and a fixed uncertainty notice.
+   This intentionally delivers a cited evidence answer rather than unrestricted
+   model conclusions. Empty/invalid synthesis becomes `insufficient`; provider
+   failure becomes `failed`. All model requests use the shared assembler and
+   count the entire evidence wrapper plus mandatory question, preserving response
+   reserve. No research data is sent to memory extraction.
+8. **Extensions:** deterministic planner/selector are delivered defaults;
+   replaceable planner/reranker protocols and failure fallback are exercised
+   offline. No second provider/model planner is required for this phase. Research
+   starts with standalone user input, no conversational history or memory hints;
+   this avoids accidental disclosure and leaves normal chat unchanged.
+9. **Verification:** fixtures must drive the complete fake-backed pipeline,
+   not just helper functions. Add repository transaction tests, citation/context
+   bounds, stale replay, ASGI disconnect and proxy cancellation, UI retry and
+   disabled behavior. Record external Firestore/Brave/Gemini/deployment checks
+   as pending. Ship a separate gated research page and inspection API.
+
+Cohesive commits after this plan review: contracts/storage/policy; pipeline/API;
+UI/evaluation/documentation and any integration hardening. Optional extensions
+must remain within Phase 5; Phase 6/8 features remain excluded.
+
+Provider references reviewed: [Brave web-search API](https://api-dashboard.search.brave.com/api-reference/web/search/get),
+[storage-rights FAQ](https://brave.com/search/api/), and
+[terms](https://api-dashboard.search.brave.com/documentation/resources/terms-of-service).
