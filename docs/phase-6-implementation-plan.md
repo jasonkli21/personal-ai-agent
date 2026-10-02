@@ -6,6 +6,11 @@ This plan turns Phase 5 research evidence into structured decision support. Phas
 
 Phase 6 adds canonical entities, conservative entity resolution, deterministic hard constraints, explainable soft ranking, and evaluations for decisions based on fresh evidence. It does not add travel/shopping-specific adapters or schemas, iterative research, learned ranking, authentication, or autonomous purchase/booking actions.
 
+These are reusable research and decision records, not authoritative domain-app
+state. A future separate application owns its trips, itineraries, bookings,
+purchases, business rules, and rich UI. The core may return evidence-backed
+candidates and decisions for that application to validate and use.
+
 ## Delivery conventions and cross-cutting requirements
 
 - Keep a canonical entity separate from each evidence-backed assertion about
@@ -16,6 +21,13 @@ Phase 6 adds canonical entities, conservative entity resolution, deterministic h
   candidate/entity IDs, claim/evidence IDs, policy and feature versions,
   constraint outcome, score components, rank/tie-break result, and generation
   time. Never mutate this record to make a later result appear historical.
+- Preserve the origin and owner scope of each referenced claim and evidence
+  record. A Phase 5 research-session ID is present when that session supplied
+  evidence, but is not required for reusable constraint or ranking contracts.
+  The evidence snapshot must retain enough immutable attribution, observation,
+  expiry, and policy data to reconstruct a decision while those records are
+  retained. Provider retention/deletion obligations apply to decision snapshots
+  as well as source sessions; expiry never grants a right to retain content.
 - Normalize money, units, time zones, locale, and geographic distance at typed
   boundaries. Preserve the original value/unit/currency and conversion source
   where conversion matters. An unavailable exchange rate or ambiguous unit is
@@ -53,10 +65,10 @@ Phase 7 can extend fields without changing prior decision meaning.
 
 | Record | Required fields |
 | --- | --- |
-| Canonical entity | `id`, `entity_type`, `canonical_name`, `owner_scope`, `identity_version`, `created_at`, `updated_at`, `status` |
-| Entity claim | `id`, `entity_id`, `attribute`, `typed_value`, `original_value`, `unit` (nullable), `currency` (nullable), `evidence_ids`, `observed_at`, `expires_at`, `claim_status`, `schema_version` |
+| Canonical entity | `id`, `entity_type`, `canonical_name`, `owner_scope`, `identity_version`, `created_at`, `updated_at`, `status`; research identity, not an authoritative app record |
+| Entity claim | `id`, `entity_id`, `attribute`, `typed_value`, `original_value`, `unit` (nullable), `currency` (nullable), owner-scoped evidence references, `observed_at`, `expires_at`, `claim_status`, `schema_version` |
 | Entity match | `id`, `subject_id`, `candidate_entity_ids`, `selected_entity_id` (nullable), `outcome`, `confidence`, `feature_values`, `policy_version`, `evidence_ids`, `created_at` |
-| Decision snapshot | `id`, `owner_id`, `research_session_id`, `constraint_set`, `candidate_ids`, `evidence_snapshot_id`, `policy_versions`, `state`, `created_at` |
+| Decision snapshot | `id`, `owner_id`, optional `research_session_id`, `constraint_set`, `candidate_ids`, `evidence_snapshot_id`, `policy_versions`, `state`, `created_at`; immutable evidence references and their provenance remain reconstructable |
 | Candidate evaluation | `id`, `decision_id`, `entity_id`, `claim_ids`, `eligibility`, `constraint_outcomes`, `feature_values`, `score` (nullable), `rank` (nullable), `exclusion_reasons` |
 
 **Required configuration:**
@@ -100,11 +112,11 @@ P5 sessions/evidence/selection ────────────────�
 
 **Goal:** define stable shared semantics before domains depend on them.
 
-**Work:** document contracts for `CanonicalEntity`, `EntityClaim`, `EntityMatch`, `Constraint`, `Candidate`, `Feature`, `RankingPolicy`, and `Recommendation`; define identity confidence thresholds, merge/review/no-match states, typed units/currency/time/location handling, missing-value semantics, and a policy-versioned hard-then-soft pipeline.
+**Work:** document contracts for `CanonicalEntity`, `EntityClaim`, `EntityMatch`, `Constraint`, `Candidate`, `Feature`, `RankingPolicy`, and `Recommendation`; define identity confidence thresholds, merge/review/no-match states, typed units/currency/time/location handling, missing-value semantics, owner-scoped evidence references, and a policy-versioned hard-then-soft pipeline. Define both a Phase 5 session-backed decision and a decision assembled from other explicitly supplied, validated evidence without requiring a research session.
 
 **Requirements:** a model may propose structured candidates but application code validates identity and enforces constraints; current request constraints outrank memory-derived preferences; recommendations retain links to source evidence and policy version.
 
-**Acceptance criteria:** contracts disallow a recommendation without candidate/entity/evidence provenance and make unknown data ineligible whenever it is necessary to prove a hard constraint.
+**Acceptance criteria:** contracts disallow a recommendation without candidate/entity/evidence provenance, reject foreign-owner references, preserve an auditable evidence snapshot, and make unknown data ineligible whenever it is necessary to prove a hard constraint. Neither decision path writes authoritative domain-app state.
 
 **Out of scope:** domain vocabulary, learned weights, user-adjustable scoring,
 multi-tenant identity policy, or adapter-specific data types in core contracts.

@@ -1,13 +1,13 @@
 # Personal AI System
 
-A personal AI system and research playground: chat, long-term memory, and evidence-grounded search agents. It is designed as one reusable research platform, with travel and shopping as the first domain modules rather than separate applications.
+A personal AI system and research playground: chat, long-term memory, and evidence-grounded research. It is a reusable AI/research substrate. Travel and shopping can add shared AI-side domain modules here; future rich applications may live in separate repositories and own their domain data and UI.
 
 ## Initial technology stack
 
 - **Web:** Next.js, React, and TypeScript, deployed as a Cloud Run service.
 - **API and worker:** Python, FastAPI, and Uvicorn, deployed as separate Cloud Run services.
 - **Durable application data:** Cloud Firestore in Native mode.
-- **Asynchronous work:** Pub/Sub push delivery to the worker for research, consolidation, and expiry-maintenance jobs.
+- **Asynchronous work:** Pub/Sub push delivery to the private worker for gated, durable Phase 4 memory-lifecycle jobs. Chat and bounded Phase 5 research use direct requests and SSE.
 - **Secrets:** Secret Manager; no provider key is committed to source control.
 - **Build and delivery:** Dockerfiles plus `gcloud run deploy --source`.
 
@@ -23,9 +23,9 @@ backend/                     FastAPI application and domain packages
     memory/                  Preference, episodic, and semantic memory
     search/                  Search pipeline and provider adapters
     evidence/                Fresh, attributable source observations
-    entities/                Canonical entities and entity resolution
-    ranking/                 Constraints and domain-specific scoring
-    domains/                 Travel and shopping domain adapters
+    entities/                Chat records; Phase 6 entity work is planned
+    ranking/                 Phase 6 placeholder for constraints and scoring
+    domains/                 Phase 7 travel/shopping placeholders
     evaluation/              Reproducible system and agent evaluation
 infrastructure/              Local and cloud deployment configuration
 experiments/                 Isolated memory, search, and ranking experiments
@@ -129,7 +129,7 @@ updates, Docker build commands, and the limits of build reproducibility.
 For AI coding sessions, follow [AGENTS.md](AGENTS.md), then start with the
 [project brief](docs/project-brief.md). It
 captures the project intent, current state, guardrails, and immediate
-implementation target. The
+implementation status. The
 [Phase 1 implementation plan](docs/phase-1-implementation-plan.md) defines the
 work and acceptance criteria; its companion
 [implementation guide](docs/phase-1-implementation-guide.md) maps every part to
@@ -137,6 +137,9 @@ the delivered code, tests, and commits. See
 [architecture notes](docs/architecture.md) for component boundaries and
 [research-agent notes](docs/research-agent.md) for the future search-agent
 model.
+
+The [architecture reconciliation record](docs/architecture-reconciliation-2026-10-02.md)
+explains the post-Phase 5 documentation changes and remaining verification gaps.
 
 Phase 1 code and local disconnect regression tests are implemented; real
 persistence/provider/deployment and deployed browser cancellation verification
@@ -192,8 +195,9 @@ completed turns, stores their provenance and compatible embeddings, and retrieve
 relevant historical context across conversations. Selected records pass through
 the same total token budget as working summaries and recent turns. Memory is
 fallible user knowledge, not external evidence or guaranteed recall. Current
-requests and corrections take precedence. There is no automatic contradiction
-resolution, editing, consolidation or forgetting.
+requests and corrections take precedence. Phase 3 itself has no automatic
+contradiction resolution, editing, consolidation or forgetting; gated Phase 4
+lifecycle behavior is described below.
 
 Review provider-data suitability before setting `MEMORY_ENABLED=true` and
 `MEMORY_EXTRACTION_ENABLED=true`; the current `local` owner and public bootstrap

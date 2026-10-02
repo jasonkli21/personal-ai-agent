@@ -3,54 +3,46 @@
 ## System shape
 
 ```text
-Browser
-  |
-Cloud Run: Next.js / React / TypeScript web service
-  |
-Cloud Run: FastAPI API service
-  |-- agents ── conversation flow ── context ── LLM adapter
-  |     |
-  |     └── research flow
-  |            |
-  |     memory ──> planning / preference-aware ranking
-  |            |
-  |     search ──> evidence ──> entities ──> ranking ──> synthesis
-  |            |                                      |
-  |      provider adapters                       domain modules
-  |                                            travel / shopping
-  |
-  |--> Firestore: conversations, memories, research, evidence, entities
-  |
-  '--> Pub/Sub: asynchronous jobs ---> Cloud Run FastAPI worker
-                                      consolidation / research / expiry
+Browser -> Cloud Run: Next.js web -> /api proxy -> Cloud Run: FastAPI API
+                                                |-- chat SSE -> shared context -> LLM
+                                                |               |-> optional memory
+                                                |-- research SSE -> search -> evidence
+                                                |                   |-> shared context -> LLM
+                                                '--> Firestore: chat, memory, research
 
-Secret Manager supplies credentials to services once external adapters exist.
+Gated Phase 4 post-terminal work -> durable memory job -> Pub/Sub
+                                                     -> private Cloud Run worker
+
+Future separate domain applications -> explicit core API (after an auth boundary)
+  domain apps own authoritative records, business rules, and rich UI
+  Phase 6/7 core work may add reusable entities, constraints, ranking, and
+  thin travel/shopping intelligence; these are not delivered Phase 5 behavior.
 ```
 
-The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the API and worker. The initial deployment target is Cloud Run, with Firestore as the durable store, Pub/Sub for asynchronous jobs, and Secret Manager for credentials. `storage` hides persistence details, while `llm` hides model-provider details. See [GCP deployment](gcp-deployment.md) for the runnable topology and cost boundaries.
+The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the API and worker. The deployment target is Cloud Run, with Firestore as the durable store, Pub/Sub for gated durable memory work, and Secret Manager for configured credentials. Repository contracts hide Firestore details from services; `llm` hides model-provider details. See [GCP deployment](gcp-deployment.md) for the runnable topology and cost boundaries.
 
 ## Core boundaries
 
 - `agents` coordinates conversation and research flows without owning provider-specific logic.
-- `context` currently selects token-budgeted active conversation turns and
-  compatible working summaries for a model call. Phase 3 adds optional labelled
+- `context` selects token-budgeted active conversation turns and
+  compatible working summaries for a model call. Phase 3 added optional labelled
   personal memory within the same total budget; Phase 5 standalone research counts whole evidence blocks through this same assembler.
   Summaries are not memory.
 - `memory` owns durable user knowledge: preferences, episodic observations, semantic summaries, consolidation, and forgetting.
 - `search` plans queries, fetches sources through adapters, extracts content, deduplicates it, and selects candidate evidence.
 - `evidence` records what an external source stated, where it came from, when it was observed, and when it expires.
-- `entities` determines whether source records describe the same product, hotel, place, merchant, or other canonical entity.
-- `ranking` applies deterministic hard constraints before explainable, domain-specific soft ranking.
-- `domains` supplies travel and shopping schemas, adapters, features, constraints, and presentation rules on top of the shared platform.
+- `entities` currently contains chat records. Phase 6 plans canonical identity for products, hotels, places, merchants, and other research candidates.
+- `ranking` is a Phase 6 placeholder for deterministic hard constraints followed by explainable soft ranking.
+- `domains` contains Phase 7 placeholders for thin travel and shopping intelligence; future applications can own their separate state and UI.
 - `evaluation` measures behavior across memory, research, and domain recommendation cases before experiments are promoted.
 
 ## Data-lifetime rule
 
 Memory and evidence are deliberately different. A user preference can last months or years. Prices, inventory, flight availability, and opening hours must be stored as observations with a freshness policy and expiration. Conclusions should point back to their supporting evidence instead of being retained as facts.
 
-## Initial persistence vocabulary
+## Persistence boundary
 
-Keep storage interfaces ready for conversations, messages, memories, research sessions, search queries, evidence, and canonical entities. This is intentionally a vocabulary, not a database implementation.
+Current repository contracts cover conversations, messages, memories, and bounded research-session aggregates with nested queries, observations, and evidence. Phase 6 will define canonical entity and decision records. These research records must remain separate from an external application's authoritative trip, booking, or purchase state. Firestore remains the current store; its memory vector search is a separate portability concern from canonical-record persistence.
 
 
 ## Delivered Phase 2 request boundary

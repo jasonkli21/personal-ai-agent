@@ -2,6 +2,11 @@
 
 This plan builds a usable personal chat system first, then progressively turns it into a memory and research-agent platform. Each phase should be evaluated before the next one adds complexity.
 
+Phases 1–5 are implemented locally. Implementation is paused after Phase 5;
+Phase 6 is not authorized. External provider, emulator, and deployed
+verification gaps are recorded separately from implementation status in the
+phase guides and release records.
+
 For task-level dependencies, requirements, and acceptance criteria, see the
 [Phase 0–1 implementation plan](phase-1-implementation-plan.md) and the
 [Phase 2 implementation plan](phase-2-implementation-plan.md).
@@ -89,6 +94,12 @@ snippet/excerpt scope and remaining external checks. Phase 6 is not authorized.
 
 ## Phase 6 — Add entities, constraints, and ranking
 
+The shared decision contracts must keep evidence-backed research entities
+separate from authoritative domain-application state. A decision may reference a
+Phase 5 research session when one supplied its evidence, but reusable constraint
+and ranking results must not require one. See the
+[Phase 6 task plan](phase-6-implementation-plan.md) for the contract gate.
+
 1. Define canonical entities and entity-resolution interfaces.
 2. Implement deterministic hard constraints, such as budget, date, availability, dimensions, or location.
 3. Implement explainable soft ranking.
@@ -99,12 +110,17 @@ snippet/excerpt scope and remaining external checks. Phase 6 is not authorized.
 
 ## Phase 7 — Build travel and shopping agents
 
-1. Implement the travel domain: places, neighborhoods, hotels, flights, restaurants, and itineraries.
+This phase validates thin AI-side travel and shopping modules with synthetic
+data. It does not require rich applications to live in this repository. Future
+separate applications may own itineraries, bookings, purchases, business rules,
+and specialized UI while consuming the shared research and decision contracts.
+
+1. Implement shared travel research models for places, neighborhoods, hotels, flights, restaurants, and evidence-backed itinerary proposals.
 2. Add travel source adapters incrementally, beginning with general web search and structured place data.
 3. Implement travel-specific constraints and ranking features.
 4. Implement the shopping domain: products, offers, merchants, specifications, and reviews.
 5. Add shopping-specific source adapters, constraints, and ranking features.
-6. Build UI views for evidence, comparisons, filters, and recommendation rationale.
+6. Build bounded reference views for evidence, comparisons, filters, and recommendation rationale; rich domain-application UI remains app-owned.
 
 **Outcome:** two practical domain agents validate that the shared platform is reusable.
 
@@ -120,6 +136,11 @@ snippet/excerpt scope and remaining external checks. Phase 6 is not authorized.
 **Outcome:** the system can investigate a question in multiple steps instead of only performing search → answer.
 
 ## Phase 9 — Harden and deploy
+
+Authentication and private-data controls must move earlier if any earlier
+phase or external application begins using real emails, bookings, receipts,
+uploads, or other private records. The phase number is not a waiver of that
+prerequisite. The current public `local` owner is unauthenticated.
 
 1. Add authentication appropriate for personal use.
 2. Add secrets management, observability, rate limits, and cost safeguards.

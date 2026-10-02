@@ -1,6 +1,23 @@
 # Research-agent model
 
-The system is one reusable research platform. Travel and shopping are domain modules that configure it; they should not fork the orchestration or memory architecture.
+The system is one reusable AI/research substrate. Thin travel and shopping
+intelligence may reuse its capabilities. Future separate applications may own
+authoritative domain records, business rules, and rich UI without forking the
+core research or memory behavior.
+
+## Delivered Phase 5 boundary
+
+The gated standalone research request performs one bounded pass over Brave
+search-result snippets, preserves expiring source observations, and returns
+validated literal excerpts with citations. It runs in the direct request/SSE
+path, without chat history, memory hints, publisher-page fetches, entity
+resolution, recommendations, or Pub/Sub research jobs. See the
+[Phase 5 guide](phase-5-implementation-guide.md) and
+[release record](releases/phase-5-source-grounded-research.md).
+
+## Later decision-support direction
+
+The following flow is a roadmap, not delivered Phase 5 behavior:
 
 ```text
 Question
@@ -19,7 +36,7 @@ The future research loop may iterate: after each pass, inspect what is missing o
 ## Shared platform contracts
 
 - **Search adapters** return source-native results; they do not decide recommendations.
-- **Evidence** preserves source URL or provider identity, observation time, expiry, source type, and entity links.
+- **Evidence** preserves source URL or provider identity, observation time, and expiry. Phase 6 may link it to entities without converting an observation into permanent fact.
 - **Entity resolution** creates a canonical object from differently named or partially overlapping source records.
 - **Constraints** are executable requirements such as a budget cap, dates, or product dimensions. Application code evaluates them deterministically.
 - **Ranking** considers softer trade-offs, including durable preferences recovered from memory.
@@ -27,7 +44,12 @@ The future research loop may iterate: after each pass, inspect what is missing o
 
 ## Domain modules
 
-`domains/travel` will eventually work with places, neighborhoods, hotels, flights, and itineraries. `domains/shopping` will work with products, merchants, offers, specifications, and reviews. Each may add provider adapters and ranking features, but both use the shared research, evidence, entity, memory, and evaluation layers.
+`domains/travel` may eventually supply research schemas, adapters, and ranking
+features for places, neighborhoods, hotels, flights, and restaurants;
+`domains/shopping` may do the same for products, merchants, offers,
+specifications, and reviews. An external travel or shopping application owns
+its editable itinerary or purchase state. The core returns attributed research
+candidates and decision support for that application to validate and use.
 
 ## Evaluation questions
 

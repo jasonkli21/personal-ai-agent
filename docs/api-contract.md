@@ -1,4 +1,4 @@
-# Conversation API contract (Phases 1–3)
+# API contract (Phases 1–5)
 
 This document defines the implemented HTTP boundary. All `/v1` routes operate
 for the current logical owner,

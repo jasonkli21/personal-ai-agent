@@ -1,6 +1,11 @@
 # Phase 7 implementation plan
 
-This plan validates the shared Phase 5–6 platform with thin travel and shopping modules. It does not create separate applications: both modules reuse research sessions, evidence, entities, constraints, ranking, and evaluation.
+This plan validates the shared Phase 5–6 platform with thin travel and shopping
+modules and synthetic data. It does not create separate rich applications.
+Future travel and shopping apps may live in other repositories, own their
+authoritative domain records and UI, and consume explicit core APIs. In-core
+modules reuse research sessions, evidence, entities, constraints, ranking, and
+evaluation.
 
 ## Scope boundary
 
@@ -8,9 +13,13 @@ Phase 7 adds domain schemas, source-adapter configurations, typed constraints/fe
 
 ## Delivery conventions and cross-cutting requirements
 
-- Each domain is a module registered through the Phase 6 extension contracts;
+- Each domain uses the internal Phase 7 `DomainModule` contract;
   it may add typed vocabulary, mappings, constraints, features, fixture data,
   and rendering—not its own search, storage, entity, ranking, or auth stack.
+  This is an internal AI-side module contract, not an external application
+  manifest or generic plugin registry.
+- An evidence-backed itinerary candidate or proposal is not the authoritative
+  editable itinerary, booking, or reservation record of a future travel app.
 - Separate stable identity from variant/offer/visit facts. A hotel room rate,
   flight itinerary, merchant offer, product variant, delivery date, review, or
   opening hour remains an attributable, expiring claim and must never become a
@@ -118,7 +127,7 @@ transaction provider contract.
 
 **Dependencies:** P7.1
 
-**Goal:** represent places, neighborhoods, hotels, flights, restaurants, and itinerary items as evidence-backed candidates.
+**Goal:** represent places, neighborhoods, hotels, flights, restaurants, and proposed itinerary items as evidence-backed candidates, not authoritative trip state.
 
 **Work:** add typed travel claims and mappings from general search plus one permitted structured place-data adapter; normalize coordinates, place/provider IDs, dates, currencies, and travel-specific TTLs. Treat flight/hotel availability/prices as short-lived observations.
 

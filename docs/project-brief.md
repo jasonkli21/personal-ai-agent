@@ -6,7 +6,7 @@ Read this document before making implementation decisions. It carries the produc
 
 This is a **personal learning and research project**, not an attempt to host or reproduce a frontier model. The goal is to learn the systems around an LLM—streaming chat, persistence, context management, retrieval, memory, search, evidence, ranking, and evaluation—and eventually use the system to experiment with AI memory architectures.
 
-The end state is one reusable personal research platform with chat, memory, and evidence-grounded search. Travel and shopping are the first domain modules, not separate applications.
+The end state is one reusable AI/research substrate with chat, memory, and evidence-grounded search. Travel and shopping may add shared AI-side domain modules here; future rich applications may live in separate repositories and own authoritative domain state, business rules, and UI.
 
 ## Current state
 
@@ -14,8 +14,8 @@ Phase 1–4 chat, context and memory code and Phase 5 bounded research are
 implemented locally. Offline checks pass; real Firestore, Gemini, licensed Brave
 and deployed GCP behavior still need verification. Phase 5 was explicitly
 authorized and reviewed on 2026-10-02; its gates remain disabled by default.
-The active scope is **Phase 5 verification and handoff**. See its
-[reviewed plan](phase-5-implementation-plan.md),
+Implementation is **paused after Phase 5**; Phase 6 has not been authorized.
+See the Phase 5 [reviewed plan](phase-5-implementation-plan.md),
 [guide](phase-5-implementation-guide.md) and
 [release evidence](releases/phase-5-source-grounded-research.md).
 Existing earlier-phase external gaps remain open.
@@ -105,11 +105,11 @@ These rules must hold as features are added:
 
 1. **The LLM is replaceable.** Provider-specific code stays inside `llm` and adapter modules.
 2. **Memory and external evidence are different data classes.** Memory represents durable, attributable user knowledge; evidence represents an observation from an external source at a point in time.
-3. **Freshness is explicit.** Evidence has source, observation time, expiry or freshness policy, and entity links. Never treat old price, availability, or opening-hours data as permanent fact.
+3. **Freshness is explicit.** Delivered Phase 5 evidence has source, observation time, and expiry or freshness policy. Phase 6 may add entity links. Never treat old price, availability, or opening-hours data as permanent fact.
 4. **Conclusions are not facts.** Recommendations must preserve the evidence and reasoning that support them rather than becoming unqualified memory.
 5. **Hard constraints precede preferences.** Filter on requirements such as budget, dates, location, availability, or dimensions before applying soft preference ranking.
 6. **Memory may guide investigation.** It can influence query planning and ranking, but must not override current constraints or fresh evidence.
-7. **Domain modules remain thin.** Travel and shopping add schemas, source adapters, constraints, features, and presentation rules; they reuse the shared research, memory, evidence, entity, ranking, and evaluation layers.
+7. **Domain modules remain thin.** Shared travel and shopping intelligence may add schemas, source adapters, constraints, and features while reusing the core layers. Separate applications own authoritative trips, bookings, purchases, business rules, and rich UI.
 8. **Experiments require evaluation.** Experimental memory or ranking behavior stays isolated until it has a baseline comparison and measured result.
 
 ## Implementation order
@@ -134,8 +134,7 @@ The [Phase 2 context-window plan](phase-2-implementation-plan.md) is implemented
 locally. Finish its credentialed quality/deployed checks before declaring full
 verification; Phase 3 was explicitly authorized and is now implemented locally.
 See its [guide](phase-3-implementation-guide.md) and
-[release evidence](releases/phase-3-simple-memory.md). Phase 5 is now delivered locally after explicit user authorization;
-do not advance to Phase 6 without explicit user instruction.
+[release evidence](releases/phase-3-simple-memory.md). Phase 5 is delivered locally after explicit user authorization; external verification remains open. Do not advance to Phase 6 without explicit user instruction.
 
 Do not add long-term memory in Phase 1. Phase 2 handles context-window management; Phase 3 introduces simple memory only after basic chat is stable.
 
@@ -162,7 +161,7 @@ Resolve these in short architecture decision records before implementation depen
 - Future Firestore schema migrations, backups, export, and deletion behavior.
   Phase 1 collections, owner scoping, and indexes are implemented; see the
   [API contract](api-contract.md) and [ADR 0002](decisions/0002-firestore-native-persistence.md).
-- Search providers and their data, pricing, and attribution requirements.
+- Additional search providers and their data, pricing, and attribution requirements. Phase 5's gated Brave snippet adapter and storage-rights policy are implemented locally.
 - Travel and shopping providers, only when those domain phases begin.
 - Operational safeguards: budgets, usage alerts, logging retention, backups, export, and deletion behavior.
 
@@ -172,6 +171,6 @@ Resolve these in short architecture decision records before implementation depen
    [architecture](architecture.md), [implementation guide](phase-1-implementation-guide.md),
    and the plan for the active task. Read [GCP deployment](gcp-deployment.md)
    when working on infrastructure.
-2. Follow the reviewed Phase 5 plan and guide; do not advance to Phase 6.
+2. Use the Phase 5 guide and release record for delivered behavior and remaining verification gaps. Do not advance to Phase 6 without explicit authorization.
 3. Preserve the architectural invariants above.
-4. Implement the smallest testable vertical slice of the current phase, update tests and docs, and do not expand into a later phase without a user decision.
+4. Once a phase is authorized, implement its smallest testable vertical slice, update tests and docs, and do not expand into a later phase without a user decision.

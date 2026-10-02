@@ -7,22 +7,25 @@ Browser
   |
   v
 Cloud Run: personal-ai-web (Next.js)
-  |  server-side /api/health and future API proxy
+  |  server-side /api proxy for chat, research, and health
   v
 Cloud Run: personal-ai-api (FastAPI) ----> Firestore (Native mode)
+  |  chat and bounded research run in direct SSE requests
+  |  gated post-terminal memory work persists lifecycle jobs
+  v
+Pub/Sub topic: personal-ai-async
   |
-  +----> Pub/Sub topic: personal-ai-async
-                         |
-                         v
-                Cloud Run: personal-ai-worker (FastAPI push target)
-                         |
-                  future consolidation / research / expiry jobs
+  v
+Cloud Run: private personal-ai-worker -> fenced memory-lifecycle job processing
 
-The Phase 1 API reads its Gemini credential from Secret Manager. The worker
-remains deployed but idle; Phase 1 chat does not publish Pub/Sub messages.
+The API reads its Gemini credential from Secret Manager. The worker and
+Pub/Sub lifecycle path are deployed but disabled by default. Phase 1 chat and
+Phase 5 research do not publish research or token-streaming work to Pub/Sub.
 ```
 
-This keeps the synchronous chat and research request path simple. Pub/Sub is not part of initial chat latency; it is reserved for durable work that can happen later, such as memory consolidation, evidence-expiry maintenance, or longer research tasks.
+This keeps chat and bounded research in the direct request path. Pub/Sub is used
+for gated durable Phase 4 memory-lifecycle notifications with fencing and
+recovery. Other asynchronous work needs its own concrete requirement.
 
 ## Components
 
@@ -30,9 +33,9 @@ This keeps the synchronous chat and research request path simple. Pub/Sub is not
 | --- | --- | --- |
 | UI | Next.js + React + TypeScript on Cloud Run | Chat and research interface |
 | API | FastAPI + Uvicorn on Cloud Run | HTTP API, orchestration, streaming |
-| Async worker | FastAPI on Cloud Run + Pub/Sub push | Acknowledge and later execute non-interactive jobs |
-| Durable data | Firestore Native mode | Conversations, memories, research sessions, evidence, entities |
-| Secrets | Secret Manager | LLM, search, places, and travel-provider credentials |
+| Async worker | FastAPI on Cloud Run + authenticated Pub/Sub push | Gated durable memory-lifecycle jobs |
+| Durable data | Firestore Native mode | Conversations, memories, and bounded research-session aggregates; entities are planned for Phase 6 |
+| Secrets | Secret Manager | Gemini key now; other provider keys only when deliberately configured |
 | Delivery | Docker + Cloud Run source deployment | Build and deploy each service |
 
 ## Deploy
@@ -66,6 +69,16 @@ worker, and web service. It injects `AI_API_KEY` using Secret Manager rather
 than an environment file or command-line value. It prints the web URL and
 health-check URL, never the secret.
 
+The example retains `gemini-2.5-flash` until an opt-in compatibility check
+validates a newer stable Flash candidate such as
+[`gemini-3.8-flash`](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)
+through this repository's generation, provider-authoritative counting,
+streaming, summary/extraction, and strict
+research-output paths. `AI_MODEL` is runtime configuration; the application
+context/output ceilings still require explicit validation. Embedding-model
+changes are a separate stored-vector and Firestore-index migration; see the
+[Phase 3 guide](phase-3-implementation-guide.md).
+
 ### Verify the end-to-end baseline
 
 Use the [Phase 1 deployment checklist](phase-1-deployment-checklist.md) after deployment. It verifies the web-to-API path, a streamed chat turn, and Firestore persistence. A successful `/api/health` response confirms that the web service can reach the API server-side; it does not exercise the model or Firestore.
@@ -79,9 +92,24 @@ Use the [Phase 1 deployment checklist](phase-1-deployment-checklist.md) after de
 
 Keep a billing budget and usage alerts enabled. External model, web-search, travel, places, and shopping providers have independent pricing and quotas.
 
+Measure Firestore stored/index bytes, vector counts, and daily operations before
+considering another canonical record store. Memory retrieval currently uses
+Firestore vector KNN and would need a separate vector-index migration; another
+document store alone cannot replace it. No current request path stores blobs or
+full publisher pages, so Cloud Storage remains deferred until a concrete upload
+or retained-artifact feature needs it.
+
 ## Security boundary
 
-The bootstrap makes the web and API endpoints public so the two-service health check runs without identity infrastructure. It is unsuitable for sensitive personal data. Before storing real chats or provider keys, implement Phase 9 authentication and authorization, restrict API ingress as appropriate, and add secrets through Secret Manager rather than environment files.
+The bootstrap makes the web and API endpoints public so the two-service health
+check runs without end-user identity infrastructure. The fixed `local` owner is
+not authentication, and the private worker does not protect public API data.
+The Gemini key is already injected through Secret Manager. Before real private
+chats, emails, bookings, receipts, uploads, or private external domain-app data,
+add verified identity, authorization, appropriate API ingress/session controls,
+and a deliberate provider-data and retention policy. This prerequisite applies
+even if those features arrive before nominal Phase 9. Health data remains outside
+the current implementation scope.
 
 
 ## Phase 2 deployment checks
