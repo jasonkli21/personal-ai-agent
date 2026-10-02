@@ -15,7 +15,11 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="en">
-      <body>{process.env.RESEARCH_ENABLED === "true" && <nav aria-label="Research navigation" style={{ padding: ".75rem 1rem" }}><Link href="/research">Research</Link></nav>}{children}</body>
+      <body><nav aria-label="Feature navigation" style={{ padding: ".75rem 1rem", display: "flex", gap: "1rem" }}>
+        {process.env.RESEARCH_ENABLED === "true" && <Link href="/research">Research</Link>}
+        {process.env.DECISION_ENABLED === "true" && <Link href="/decisions">Decision support</Link>}
+        {process.env.DECISION_ENABLED === "true" && process.env.DECISION_INSPECTION_ENABLED === "true" && <Link href="/development/decisions">Decision inspector</Link>}
+      </nav>{children}</body>
     </html>
   );
 }
