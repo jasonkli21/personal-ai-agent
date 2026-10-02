@@ -207,7 +207,7 @@ class InMemoryMessageRepository:
                 raise ResourceNotFoundError("message not found")
             return _effective_message(message, self._messages)
 
-    def list_active(self, *, owner_id: str, conversation_id: UUID) -> list[Message]:
+    def list_active(self, *, owner_id: str, conversation_id: UUID, timeout: float | None = None) -> list[Message]:
         with self._mutation_lock:
             messages = [
                 message

@@ -16,7 +16,7 @@ class ContextInspector:
         self.settings = settings
         self.summaries = summaries
 
-    def inspect(self, active: Sequence[Message]) -> dict:
+    def inspect(self, active: Sequence[Message], retrieval=None) -> dict:
         report = {
             "counter_kind": "estimated",
             "selected": [],
@@ -47,7 +47,7 @@ class ContextInspector:
             }
 
         try:
-            result = assembler.assemble(active[:index], pending, refresh=False)
+            result = assembler.assemble(active[:index], pending, refresh=False, retrieval=retrieval)
         except ContextError as error:
             count = counter.count((ChatMessage(pending.role, pending.content),))
             report.update(
@@ -70,6 +70,26 @@ class ContextInspector:
                 }
             )
             return report
+        if retrieval is not None:
+            selected_memories = set(result.selected_memory_ids)
+            exclusions = dict(result.excluded_memories)
+            report["memory"] = {
+                "mode": "supplied-record planning estimate; no semantic query or prior-use claim",
+                "tokens": result.memory_tokens,
+                "diagnostics": retrieval.diagnostics,
+                "records": [{
+                    "id": str(s.memory.id), "type": s.memory.memory_type,
+                    "source_conversation_id": str(s.memory.source_conversation_id),
+                    "source_message_ids": [str(i) for i in s.memory.source_message_ids],
+                    "observed_at": s.memory.observed_at.isoformat(),
+                    "effective_at": s.memory.effective_at.isoformat(),
+                    "created_at": s.memory.created_at.isoformat(),
+                    "selected": s.memory.id in selected_memories,
+                    "reason": exclusions.get(s.memory.id),
+                    "similarity": None,
+                    "estimated_tokens": counter.count((ChatMessage("system", s.memory.content),)).tokens,
+                } for s in retrieval.candidates],
+            }
         selected = set(result.selected_message_ids)
         excluded = dict(result.excluded)
         summary = result.summary

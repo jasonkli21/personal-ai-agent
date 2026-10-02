@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "fixtures": [
+    {"name": "later-preference", "statements": ["I prefer quiet mountain cabins."], "types": ["preference"], "query": "Which lodging atmosphere do I prefer?", "vectors": [[1,0,0]], "query_vector": [1,0,0], "expected_order": [0], "forbidden": []},
+    {"name": "episodic-match", "statements": ["I visited the invented Amber Trail in 2025."], "types": ["episodic_observation"], "query": "Which trail did I visit?", "vectors": [[1,0,0]], "query_vector": [1,0,0], "expected_order": [0], "forbidden": []},
+    {"name": "semantic-summary", "statements": ["I usually take a sketchbook on walks."], "types": ["semantic_summary"], "query": "What do I usually bring on walks?", "vectors": [[1,0,0]], "query_vector": [1,0,0], "expected_order": [0], "forbidden": []},
+    {"name": "explicit-correction", "statements": ["I prefer busy city hotels.", "Correction: I prefer quiet mountain cabins."], "types": ["preference", "explicit_correction"], "query": "What lodging do I prefer now?", "vectors": [[1,0,0],[1,0,0]], "query_vector": [1,0,0], "expected_order": [1,0], "forbidden": []},
+    {"name": "temporal-change", "statements": ["I prefer early walks.", "I prefer evening walks."], "types": ["preference", "preference"], "query": "When do I prefer walking?", "vectors": [[1,0,0],[1,0,0]], "query_vector": [1,0,0], "expected_order": [1,0], "forbidden": []},
+    {"name": "irrelevant-neighbor", "statements": ["I prefer quiet mountain cabins.", "I like drawing mountain cabins."], "types": ["preference", "preference"], "query": "Which lodging atmosphere do I prefer?", "vectors": [[1,0,0],[0.7,0.7141428429,0]], "query_vector": [1,0,0], "expected_order": [0], "forbidden": [1]},
+    {"name": "duplicate-input", "statements": ["I prefer quiet mountain cabins."], "types": ["preference"], "query": "Which lodging atmosphere do I prefer?", "vectors": [[1,0,0]], "query_vector": [1,0,0], "expected_order": [0], "forbidden": [], "repeat_extraction": true},
+    {"name": "edited-branch", "statements": ["I prefer busy city hotels."], "types": ["preference"], "query": "What lodging do I prefer?", "vectors": [[1,0,0]], "query_vector": [1,0,0], "expected_order": [], "forbidden": [0], "supersede": true},
+    {"name": "foreign-owner", "statements": ["I prefer quiet mountain cabins."], "types": ["preference"], "query": "Which lodging atmosphere do I prefer?", "vectors": [[1,0,0]], "query_vector": [1,0,0], "expected_order": [], "forbidden": [0], "query_owner": "other"},
+    {"name": "memory-budget", "statements": ["I prefer quiet mountain cabins."], "types": ["preference"], "query": "Which lodging atmosphere do I prefer?", "vectors": [[1,0,0]], "query_vector": [1,0,0], "expected_order": [0], "forbidden": [], "memory_budget": 1, "expected_injected": false}
+  ]
+}

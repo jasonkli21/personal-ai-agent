@@ -7,12 +7,13 @@ from typing import Annotated
 from uuid import UUID, uuid4
 
 import anyio
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from personal_ai.api.dependencies import (
     get_chat_turn_service,
     get_conversation_service,
+    get_memory_repository,
     get_summary_repository,
 )
 from personal_ai.api.schemas import (
@@ -177,7 +178,12 @@ def inspect_context(
     settings: Annotated[Settings, Depends(_inspection_enabled)],
     service: Annotated[ConversationService, Depends(get_conversation_service)],
     summaries: Annotated[ConversationSummaryRepository, Depends(get_summary_repository)],
+    memories: Annotated[object, Depends(get_memory_repository)],
+    memory_ids: Annotated[list[UUID] | None, Query(max_length=20)] = None,
 ) -> dict:
     """Read-only planning estimate: never call counting/generation provider APIs."""
     _, active = service.get_conversation(conversation_id)
-    return ContextInspector(settings, summaries).inspect(active)
+    retrieval = None
+    if memory_ids:
+        retrieval = service.inspect_memories(settings, memories, memory_ids)
+    return ContextInspector(settings, summaries).inspect(active, retrieval)

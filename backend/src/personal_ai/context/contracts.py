@@ -162,3 +162,6 @@ class AssembledContext:
     summary: ConversationSummary | None
     budget: BudgetReport
     diagnostics: tuple[str, ...] = ()
+    selected_memory_ids: tuple[UUID, ...] = ()
+    excluded_memories: tuple[tuple[UUID, str], ...] = ()
+    memory_tokens: int = 0

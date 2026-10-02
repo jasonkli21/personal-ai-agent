@@ -160,12 +160,12 @@ class FirestoreMessageRepository:
             item.id: item for item in (_message_from_data(s.to_dict()) for s in history)
         })
 
-    def list_active(self, *, owner_id: str, conversation_id: UUID) -> list[Message]:
+    def list_active(self, *, owner_id: str, conversation_id: UUID, timeout: float | None = None) -> list[Message]:
         snapshots = self._run(
             lambda: list(
                 self._message_query(owner_id=owner_id, conversation_id=conversation_id)
                 .order_by("created_at", direction=firestore.Query.ASCENDING)
-                .stream()
+                .stream(**({"retry": None, "timeout": timeout} if timeout is not None else {}))
             )
         )
         messages = [_message_from_data(snapshot.to_dict()) for snapshot in snapshots]

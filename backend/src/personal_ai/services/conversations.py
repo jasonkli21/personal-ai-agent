@@ -25,6 +25,11 @@ class ConversationService:
         self._messages = messages
         self._owner_id = owner_id
 
+    def inspect_memories(self, settings, repository, memory_ids):
+        from personal_ai.memory.inspection import inspect_records
+
+        return inspect_records(settings, repository, self._messages, self._owner_id, memory_ids)
+
     def create_conversation(self, *, title: str | None = None) -> Conversation:
         """Create an empty conversation for the current logical owner."""
         now = datetime.now(UTC)

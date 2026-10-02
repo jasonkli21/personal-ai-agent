@@ -36,6 +36,19 @@ class Settings(BaseSettings):
     summary_trigger_tokens: int = Field(default=12_000, gt=0)
     max_summary_tokens: int = Field(default=2_048, gt=0)
     context_inspection_enabled: bool = False
+    memory_enabled: bool = False
+    memory_extraction_enabled: bool = False
+    memory_inspection_enabled: bool = False
+    memory_embedding_model: str = Field(default="gemini-embedding-001", min_length=1)
+    memory_embedding_dimensions: int = Field(default=768, gt=0, le=2048)
+    memory_embedding_batch_size: int = Field(default=8, gt=0, le=100)
+    memory_max_candidates_per_turn: int = Field(default=4, gt=0, le=16)
+    memory_retrieval_candidate_limit: int = Field(default=20, gt=0, le=100)
+    memory_retrieval_limit: int = Field(default=4, gt=0)
+    memory_min_similarity: float = Field(default=0.8, ge=0, le=1)
+    memory_max_context_tokens: int = Field(default=512, gt=0)
+    memory_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    memory_sensitive_terms: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
@@ -44,6 +57,11 @@ class Settings(BaseSettings):
             raise ValueError("context_budget_invalid")
         if self.summary_trigger_tokens > available:
             raise ValueError("context_budget_invalid")
+        if self.memory_retrieval_limit > self.memory_retrieval_candidate_limit:
+            raise ValueError("memory_configuration_invalid")
+        if (self.memory_enabled or "memory_max_context_tokens" in self.model_fields_set) \
+                and self.memory_max_context_tokens > available:
+            raise ValueError("memory_configuration_invalid")
         return self
 
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)

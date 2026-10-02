@@ -87,12 +87,16 @@ class ChatTurnService:
         model: str,
         stale_stream_after_seconds: float = 360,
         context_assembler: ContextAssembler,
+        memory_retriever=None,
+        memory_extraction=None,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
         self._llm = llm
         self._owner_id = owner_id
         self._context = context_assembler
+        self._memory_retriever = memory_retriever
+        self._memory_extraction = memory_extraction
         self._model = model
         self._stale_stream_after_seconds = stale_stream_after_seconds
 
@@ -197,7 +201,16 @@ class ChatTurnService:
             post_active = self._messages.list_active(
                 owner_id=self._owner_id, conversation_id=user.conversation_id,
             )
-            assembled = self._context.assemble(post_active[:-1], user, deadline=deadline)
+            retrieval = None
+            if self._memory_retriever is not None:
+                retrieval = self._memory_retriever.retrieve(
+                    self._owner_id, user.content, post_active,
+                    timeout=min(self._context.settings.memory_timeout_seconds,
+                                remaining(deadline) / 4),
+                )
+            assembled = self._context.assemble(
+                post_active[:-1], user, deadline=deadline, retrieval=retrieval,
+            )
             remaining(deadline)
             assistant = self._new_message(
                 conversation_id=user.conversation_id,
@@ -333,6 +346,13 @@ class ChatTurnService:
             yield _sse(
                 "response.completed", SSEResponseCompleted(message=completed).model_dump_json()
             )
+            # The terminal frame has already been delivered. No extraction outcome
+            # can change the durable answer or create another SSE event.
+            if self._memory_extraction is not None:
+                try:
+                    await anyio.to_thread.run_sync(self._memory_extraction.run, completed)
+                except Exception as error:  # noqa: BLE001 - optional post-completion work
+                    logger.info("Memory post-turn failed error_class=%s", type(error).__name__)
         except asyncio.CancelledError:
             if not terminal:
                 self._fail(turn.assistant, "client_cancelled", "".join(parts))
