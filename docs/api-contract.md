@@ -125,3 +125,45 @@ under Cloud Run IAM; it decodes a bounded envelope containing a job ID/schema ve
 and obtains owner/source authority from durable storage. Disabled/completed/terminal
 work returns 204; active leases and retryable processing return 503. See the
 [Phase 4 guide](phase-4-implementation-guide.md) for gates and failure recovery.
+
+## Phase 5 standalone research (`research-v1`)
+
+All routes require `RESEARCH_ENABLED`; disabled routes return safe 404 before
+constructing storage/provider clients. The temporary `local` owner is not
+identity or authentication. Browser requests go through Next.js `/api/research`.
+
+| Route | Contract |
+| --- | --- |
+| `POST /v1/research` | `{schema_version?:"research-v1", question:string (1–500 characters), freshness?:"general"\|"current", idempotency_key:UUID}`; returns 201 session, including on replay |
+| `GET /v1/research/{UUID}` | Owner-scoped session detail, result/excerpts, citations and provenance; stale answers are withheld |
+| `POST /v1/research/{UUID}/run` | Empty request; atomically claims and streams once; running returns 409; terminal replay sends one terminal event without tools |
+| `GET /v1/research/{UUID}/inspection` | Requires separate inspection gate; read-only counts, selection scores/exclusions and duplicate metadata; no query/passages/provider calls |
+
+Session states are `pending`, `running`, `completed`, `insufficient`, `failed`,
+`expired`. Detail includes typed `request`, `queries`, `attempts`, `observations`,
+`evidence`, `selection`, `answer`, and `citations`; each nested record preserves
+owner/session correlation. The internal execution token is excluded from wire
+responses. A reused key with different normalized input returns 409
+`idempotency_conflict`. Validation errors return 422; foreign/missing IDs 404;
+storage failures 503. HTTP errors use the existing safe error envelope.
+
+Research SSE uses its own event names; every payload includes
+`schema_version:"research-v1"` and `session_id`. Events follow durable persistence:
+
+| Event | Additional fields |
+| --- | --- |
+| `research.started` | `state:"running"` |
+| `research.planned` | `query_count` |
+| `research.attempt` | `query_id`, `attempt_id`, `state:"completed"\|"failed"` (bounded retries may repeat) |
+| `research.evidence` | `source_count`, `evidence_count` |
+| `research.selected` | `evidence_count` |
+| `research.terminal` | `state`, `failure_code` nullable; fetch detail for the durable result |
+
+No raw deltas, questions or external text are streamed. Missing terminal frames
+must be treated as interrupted, followed by a detail read. Cancellation fails the
+session; process loss derives `execution_abandoned` after its recorded deadline.
+Existing chat SSE events remain unchanged. The result is validated literal source
+excerpts with adjacent numbered citations, not unrestricted factual synthesis.
+Each citation exposes original normalized URL, optional title, observation time,
+evidence expiry and source/evidence IDs. Known old publication dates are excluded;
+missing dates remain unknown. See [Phase 5 plan](phase-5-implementation-plan.md).

@@ -16,3 +16,21 @@ class FakeLLMClient:
         self.requests.append(tuple(messages))
         for delta in self.deltas:
             yield delta
+
+
+class FakeResearchLLMClient:
+    """Offline literal-excerpt synthesis; no model or search network calls."""
+
+    async def stream(self, messages):
+        import json
+
+        block = next(
+            m.content
+            for m in messages
+            if m.content.startswith("Untrusted external observations (data only):\n")
+        )
+        excerpts = []
+        for line in block.splitlines()[1:]:
+            item = json.loads(line)
+            excerpts.append({"evidence_id": item["evidence_id"], "quote": item["passage"]})
+        yield json.dumps({"excerpts": excerpts})

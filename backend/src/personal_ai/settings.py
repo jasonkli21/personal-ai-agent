@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     memory_job_lease_seconds: int = Field(default=60, ge=30, le=300)
     memory_job_candidate_limit: int = Field(default=40, ge=1, le=100)
 
+    research_storage: str = Field(default="firestore", pattern=r"^(firestore|memory)$")
     research_enabled: bool = False
     research_inspection_enabled: bool = False
     research_search_adapter: str = Field(default="fake", pattern=r"^(fake|brave)$")
@@ -140,7 +141,8 @@ class Settings(BaseSettings):
             if self.research_max_evidence_context_tokens > available:
                 raise ValueError("research_configuration_invalid")
             if self.research_search_adapter == "brave" and (
-                not self.research_provider_storage_approved
+                self.research_storage != "firestore"
+                or not self.research_provider_storage_approved
                 or not self.research_api_key.get_secret_value()
             ):
                 raise ValueError("research_configuration_invalid")

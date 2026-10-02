@@ -44,8 +44,18 @@ def validate_save(current, candidate):
         current.request != candidate.request
         or current.created_at != candidate.created_at
         or current.policy_version != candidate.policy_version
+        or current.execution_deadline != candidate.execution_deadline
+        or candidate.state not in {"running", "completed", "insufficient", "failed"}
     ):
         raise ResearchError("research_conflict", 409)
+    if current.queries:
+        if len(current.queries) != len(candidate.queries):
+            raise ResearchError("research_conflict", 409)
+        for old, new in zip(current.queries, candidate.queries, strict=True):
+            if old.model_dump(exclude={"state", "executed_at"}) != new.model_dump(
+                exclude={"state", "executed_at"}
+            ) or (old.state != "planned" and old != new):
+                raise ResearchError("research_conflict", 409)
     # Provenance is append-only; extraction may merge links before its first persistence.
     for field in ("attempts", "observations", "evidence"):
         old, new = getattr(current, field), getattr(candidate, field)

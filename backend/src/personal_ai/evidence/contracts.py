@@ -68,7 +68,7 @@ class SourceObservation(ResearchRecord):
     observed_at: datetime
     published_at: datetime | None = None
     content_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
-    status: Literal["accepted", "empty", "unsafe", "oversized"]
+    status: Literal["accepted", "empty", "unsafe", "oversized", "stale"]
     attempt_id: UUID
 
 

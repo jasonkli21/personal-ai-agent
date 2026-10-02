@@ -4,6 +4,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from personal_ai.agents.research.contracts import ResearchError
+from personal_ai.api.research import router as research_router
 from personal_ai.api.routes import router as conversations_router
 from personal_ai.context import ContextError
 from personal_ai.llm.errors import LLMError
@@ -13,6 +15,7 @@ from personal_ai.storage import ConversationConflictError, ResourceNotFoundError
 
 app = FastAPI(title="Personal AI System", version="0.1.0")
 app.include_router(conversations_router)
+app.include_router(research_router)
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
@@ -75,3 +78,8 @@ async def preparation_provider_error(_: Request, error: LLMError) -> JSONRespons
 @app.exception_handler(ContextBudgetInvalidError)
 async def context_configuration_error(_: Request, __: ContextBudgetInvalidError) -> JSONResponse:
     return _error_response(503, "context_budget_invalid", "The context budget is invalid.")
+
+
+@app.exception_handler(ResearchError)
+async def research_error(_: Request, error: ResearchError) -> JSONResponse:
+    return _error_response(error.status, error.code, "Research could not proceed. Check the session or start a new request.")
