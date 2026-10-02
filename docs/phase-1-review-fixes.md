@@ -45,4 +45,5 @@ request/body cancellation; they do not prove browser cancellation on Cloud Run.
 
 The remaining [closeout plan](phase-1-verification-plan.md) still requires real
 emulator persistence across API restart, opt-in Gemini smoke testing, Docker CI
-results, and deployed synthetic browser flows. Phase 2 remains unstarted.
+results, and deployed synthetic browser flows. Phase 2 is now implemented locally; its later root-cut supersession and
+preparation changes are documented in the [Phase 2 guide](phase-2-implementation-guide.md).

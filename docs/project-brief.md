@@ -32,10 +32,12 @@ Implemented:
   edit-and-retry flows with preserved superseded history.
 - Provider-authoritative token budgets, complete-turn context selection, and
   response-size bounds.
-- Branch-safe append-only working summaries, synchronous bounded refresh, and
+- Branch-safe append-only working summaries with separate coverage/source provenance,
+  incomplete-turn skipping, synchronous bounded refresh, and
   disabled-by-default read-only context inspection.
 - Synthetic Phase 1/2 context evaluations and opt-in provider quality checks.
-- Atomic turn/replacement preparation, overlap rejection, conditional terminal
+- Atomic turn/replacement preparation with bounded root-cut writes, deadline-aware
+  counting and snapshot-independent reservation cleanup, overlap rejection, conditional terminal
   updates, and recovery of abandoned streaming placeholders.
 - Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.
 - Dockerfiles and a GCP bootstrap/deployment script.

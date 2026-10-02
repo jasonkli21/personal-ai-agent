@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+from itertools import pairwise
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -62,6 +63,10 @@ class ConversationSummary(TimestampedRecord):
     content: str = Field(min_length=1, max_length=20_000)
     source_message_ids: tuple[UUID, ...]
     source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Coverage includes skipped incomplete turns; sources contain only complete turns.
+    # Empty coverage preserves compatibility with existing contiguous summaries.
+    coverage_message_ids: tuple[UUID, ...] = ()
+    coverage_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     covers_through_message_id: UUID
     source_token_count: int = Field(ge=0)
     summary_token_count: int = Field(ge=0)
@@ -74,6 +79,13 @@ class ConversationSummary(TimestampedRecord):
         if not self.content.strip() or not self.source_message_ids:
             raise ValueError("empty summary")
         if self.source_message_ids[-1] != self.covers_through_message_id:
+            raise ValueError("summary coverage mismatch")
+        if bool(self.coverage_message_ids) != bool(self.coverage_fingerprint):
+            raise ValueError("incomplete coverage provenance")
+        if self.coverage_message_ids and (
+            self.coverage_message_ids[-1] != self.covers_through_message_id
+            or not set(self.source_message_ids).issubset(self.coverage_message_ids)
+        ):
             raise ValueError("summary coverage mismatch")
         return self
 
@@ -89,31 +101,43 @@ class ConversationSummaryRepository(Protocol):
     ) -> ConversationSummary | None: ...
 
 
-def fingerprint(messages: Sequence[Message]) -> str:
-    payload = [(str(m.id), m.role.value, m.content) for m in messages]
+def fingerprint(messages: Sequence[Message], *, include_state: bool = False) -> str:
+    payload = [
+        (str(m.id), m.role.value, m.content)
+        + ((m.status.value, str(m.parent_message_id)) if include_state else ())
+        for m in messages
+    ]
     return sha256(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
     ).hexdigest()
 
 
+def complete_turns(messages: Sequence[Message]) -> list[tuple[Message, Message]]:
+    return [
+        (user, assistant)
+        for user, assistant in pairwise(messages)
+        if user.role.value == "user" and assistant.role.value == "assistant"
+        and user.status.value == assistant.status.value == "completed"
+        and assistant.parent_message_id == user.id
+    ]
+
+
 def is_compatible(summary: ConversationSummary, active: Sequence[Message]) -> bool:
-    prefix = active[: len(summary.source_message_ids)]
+    coverage = summary.coverage_message_ids or summary.source_message_ids
+    prefix = active[: len(coverage)]
+    sources = [m for turn in complete_turns(prefix) for m in turn]
     return (
-        tuple(m.id for m in prefix) == summary.source_message_ids
-        and len(prefix) % 2 == 0
+        tuple(m.id for m in prefix) == coverage
+        and tuple(m.id for m in sources) == summary.source_message_ids
         and all(
-            m.status.value == "completed"
+            m.status.value != "superseded"
             and m.owner_id == summary.owner_id
             and m.conversation_id == summary.conversation_id
             for m in prefix
         )
-        and all(
-            prefix[i].role.value == "user"
-            and prefix[i + 1].role.value == "assistant"
-            and prefix[i + 1].parent_message_id == prefix[i].id
-            for i in range(0, len(prefix), 2)
-        )
-        and fingerprint(prefix) == summary.source_fingerprint
+        and fingerprint(sources) == summary.source_fingerprint
+        and (not summary.coverage_fingerprint
+             or fingerprint(prefix, include_state=True) == summary.coverage_fingerprint)
     )
 
 

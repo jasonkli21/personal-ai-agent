@@ -85,6 +85,14 @@ class ContextInspector:
                 "summary": {
                     "id": str(summary.id),
                     "source_message_ids": [str(i) for i in summary.source_message_ids],
+                    "coverage_message_ids": [
+                        str(i) for i in (summary.coverage_message_ids or summary.source_message_ids)
+                    ],
+                    "skipped_message_ids": [
+                        str(i) for i in summary.coverage_message_ids
+                        if i not in summary.source_message_ids
+                    ],
+                    "coverage_fingerprint": summary.coverage_fingerprint,
                     "source_fingerprint": summary.source_fingerprint,
                     "covers_through_message_id": str(summary.covers_through_message_id),
                     "summary_token_count": summary.summary_token_count,

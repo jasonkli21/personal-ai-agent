@@ -19,7 +19,10 @@ method, so the provider adapter contains a narrowly scoped transport call and an
 offline test against the installed SDK. See the
 [official countTokens contract](https://ai.google.dev/api/tokens).
 Counting failure rejects preparation safely; it never substitutes an estimate
-and presents it as authoritative. Per-request repeated counts are cached.
+and presents it as authoritative. Per-request repeated counts are cached. Complete-turn boundaries are searched
+with authoritative candidate counts rather than one request per historical turn.
+A fitting raw history takes priority; a summary must add coverage without evicting
+fitting recent turns. One owned counting client is reused and closed per preparation.
 
 Offline planning uses a labelled UTF-8 byte estimate with a 10% multiplier and
 per-message overhead; fixture tests use deterministic word units. Neither claims

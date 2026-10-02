@@ -127,3 +127,39 @@ def test_stream_adapter_keeps_summary_in_system_context_and_enforces_response_re
     assert captured[0]["config"]["max_output_tokens"] == settings.max_response_tokens
     assert captured[0]["contents"] == [{"role": "user", "parts": [{"text": "newest"}]}]
     assert "Historical summary" in captured[0]["config"]["system_instruction"]
+
+
+def test_counting_reuses_owned_client_limits_calls_and_closes_at_assembly_end(monkeypatch):
+    from personal_ai.context import ContextAssembler
+    captured = []
+    def handler(request):
+        captured.append(request)
+        return httpx.Response(200, json={'totalTokens': 20})
+    client = genai.Client(api_key='offline-fake', http_options={
+        'client_args': {'transport': httpx.MockTransport(handler)},
+    })
+    builds = []
+    closes = []
+    def build(self):
+        builds.append(True)
+        return client
+    monkeypatch.setattr(GeminiLLMClient, '_build_client', build)
+    close = client.close
+    monkeypatch.setattr(client, 'close', lambda: (closes.append(True), close()))
+    settings = fixture_settings(ai_api_key='offline-fake')
+    active, pending, _ = build_fixture({**load_fixtures()[0], 'turns': 100, 'words_per_message': 1})
+    result = ContextAssembler(settings, GeminiTokenCounter(settings)).assemble(active, pending)
+    assert len(result.selected_message_ids) == 201
+    assert len(captured) == 2
+    assert len(builds) == len(closes) == 1
+
+
+def test_count_deadline_is_forwarded_to_transport_without_sdk_retries():
+    calls = []
+    class Api:
+        def request(self, *args, **kwargs):
+            calls.append(kwargs['http_options'])
+            return SimpleNamespace(body=json.dumps({'totalTokens': 20}))
+    counter = GeminiTokenCounter(fixture_settings(), client=SimpleNamespace(_api_client=Api()))
+    counter.count_with_timeout([ChatMessage('user', 'synthetic')], 0.25)
+    assert calls == [{'timeout': 250, 'retry_options': {'attempts': 1}}]

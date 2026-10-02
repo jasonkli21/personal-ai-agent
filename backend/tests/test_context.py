@@ -244,3 +244,71 @@ def test_incompatible_summary_cannot_be_selected_after_regeneration():
     )
     assert result.summary is None
     assert all(m != summary_wrapper("Launch color is amber.") for m in result.messages)
+
+
+def test_summary_does_not_evict_recent_turns_when_raw_history_fits():
+    active, pending, _ = named('short-control')
+    pending = pending.model_copy(update={'content': 'question ' * 110})
+    repo = InMemorySummaryRepository()
+    repo.create(record(active[:2], content='old ' * 35))
+    assembler = ContextAssembler(fixture_settings(), FakeTokenCounter(), repo)
+    result = assembler.assemble(active, pending)
+    assert result.summary is None
+    assert result.selected_message_ids == tuple(m.id for m in active) + (pending.id,)
+
+
+def test_summary_cannot_crowd_out_fitting_recent_turns_when_history_overflows():
+    active, pending, _ = named()
+    repo = InMemorySummaryRepository()
+    repo.create(record(active[:2], content='old ' * 35))
+    raw = ContextAssembler(fixture_settings(), FakeTokenCounter()).assemble(active, pending)
+    result = ContextAssembler(fixture_settings(), FakeTokenCounter(), repo).assemble(active, pending)
+    assert set(raw.selected_message_ids).issubset(result.selected_message_ids)
+    assert result.summary is None
+
+
+def test_summary_advances_across_incomplete_history_and_validates_coverage():
+    active, pending, _ = named('beyond-fixed-cap')
+    active[1] = active[1].model_copy(update={'status': MessageStatus.FAILED})
+    active[2] = active[2].model_copy(update={'content': 'FACT: Later launch color is violet. ' + active[2].content})
+    repo = InMemorySummaryRepository()
+    summarizer = FactSummarizer()
+    assembler = ContextAssembler(fixture_settings(), FakeTokenCounter(), repo, summarizer)
+    first = assembler.assemble(active, pending)
+    assert first.summary and 'Later launch color is violet' in first.summary.content
+    assert not {m.id for m in active[:2]} & set(first.summary.source_message_ids)
+    assert tuple(m.id for m in active[:2]) == first.summary.coverage_message_ids[:2]
+    assert 'summary_skipped_incomplete_turns' in first.diagnostics
+    by_id = {m.id: m for m in active}
+    assert all(by_id[mid].status is MessageStatus.COMPLETED for mid in summarizer.calls[0][0])
+    second = assembler.assemble(active, pending)
+    assert second.summary and len(second.summary.coverage_message_ids) > len(first.summary.coverage_message_ids)
+    changed = list(active)
+    changed[1] = changed[1].model_copy(update={'status': MessageStatus.COMPLETED})
+    assert repo.compatible(owner_id='local', conversation_id=pending.conversation_id, active=changed) is None
+    changed = list(active)
+    changed[0] = changed[0].model_copy(update={'content': 'edited incomplete turn'})
+    assert repo.compatible(owner_id='local', conversation_id=pending.conversation_id, active=changed) is None
+
+
+def test_selection_count_calls_grow_logarithmically():
+    fixture = {**load_fixtures()[0], 'turns': 1000}
+    active, pending, _ = build_fixture(fixture)
+    class Counter(FakeTokenCounter):
+        calls = 0
+        def count(self, request):
+            self.calls += 1
+            return super().count(request)
+    counter = Counter()
+    result = ContextAssembler(fixture_settings(), counter).assemble(active, pending)
+    assert counter.calls <= 16
+    assert result.selected_message_ids[-3:-1] == tuple(m.id for m in active[-2:])
+    assert result.budget.selected_total <= result.budget.input_budget
+
+
+def test_edited_branch_evaluation_executes_rewrite_and_invalidates_original_summary():
+    row = next(row for row in evaluate() if row['fixture'] == 'edited-branch')
+    assert row['branch_rewrite_verified'] is True
+    assert row['obsolete_facts_excluded'] is True
+    assert row['required_facts_retained'] and row['summary_id']
+    assert row['result'] == 'passed'

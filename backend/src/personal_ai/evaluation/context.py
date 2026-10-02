@@ -1,5 +1,6 @@
 """Synthetic offline Phase 1/2 comparison; no provider, credentials, or judge."""
 
+import asyncio
 import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -10,8 +11,11 @@ from personal_ai.context import ContextAssembler, ContextError
 from personal_ai.context.contracts import SummaryDraft
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import FakeTokenCounter
-from personal_ai.entities import Message, MessageRole, MessageStatus
+from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
+from personal_ai.llm import FakeLLMClient
+from personal_ai.services import ChatTurnService
 from personal_ai.settings import Settings
+from personal_ai.storage import InMemoryConversationRepository, InMemoryMessageRepository
 
 FIXTURE_PATH = Path(__file__).with_name("context-fixtures.json")
 
@@ -101,12 +105,15 @@ def evaluate() -> list[dict]:
     for fixture in load_fixtures():
         active, pending, audit = build_fixture(fixture)
         summaries = InMemorySummaryRepository()
+        branch_verified = None
+        if fixture.get("branch"):
+            active, audit, branch_verified = rewrite_fixture_branch(active, pending, summaries)
         assembler = ContextAssembler(
             fixture_settings(), FakeTokenCounter(), summaries, FactSummarizer()
         )
         base = {
             "fixture": fixture["name"],
-            "fixture_version": 1,
+            "fixture_version": 2,
             "configuration": fixture_settings().model_dump(exclude={"ai_api_key"}),
             "phase_1": {
                 "input_message_count": len(active) + 1,
@@ -114,11 +121,13 @@ def evaluate() -> list[dict]:
                 "known_limitation": "no token-budget gate or working summary",
             },
             "provider_token_count": None,
+            "branch_rewrite_verified": branch_verified,
         }
         try:
             context = assembler.assemble(active, pending)
             text = " ".join(m.content for m in context.messages)
             retained = all(fact in text for fact in fixture["required_old_facts"])
+            obsolete_excluded = not fixture.get("branch") or "Original city is Lisbon" not in text
             excluded_audit = all(m.id not in context.selected_message_ids for m in audit)
             expected = all(
                 str(uuid5(pending.conversation_id, key))
@@ -134,9 +143,11 @@ def evaluate() -> list[dict]:
                 not fixture["reject"]
                 and retained
                 and excluded_audit
+                and obsolete_excluded
                 and expected
                 and expected_excluded
                 and context.budget.selected_total <= context.budget.input_budget
+                and (branch_verified is not False)
             )
             base.update(
                 {
@@ -149,6 +160,7 @@ def evaluate() -> list[dict]:
                     "estimated_token_count": context.budget.selected_total,
                     "budget": asdict(context.budget),
                     "required_facts_retained": retained,
+                    "obsolete_facts_excluded": obsolete_excluded,
                 }
             )
         except ContextError as error:
@@ -166,6 +178,58 @@ def evaluate() -> list[dict]:
             )
         rows.append(base)
     return rows
+
+
+def rewrite_fixture_branch(active, pending, summaries):
+    """Seed an original summary, then execute a real edit/retry and append turns."""
+    conversations = InMemoryConversationRepository()
+    messages = InMemoryMessageRepository(conversations)
+    conversations.create(Conversation(
+        id=pending.conversation_id, owner_id="local", title="Synthetic branch fixture",
+        created_at=active[0].created_at, updated_at=active[-1].created_at,
+    ))
+    original_ids = {
+        m.id: uuid5(pending.conversation_id, "obsolete" if i == 0 else f"original-{i}")
+        for i, m in enumerate(active)
+    }
+    original = [m.model_copy(update={
+        "id": original_ids[m.id],
+        "parent_message_id": original_ids.get(m.parent_message_id),
+        "content": m.content.replace("Corrected city is Bergen", "Original city is Lisbon"),
+    }) for i, m in enumerate(active)]
+    for message in original:
+        messages.create(message)
+    settings = fixture_settings()
+    assembler = ContextAssembler(settings, FakeTokenCounter(), summaries, FactSummarizer())
+    assembler.assemble(original, pending)
+    original_summaries = set(summaries.records)
+    service = ChatTurnService(
+        conversations, messages, FakeLLMClient(["Acknowledged corrected city is Bergen."]),
+        owner_id="local", model="fixture-model", context_assembler=assembler,
+    )
+    stream = service.edit_and_retry(
+        pending.conversation_id, original[0].id, active[0].content, request_id="fixture-edit",
+    )
+
+    async def consume():
+        async for _ in stream:
+            pass
+
+    asyncio.run(consume())
+    branch = messages.list_active(owner_id="local", conversation_id=pending.conversation_id)
+    invalidated = bool(original_summaries) and summaries.compatible(
+        owner_id="local", conversation_id=pending.conversation_id, active=branch,
+    ) is None
+    parent = branch[-1].id
+    for message in active[2:]:
+        copied = message.model_copy(update={"parent_message_id": parent})
+        messages.create(copied)
+        parent = copied.id
+    branch = messages.list_active(owner_id="local", conversation_id=pending.conversation_id)
+    audit = [messages.get(owner_id="local", conversation_id=pending.conversation_id,
+                          message_id=m.id) for m in original]
+    verified = invalidated and all(m.status is MessageStatus.SUPERSEDED for m in audit)
+    return branch, audit, verified
 
 
 if __name__ == "__main__":

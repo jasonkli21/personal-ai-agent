@@ -498,3 +498,84 @@ def test_firestore_summary_repository_is_owner_scoped_append_only_and_maps_lazy_
         client.fail_query_stage = stage
         with pytest.raises(StorageUnavailableError):
             summaries.compatible(owner_id=OWNER, conversation_id=conv.id, active=active)
+
+
+@pytest.mark.parametrize('adapter', ['memory', 'firestore'])
+@pytest.mark.parametrize('target_index', [0, 1])
+def test_long_branch_replacement_uses_bounded_writes_and_preserves_audit(
+    adapter, target_index, transactional_fake, monkeypatch,
+):
+    from uuid import uuid4
+
+    from personal_ai.evaluation.context import build_fixture, load_fixtures
+    from personal_ai.storage import InMemoryConversationRepository, InMemoryMessageRepository
+    active, pending, _ = build_fixture({**load_fixtures()[0], 'turns': 300})
+    conv = Conversation(id=pending.conversation_id, owner_id=OWNER, title='Long synthetic',
+                        created_at=NOW, updated_at=NOW)
+    writes = []
+    if adapter == 'memory':
+        conversations = InMemoryConversationRepository()
+        conversations.create(conv)
+        repository = InMemoryMessageRepository(conversations)
+        for item in active:
+            repository.create(item)
+    else:
+        client = FakeFirestoreClient()
+        FirestoreConversationRepository(client).create(conv)
+        repository = FirestoreMessageRepository(client)
+        for item in active:
+            client.data['messages'][str(item.id)] = _message_data(item)
+        commit = client.commit
+        def bounded_commit(items):
+            assert len(items) <= 500
+            writes.append(len(items))
+            commit(items)
+        monkeypatch.setattr(client, 'commit', bounded_commit)
+    target = active[target_index]
+    replacement = target.model_copy(update={
+        'id': uuid4(), 'content': 'replacement', 'supersedes_message_id': target.id,
+    })
+    lease = uuid4()
+    repository.prepare_message_turn(
+        owner_id=OWNER, conversation_id=conv.id, expected_active_ids=[m.id for m in active],
+        supersede_from_message_id=target.id, messages=(replacement,), updated_at=NOW,
+        preparation_id=lease,
+    )
+    assert repository.list_active(owner_id=OWNER, conversation_id=conv.id) == [*active[:target_index], replacement]
+    for item in (target, active[-1]):
+        preserved = repository.get(owner_id=OWNER, conversation_id=conv.id, message_id=item.id)
+        assert preserved.status is MessageStatus.SUPERSEDED
+        assert preserved.content == item.content
+        assert preserved.parent_message_id == item.parent_message_id
+    assert repository.update_status(
+        owner_id=OWNER, conversation_id=conv.id, message_id=active[-1].id,
+        status=MessageStatus.FAILED, expected_status=MessageStatus.COMPLETED, updated_at=NOW,
+    ) is None
+    repository.release_preparation(owner_id=OWNER, conversation_id=conv.id, preparation_id=uuid4())
+    from personal_ai.storage import ConversationConflictError
+    with pytest.raises(ConversationConflictError):
+        repository.prepare_message_turn(
+            owner_id=OWNER, conversation_id=conv.id,
+            expected_active_ids=[m.id for m in [*active[:target_index], replacement]],
+            supersede_from_message_id=None, messages=(), updated_at=NOW, preparation_id=uuid4(),
+        )
+    repository.release_preparation(owner_id=OWNER, conversation_id=conv.id, preparation_id=lease)
+    if writes:
+        assert max(writes) == 3
+
+
+def test_firestore_release_lease_is_owner_scoped_and_preserves_new_reservation(transactional_fake):
+    from uuid import uuid4
+    client = FakeFirestoreClient()
+    conv = conversation()
+    FirestoreConversationRepository(client).create(conv)
+    repository = FirestoreMessageRepository(client)
+    lease = uuid4()
+    repository.prepare_message_turn(owner_id=OWNER, conversation_id=conv.id, expected_active_ids=[],
+        supersede_from_message_id=None, messages=(), updated_at=NOW, preparation_id=lease)
+    repository.release_preparation(owner_id=OWNER, conversation_id=conv.id, preparation_id=uuid4())
+    assert client.data['conversations'][str(conv.id)]['context_preparation_id'] == str(lease)
+    with pytest.raises(ResourceNotFoundError):
+        repository.release_preparation(owner_id='foreign', conversation_id=conv.id, preparation_id=lease)
+    repository.release_preparation(owner_id=OWNER, conversation_id=conv.id, preparation_id=lease)
+    assert client.data['conversations'][str(conv.id)]['context_preparation_id'] is None

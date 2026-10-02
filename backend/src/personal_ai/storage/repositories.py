@@ -29,6 +29,10 @@ class MessageRepository(Protocol):
 
     def create(self, message: Message) -> Message: ...
 
+    def release_preparation(
+        self, *, owner_id: str, conversation_id: UUID, preparation_id: UUID,
+    ) -> None: ...
+
     def recover_stale_turn(
         self,
         *,

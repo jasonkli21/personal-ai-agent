@@ -21,7 +21,7 @@ from personal_ai.storage.errors import (
     ResourceNotFoundError,
     StorageUnavailableError,
 )
-from personal_ai.storage.fake import _active_path, _descendant_ids
+from personal_ai.storage.fake import _active_path, _descendant_ids, _effective_message
 
 
 class FirestoreConversationRepository:
@@ -113,6 +113,26 @@ class FirestoreMessageRepository:
         self._collection = self._client.collection("messages")
         self._conversations = self._client.collection("conversations")
 
+    def release_preparation(
+        self, *, owner_id: str, conversation_id: UUID, preparation_id: UUID,
+    ) -> None:
+        reference = self._conversations.document(str(conversation_id))
+
+        def operation() -> None:
+            @firestore.transactional
+            def release(transaction: Any) -> None:
+                snapshot = next(transaction.get(reference), None)
+                if snapshot is None or not snapshot.exists \
+                        or snapshot.to_dict().get("owner_id") != owner_id:
+                    raise ResourceNotFoundError("conversation not found")
+                if snapshot.to_dict().get("context_preparation_id") == str(preparation_id):
+                    transaction.update(reference, {
+                        "context_preparation_id": None, "context_preparation_started_at": None,
+                    })
+            release(self._client.transaction())
+
+        self._run(operation)
+
     def create(self, message: Message) -> Message:
         def operation() -> None:
             batch = self._client.batch()
@@ -133,7 +153,12 @@ class FirestoreMessageRepository:
         message = _message_from_data(snapshot.to_dict())
         if message.owner_id != owner_id or message.conversation_id != conversation_id:
             raise ResourceNotFoundError("message not found")
-        return message
+        history = self._run(lambda: list(self._message_query(
+            owner_id=owner_id, conversation_id=conversation_id,
+        ).stream()))
+        return _effective_message(message, {
+            item.id: item for item in (_message_from_data(s.to_dict()) for s in history)
+        })
 
     def list_active(self, *, owner_id: str, conversation_id: UUID) -> list[Message]:
         snapshots = self._run(
@@ -189,6 +214,13 @@ class FirestoreMessageRepository:
                     current = _message_from_data(snapshot.to_dict())
                     if current.owner_id != owner_id or current.conversation_id != conversation_id:
                         raise ResourceNotFoundError("message not found")
+                    stored = [
+                        _message_from_data(item.to_dict())
+                        for item in transaction.get(self._message_query(
+                            owner_id=owner_id, conversation_id=conversation_id,
+                        ))
+                    ]
+                    current = _effective_message(current, {item.id: item for item in stored})
                     if current.status is not expected_status:
                         return False
                     transaction.update(message_ref, changes)
@@ -324,22 +356,15 @@ class FirestoreMessageRepository:
                 if len(messages) + 1 > 500:
                     raise StorageUnavailableError("message storage unavailable")
 
-                replaced: list[Message] = []
                 if supersede_from_message_id is not None:
-                    descendant_ids = _descendant_ids(stored, supersede_from_message_id)
-                    replaced = [
-                        stored_by_id[item_id]
-                        for item_id in descendant_ids
-                        if item_id in stored_by_id
-                        and stored_by_id[item_id].status is not MessageStatus.SUPERSEDED
-                    ]
-                    if len(replaced) + len(messages) + 1 > 500:
+                    if len(messages) + 2 > 500:
                         raise StorageUnavailableError("message storage unavailable")
-                    for item in replaced:
-                        transaction.update(
-                            self._collection.document(str(item.id)),
-                            {"status": MessageStatus.SUPERSEDED.value},
-                        )
+                    # A durable root cut supersedes its historical descendants
+                    # through repository reads, keeping replacement writes bounded.
+                    transaction.update(
+                        self._collection.document(str(supersede_from_message_id)),
+                        {"status": MessageStatus.SUPERSEDED.value},
+                    )
 
                 for item in messages:
                     transaction.create(message_refs[item.id], _message_data(item))
@@ -371,18 +396,16 @@ class FirestoreMessageRepository:
         replaced = [
             by_id[identifier]
             for identifier in identifiers
-            if identifier in by_id and by_id[identifier].status is not MessageStatus.SUPERSEDED
+            if identifier in by_id
+            and _effective_message(by_id[identifier], by_id).status is not MessageStatus.SUPERSEDED
         ]
-        if len(replaced) + 1 > 500:
-            raise StorageUnavailableError("message storage unavailable")
 
         def operation() -> None:
             batch = self._client.batch()
-            for message in replaced:
-                batch.update(
-                    self._collection.document(str(message.id)),
-                    {"status": MessageStatus.SUPERSEDED.value},
-                )
+            batch.update(
+                self._collection.document(str(message_id)),
+                {"status": MessageStatus.SUPERSEDED.value},
+            )
             batch.update(
                 self._conversations.document(str(conversation_id)), {"updated_at": updated_at}
             )

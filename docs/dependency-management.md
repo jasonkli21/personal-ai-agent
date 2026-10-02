@@ -16,7 +16,7 @@ source .venv/bin/activate
 uv build --no-build-isolation
 ```
 
-The first sync installs the locked Hatchling build group without building the
+The first sync installs the locked Hatchling and editables build group without building the
 application. The second installs runtime/dev dependencies and builds the local
 package with those build tools, avoiding a separate unpinned build environment.
 Docker follows the same sequence, omitting the dev extra and using a noneditable
@@ -26,7 +26,9 @@ For an intentional dependency change, edit `pyproject.toml`, run `uv lock`, then
 the sync steps and backend tests/lint/build. To upgrade existing pins, use
 `uv lock --upgrade-package PACKAGE` or `uv lock --upgrade`, review the diff,
 and commit the updated metadata and lock together. Build tooling lives in both
-`build-system.requires` and the `build` group; keep their Hatchling pins aligned.
+`build-system.requires` and the `build` group; keep their Hatchling and editables pins aligned. The pinned editables dependency
+is required by Hatchling for the non-isolated editable install used locally and
+in backend CI.
 
 `--locked` rejects metadata changes that require updating the lockfile. See
 [uv locking and syncing](https://docs.astral.sh/uv/concepts/projects/sync/).

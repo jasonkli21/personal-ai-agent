@@ -7,6 +7,7 @@ import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from uuid import UUID, uuid4
 
 import anyio
@@ -18,6 +19,7 @@ from personal_ai.api.schemas import (
     SSEResponseError,
 )
 from personal_ai.context import ContextAssembler
+from personal_ai.context.deadline import remaining
 from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
 from personal_ai.llm import ChatMessage, LLMClient, LLMError, LLMInvalidResponseError
 from personal_ai.storage import ConversationConflictError
@@ -181,6 +183,7 @@ class ChatTurnService:
         request_id: str,
     ) -> AsyncIterator[str]:
         reservation = uuid4()
+        deadline = monotonic() + self._context.settings.request_timeout_seconds
         self._messages.prepare_message_turn(
             owner_id=self._owner_id,
             conversation_id=user.conversation_id,
@@ -190,12 +193,12 @@ class ChatTurnService:
             updated_at=datetime.now(UTC),
             preparation_id=reservation,
         )
-        post_active = self._messages.list_active(
-            owner_id=self._owner_id,
-            conversation_id=user.conversation_id,
-        )
         try:
-            assembled = self._context.assemble(post_active[:-1], user)
+            post_active = self._messages.list_active(
+                owner_id=self._owner_id, conversation_id=user.conversation_id,
+            )
+            assembled = self._context.assemble(post_active[:-1], user, deadline=deadline)
+            remaining(deadline)
             assistant = self._new_message(
                 conversation_id=user.conversation_id,
                 role=MessageRole.ASSISTANT,
@@ -219,15 +222,10 @@ class ChatTurnService:
             # Release only our lease. Recovery handles unavailable storage/process death;
             # an expired request must never release a newer request's reservation.
             try:
-                self._messages.prepare_message_turn(
+                self._messages.release_preparation(
                     owner_id=self._owner_id,
                     conversation_id=user.conversation_id,
-                    expected_active_ids=[m.id for m in post_active],
-                    supersede_from_message_id=None,
-                    messages=(),
-                    updated_at=datetime.now(UTC),
                     preparation_id=reservation,
-                    complete_preparation=True,
                 )
             except Exception as error:  # noqa: BLE001 - preserve the original safe failure
                 logger.error(

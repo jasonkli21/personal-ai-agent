@@ -1,7 +1,7 @@
 [
   {
     "fixture": "short-control",
-    "fixture_version": 1,
+    "fixture_version": 2,
     "configuration": {
       "ai_provider": "gemini",
       "ai_model": "fixture-model",
@@ -22,6 +22,7 @@
       "known_limitation": "no token-budget gate or working summary"
     },
     "provider_token_count": null,
+    "branch_rewrite_verified": null,
     "result": "passed",
     "failure_reason": null,
     "summary_id": null,
@@ -45,11 +46,12 @@
       "selected_total": 73,
       "counter_kind": "estimated"
     },
-    "required_facts_retained": true
+    "required_facts_retained": true,
+    "obsolete_facts_excluded": true
   },
   {
     "fixture": "beyond-fixed-cap",
-    "fixture_version": 1,
+    "fixture_version": 2,
     "configuration": {
       "ai_provider": "gemini",
       "ai_model": "fixture-model",
@@ -70,9 +72,10 @@
       "known_limitation": "no token-budget gate or working summary"
     },
     "provider_token_count": null,
+    "branch_rewrite_verified": null,
     "result": "passed",
     "failure_reason": null,
-    "summary_id": "40185b23-9e26-4c34-8a26-03ca902537e2",
+    "summary_id": "7d6387e1-3d5a-4073-9984-3c1c68ee8022",
     "selected_message_ids": [
       "31a787a5-fc4d-59e7-8260-8f20a2955e58",
       "9aee7dd1-84c9-5811-8671-a8a8659d45ec",
@@ -150,11 +153,12 @@
       "selected_total": 171,
       "counter_kind": "estimated"
     },
-    "required_facts_retained": true
+    "required_facts_retained": true,
+    "obsolete_facts_excluded": true
   },
   {
     "fixture": "old-fact",
-    "fixture_version": 1,
+    "fixture_version": 2,
     "configuration": {
       "ai_provider": "gemini",
       "ai_model": "fixture-model",
@@ -175,9 +179,10 @@
       "known_limitation": "no token-budget gate or working summary"
     },
     "provider_token_count": null,
+    "branch_rewrite_verified": null,
     "result": "passed",
     "failure_reason": null,
-    "summary_id": "53e4d02c-5ffc-42bf-bfae-362792d55013",
+    "summary_id": "6ffd0be9-c7dc-4cb1-b35d-091bfdf7a3df",
     "selected_message_ids": [
       "b9886193-4829-5709-baf5-1449b91b8a2f",
       "e9aa0439-1d6d-53f8-92b6-472a58a42e61",
@@ -219,11 +224,12 @@
       "selected_total": 174,
       "counter_kind": "estimated"
     },
-    "required_facts_retained": true
+    "required_facts_retained": true,
+    "obsolete_facts_excluded": true
   },
   {
     "fixture": "edited-branch",
-    "fixture_version": 1,
+    "fixture_version": 2,
     "configuration": {
       "ai_provider": "gemini",
       "ai_model": "fixture-model",
@@ -244,9 +250,10 @@
       "known_limitation": "no token-budget gate or working summary"
     },
     "provider_token_count": null,
+    "branch_rewrite_verified": true,
     "result": "passed",
     "failure_reason": null,
-    "summary_id": "a7598ccc-fcf1-4f58-b0ac-4000c781512d",
+    "summary_id": "4f571666-3801-4108-82b6-dbeda4f67ae2",
     "selected_message_ids": [
       "f19f365c-304c-5a8a-b49b-cb94645d38a0",
       "bea50485-091a-5b0c-9a22-5d429441569e",
@@ -261,8 +268,8 @@
       "bc548997-07bf-5aa7-9dee-c1b43577dc87"
     ],
     "excluded_message_ids": [
-      "69e65a8a-1f97-5d47-af42-b3064c4905fd",
-      "7ddd2708-4d8a-5339-8757-30a89e63c85f",
+      "d4256221-8ea3-40af-bfda-770447a45a60",
+      "97c82f4a-022b-4faf-a38f-7ee46eaa8d06",
       "db0b56a1-97a9-5c7f-bd04-bfab5ef3f9c9",
       "96cb3505-e251-5cad-bbe2-9cb6987a47d8",
       "dcc7239c-d4ea-5075-930a-c04b1e8ad3db",
@@ -275,7 +282,30 @@
       "b6794c21-08d7-571d-b279-90dcce756d8d",
       "4741d0e8-95d3-587b-9822-05733be6f9e7",
       "a4f36f22-1ed7-5ee5-bfb4-f1a638ba14d3",
-      "d11bfbe6-684d-5b04-9ddf-40f639750cb1"
+      "d11bfbe6-684d-5b04-9ddf-40f639750cb1",
+      "c3676987-1f6b-565b-80d9-dbed1608a326",
+      "5eb7bcd0-34d6-5bb7-9450-d8070833d67d",
+      "911d8cc3-9d85-5f9d-938b-fa71c9c17897",
+      "1e99e918-739c-5268-b75a-cc90cc9fe5e6",
+      "ef15af6c-0860-51a2-a25a-29a0d705dab2",
+      "c75e0ae1-bb98-56fa-bb12-310768a6046c",
+      "177fd16c-745a-532a-95b1-2e951b264799",
+      "44364400-2926-5ea4-8406-413cc9373328",
+      "e062f059-510b-5eb1-9cbb-15dd4fb92127",
+      "df4f54e8-53b1-544d-82a6-27dc2ffd52cd",
+      "d5bed3d0-688b-5c15-b5a8-075e620c876f",
+      "bc2a4630-7924-5202-bcf1-217d0c39f753",
+      "c4715b21-d837-50a5-84f6-a71b4690f341",
+      "cba6d5ac-c335-56e3-97b6-1008e80e54b5",
+      "a5be84aa-fcdb-5b52-8ce2-313fca780d50",
+      "8ebf8e07-75f2-5f55-9063-be5ee7942e56",
+      "8ca5947f-7956-59f0-8d01-7ab0423c965f",
+      "e248c454-9d2f-5083-bcb2-d5b4b9e4524c",
+      "c3ce6d89-1f45-50c1-8d5d-9daec67c252f",
+      "d4f89a80-a5a2-58cd-8b03-d6cf94c01be5",
+      "3052bc9f-de10-5883-9c62-01658acc454a",
+      "77944bb5-3a15-5507-950f-a98874840371",
+      "0ec6bc06-ad68-56e5-b4f6-078c1878092a"
     ],
     "estimated_token_count": 171,
     "budget": {
@@ -289,11 +319,12 @@
       "selected_total": 171,
       "counter_kind": "estimated"
     },
-    "required_facts_retained": true
+    "required_facts_retained": true,
+    "obsolete_facts_excluded": true
   },
   {
     "fixture": "oversized-newest",
-    "fixture_version": 1,
+    "fixture_version": 2,
     "configuration": {
       "ai_provider": "gemini",
       "ai_model": "fixture-model",
@@ -314,6 +345,7 @@
       "known_limitation": "no token-budget gate or working summary"
     },
     "provider_token_count": null,
+    "branch_rewrite_verified": null,
     "result": "passed",
     "failure_reason": "context_message_too_large",
     "summary_id": null,

@@ -2,7 +2,6 @@
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from itertools import pairwise
 from uuid import UUID, uuid4
 
 from personal_ai.context.contracts import (
@@ -13,6 +12,7 @@ from personal_ai.context.contracts import (
     ConversationSummary,
     ConversationSummaryRepository,
     TokenCounter,
+    complete_turns,
     fingerprint,
 )
 from personal_ai.entities import Message, MessageRole, MessageStatus
@@ -47,20 +47,6 @@ def summary_request(
     )
 
 
-def complete_turns(messages: Sequence[Message]) -> list[tuple[Message, Message]]:
-    turns = []
-    for user, assistant in pairwise(messages):
-        if (
-            user.role is MessageRole.USER
-            and assistant.role is MessageRole.ASSISTANT
-            and user.status is MessageStatus.COMPLETED
-            and assistant.status is MessageStatus.COMPLETED
-            and assistant.parent_message_id == user.id
-        ):
-            turns.append((user, assistant))
-    return turns
-
-
 class ContextAssembler:
     def __init__(
         self,
@@ -84,6 +70,49 @@ class ContextAssembler:
         return budget
 
     def assemble(
+        self,
+        active_messages: Sequence[Message],
+        pending_user_message: Message,
+        *,
+        refresh: bool = True,
+        deadline: float | None = None,
+    ) -> AssembledContext:
+        from personal_ai.context.deadline import DeadlineCounter, DeadlineSummarizer
+
+        scoped = ContextAssembler(
+            self.settings, DeadlineCounter(self.counter, deadline), self.summaries,
+            DeadlineSummarizer(self.summarizer, deadline) if self.summarizer else None,
+        )
+        try:
+            return scoped._assemble(active_messages, pending_user_message, refresh=refresh)
+        finally:
+            close = getattr(self.counter, "close", None)
+            if close:
+                close()
+
+    def _fit_turns(self, turns, request, budget: int, *, suffix: bool):
+        """Count the full candidate first, then search complete-turn boundaries.
+
+        Each accepted request is provider-counted; binary search avoids one
+        network round trip per historical turn. Never use additive estimates
+        as the authority for the final request.
+        """
+        def candidate(size):
+            chosen = (turns[-size:] if suffix else turns[:size]) if size else []
+            return [m for turn in chosen for m in turn]
+
+        if self.counter.count(request(candidate(len(turns)))).tokens <= budget:
+            return candidate(len(turns))
+        low, high = 0, len(turns)
+        while low + 1 < high:
+            middle = (low + high) // 2
+            if self.counter.count(request(candidate(middle))).tokens <= budget:
+                low = middle
+            else:
+                high = middle
+        return candidate(low)
+
+    def _assemble(
         self,
         active_messages: Sequence[Message],
         pending_user_message: Message,
@@ -127,27 +156,37 @@ class ContextAssembler:
     ) -> AssembledContext:
         mandatory = (ChatMessage(MessageRole.USER, pending.content),)
         mandatory_count = self.counter.count(mandatory)
+        turns = complete_turns(history)
+        raw_request = lambda chosen: tuple(ChatMessage(m.role, m.content) for m in chosen) + mandatory
+        raw = self._fit_turns(turns, raw_request, self.input_budget(), suffix=True)
         prefix: tuple[ChatMessage, ...] = ()
         covered: set[UUID] = set()
-        if summary:
+        chosen = raw
+        # A summary must add coverage without evicting fitting recent turns.
+        if summary and len(raw) < len(turns) * 2:
             wrapped = (summary_wrapper(summary.content),)
             if (
                 self.counter.count(wrapped).tokens <= self.settings.max_summary_tokens
                 and self.counter.count(wrapped + mandatory).tokens <= self.input_budget()
             ):
-                prefix = wrapped
-                covered = set(summary.source_message_ids)
+                summarized = set(summary.source_message_ids)
+                recent = [turn for turn in turns if turn[0].id not in summarized]
+                with_summary = self._fit_turns(
+                    recent, lambda selected: wrapped + raw_request(selected),
+                    self.input_budget(), suffix=True,
+                )
+                retained = {m.id for m in with_summary}
+                raw_ids = {m.id for m in raw}
+                if raw_ids - summarized <= retained and summarized - raw_ids:
+                    chosen = with_summary
+                    prefix = wrapped
+                    covered = summarized
+                else:
+                    summary = None
             else:
                 summary = None
-        chosen: list[Message] = []
-        for turn in reversed(complete_turns(history)):
-            if any(m.id in covered for m in turn):
-                continue
-            candidate = [*turn, *chosen]
-            request = prefix + tuple(ChatMessage(m.role, m.content) for m in candidate) + mandatory
-            if self.counter.count(request).tokens > self.input_budget():
-                break
-            chosen = candidate
+        else:
+            summary = None
         messages = prefix + tuple(ChatMessage(m.role, m.content) for m in chosen) + mandatory
         total = self.counter.count(messages)
         base = self.counter.count(prefix + mandatory)
@@ -188,31 +227,25 @@ class ContextAssembler:
         prior: ConversationSummary | None,
         diagnostics: list[str],
     ) -> ConversationSummary | None:
-        # Only an omitted, contiguous prefix of complete turns can be summarized.
         selected_ids = set(selected.selected_message_ids)
-        source: list[Message] = []
-        for user, assistant in complete_turns(history):
-            if user.id in selected_ids or assistant.id in selected_ids:
-                break
-            if tuple(history[len(source) : len(source) + 2]) != (user, assistant):
-                break
-            source.extend((user, assistant))
-        covered = len(prior.source_message_ids) if prior else 0
-        suffix = source[covered:]
+        cutoff = next((i for i, m in enumerate(history) if m.id in selected_ids), len(history))
+        omitted = history[:cutoff]
+        covered = len(prior.coverage_message_ids or prior.source_message_ids) if prior else 0
+        if covered > len(omitted):
+            return None
+        suffix = [m for turn in complete_turns(omitted[covered:]) for m in turn]
+        if len([m for turn in complete_turns(omitted) for m in turn]) < len(omitted):
+            diagnostics.append("summary_skipped_incomplete_turns")
         if not suffix:
             return None
         try:
             source_count = self.counter.count(tuple(ChatMessage(m.role, m.content) for m in suffix))
             if source_count.tokens < self.settings.summary_trigger_tokens:
                 return None
-            bounded: list[Message] = []
-            for turn in complete_turns(suffix):
-                candidate = [*bounded, *turn]
-                if self.counter.count(summary_request(candidate, prior)).tokens > self.input_budget(
-                    self.settings.max_summary_tokens
-                ):
-                    break
-                bounded = candidate
+            bounded = self._fit_turns(
+                complete_turns(suffix), lambda chosen: summary_request(chosen, prior),
+                self.input_budget(self.settings.max_summary_tokens), suffix=False,
+            )
             if not bounded:
                 diagnostics.append("summary_input_too_large")
                 return None
@@ -227,7 +260,9 @@ class ContextAssembler:
             ):
                 diagnostics.append("summary_output_too_large")
                 return None
-            full_source = [*history[:covered], *bounded]
+            coverage_end = next(i for i, m in enumerate(history) if m.id == bounded[-1].id) + 1
+            coverage = history[:coverage_end]
+            full_source = [m for turn in complete_turns(coverage) for m in turn]
             record = ConversationSummary(
                 id=uuid4(),
                 conversation_id=full_source[0].conversation_id,
@@ -235,6 +270,8 @@ class ContextAssembler:
                 content=draft.content,
                 source_message_ids=tuple(m.id for m in full_source),
                 source_fingerprint=fingerprint(full_source),
+                coverage_message_ids=tuple(m.id for m in coverage),
+                coverage_fingerprint=fingerprint(coverage, include_state=True),
                 covers_through_message_id=full_source[-1].id,
                 source_token_count=self.counter.count(summary_request(bounded, prior)).tokens,
                 summary_token_count=output_count.tokens,

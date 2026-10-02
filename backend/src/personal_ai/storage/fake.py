@@ -8,7 +8,11 @@ from threading import RLock
 from uuid import UUID
 
 from personal_ai.entities import Conversation, Message, MessageStatus
-from personal_ai.storage.errors import ConversationConflictError, ResourceNotFoundError
+from personal_ai.storage.errors import (
+    ConversationConflictError,
+    ResourceNotFoundError,
+    StorageUnavailableError,
+)
 
 
 class InMemoryConversationRepository:
@@ -74,6 +78,19 @@ class InMemoryMessageRepository:
             self._messages[message.id] = message
             self._touch_conversation(message.owner_id, message.conversation_id, message.created_at)
         return message
+
+    def release_preparation(
+        self, *, owner_id: str, conversation_id: UUID, preparation_id: UUID,
+    ) -> None:
+        with self._mutation_lock:
+            if self._conversations:
+                conversation = self._conversations.get(
+                    owner_id=owner_id, conversation_id=conversation_id,
+                )
+                if conversation.context_preparation_id == preparation_id:
+                    self._conversations.update(conversation.model_copy(update={
+                        "context_preparation_id": None, "context_preparation_started_at": None,
+                    }))
 
     def recover_stale_turn(
         self,
@@ -151,6 +168,8 @@ class InMemoryMessageRepository:
                 for item in messages
             ):
                 raise ResourceNotFoundError("conversation not found")
+            if len(messages) + 1 + (supersede_from_message_id is not None) > 500:
+                raise StorageUnavailableError("message storage unavailable")
             self._validate_conversation(owner_id, conversation_id)
             conversation = self._conversations.get(
                 owner_id=owner_id, conversation_id=conversation_id
@@ -162,13 +181,10 @@ class InMemoryMessageRepository:
                 raise ConversationConflictError("context preparation is in progress")
 
             if supersede_from_message_id is not None:
-                descendant_ids = _descendant_ids(stored, supersede_from_message_id)
-                for identifier in descendant_ids:
-                    existing = self._messages.get(identifier)
-                    if existing is not None:
-                        self._messages[identifier] = existing.model_copy(
-                            update={"status": MessageStatus.SUPERSEDED}
-                        )
+                existing = self._messages[supersede_from_message_id]
+                self._messages[existing.id] = existing.model_copy(
+                    update={"status": MessageStatus.SUPERSEDED}
+                )
 
             for message in messages:
                 self._messages[message.id] = message
@@ -189,7 +205,7 @@ class InMemoryMessageRepository:
                 or message.conversation_id != conversation_id
             ):
                 raise ResourceNotFoundError("message not found")
-            return message
+            return _effective_message(message, self._messages)
 
     def list_active(self, *, owner_id: str, conversation_id: UUID) -> list[Message]:
         with self._mutation_lock:
@@ -250,11 +266,12 @@ class InMemoryMessageRepository:
                 if (
                     message.owner_id == owner_id
                     and message.conversation_id == conversation_id
-                    and message.status is not MessageStatus.SUPERSEDED
+                    and _effective_message(message, self._messages).status is not MessageStatus.SUPERSEDED
                 ):
                     updated = message.model_copy(update={"status": MessageStatus.SUPERSEDED})
-                    self._messages[identifier] = updated
                     replaced.append(updated)
+            root = self._messages[message_id]
+            self._messages[message_id] = root.model_copy(update={"status": MessageStatus.SUPERSEDED})
             self._touch_conversation(owner_id, conversation_id, updated_at)
             return sorted(replaced, key=lambda item: (item.created_at, str(item.id)))
 
@@ -274,6 +291,22 @@ class InMemoryMessageRepository:
 # Explicit fake aliases keep test setup readable at composition sites.
 FakeConversationRepository = InMemoryConversationRepository
 FakeMessageRepository = InMemoryMessageRepository
+
+
+def _effective_message(message: Message, by_id: dict[UUID, Message]) -> Message:
+    """Superseding a root durably cuts its whole subtree without rewriting it."""
+    current = message
+    seen = set()
+    while current.id not in seen:
+        seen.add(current.id)
+        if current.status is MessageStatus.SUPERSEDED:
+            return message.model_copy(update={"status": MessageStatus.SUPERSEDED})
+        parent = by_id.get(current.parent_message_id)
+        if parent is None or parent.owner_id != message.owner_id \
+                or parent.conversation_id != message.conversation_id:
+            break
+        current = parent
+    return message
 
 
 def _descendant_ids(messages: list[Message], root_id: UUID) -> set[UUID]:

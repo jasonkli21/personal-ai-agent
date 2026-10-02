@@ -306,3 +306,43 @@ def test_invalid_operator_budget_returns_safe_configuration_error(environment, m
         assert "offline-fake" not in response.text
     finally:
         configured_settings.cache_clear()
+
+
+def test_post_reservation_read_failure_releases_lease_and_retry_succeeds(environment, monkeypatch):
+    client, conversations, messages, _, _, _ = environment
+    _, pending = install(environment, 'short-control')
+    original = messages.list_active
+    reads = 0
+    def read(**kwargs):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            from personal_ai.storage import StorageUnavailableError
+            raise StorageUnavailableError('synthetic read failure')
+        return original(**kwargs)
+    monkeypatch.setattr(messages, 'list_active', read)
+    path = f'/v1/conversations/{pending.conversation_id}/messages'
+    response = client.post(path, json={'content': 'new prompt'})
+    assert response.status_code == 503
+    assert conversations.get(owner_id='local', conversation_id=pending.conversation_id).context_preparation_id is None
+    retry = client.post(path, json={'content': 'retry'})
+    assert retry.status_code == 200 and 'response.completed' in retry.text
+
+
+def test_overall_preparation_deadline_releases_lease_without_assistant(environment, monkeypatch):
+    from personal_ai.context import deadline
+    client, conversations, messages, _, llm, context = environment
+    _, pending = install(environment, 'short-control')
+    clock = [0.0]
+    monkeypatch.setattr('personal_ai.services.chat_turns.monotonic', lambda: clock[0])
+    monkeypatch.setattr(deadline, 'monotonic', lambda: clock[0])
+    class Counter(FakeTokenCounter):
+        def count(self, request):
+            clock[0] += context.settings.request_timeout_seconds + 1
+            return super().count(request)
+    context.counter = Counter()
+    response = client.post(f'/v1/conversations/{pending.conversation_id}/messages', json={'content': 'prompt'})
+    assert response.status_code == 503 and response.json()['error']['code'] == 'llm_timeout'
+    assert not llm.requests
+    assert messages.list_active(owner_id='local', conversation_id=pending.conversation_id)[-1].role.value == 'user'
+    assert conversations.get(owner_id='local', conversation_id=pending.conversation_id).context_preparation_id is None

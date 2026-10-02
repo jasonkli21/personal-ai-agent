@@ -76,3 +76,17 @@ name and JSON `data:` payload.
 
 An error event is safe for display. It must not contain provider credentials,
 internal exception details, or raw upstream output.
+
+## Phase 2 review amendments (2026-10-02)
+
+Supersession is represented by durable root cuts. Repository reads return
+`superseded` for every historical descendant, while original descendant documents
+retain content, links, and terminal status. This is compatible with existing eager
+supersession records and leaves successful SSE payloads unchanged.
+
+Context inspection includes `coverage_message_ids`, `coverage_fingerprint`, and
+`skipped_message_ids` alongside summary source provenance. Only complete source
+turns enter summary generation; skipped incomplete turns remain covered for branch
+validation. Legacy summaries omit explicit coverage and require a complete prefix.
+Preparation counting and generation share `REQUEST_TIMEOUT_SECONDS`; expiration
+returns the safe `llm_timeout` envelope before streaming.
