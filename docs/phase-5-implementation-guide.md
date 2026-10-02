@@ -21,7 +21,7 @@ authentication or research-to-memory promotion was introduced.
 | P5.8 | `api/research.py`, gated `/research` UI and Next.js proxies, read-only inspection, `make research-eval`, CI, opt-in checks and this handoff |
 
 Primary commits: plan review `64971b2`, contracts/storage `403a79b`, pipeline/API
-`49432de`; final integration/UI/evidence changes follow those commits. See
+`49432de`, integration/UI `1ed9974`; the release record captures acceptance evidence. See
 [release evidence](releases/phase-5-source-grounded-research.md) for tested revision
 and results.
 
