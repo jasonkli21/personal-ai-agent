@@ -93,6 +93,26 @@ class Settings(BaseSettings):
     research_provider_timeout_seconds: float = Field(default=10, gt=0, le=30)
     research_min_request_interval_seconds: float = Field(default=1, ge=1, le=60)
 
+    travel_enabled: bool = False
+    shopping_enabled: bool = False
+    domain_inspection_enabled: bool = False
+    domain_max_results: int = Field(default=8, ge=1, le=12)
+    domain_max_comparison_rows: int = Field(default=12, ge=1, le=24)
+    domain_max_response_bytes: int = Field(default=131072, ge=1024, le=262144)
+    domain_provider_timeout_seconds: float = Field(default=10, gt=0, le=30)
+    travel_places_adapter: str = Field(default="fake", pattern=r"^(fake|osm_nominatim)$")
+    travel_provider_policy_approved: bool = False
+    travel_osm_contact_email: str = Field(default="", max_length=254)
+    travel_osm_user_agent: str = Field(default="PersonalAISystem/0.1", min_length=8, max_length=200)
+    travel_min_request_interval_seconds: float = Field(default=1, ge=1, le=60)
+    travel_place_ttl_seconds: int = Field(default=604800, ge=300, le=2592000)
+    shopping_products_adapter: str = Field(default="fake", pattern=r"^(fake|open_food_facts)$")
+    shopping_provider_policy_approved: bool = False
+    shopping_off_user_agent: str = Field(default="", max_length=200)
+    shopping_off_base_url: AnyHttpUrl = Field(default="https://world.openfoodfacts.net")
+    shopping_min_request_interval_seconds: float = Field(default=4, ge=4, le=60)
+    shopping_product_ttl_seconds: int = Field(default=2592000, ge=3600, le=7776000)
+
     decision_enabled: bool = False
     decision_inspection_enabled: bool = False
     entity_resolution_policy_version: str = Field(default="resolve-v2", min_length=1, max_length=100)
@@ -159,14 +179,42 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("research_configuration_invalid")
         decision_weights = (self.decision_feature_preference_weight,)
+        domain_gates = (self.travel_enabled, self.shopping_enabled)
         if (
             self.entity_resolution_policy_version != "resolve-v2"
             or self.decision_constraint_policy_version != "constraint-v1"
             or self.decision_ranking_policy_version != "rank-v1"
             or any(not math.isfinite(weight) for weight in decision_weights)
             or self.decision_max_candidates > self.decision_max_comparison_rows
+            or self.domain_max_comparison_rows < self.decision_max_candidates
+            or any(domain_gates) and not self.decision_enabled
         ):
             raise ValueError("decision_configuration_invalid")
+        if (
+            self.travel_enabled
+            and self.travel_places_adapter == "osm_nominatim"
+            and (
+                not self.travel_provider_policy_approved
+                or not self.travel_osm_contact_email
+                or "\r" in self.travel_osm_user_agent
+                or "\n" in self.travel_osm_user_agent
+            )
+        ):
+            raise ValueError("travel_configuration_invalid")
+        if (
+            self.shopping_enabled
+            and self.shopping_products_adapter == "open_food_facts"
+            and (
+                not self.shopping_provider_policy_approved
+                or not self.shopping_off_user_agent
+                or self.shopping_off_base_url.scheme != "https"
+                or self.shopping_off_base_url.host not in {
+                    "world.openfoodfacts.net",
+                    "world.openfoodfacts.org",
+                }
+            )
+        ):
+            raise ValueError("shopping_configuration_invalid")
         return self
 
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)

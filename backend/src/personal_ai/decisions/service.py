@@ -32,6 +32,7 @@ from personal_ai.ranking.policy import (
     evaluate_candidates,
     literal_supported,
     normalize_name,
+    rank_with_domain_features,
     resolve_candidate,
 )
 from personal_ai.settings import Settings
@@ -179,6 +180,8 @@ class DecisionService:
         owner_id: str = "local",
         clock=lambda: datetime.now(UTC),
         ranker=evaluate_candidates,
+        domain_feature_calculator=None,
+        domain_feature_context: dict | None = None,
     ):
         self.settings = settings
         self.repository = repository
@@ -186,6 +189,8 @@ class DecisionService:
         self.owner_id = owner_id
         self.clock = clock
         self.ranker = ranker
+        self.domain_feature_calculator = domain_feature_calculator
+        self.domain_feature_context = domain_feature_context or {}
 
     def create(self, request: DecisionCreateRequest) -> DecisionResult:
         if not self.settings.decision_enabled:
@@ -473,11 +478,47 @@ class DecisionService:
             "preference_weight": self.settings.decision_feature_preference_weight,
             "identity_matches": tuple(matches),
         }
+        ranking_failed = False
         try:
             evaluations, state, selected_id = self.ranker(**rank_args)
         except Exception as error:  # noqa: BLE001 - safe unranked eligible fallback
             logger.info("Decision ranking failed; preserving eligible candidates error_class=%s", type(error).__name__)
             evaluations, state, selected_id = evaluate_candidates(**rank_args, score_enabled=False)
+            ranking_failed = True
+
+        feature_policy_version = None
+        domain_feature_weights = {}
+        if self.domain_feature_calculator is not None:
+            feature_policy_version = self.domain_feature_calculator.policy_version
+            domain_feature_weights = self.domain_feature_calculator.feature_weights
+            if not ranking_failed:
+                try:
+                    feature_values = self.domain_feature_calculator.calculate_features(
+                        entities=unique_entities,
+                        claims_by_entity=claims_by_entity,
+                        constraints=request.constraints,
+                        preferences=request.preferences,
+                        evaluations=evaluations,
+                        eligible_entity_ids=tuple(
+                            item.entity_id for item in evaluations if item.eligibility
+                        ),
+                        now=now,
+                        context=self.domain_feature_context,
+                    )
+                    evaluations, state, selected_id = rank_with_domain_features(
+                        tuple(evaluations),
+                        unique_entities,
+                        feature_values,
+                        state,
+                    )
+                except Exception as error:  # noqa: BLE001 - preserve hard-filter outcomes
+                    logger.info(
+                        "Domain ranking extension failed; preserving eligibility error_class=%s",
+                        type(error).__name__,
+                    )
+                    evaluations, state, selected_id = evaluate_candidates(
+                        **rank_args, score_enabled=False
+                    )
 
         evaluations_by_entity = {item.entity_id: item for item in evaluations}
         eligible = [item for item in evaluations if item.eligibility]
@@ -552,8 +593,10 @@ class DecisionService:
                 ranking_policy=RankingPolicy(
                     feature_weights={
                         "preference": self.settings.decision_feature_preference_weight,
+                        **domain_feature_weights,
                     }
                 ),
+                domain_features=feature_policy_version,
                 max_candidates=self.settings.decision_max_candidates,
                 max_comparison_rows=self.settings.decision_max_comparison_rows,
             ),

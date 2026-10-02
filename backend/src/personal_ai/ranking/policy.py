@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from personal_ai.decisions.contracts import (
     AttributeStatus,
+    CandidateEvaluation,
     CandidateProposal,
     Constraint,
     ConstraintOutcome,
@@ -303,6 +304,67 @@ def _claim_value_match(left: EntityClaim, right: EntityClaim) -> bool:
     return result is True and left.scope == right.scope
 
 
+def rank_with_domain_features(
+    evaluations: tuple[CandidateEvaluation, ...],
+    entities: tuple[CanonicalEntity, ...],
+    features_by_entity: dict[UUID, tuple[FeatureScore, ...]],
+    fallback_state: str,
+) -> tuple[tuple[CandidateEvaluation, ...], str, UUID | None]:
+    """Apply registered domain features after the shared eligibility filter.
+
+    Phase 6 eligibility and exclusion outcomes are preserved. The shared stage
+    combines its preference score with a domain feature score at equal weight,
+    then applies the same stable name/entity tie breakers as rank-v1.
+    """
+    names = {entity.id: normalize_name(entity.canonical_name) for entity in entities}
+    combined: dict[UUID, CandidateEvaluation] = {}
+    for evaluation in evaluations:
+        extra = features_by_entity.get(evaluation.entity_id, ()) if evaluation.eligibility else ()
+        features = (*evaluation.feature_values, *extra)
+        base_score = evaluation.score
+        domain_values = [item for item in extra if item.value is not None and item.weight > 0]
+        domain_weight = sum(item.weight for item in domain_values)
+        domain_score = (
+            sum(item.value * item.weight for item in domain_values) / domain_weight
+            if domain_weight > 0
+            else None
+        )
+        if base_score is None:
+            score = domain_score
+        elif domain_score is None:
+            score = base_score
+        else:
+            score = 0.5 * base_score + 0.5 * domain_score
+        combined[evaluation.entity_id] = evaluation.model_copy(
+            update={"feature_values": features, "score": score, "rank": None}
+        )
+
+    eligible = [item for item in combined.values() if item.eligibility]
+    eligible.sort(
+        key=lambda item: (
+            item.score is None,
+            -(item.score if item.score is not None else 0),
+            names.get(item.entity_id, ""),
+            str(item.entity_id),
+        )
+    )
+    ranked_ids = [item.entity_id for item in eligible if item.score is not None]
+    ranked = {
+        entity_id: combined[entity_id].model_copy(update={"rank": index + 1})
+        for index, entity_id in enumerate(ranked_ids)
+    }
+    combined.update(ranked)
+    selected = ranked_ids[0] if ranked_ids else None
+    if selected is not None:
+        state = "recommended"
+    elif eligible:
+        state = "eligible_unranked"
+    else:
+        # Keep the core distinction between research-needed and no-match.
+        state = fallback_state
+    return tuple(combined[item.entity_id] for item in evaluations), state, selected
+
+
 def resolve_candidate(
     *,
     decision_id: UUID,
@@ -533,6 +595,18 @@ def _matches(actual: TypedValue, constraint: Constraint) -> tuple[bool | None, s
     op = constraint.operator
     expected = constraint.value
     if op in {"maximum", "minimum", "range"}:
+        if isinstance(actual, DateValue) and isinstance(expected, DateValue):
+            if op == "maximum":
+                passed = actual.value <= expected.value
+                return passed, "within_maximum" if passed else "over_maximum"
+            if op == "minimum":
+                passed = actual.value >= expected.value
+                return passed, "within_minimum" if passed else "under_minimum"
+            upper = constraint.upper_value
+            if not isinstance(upper, DateValue):
+                return None, "incompatible_range_units"
+            passed = expected.value <= actual.value <= upper.value
+            return passed, "inside_range" if passed else "outside_range"
         actual_numeric = _numeric(actual)
         expected_numeric = _numeric(expected) if expected is not None else None
         if actual_numeric is None or expected_numeric is None:

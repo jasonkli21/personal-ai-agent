@@ -6,10 +6,13 @@ from fastapi.responses import JSONResponse
 
 from personal_ai.agents.research.contracts import ResearchError
 from personal_ai.api.decisions import router as decisions_router
+from personal_ai.api.domains import router as domains_router
 from personal_ai.api.research import router as research_router
 from personal_ai.api.routes import router as conversations_router
 from personal_ai.context import ContextError
 from personal_ai.decisions.repositories import DecisionError
+from personal_ai.domains.contracts import DomainContractError
+from personal_ai.domains.providers import DomainProviderError
 from personal_ai.llm.errors import LLMError
 from personal_ai.services import InvalidRetryTargetError
 from personal_ai.settings import ContextBudgetInvalidError
@@ -19,6 +22,7 @@ app = FastAPI(title="Personal AI System", version="0.1.0")
 app.include_router(conversations_router)
 app.include_router(research_router)
 app.include_router(decisions_router)
+app.include_router(domains_router)
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
@@ -91,3 +95,13 @@ async def research_error(_: Request, error: ResearchError) -> JSONResponse:
 @app.exception_handler(DecisionError)
 async def decision_error(_: Request, error: DecisionError) -> JSONResponse:
     return _error_response(error.status, error.code, "The decision could not be completed. Check its evidence and constraints.")
+
+
+@app.exception_handler(DomainContractError)
+async def domain_contract_error(_: Request, error: DomainContractError) -> JSONResponse:
+    return _error_response(error.status, error.code, "The domain comparison could not be completed. Check its constraints and source evidence.")
+
+
+@app.exception_handler(DomainProviderError)
+async def domain_provider_error(_: Request, error: DomainProviderError) -> JSONResponse:
+    return _error_response(error.status, error.code, "The configured source is unavailable or declined the request.")

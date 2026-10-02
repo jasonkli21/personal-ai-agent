@@ -234,6 +234,10 @@ class PolicyVersions(DecisionRecord):
     claim_verification: Literal["claim-verification-v1", "claim-verification-v2"] = "claim-verification-v1"
     constraints: Literal["constraint-v1"] = "constraint-v1"
     ranking: Literal["rank-v1"] = "rank-v1"
+    # Optional, additive Phase 7 feature policy. `rank-v1` remains the shared
+    # hard-filter/soft-rank contract; this records a registered domain feature
+    # extension used for that decision.
+    domain_features: str | None = Field(default=None, max_length=100)
     evidence_snapshot: Literal["evidence-snapshot-v1"] = "evidence-snapshot-v1"
     entity_match_threshold: float = Field(ge=0, le=1)
     ranking_policy: RankingPolicy
@@ -329,7 +333,7 @@ class CandidateEvaluation(DecisionRecord):
     eligibility: bool
     attribute_statuses: tuple[AttributeStatus, ...] = Field(default=(), max_length=40)
     constraint_outcomes: tuple[ConstraintOutcome, ...] = Field(default=(), max_length=30)
-    feature_values: tuple[FeatureScore, ...] = Field(default=(), max_length=20)
+    feature_values: tuple[FeatureScore, ...] = Field(default=(), max_length=30)
     score: float | None = Field(default=None, ge=0, le=1)
     rank: int | None = Field(default=None, ge=1)
     exclusion_reasons: tuple[str, ...] = Field(default=(), max_length=30)
