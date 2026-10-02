@@ -184,6 +184,111 @@ def test_source_literal_must_agree_with_typed_value_before_hard_constraint_use()
     assert verified.evaluations[0].constraint_outcomes[0].outcome == "pass"
 
 
+@pytest.mark.parametrize(
+    ("subject", "passage", "original", "amount"),
+    [
+        ("Expensive Widget", "Expensive Widget costs $900 USD. Cheap Widget costs $10 USD.", "$10 USD", "10"),
+        ("Expensive Widget", "Expensive Widget costs $900 USD while Cheap Widget costs $10 USD.", "$10 USD", "10"),
+        ("Widget", "Widget price is $900 USD; shipping is $10 USD.", "$10 USD", "10"),
+        ("Widget", "Widget price is $900 USD, shipping is $10 USD.", "$10 USD", "10"),
+        ("Widget", "Widget costs $10 USD, excluding a required $900 USD fee.", "$10 USD", "10"),
+        ("Widget", "Widget costs $10 USD if a discount applies.", "$10 USD", "10"),
+    ],
+)
+def test_claim_value_must_be_bound_to_the_candidate_and_attribute(subject, passage, original, amount):
+    source = evidence(passage)
+    claim = ClaimProposal(
+        attribute="price", typed_value=MoneyValue(amount=Decimal(amount), currency="USD"),
+        original_value=original, currency="USD", evidence_ids=(source.evidence_id,),
+    )
+    result = make_service().create(DecisionCreateRequest(
+        idempotency_key=uuid4(),
+        candidates=(Candidate(entity_type="object", canonical_name=subject, claims=(claim,)),),
+        constraints=(budget("50"),), supplied_evidence=(source,),
+    ))
+    assert result.claims[0].claim_status == "unverified"
+    assert result.evaluations[0].eligibility is False
+    assert result.decision.state == "research_needed"
+
+
+def test_negated_availability_is_not_verified_as_available():
+    source = evidence("Widget is not available.")
+    result = make_service().create(DecisionCreateRequest(
+        idempotency_key=uuid4(),
+        candidates=(Candidate(entity_type="object", canonical_name="Widget", claims=(
+            ClaimProposal(
+                attribute="availability", typed_value={"kind": "availability", "value": "available"},
+                original_value="available", evidence_ids=(source.evidence_id,),
+            ),
+        )),),
+        constraints=(Constraint(
+            id=uuid4(), attribute="availability", operator="availability",
+            value={"kind": "availability", "value": "available"},
+        ),),
+        supplied_evidence=(source,),
+    ))
+    assert result.claims[0].claim_status == "unverified"
+    assert result.evaluations[0].eligibility is False
+
+
+def test_unsupported_candidate_identity_is_excluded_from_recommendations():
+    source = evidence("A different product costs $10 USD.")
+    result = make_service().create(DecisionCreateRequest(
+        idempotency_key=uuid4(),
+        candidates=(Candidate(entity_type="object", canonical_name="Invented Widget", claims=(
+            ClaimProposal(
+                attribute="price", typed_value=MoneyValue(amount=Decimal(10), currency="USD"),
+                original_value="$10 USD", currency="USD", evidence_ids=(source.evidence_id,),
+            ),
+        )),),
+        constraints=(budget("50"),), supplied_evidence=(source,),
+    ))
+    assert result.matches[0].feature_values["identity_evidence_missing"] == 1
+    assert result.evaluations[0].eligibility is False
+    assert "identity_evidence_missing" in result.evaluations[0].exclusion_reasons
+    assert result.decision.state == "research_needed"
+
+
+def test_conflicting_stable_identifiers_prevent_fuzzy_entity_merge():
+    repository = InMemoryDecisionRepository()
+    service = make_service(repository)
+    first_source = evidence("Model X catalog SKU-A costs $40 USD.")
+    first = service.create(DecisionCreateRequest(
+        idempotency_key=uuid4(),
+        candidates=(candidate("Model X", "SKU-A", "40", "black", first_source),),
+        supplied_evidence=(first_source,),
+    ))
+    second_source = evidence("Model Y catalog SKU-B costs $40 USD.")
+    second = service.create(DecisionCreateRequest(
+        idempotency_key=uuid4(),
+        candidates=(candidate("Model Y", "SKU-B", "40", "black", second_source),),
+        supplied_evidence=(second_source,),
+    ))
+    assert first.entities[0].id != second.entities[0].id
+    assert second.matches[0].outcome == "no_match"
+    assert second.matches[0].feature_values["conflicting_identifier"] == 1
+    assert first.decision.state == second.decision.state == "recommended"
+
+
+def test_replay_survives_lower_candidate_limits_and_new_repository_state():
+    repository = InMemoryDecisionRepository()
+    sources = (evidence("Alpha Widget costs $10 USD."), evidence("Beta Widget costs $20 USD."))
+    request = DecisionCreateRequest(
+        idempotency_key=uuid4(), supplied_evidence=sources,
+        candidates=tuple(Candidate(
+            entity_type="object", canonical_name=name,
+            claims=(ClaimProposal(
+                attribute="price", typed_value=MoneyValue(amount=amount, currency="USD"),
+                original_value=f"${amount} USD", evidence_ids=(source.evidence_id,),
+            ),),
+        ) for name, amount, source in zip(("Alpha Widget", "Beta Widget"), (10, 20), sources, strict=True)),
+    )
+    result = make_service(repository).create(request)
+    repository.list_entities = lambda *_args, **_kwargs: pytest.fail("replay must not scan entities")
+    replay = make_service(repository, decision_max_candidates=1, decision_max_comparison_rows=1)
+    assert replay.create(request) == result
+
+
 def test_idempotency_conflict_and_source_update_keep_old_claims_and_show_conflict():
     repository = InMemoryDecisionRepository()
     service = make_service(repository)
@@ -373,7 +478,10 @@ def test_decision_api_is_gated_and_serves_persisted_result():
 async def test_phase5_session_supplies_owner_scoped_decision_evidence():
     from personal_ai.evaluation.research import build_fixture, load_fixtures
 
-    research, research_request = build_fixture(load_fixtures()[0])
+    fixture = {**load_fixtures()[0], "sources": [{
+        "url": "https://example.org/star", "text": "The synthetic star color is blue.",
+    }]}
+    research, research_request = build_fixture(fixture)
     session = await research.create(research_request)
     claimed = await research.prepare_run(session.id)
     _ = [event async for event in research.stream(claimed)]
@@ -386,7 +494,7 @@ async def test_phase5_session_supplies_owner_scoped_decision_evidence():
         research_repository=research.repository,
         clock=lambda: NOW,
     )
-    result = service.create(DecisionCreateRequest(
+    request = DecisionCreateRequest(
         idempotency_key=uuid4(),
         research_session_id=completed.id,
         candidates=(Candidate(
@@ -403,15 +511,28 @@ async def test_phase5_session_supplies_owner_scoped_decision_evidence():
             id=uuid4(), attribute="color", operator="exact",
             value=TextValue(value="blue"), source="user",
         ),),
-    ))
+    )
+    result = service.create(request)
 
     assert result.decision.research_session_id == completed.id
     assert result.decision.state == "recommended"
+    assert result.claims[0].claim_status == "verified"
     assert result.recommendation.evidence_ids == (evidence_id,)
     reference = result.evidence_snapshot.evidence_refs[0]
     assert reference.research_session_id == completed.id
     assert reference.origin == "research_session"
     assert reference.owner_id == completed.owner_id
+
+    class UnavailableResearchRepository:
+        def get(self, *_):
+            raise AssertionError("idempotent replay must not revisit research evidence")
+
+    replay_service = DecisionService(
+        settings(), service.repository,
+        research_repository=UnavailableResearchRepository(),
+        clock=lambda: NOW + timedelta(days=2),
+    )
+    assert replay_service.create(request) == result
 
     foreign_service = DecisionService(
         settings(),

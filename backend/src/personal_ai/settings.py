@@ -95,7 +95,7 @@ class Settings(BaseSettings):
 
     decision_enabled: bool = False
     decision_inspection_enabled: bool = False
-    entity_resolution_policy_version: str = Field(default="resolve-v1", min_length=1, max_length=100)
+    entity_resolution_policy_version: str = Field(default="resolve-v2", min_length=1, max_length=100)
     entity_match_threshold: float = Field(default=0.9, ge=0, le=1)
     decision_constraint_policy_version: str = Field(
         default="constraint-v1", min_length=1, max_length=100
@@ -160,7 +160,7 @@ class Settings(BaseSettings):
                 raise ValueError("research_configuration_invalid")
         decision_weights = (self.decision_feature_preference_weight,)
         if (
-            self.entity_resolution_policy_version != "resolve-v1"
+            self.entity_resolution_policy_version != "resolve-v2"
             or self.decision_constraint_policy_version != "constraint-v1"
             or self.decision_ranking_policy_version != "rank-v1"
             or any(not math.isfinite(weight) for weight in decision_weights)

@@ -293,6 +293,15 @@
       "queryScope": "COLLECTION",
       "fields": [
         {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "entity_id", "order": "ASCENDING"},
+        {"fieldPath": "attribute", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "entity_claims",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
         {"fieldPath": "evidence_ids", "arrayConfig": "CONTAINS"}
       ]
     },

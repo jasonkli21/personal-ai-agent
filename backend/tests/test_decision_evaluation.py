@@ -9,7 +9,8 @@ def test_decision_evaluation_covers_each_policy_fixture_with_snapshot_provenance
     assert report["passed"] is True
     assert report["policy_versions"] == {
         "identity": "identity-v1",
-        "resolution": "resolve-v1",
+        "resolution": "resolve-v2",
+        "claim_verification": "claim-verification-v2",
         "constraints": "constraint-v1",
         "ranking": "rank-v1",
     }
@@ -20,7 +21,8 @@ def test_decision_evaluation_covers_each_policy_fixture_with_snapshot_provenance
         result["passed"]
         and result["decision_id"]
         and result["evidence_snapshot_id"]
-        and result["entity_policy"] == "resolve-v1"
+        and result["entity_policy"] == "resolve-v2"
+        and result["claim_verification_policy"] == "claim-verification-v2"
         and result["constraint_policy"] == "constraint-v1"
         and result["ranking_policy"] == "rank-v1"
         for result in report["results"]

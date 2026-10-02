@@ -29,6 +29,16 @@ truth or writing an external application's authoritative state.
   versioned threshold; ambiguous candidates remain review outcomes. New
   candidates are persisted separately, so resolution never destructively
   merges identity records.
+- Conflicting values for a shared stable identifier key veto an automatic
+  exact or scored match. Claim verification requires a simple explicit
+  subject/attribute/value assertion with affirmative polarity; it does not
+  infer that a literal elsewhere in the passage belongs to a candidate.
+  Scored matching uses only identity attributes such as model, SKU, catalog or
+  product ID, and standard product identifiers; price, color, and availability
+  are not identity evidence.
+  Resolution is `resolve-v2`; assertion verification is separately versioned
+  as `claim-verification-v2`. Missing claim-version metadata remains v1 and
+  cannot qualify for current decisions.
 - Evaluate typed hard constraints before preferences. Unknown, stale,
   conflicting, or unverified required attributes fail closed. Currency rates
   are not guessed; unsupported currency or unit conversion yields unknown.

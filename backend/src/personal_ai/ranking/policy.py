@@ -37,9 +37,13 @@ from personal_ai.entities.research import (
     TypedValue,
 )
 
-RESOLUTION_POLICY_VERSION = "resolve-v1"
+RESOLUTION_POLICY_VERSION = "resolve-v2"
 CONSTRAINT_POLICY_VERSION = "constraint-v1"
 RANKING_POLICY_VERSION = "rank-v1"
+CLAIM_VERIFICATION_POLICY_VERSION = "claim-verification-v2"
+IDENTITY_ATTRIBUTES = frozenset({
+    "model", "sku", "catalog_id", "product_id", "upc", "ean", "isbn", "mpn",
+})
 
 _UNITS: dict[str, tuple[str, Decimal]] = {
     "m": ("length", Decimal(1)),
@@ -126,6 +130,69 @@ def literal_supported(original_value: str, passage: str) -> bool:
         if left_ok and right_ok:
             return True
         start = position + 1
+    return False
+
+
+def claim_assertion_supported(
+    subject: str, attribute: str, original_value: str, typed_value: TypedValue, passage: str
+) -> bool:
+    """Require a literal value in a simple, subject-bound, affirmative assertion.
+
+    This intentionally handles only explicit single-sentence forms (plus a narrow
+    adjacent ``Its color is ...`` form). It is not a semantic entailment check.
+    """
+    if not normalize_name(subject) or not literal_matches_typed_value(original_value, typed_value):
+        return False
+    value_pattern = re.escape(unicodedata.normalize("NFKC", original_value).strip())
+    subject_pattern = r"\s+".join(re.escape(part) for part in unicodedata.normalize("NFKC", subject).split())
+    subject_prefix = rf"^\s*(?:the\s+)?{subject_pattern}(?:\s+catalog\s+\S+)?\s+"
+    # A complete assertion cannot borrow a value or omit a trailing qualifier.
+    boundary = r"\s*[.!?;]?\s*$"
+    if attribute.casefold() == "price":
+        predicates = r"(?:costs?|price\s+is|is\s+priced\s+at|is\s+listed\s+for)"
+        assertion_pattern = subject_prefix + predicates + rf"\s+{value_pattern}{boundary}"
+    else:
+        attribute_pattern = re.escape(attribute.replace("_", " "))
+        assertion_pattern = (
+            subject_prefix
+            + rf"(?:{attribute_pattern}\s+(?:is|are|:|=)|is\s+{attribute_pattern})"
+            + rf"\s+{value_pattern}{boundary}"
+        )
+        if attribute == "availability" and isinstance(typed_value, AvailabilityValue):
+            assertion_pattern = (
+                rf"(?:{assertion_pattern}|{subject_prefix}is\s+{value_pattern}{boundary})"
+            )
+
+    sentences = re.split(r"(?<=[.!?;])\s+", passage)
+    for index, sentence in enumerate(sentences):
+        sentence = unicodedata.normalize("NFKC", sentence)
+        if re.search(r"\b(if|unless|whether|might|may|could|would)\b", sentence, re.IGNORECASE):
+            continue
+        if re.search(assertion_pattern, sentence, re.IGNORECASE):
+            return True
+        if index == 0 or attribute.casefold() == "price":
+            continue
+        current = unicodedata.normalize("NFKC", sentence)
+        if not re.match(r"\s*(?:its|the item['’]s)\b", current, re.IGNORECASE):
+            continue
+        previous = unicodedata.normalize("NFKC", sentences[index - 1])
+        # Anaphora is accepted only after one simple, explicit subject assertion.
+        prior_assertion = re.fullmatch(
+            subject_prefix + rf"(?:costs?|price\s+is|is\s+priced\s+at)\s+"
+            rf"(?:[$€£]\s*)?{_NUMBER_PATTERN}\s+[A-Z]{{3}}{boundary}",
+            previous,
+            re.IGNORECASE,
+        )
+        if prior_assertion is None or re.search(
+            r"\b(and|or|but|while|whereas|versus|if|unless)\b", previous, re.IGNORECASE
+        ):
+            continue
+        pronoun_pattern = (
+            rf"^\s*(?:its|the item['’]s)\s+{re.escape(attribute.replace('_', ' '))}"
+            rf"\s+(?:is|are|:|=)\s+{value_pattern}{boundary}"
+        )
+        if re.search(pronoun_pattern, current, re.IGNORECASE):
+            return True
     return False
 
 
@@ -261,8 +328,22 @@ def resolve_candidate(
         and entity.owner_scope in {f"owner:{owner_id}", "shared"}
     )
     proposed_ids = {key.casefold(): _identifier(value) for key, value in proposal.identifiers.items()}
+    conflicting_identifier_entities = {
+        entity.id
+        for entity in available
+        if any(
+            key in {stored_key.casefold() for stored_key in entity.identifiers}
+            and value != _identifier(next(
+                stored_value for stored_key, stored_value in entity.identifiers.items()
+                if stored_key.casefold() == key
+            ))
+            for key, value in proposed_ids.items()
+        )
+    }
     exact: list[tuple[CanonicalEntity, str]] = []
     for entity in available:
+        if entity.id in conflicting_identifier_entities:
+            continue
         same = [
             key for key, value in proposed_ids.items()
             if key in {k.casefold() for k in entity.identifiers}
@@ -298,10 +379,15 @@ def resolve_candidate(
     proposed_name = normalize_name(proposal.canonical_name)
     eligible_proposed = tuple(
         claim for claim in proposed_claims
-        if claim.claim_status == "verified" and claim.expires_at > now
+        if claim.attribute.casefold() in IDENTITY_ATTRIBUTES
+        and claim.claim_status == "verified"
+        and claim.verification_policy_version == CLAIM_VERIFICATION_POLICY_VERSION
+        and claim.expires_at > now
     )
     scored: list[tuple[float, CanonicalEntity, dict[str, float]]] = []
     for entity in available:
+        if entity.id in conflicting_identifier_entities:
+            continue
         name_candidates = [normalize_name(entity.canonical_name)]
         if entity.id in alias_by_entity:
             name_candidates.append(normalize_name(alias_by_entity[entity.id]))
@@ -311,7 +397,11 @@ def resolve_candidate(
         )
         stored_claims = tuple(
             claim for claim in claims_by_entity.get(entity.id, ())
-            if claim.owner_id == owner_id and claim.claim_status == "verified" and claim.expires_at > now
+            if claim.owner_id == owner_id
+            and claim.attribute.casefold() in IDENTITY_ATTRIBUTES
+            and claim.claim_status == "verified"
+            and claim.verification_policy_version == CLAIM_VERIFICATION_POLICY_VERSION
+            and claim.expires_at > now
         )
         shared_attributes = sorted({
             left.attribute
@@ -344,16 +434,18 @@ def resolve_candidate(
         top = scored[: min(20, len(scored))]
         best = top[0][0]
         ambiguous = len(top) > 1 and top[1][0] == best
+        candidate_ids = tuple(item[1].id for item in top)
         return EntityMatch(
             id=match_id, decision_id=decision_id, subject_id=subject_id, owner_id=owner_id,
             candidate_entity_id=new_entity_id,
-            candidate_entity_ids=tuple(item[1].id for item in top), outcome="review",
+            candidate_entity_ids=candidate_ids, outcome="review",
             confidence=best,
             feature_values={
                 f"candidate_{index}_{key}": value
                 for index, (_, _, features) in enumerate(top)
                 for key, value in features.items()
-            } | ({"ambiguous_tie": 1.0} if ambiguous else {}),
+            } | ({"ambiguous_tie": 1.0} if ambiguous else {})
+              | ({"conflicting_identifier": 1.0} if conflicting_identifier_entities else {}),
             evidence_ids=tuple(ref.evidence_id for ref in evidence_refs), created_at=now,
         ), new_entity_id
 
@@ -361,7 +453,10 @@ def resolve_candidate(
         id=match_id, decision_id=decision_id, subject_id=subject_id, owner_id=owner_id,
         candidate_entity_id=new_entity_id,
         candidate_entity_ids=(), outcome="no_match", confidence=0.0,
-        feature_values={}, evidence_ids=tuple(ref.evidence_id for ref in evidence_refs), created_at=now,
+        feature_values=(
+            {"conflicting_identifier": 1.0}
+            if conflicting_identifier_entities else {}
+        ), evidence_ids=tuple(ref.evidence_id for ref in evidence_refs), created_at=now,
     ), new_entity_id
 
 
@@ -376,8 +471,16 @@ def _status(
         if claim.attribute == attribute and (scope is None or claim.scope == scope)
     )
     active = tuple(claim for claim in relevant if claim.expires_at > now and claim.claim_status != "retracted")
-    verified = tuple(claim for claim in active if claim.claim_status == "verified")
-    unverified = tuple(claim for claim in active if claim.claim_status == "unverified")
+    verified = tuple(
+        claim for claim in active
+        if claim.claim_status == "verified"
+        and claim.verification_policy_version == CLAIM_VERIFICATION_POLICY_VERSION
+    )
+    unverified = tuple(
+        claim for claim in active
+        if claim.claim_status == "unverified"
+        or claim.verification_policy_version != CLAIM_VERIFICATION_POLICY_VERSION
+    )
     shown_claims = active or relevant
     claim_ids = tuple(sorted((claim.id for claim in shown_claims), key=str))
     evidence_ids = tuple(sorted({ref.evidence_id for claim in shown_claims for ref in claim.evidence_refs}, key=str))
@@ -520,9 +623,17 @@ def evaluate_candidates(
         if identity_outcome == "review":
             exclusions.append("identity_ambiguous")
             unknown_required = True
+        elif any(
+            match.feature_values.get("identity_evidence_missing")
+            for match in candidate_matches
+        ):
+            exclusions.append("identity_evidence_missing")
+            unknown_required = True
         verified_claims = tuple(
             claim for claim in claims
-            if claim.claim_status == "verified" and claim.expires_at > now
+            if claim.claim_status == "verified"
+            and claim.verification_policy_version == CLAIM_VERIFICATION_POLICY_VERSION
+            and claim.expires_at > now
         )
         if not verified_claims:
             exclusions.append("candidate_no_current_evidence")
@@ -540,6 +651,7 @@ def evaluate_candidates(
                     candidate_claim for candidate_claim in claims
                     if candidate_claim.id in status.claim_ids
                     and candidate_claim.claim_status == "verified"
+                    and candidate_claim.verification_policy_version == CLAIM_VERIFICATION_POLICY_VERSION
                     and candidate_claim.expires_at > now
                 )
                 passed, reason = _matches(claim.typed_value, constraint)
@@ -589,6 +701,7 @@ def evaluate_candidates(
                         candidate_claim for candidate_claim in item["claims"]
                         if candidate_claim.id in status.claim_ids
                         and candidate_claim.claim_status == "verified"
+                        and candidate_claim.verification_policy_version == CLAIM_VERIFICATION_POLICY_VERSION
                         and candidate_claim.expires_at > now
                     )
                     match = values_equal(claim.typed_value, preference.target)

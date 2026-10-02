@@ -7,7 +7,8 @@
   },
   "policy_versions": {
     "identity": "identity-v1",
-    "resolution": "resolve-v1",
+    "resolution": "resolve-v2",
+    "claim_verification": "claim-verification-v2",
     "constraints": "constraint-v1",
     "ranking": "rank-v1"
   },

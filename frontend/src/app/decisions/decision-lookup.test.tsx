@@ -15,7 +15,8 @@ const result = {
     id: "decision-1", state: "recommended", selected_entity_id: "entity-1", research_session_id: null,
     created_at: "2026-10-02T12:00:00Z",
     policy_versions: {
-      identity: "identity-v1", resolution: "resolve-v1", constraints: "constraint-v1", ranking: "rank-v1",
+      identity: "identity-v1", resolution: "resolve-v1", claim_verification: "claim-verification-v1",
+      constraints: "constraint-v1", ranking: "rank-v1",
       entity_match_threshold: 0.86, ranking_policy: { policy_version: "rank-v1", feature_weights: { preference: 1 } },
     },
   },

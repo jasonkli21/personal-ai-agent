@@ -1,5 +1,6 @@
 """Atomic immutable Firestore storage for entities, claims, and decisions."""
 
+import time
 from uuid import UUID
 
 from google.api_core.exceptions import GoogleAPICallError, RetryError
@@ -80,23 +81,36 @@ class FirestoreDecisionRepository:
 
     def list_claims(self, owner_id, entity_ids, attributes=(), limit=500):
         def operation():
-            records = []
+            records_by_id = {}
             ids = [str(item) for item in entity_ids]
+            requested_attributes = tuple(sorted(set(attributes))) or (None,)
+            deadline = time.monotonic() + 5
             for offset in range(0, len(ids), 30):
                 group = ids[offset:offset + 30]
-                query = self.claims.where(
-                    filter=firestore.FieldFilter("owner_id", "==", owner_id)
-                ).where(filter=firestore.FieldFilter("entity_id", "in", group)).limit(limit + 1)
-                records.extend(
-                    EntityClaim.model_validate(item.to_dict())
-                    for item in query.stream(retry=None, timeout=5)
-                )
-            unique = {record.id: record for record in records}
-            relevant = [
-                item for item in unique.values()
-                if not attributes or item.attribute in attributes
-            ]
-            return tuple(sorted(relevant, key=lambda item: (str(item.entity_id), item.attribute, str(item.id))))[:limit + 1]
+                for attribute in requested_attributes:
+                    query = self.claims.where(
+                        filter=firestore.FieldFilter("owner_id", "==", owner_id)
+                    ).where(filter=firestore.FieldFilter("entity_id", "in", group))
+                    if attribute is not None:
+                        query = query.where(
+                            filter=firestore.FieldFilter("attribute", "==", attribute)
+                        )
+                    query = query.limit(limit + 1)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("decision claim query deadline exceeded")
+                    for item in query.stream(retry=None, timeout=remaining):
+                        record = EntityClaim.model_validate(item.to_dict())
+                        records_by_id[record.id] = record
+                        if len(records_by_id) > limit:
+                            return tuple(sorted(
+                                records_by_id.values(),
+                                key=lambda claim: (str(claim.entity_id), claim.attribute, str(claim.id)),
+                            )[:limit + 1])
+            return tuple(sorted(
+                records_by_id.values(),
+                key=lambda item: (str(item.entity_id), item.attribute, str(item.id)),
+            ))
 
         return self._run(operation)
 

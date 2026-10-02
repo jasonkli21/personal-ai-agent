@@ -27,8 +27,9 @@ from personal_ai.entities.research import (
     EvidenceReference,
 )
 from personal_ai.ranking.policy import (
+    CLAIM_VERIFICATION_POLICY_VERSION,
+    claim_assertion_supported,
     evaluate_candidates,
-    literal_matches_typed_value,
     literal_supported,
     normalize_name,
     resolve_candidate,
@@ -59,7 +60,7 @@ def _claim_id_for(entity_id: UUID, proposal) -> UUID:
     value = proposal.typed_value.model_dump(mode="json")
     key = json.dumps(
         [
-            str(entity_id), proposal.attribute, proposal.scope, value,
+            str(entity_id), CLAIM_VERIFICATION_POLICY_VERSION, proposal.attribute, proposal.scope, value,
             proposal.original_value, proposal.unit, proposal.currency,
             sorted(str(item) for item in proposal.evidence_ids),
         ],
@@ -126,6 +127,7 @@ def _make_claim(
     *,
     owner_id: str,
     entity_id: UUID,
+    subject_name: str,
     proposal,
     refs_by_id: dict[UUID, tuple[EvidenceReference, ...]],
     passages: dict[UUID, str],
@@ -139,8 +141,13 @@ def _make_claim(
     }
     refs = tuple(evidence_refs_by_key[key] for key in sorted(evidence_refs_by_key, key=lambda pair: (str(pair[0]), str(pair[1]))))
     supported = any(
-        literal_supported(proposal.original_value, passages[evidence_id])
-        and literal_matches_typed_value(proposal.original_value, proposal.typed_value)
+        claim_assertion_supported(
+            subject_name,
+            proposal.attribute,
+            proposal.original_value,
+            proposal.typed_value,
+            passages[evidence_id],
+        )
         for evidence_id in proposal.evidence_ids
     )
     return EntityClaim(
@@ -157,6 +164,7 @@ def _make_claim(
         observed_at=max(ref.observed_at for ref in refs),
         expires_at=min(ref.expires_at for ref in refs),
         claim_status="verified" if supported else "unverified",
+        verification_policy_version=CLAIM_VERIFICATION_POLICY_VERSION,
         scope=proposal.scope,
     )
 
@@ -182,6 +190,16 @@ class DecisionService:
     def create(self, request: DecisionCreateRequest) -> DecisionResult:
         if not self.settings.decision_enabled:
             raise ResourceNotFoundError("decision not found")
+        decision_id = decision_id_for(self.owner_id, request.idempotency_key)
+        fingerprint = request.fingerprint(self.owner_id)
+        try:
+            replay = self.repository.get(self.owner_id, decision_id)
+        except ResourceNotFoundError:
+            replay = None
+        if replay is not None:
+            if replay.decision.request_fingerprint != fingerprint:
+                raise DecisionError("idempotency_conflict")
+            return replay
         if len(request.candidates) > min(
             self.settings.decision_max_candidates, self.settings.decision_max_comparison_rows
         ):
@@ -211,7 +229,6 @@ class DecisionService:
             refs_by_id.setdefault(ref.evidence_id, ())
             refs_by_id[ref.evidence_id] += (ref,)
 
-        decision_id = decision_id_for(self.owner_id, request.idempotency_key)
         entity_pool: dict[str, list[CanonicalEntity]] = {}
         alias_pool: list[EntityAlias] = []
         claim_pool: list[EntityClaim] = []
@@ -232,6 +249,7 @@ class DecisionService:
                 _make_claim(
                     owner_id=self.owner_id,
                     entity_id=provisional_subject_ids[index],
+                    subject_name=candidate.canonical_name,
                     proposal=claim_proposal,
                     refs_by_id=refs_by_id,
                     passages=passages,
@@ -364,6 +382,7 @@ class DecisionService:
                 _make_claim(
                     owner_id=self.owner_id,
                     entity_id=selected_id,
+                    subject_name=candidate.canonical_name,
                     proposal=claim_proposal,
                     refs_by_id=refs_by_id,
                     passages=passages,
@@ -478,6 +497,7 @@ class DecisionService:
                 claim for claim in claims_by_entity[selected_id]
                 if claim.id in selected_evaluation.claim_ids
                 and claim.claim_status == "verified"
+                and claim.verification_policy_version == CLAIM_VERIFICATION_POLICY_VERSION
                 and claim.expires_at > now
             )
             supporting_claim_ids = tuple(sorted((claim.id for claim in supported_claims), key=str))
@@ -527,6 +547,7 @@ class DecisionService:
             candidate_ids=tuple(entity.id for entity in unique_entities),
             evidence_snapshot_id=evidence_snapshot.id,
             policy_versions=PolicyVersions(
+                claim_verification=CLAIM_VERIFICATION_POLICY_VERSION,
                 entity_match_threshold=self.settings.entity_match_threshold,
                 ranking_policy=RankingPolicy(
                     feature_weights={

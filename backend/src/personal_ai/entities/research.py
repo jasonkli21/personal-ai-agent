@@ -211,6 +211,7 @@ class EntityClaim(DecisionRecord):
     observed_at: datetime
     expires_at: datetime
     claim_status: Literal["verified", "unverified", "retracted"]
+    verification_policy_version: Literal["claim-verification-v1", "claim-verification-v2"] = "claim-verification-v1"
     schema_version: Literal["entity-claim-v1"] = "entity-claim-v1"
     scope: str | None = Field(default=None, max_length=100)
 
@@ -246,7 +247,7 @@ class EntityMatch(DecisionRecord):
     outcome: Literal["matched", "review", "no_match"]
     confidence: float = Field(ge=0, le=1)
     feature_values: dict[str, float]
-    policy_version: Literal["resolve-v1"] = "resolve-v1"
+    policy_version: Literal["resolve-v1", "resolve-v2"] = "resolve-v2"
     evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=12)
     created_at: datetime
 

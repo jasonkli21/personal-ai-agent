@@ -47,3 +47,31 @@ ranking fallback. They do not establish real Firestore semantics.
   data. Decision and inspection gates remain off by default.
 
 Do not treat synthetic results as provider, emulator, or deployment evidence.
+
+## Review remediation — 2026-10-02
+
+Tested revision: base `309aa7f` plus the review-remediation working tree recorded
+in this commit. The final parent review tightened full-assertion parsing,
+preserved a successful session-backed decision test, and added partial identifier
+conflict and replay-after-lowered-limit coverage. Final offline checks:
+
+| Check | Result |
+| --- | --- |
+| `make backend-test` | 371 passed, 12 opt-in manual checks skipped; one upstream Starlette/httpx warning. |
+| `make backend-lint` | Passed. |
+| `make context-eval memory-eval memory-lifecycle-eval research-eval decision-eval` | All passed; decision fixtures 15/15. |
+| `make frontend-test` | 53 passed across 10 files. |
+| `make frontend-lint frontend-typecheck` | Both passed. |
+| `git diff --check` | Passed. |
+
+Checks used Python 3.11.15 and Node 22.23.3 with the existing locked dependencies.
+These checks cover the conservative claim assertion parser, conflicting stable
+identifiers, unsupported identity exclusion, complete attribute-filtered claim
+retrieval in the Firestore fake, and replay after source-session expiry.
+
+New claims and decision snapshots record `claim-verification-v2`. Claims whose
+stored verification version is absent remain v1 and cannot satisfy current
+constraints or identity resolution. New snapshots record `resolve-v2`; old
+snapshots remain readable as v1. The updated Firestore claim query adds an
+owner/entity/attribute index to the manifest. Real Firestore index readiness,
+transactions, provider checks, and deployed behavior remain unverified.

@@ -55,6 +55,7 @@ export type DecisionResult = {
     policy_versions: {
       identity: string;
       resolution: string;
+      claim_verification: string;
       constraints: string;
       ranking: string;
       entity_match_threshold: number;

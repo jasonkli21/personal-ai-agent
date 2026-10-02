@@ -20,6 +20,7 @@ from personal_ai.entities.research import (
     DateWindowValue,
     EntityAlias,
     EntityClaim,
+    EntityMatch,
     EvidenceReference,
     LocationValue,
     MoneyValue,
@@ -28,6 +29,7 @@ from personal_ai.entities.research import (
     TextValue,
 )
 from personal_ai.ranking.policy import (
+    claim_assertion_supported,
     evaluate_candidates,
     literal_matches_typed_value,
     literal_supported,
@@ -36,6 +38,35 @@ from personal_ai.ranking.policy import (
 from personal_ai.settings import Settings
 
 NOW = datetime(2026, 10, 2, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("value", ["available", "unavailable"])
+def test_explicit_availability_assertions_are_supported(value):
+    assert claim_assertion_supported(
+        "Widget", "availability", value, AvailabilityValue(value=value), f"Widget is {value}.",
+    )
+
+
+def test_adjacent_pronouns_require_an_unambiguous_complete_subject_assertion():
+    value = TextValue(value="blue")
+    assert claim_assertion_supported("Widget", "color", "blue", value, "Widget costs $40 USD. Its color is blue.")
+    for passage in (
+        "Widget costs $40 USD, unlike Other Item. Its color is blue.",
+        "Widget costs less than Other Item. Its color is blue.",
+        "Widget costs $40 USD. Its color is blue, except in current stock.",
+    ):
+        assert not claim_assertion_supported("Widget", "color", "blue", value, passage)
+
+
+def test_partial_exact_identifier_match_does_not_override_another_identifier_conflict():
+    stored = entity("Widget", identifiers={"catalog": "same", "sku": "A"})
+    match, selected = resolve_candidate(
+        decision_id=uuid4(), subject_id=uuid4(), owner_id="local",
+        proposal=CandidateProposal(entity_type="object", canonical_name="Widget", identifiers={"catalog": "same", "sku": "B"}),
+        proposed_claims=(), evidence_refs=(evidence(),), entities=(stored,), aliases=(),
+        claims_by_entity={}, new_entity_id=uuid4(), now=NOW, threshold=0.9, match_id=uuid4(),
+    )
+    assert match.outcome == "no_match" and selected != stored.id
 
 
 def test_claim_literal_matching_is_boundary_aware_and_conservative_about_currency():
@@ -77,6 +108,7 @@ def claim(attribute, value, ref, *, entity_id=None, owner="local", scope=None, v
         evidence_refs=(ref,), evidence_ids=(ref.evidence_id,),
         observed_at=ref.observed_at, expires_at=ref.expires_at,
         claim_status="verified" if verified else "unverified", scope=scope,
+        verification_policy_version="claim-verification-v2",
     )
 
 
@@ -111,15 +143,15 @@ def test_resolution_requires_independent_identity_support_and_abstains_on_ambigu
 def test_alias_and_fresh_independent_claim_can_resolve_but_stale_claim_cannot():
     ref = evidence()
     stored = entity("Widget", identifiers={"catalog": "old"})
-    old_claim = claim("color", TextValue(value="blue"), ref, entity_id=stored.id)
+    old_claim = claim("model", TextValue(value="ZX-1"), ref, entity_id=stored.id)
     proposal = CandidateProposal(
         entity_type="object", canonical_name="Widget",
         claims=(ClaimProposal(
-            attribute="color", typed_value=TextValue(value="blue"), original_value="blue",
+            attribute="model", typed_value=TextValue(value="ZX-1"), original_value="ZX-1",
             evidence_ids=(ref.evidence_id,),
         ),),
     )
-    new_claim = claim("color", TextValue(value="blue"), ref, entity_id=uuid4())
+    new_claim = claim("model", TextValue(value="ZX-1"), ref, entity_id=uuid4())
     alias = EntityAlias(
         id=uuid4(), entity_id=stored.id, owner_id="local", normalized_alias="widget",
         created_at=NOW,
@@ -141,6 +173,50 @@ def test_alias_and_fresh_independent_claim_can_resolve_but_stale_claim_cannot():
         threshold=0.9, match_id=uuid4(),
     )
     assert abstained.outcome == "review" and selected != stored.id
+
+
+def test_resolution_does_not_use_shared_price_or_color_as_identity_evidence():
+    ref = evidence()
+    stored = entity("Blue Widget")
+    for attribute, value in (("price", NumberValue(value=Decimal(40))), ("color", TextValue(value="blue"))):
+        old_claim = claim(attribute, value, ref, entity_id=stored.id)
+        proposed_claim = claim(attribute, value, ref, entity_id=uuid4())
+        outcome, selected = resolve_candidate(
+            decision_id=uuid4(), subject_id=uuid4(), owner_id="local",
+            proposal=CandidateProposal(entity_type="object", canonical_name="Blue Widget"),
+            proposed_claims=(proposed_claim,), evidence_refs=(ref,), entities=(stored,), aliases=(),
+            claims_by_entity={stored.id: (old_claim,)}, new_entity_id=uuid4(), now=NOW,
+            threshold=0.9, match_id=uuid4(),
+        )
+        assert outcome.outcome == "review"
+        assert selected != stored.id
+
+
+def test_verified_claims_cannot_make_identity_with_missing_support_eligible():
+    candidate = entity("Invented Widget")
+    ref = evidence()
+    supported_value = claim(
+        "price", NumberValue(value=Decimal(10)), ref, entity_id=candidate.id
+    )
+    missing_identity = EntityMatch(
+        id=uuid4(), decision_id=uuid4(), subject_id=uuid4(), owner_id="local",
+        candidate_entity_id=candidate.id, candidate_entity_ids=(), selected_entity_id=None,
+        outcome="no_match", confidence=0,
+        feature_values={"identity_evidence_missing": 1.0},
+        evidence_ids=(ref.evidence_id,), created_at=NOW,
+    )
+    required = Constraint(
+        id=uuid4(), attribute="price", operator="maximum", value=NumberValue(value=Decimal(50)),
+    )
+    results, state, selected = evaluate_candidates(
+        decision_id=uuid4(), entities=(candidate,), claims_by_entity={candidate.id: (supported_value,)},
+        constraints=(required,), preferences=(), now=NOW, preference_weight=1,
+        identity_matches=(missing_identity,),
+    )
+    assert results[0].attribute_statuses[0].status == "verified"
+    assert results[0].eligibility is False
+    assert "identity_evidence_missing" in results[0].exclusion_reasons
+    assert state == "research_needed" and selected is None
 
 
 @pytest.mark.parametrize(
@@ -209,6 +285,24 @@ def test_attribute_freshness_conflict_and_missing_fail_closed():
     assert results[0].attribute_statuses[0].status == "missing" and state == "research_needed"
 
 
+def test_historical_claim_verification_does_not_satisfy_current_required_constraint():
+    candidate = entity()
+    historic = claim(
+        "price", MoneyValue(amount=Decimal(10), currency="USD"), evidence(), entity_id=candidate.id
+    ).model_copy(update={"verification_policy_version": "claim-verification-v1"})
+    required = Constraint(
+        id=uuid4(), attribute="price", operator="maximum",
+        value=MoneyValue(amount=Decimal(20), currency="USD"),
+    )
+    results, state, selected = evaluate_candidates(
+        decision_id=uuid4(), entities=(candidate,), claims_by_entity={candidate.id: (historic,)},
+        constraints=(required,), preferences=(), now=NOW, preference_weight=1,
+    )
+    assert results[0].attribute_statuses[0].status == "unverified"
+    assert results[0].eligibility is False
+    assert state == "research_needed" and selected is None
+
+
 def test_preference_ranks_only_eligible_and_ties_are_stable():
     ref = evidence()
     first, second = entity("Beta", identifiers={"catalog": "b"}), entity("Alpha", identifiers={"catalog": "a"})
@@ -254,9 +348,9 @@ def test_policy_settings_are_versioned_bounded_and_disabled_by_default():
     base = {"_env_file": None, "ai_provider": "gemini", "ai_model": "synthetic"}
     settings = Settings(**base)
     assert not settings.decision_enabled and not settings.decision_inspection_enabled
-    assert settings.entity_resolution_policy_version == "resolve-v1"
+    assert settings.entity_resolution_policy_version == "resolve-v2"
     with pytest.raises(ValidationError):
-        Settings(**base, entity_resolution_policy_version="resolve-v2")
+        Settings(**base, entity_resolution_policy_version="resolve-v1")
     with pytest.raises(ValidationError):
         Settings(**base, decision_max_candidates=13, decision_max_comparison_rows=12)
 

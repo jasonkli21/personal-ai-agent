@@ -145,13 +145,10 @@ def _widget(
     expires_at: datetime | None = None,
 ) -> tuple[SuppliedEvidence, Candidate]:
     sku = identifier
-    facts = [name]
-    if sku:
-        facts.append(f"catalog {sku}")
-    facts.extend((f"costs ${amount} USD", f"color is {color}"))
+    identity = f" catalog {sku}" if sku else ""
     source = _source(
         key,
-        ". ".join(facts) + ".",
+        f"{name}{identity} costs ${amount} USD. {name} color is {color}.",
         observed_at=observed_at,
         expires_at=expires_at,
     )
@@ -180,18 +177,25 @@ def _scenario(fixture: dict):
         source, candidate = _widget("exact-new", "Orion Widget", identifier="sku")
         sources, candidates, constraints = (source,), (candidate,), (_budget("50"),)
     elif name == "alias-plus-fresh-attribute":
-        old_source, old_candidate = _widget("alias-old", "Aster Widget")
+        old_source = _source("alias-old", "Aster Widget model is AW-1.")
+        old_candidate = _candidate("Aster Widget", old_source, (
+            _claim("model", TextValue(value="AW-1"), "AW-1", old_source),
+        ))
         _run(repository, _request("alias-seed", (old_candidate,), (old_source,), (_budget("50"),)))
-        source, candidate = _widget("alias-new", "Aster Widgets")
+        source = _source("alias-new", "Aster Widgets model is AW-1. Aster Widgets costs $40 USD.")
+        candidate = _candidate("Aster Widgets", source, (
+            _claim("model", TextValue(value="AW-1"), "AW-1", source),
+            _claim("price", MoneyValue(amount=Decimal(40), currency="USD"), "$40 USD", source),
+        ))
         sources, candidates, constraints = (source,), (candidate,), (_budget("50"),)
     elif name == "near-name-alone-abstains":
-        old_source = _source("near-old", "Acme Widget color blue.")
+        old_source = _source("near-old", "Acme Widget color is blue.")
         old_candidate = _candidate(
             "Acme Widget", old_source,
             (_claim("color", TextValue(value="blue"), "blue", old_source),),
         )
         _run(repository, _request("near-seed", (old_candidate,), (old_source,)))
-        source = _source("near-new", "Acme Widgets color red.")
+        source = _source("near-new", "Acme Widgets color is red.")
         candidate = _candidate(
             "Acme Widgets", source,
             (_claim("color", TextValue(value="red"), "red", source),),
@@ -210,7 +214,7 @@ def _scenario(fixture: dict):
                 updated_at=NOW - timedelta(days=1),
             )
             repository.entities[entity.id] = entity
-        source = _source("ambiguous", "Collision Widget catalog SHARED-SKU color blue.")
+        source = _source("ambiguous", "Collision Widget catalog SHARED-SKU color is blue.")
         candidate = _candidate(
             "Collision Widget", source,
             (_claim("color", TextValue(value="blue"), "blue", source),),
@@ -221,7 +225,7 @@ def _scenario(fixture: dict):
         stale_observed = NOW - timedelta(days=2)
         stale_expires = NOW - timedelta(days=1)
         old_source = _source(
-            "stale-old", "Northstar Compact color blue.",
+            "stale-old", "Northstar Compact color is blue.",
             observed_at=stale_observed, expires_at=stale_expires,
         )
         old_candidate = _candidate(
@@ -230,7 +234,7 @@ def _scenario(fixture: dict):
         )
         _run(repository, _request("stale-seed", (old_candidate,), (old_source,)))
         source = _source(
-            "stale-new", "Northstar Compacts color blue.",
+            "stale-new", "Northstar Compacts color is blue.",
             observed_at=stale_observed, expires_at=stale_expires,
         )
         candidate = _candidate(
@@ -251,7 +255,7 @@ def _scenario(fixture: dict):
         constraints = (_budget("30"),)
         sources, candidates = (first, second), (candidate,)
     elif name == "missing-required-attribute":
-        source = _source("missing", "Moss Widget color green.")
+        source = _source("missing", "Moss Widget color is green.")
         candidate = _candidate(
             "Moss Widget", source,
             (_claim("color", TextValue(value="green"), "green", source),),
@@ -284,7 +288,7 @@ def _scenario(fixture: dict):
     elif name == "date-location-availability":
         source = _source(
             "date-location-availability",
-            "Cedar Lodge dates 2026-09-10 to 2026-09-12; location 37.7749, -122.4194; available.",
+            "Cedar Lodge dates are 2026-09-10 to 2026-09-12; Cedar Lodge location is 37.7749, -122.4194; Cedar Lodge availability is available.",
         )
         candidate = _candidate("Cedar Lodge", source, (
             _claim("dates", DateWindowValue(start=date(2026, 9, 10), end=date(2026, 9, 12)),
@@ -303,8 +307,8 @@ def _scenario(fixture: dict):
         )
         sources, candidates = (source,), (candidate,)
     elif name == "equal-score-stable-tie":
-        beta_source = _source("tie-beta", "Beta Widget color blue.")
-        alpha_source = _source("tie-alpha", "Alpha Widget color red.")
+        beta_source = _source("tie-beta", "Beta Widget color is blue.")
+        alpha_source = _source("tie-alpha", "Alpha Widget color is red.")
         beta = _candidate("Beta Widget", beta_source,
                           (_claim("color", TextValue(value="blue"), "blue", beta_source),))
         alpha = _candidate("Alpha Widget", alpha_source,
@@ -315,8 +319,8 @@ def _scenario(fixture: dict):
         ),)
         sources, candidates = (beta_source, alpha_source), (beta, alpha)
     elif name == "preference-cannot-resurrect-excluded":
-        blue_source = _source("preferred-blue", "Blue Widget costs $80 USD and color is blue.")
-        red_source = _source("eligible-red", "Red Widget costs $40 USD and color is red.")
+        blue_source = _source("preferred-blue", "Blue Widget costs $80 USD. Blue Widget color is blue.")
+        red_source = _source("eligible-red", "Red Widget costs $40 USD. Red Widget color is red.")
         blue = _candidate("Blue Widget", blue_source, (
             _claim("price", MoneyValue(amount=Decimal(80), currency="USD"), "$80 USD", blue_source),
             _claim("color", TextValue(value="blue"), "blue", blue_source),
@@ -427,6 +431,7 @@ def evaluate() -> dict:
             "decision_id": str(result.decision.id),
             "evidence_snapshot_id": str(result.evidence_snapshot.id),
             "entity_policy": result.decision.policy_versions.resolution,
+            "claim_verification_policy": result.decision.policy_versions.claim_verification,
             "constraint_policy": result.decision.policy_versions.constraints,
             "ranking_policy": result.decision.policy_versions.ranking,
             "identity_outcome": identity,
@@ -463,6 +468,7 @@ def evaluate() -> dict:
         "policy_versions": {
             "identity": "identity-v1",
             "resolution": first_policy["entity_policy"],
+            "claim_verification": first_policy["claim_verification_policy"],
             "constraints": first_policy["constraint_policy"],
             "ranking": first_policy["ranking_policy"],
         },

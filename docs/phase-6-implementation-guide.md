@@ -32,11 +32,29 @@ Accepted architecture decisions are recorded in
 references, canonical entities, claims, match outcomes, and one evaluation per
 candidate.
 
-Resolution accepts a unique exact stable identifier. Name similarity alone
-never merges entities; a scored match also needs an independently matching,
-fresh, verified claim. Ambiguous matches abstain and remain separate research
-candidates. Resolution stops with a safe error if its bounded entity scan would
-be truncated.
+Resolution accepts a unique exact stable identifier unless another supplied
+stable identifier conflicts. Name similarity alone never merges entities; a
+scored match also needs an independently matching, fresh, verified claim.
+Conflicting stable identifiers veto automatic matching. Ambiguous matches
+abstain and remain separate research candidates. Resolution stops with a safe
+error if its bounded entity scan would be truncated.
+Scored identity matching uses only verified `model`, `sku`, catalog/product IDs,
+and standard product identifiers; shared price, color, or availability claims
+cannot establish that two candidates are the same entity.
+
+Claim verification accepts only simple, affirmative subject-to-attribute-to-value
+forms, such as `Widget costs $40 USD`, `Widget color is blue`, or
+`Widget is available`. Assertions must be complete; trailing qualifiers and
+compound clauses remain unverified. Values elsewhere
+in the passage do not verify a claim; conditional, negated, or structurally
+ambiguous statements remain unverified. A narrow adjacent `Its color is blue`
+form is accepted only when the immediately preceding sentence is one simple
+assertion about that candidate. This is literal syntax validation, not semantic
+entailment. Resolution uses `resolve-v2`, and the assertion grammar has its own
+`claim-verification-v2` policy version. New decision snapshots and claims record
+both versions. Claims without verification-version metadata remain tagged as v1
+and cannot satisfy current constraints or identity resolution; historical v1
+snapshots remain readable with their original recorded policies.
 
 Claims remain immutable when later sources report a different value. Fresh
 same-scope disagreement is `conflicting`; expired claims are `stale`; absent
@@ -66,7 +84,9 @@ evidence snapshots atomically, with append-only claims and idempotent decision
 replay. Index definitions are in the root `firestore.indexes.json` for
 `canonical_entities`, `entity_aliases`, `entity_claims`, `entity_matches`,
 `decision_snapshots`, `decision_evidence_snapshots`, and
-`candidate_evaluations`.
+`candidate_evaluations`. Claim reads filter by owner, entity, and requested
+attribute before applying their bounded limit, under one shared query deadline;
+the matching composite index is included in the manifest.
 
 Backend routes are:
 
@@ -81,6 +101,10 @@ and expiry times, requirement results, and source links. The separate
 `/development/decisions` view also displays resolution and inspection data.
 Neither view shows raw private memory or hidden model reasoning. A decision is
 created through the API; this phase does not add a candidate-authoring form.
+An idempotent decision replay checks the deterministic decision ID and request
+fingerprint before reading a research session or supplied evidence. A matching
+replay returns the immutable saved snapshot even after its source session expires;
+key reuse with a different request remains an idempotency conflict.
 
 For a local synthetic browser check, enable `DECISION_ENABLED=true` in both
 backend and frontend environment files. Enable

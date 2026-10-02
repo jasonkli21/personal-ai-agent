@@ -9,8 +9,8 @@ import pytest
 
 from personal_ai.decisions.contracts import DecisionCreateRequest
 from personal_ai.decisions.firestore import FirestoreDecisionRepository
-from personal_ai.decisions.repositories import DecisionError
-from personal_ai.entities.research import MoneyValue
+from personal_ai.decisions.repositories import DecisionError, InMemoryDecisionRepository
+from personal_ai.entities.research import MoneyValue, TextValue
 from personal_ai.storage.errors import ResourceNotFoundError
 from tests.test_decisions import evidence, make_service
 
@@ -156,3 +156,31 @@ def test_firestore_decision_rejects_idempotency_conflict_before_writing():
     with pytest.raises(DecisionError, match="idempotency_conflict"):
         repository.create(changed)
     transaction.create.assert_not_called()
+
+
+def test_firestore_claim_attribute_filter_finds_relevant_record_past_unrelated_prefix():
+    repository, client, _ = repository_environment()
+    result = decision_result()
+    entity_id = result.entities[0].id
+    base_claim = result.claims[0]
+    for index in range(501):
+        unrelated = base_claim.model_copy(update={
+            "id": uuid4(), "attribute": "color", "typed_value": TextValue(value="blue"),
+            "original_value": "blue",
+        })
+        client.records[("entity_claims", str(unrelated.id))] = unrelated.model_dump(mode="json")
+    relevant = next(claim for claim in result.claims if claim.attribute == "price")
+    client.records[("entity_claims", str(relevant.id))] = relevant.model_dump(mode="json")
+
+    fetched = repository.list_claims("local", (entity_id,), ("price",), limit=5)
+    assert tuple(item.id for item in fetched) == (relevant.id,)
+
+    fake = InMemoryDecisionRepository()
+    fake.claims = {
+        uuid4(): base_claim.model_copy(update={
+            "attribute": "color", "typed_value": TextValue(value="blue"), "original_value": "blue",
+        })
+        for _ in range(501)
+    }
+    fake.claims[relevant.id] = relevant
+    assert fake.list_claims("local", (entity_id,), ("price",), limit=5) == (relevant,)

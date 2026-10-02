@@ -10,10 +10,11 @@
     "revision": {"type": "string", "minLength": 1},
     "policy_versions": {
       "type": "object",
-      "required": ["identity", "resolution", "constraints", "ranking"],
+      "required": ["identity", "resolution", "claim_verification", "constraints", "ranking"],
       "properties": {
         "identity": {"const": "identity-v1"},
-        "resolution": {"const": "resolve-v1"},
+        "resolution": {"const": "resolve-v2"},
+        "claim_verification": {"const": "claim-verification-v2"},
         "constraints": {"const": "constraint-v1"},
         "ranking": {"const": "rank-v1"}
       },
@@ -24,11 +25,12 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["fixture", "evidence_snapshot_id", "entity_policy", "constraint_policy", "ranking_policy", "result", "passed"],
+        "required": ["fixture", "evidence_snapshot_id", "entity_policy", "claim_verification_policy", "constraint_policy", "ranking_policy", "result", "passed"],
         "properties": {
           "fixture": {"type": "string"},
           "evidence_snapshot_id": {"type": ["string", "null"]},
           "entity_policy": {"type": "string"},
+          "claim_verification_policy": {"type": "string"},
           "constraint_policy": {"type": "string"},
           "ranking_policy": {"type": "string"},
           "result": {"type": "string"},
