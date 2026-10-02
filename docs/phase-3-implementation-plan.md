@@ -12,6 +12,17 @@ Read the [project brief](project-brief.md) first. Its constraints override
 convenience decisions in this plan. Read the [architecture notes](architecture.md)
 for the `memory`, `context`, and data-lifetime boundaries.
 
+## Execution status (2026-10-02)
+
+P3.0–P3.8 are implemented locally; see the [implementation guide](phase-3-implementation-guide.md)
+and [release evidence](releases/phase-3-simple-memory.md). Provider, emulator,
+production vector-index and deployed checks remain pending, and all gates default
+off. [ADR 0009](decisions/0009-simple-attributable-memory.md) clarifies extractive
+semantic summaries, deterministic similarity bands, source-turn provenance,
+optional-work deadlines, index ordering, and provider-free supplied-ID inspection.
+Inspection estimates possible fit; it does not claim semantic relevance or replay
+past requests. Phase 4 has not started.
+
 ## Scope boundary
 
 Phase 3 adds a small, inspectable long-term-memory loop:

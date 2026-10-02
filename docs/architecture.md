@@ -33,8 +33,9 @@ The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the 
 
 - `agents` coordinates conversation and research flows without owning provider-specific logic.
 - `context` currently selects token-budgeted active conversation turns and
-  compatible working summaries for a model call. Memory/evidence injection is
-  future work; summaries are not memory.
+  compatible working summaries for a model call. Phase 3 adds optional labelled
+  personal memory within the same total budget; evidence injection is future work.
+  Summaries are not memory.
 - `memory` owns durable user knowledge: preferences, episodic observations, semantic summaries, consolidation, and forgetting.
 - `search` plans queries, fetches sources through adapters, extracts content, deduplicates it, and selects candidate evidence.
 - `evidence` records what an external source stated, where it came from, when it was observed, and when it expires.
@@ -61,3 +62,15 @@ and read-only inspection. Gemini counting and bounded summary-generation SDK
 calls stay inside `llm`; Firestore summary records stay behind repository
 contracts. The worker/Pub/Sub path remains idle. See
 [Phase 2 implementation](phase-2-implementation-guide.md).
+
+## Delivered Phase 3 memory boundary
+
+After user/branch persistence, chat retrieves bounded owner-scoped vector candidates
+through the memory repository and provider-neutral embedder. It revalidates active
+user-source provenance, then the shared assembler counts whole optional historical
+records without displacing Phase 2 context. Retrieval/counting failure falls back to
+Phase 2. After successful durable assistant completion and the terminal SSE frame,
+bounded extraction validates exact user excerpts before embedding and atomic storage.
+Memory and inspection gates default off. No worker lifecycle is added. See
+[Phase 3 implementation](phase-3-implementation-guide.md) and
+[ADR 0009](decisions/0009-simple-attributable-memory.md).

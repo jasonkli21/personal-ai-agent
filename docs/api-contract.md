@@ -1,4 +1,4 @@
-# Conversation API contract (Phases 1–2)
+# Conversation API contract (Phases 1–3)
 
 This document defines the implemented HTTP boundary. All `/v1` routes operate
 for the current logical owner,
@@ -90,3 +90,22 @@ turns enter summary generation; skipped incomplete turns remain covered for bran
 validation. Legacy summaries omit explicit coverage and require a complete prefix.
 Preparation counting and generation share `REQUEST_TIMEOUT_SECONDS`; expiration
 returns the safe `llm_timeout` envelope before streaming.
+
+## Phase 3 memory amendments (2026-10-02)
+
+Successful chat/SSE responses remain unchanged. After the user/branch mutation,
+optional owner-scoped memory retrieval precedes context assembly; retrieval and
+memory-counting failure continue with the valid Phase 2 request. Extraction runs
+after final completion persistence and the terminal frame, with no additional SSE
+messages or user-facing extraction errors.
+
+The gated context endpoint optionally accepts up to 20 repeated `memory_ids=UUID`
+query parameters. Both `CONTEXT_INSPECTION_ENABLED` and `MEMORY_INSPECTION_ENABLED`
+are required for this extension in backend and proxy. It reports supplied-record
+planning metadata in `memory`: `mode`, aggregate `tokens`, `diagnostics`, and
+`records` with `id`, `type`, `source_conversation_id`, `source_message_ids`,
+`observed_at`, `effective_at`, `created_at`, `selected`, `reason`,
+`estimated_tokens`, and null `similarity`. It performs no embedding or semantic
+query and makes no prior-use claim. Memory text and vectors are omitted. A missing
+or foreign record returns 404; malformed or oversized ID lists return 422.
+There are no user-facing memory create/edit/delete/list routes in Phase 3.

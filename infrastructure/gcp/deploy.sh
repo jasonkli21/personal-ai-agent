@@ -74,7 +74,7 @@ gcloud run deploy personal-ai-api \
   --allow-unauthenticated \
   --min-instances=0 \
   --service-account="$API_RUNTIME_SA" \
-  --set-env-vars="AI_PROVIDER=gemini,AI_MODEL=$AI_MODEL,DATABASE_BACKEND=firestore,FIRESTORE_PROJECT_ID=$PROJECT_ID,CONTEXT_INSPECTION_ENABLED=false" \
+  --set-env-vars="AI_PROVIDER=gemini,AI_MODEL=$AI_MODEL,DATABASE_BACKEND=firestore,FIRESTORE_PROJECT_ID=$PROJECT_ID,CONTEXT_INSPECTION_ENABLED=false,MEMORY_ENABLED=false,MEMORY_EXTRACTION_ENABLED=false,MEMORY_INSPECTION_ENABLED=false" \
   --set-secrets="AI_API_KEY=$MODEL_SECRET_NAME:latest"
 
 API_URL=$(gcloud run services describe personal-ai-api --region="$REGION" --format='value(status.url)')
@@ -106,7 +106,7 @@ gcloud run deploy personal-ai-web \
   --region="$REGION" \
   --allow-unauthenticated \
   --min-instances=0 \
-  --set-env-vars="API_BASE_URL=$API_URL,CONTEXT_INSPECTION_ENABLED=false"
+  --set-env-vars="API_BASE_URL=$API_URL,CONTEXT_INSPECTION_ENABLED=false,MEMORY_INSPECTION_ENABLED=false"
 
 WEB_URL=$(gcloud run services describe personal-ai-web --region="$REGION" --format='value(status.url)')
 echo "Deployment complete: $WEB_URL"

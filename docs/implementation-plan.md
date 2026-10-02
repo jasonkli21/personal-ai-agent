@@ -40,6 +40,11 @@ criteria, see [Phase 2 implementation plan](phase-2-implementation-plan.md).
 
 ## Phase 3 — Add simple long-term memory
 
+Implemented locally with gates disabled by default. See the
+[task plan](phase-3-implementation-plan.md), [guide](phase-3-implementation-guide.md),
+and [release evidence](releases/phase-3-simple-memory.md). Credentialed verification
+remains pending; Phase 4 is not authorized.
+
 1. Define memory types: preference, episodic observation, semantic summary, and explicit user correction.
 2. Extract candidate memories from conversations.
 3. Store memory with provenance, confidence, timestamps, and embeddings.

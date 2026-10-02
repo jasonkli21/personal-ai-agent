@@ -28,3 +28,22 @@ it("shows enabled selection metadata and exclusion reasons", async () => {
   expect(screen.getByText(/42 provider tokens/)).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conversation-1/context", { cache: "no-store" });
 });
+
+it("shows supplied memory provenance and selected versus excluded records", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    counter_kind: "estimated", budget: null, selected: [], excluded: [], summary: null, overflow: null, diagnostics: [],
+    memory: { mode: "supplied-record planning estimate; no semantic query or prior-use claim", tokens: 100, records: [
+      { id: "memory-1", type: "preference", source_conversation_id: "source", source_message_ids: ["user-1"], effective_at: "2026-10-02", selected: true, reason: null, estimated_tokens: 30 },
+      { id: "memory-2", type: "explicit_correction", source_conversation_id: "source", source_message_ids: ["user-2"], effective_at: "2026-10-02", selected: false, reason: "budget", estimated_tokens: 60 },
+    ] },
+  })));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<ContextInspector enabled memoryEnabled />);
+  fireEvent.change(screen.getByLabelText("Conversation ID"), { target: { value: "conversation-1" } });
+  fireEvent.change(screen.getByLabelText(/Memory IDs/), { target: { value: "memory-1, memory-2" } });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect context" }));
+  expect(await screen.findByText(/no semantic query or prior-use claim/)).toBeInTheDocument();
+  expect(screen.getByText(/preference memory-1: selected/)).toBeInTheDocument();
+  expect(screen.getByText(/explicit_correction memory-2: excluded \(budget\)/)).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conversation-1/context?memory_ids=memory-1&memory_ids=memory-2", { cache: "no-store" });
+});

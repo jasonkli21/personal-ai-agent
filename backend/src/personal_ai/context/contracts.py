@@ -152,6 +152,7 @@ class BudgetReport:
     history_tokens: int
     selected_total: int
     counter_kind: str
+    memory_tokens: int = 0
 
 
 @dataclass(frozen=True)

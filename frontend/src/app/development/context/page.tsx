@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 
 export default function ContextInspectionPage() {
   if (process.env.CONTEXT_INSPECTION_ENABLED !== "true") notFound();
-  return <ContextInspector enabled />;
+  return <ContextInspector enabled memoryEnabled={process.env.MEMORY_INSPECTION_ENABLED === "true"} />;
 }

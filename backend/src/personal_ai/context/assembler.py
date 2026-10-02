@@ -83,20 +83,33 @@ class ContextAssembler:
         from personal_ai.context.deadline import DeadlineCounter, DeadlineSummarizer
 
         scoped = ContextAssembler(
-            self.settings, DeadlineCounter(self.counter, deadline), self.summaries,
+            self.settings,
+            DeadlineCounter(self.counter, deadline),
+            self.summaries,
             DeadlineSummarizer(self.summarizer, deadline) if self.summarizer else None,
         )
         try:
             result = scoped._assemble(active_messages, pending_user_message, refresh=refresh)
-            if retrieval is None or not self.settings.memory_enabled:
+            if retrieval is None:
                 return result
+            if not self.settings.memory_enabled:
+                return replace(
+                    result,
+                    excluded_memories=(
+                        *retrieval.excluded,
+                        *((s.memory.id, "disabled") for s in retrieval.selected),
+                    ),
+                )
             from personal_ai.context.deadline import remaining
 
             left = remaining(deadline)
-            optional_seconds = min(self.settings.memory_timeout_seconds,
-                                   left / 4 if left is not None else self.settings.memory_timeout_seconds)
+            optional_seconds = min(
+                self.settings.memory_timeout_seconds,
+                left / 4 if left is not None else self.settings.memory_timeout_seconds,
+            )
             optional = ContextAssembler(
-                self.settings, DeadlineCounter(self.counter, monotonic() + optional_seconds),
+                self.settings,
+                DeadlineCounter(self.counter, monotonic() + optional_seconds),
             )
             return optional._inject_memory(result, pending_user_message, retrieval)
         finally:
@@ -119,8 +132,11 @@ class ContextAssembler:
         )
         for scored in retrieval.selected:
             m = scored.memory
-            if m.owner_id != pending.owner_id or m.status != "active" \
-                    or content_reason(m.content, self.settings):
+            if (
+                m.owner_id != pending.owner_id
+                or m.status != "active"
+                or content_reason(m.content, self.settings)
+            ):
                 excluded.append((m.id, "ineligible"))
                 continue
             line = f"[{m.memory_type}; effective {m.effective_at.isoformat()}] {m.content}"
@@ -130,21 +146,37 @@ class ContextAssembler:
                 candidate = (block,) + result.messages
                 total = self.counter.count(candidate)
             except (LLMError, ContextError, ValueError):
-                return replace(result, diagnostics=(*result.diagnostics, "memory_count_failed"),
-                               excluded_memories=tuple((s.memory.id, "count_failed")
-                                                       for s in retrieval.selected))
-            if memory_count > self.settings.memory_max_context_tokens \
-                    or total.tokens > self.input_budget():
+                return replace(
+                    result,
+                    diagnostics=(*result.diagnostics, "memory_count_failed"),
+                    excluded_memories=(
+                        *retrieval.excluded,
+                        *tuple((s.memory.id, "count_failed") for s in retrieval.selected),
+                    ),
+                )
+            if (
+                memory_count > self.settings.memory_max_context_tokens
+                or total.tokens > self.input_budget()
+            ):
                 excluded.append((m.id, "budget"))
                 continue
             chosen.append(m.id)
             blocks.append(line)
             final, tokens = candidate, memory_count
             total_tokens = total.tokens
-        return replace(result, messages=final, selected_memory_ids=tuple(chosen),
-                       excluded_memories=tuple(excluded), memory_tokens=tokens,
-                       budget=replace(result.budget, selected_total=total_tokens),
-                       diagnostics=(*result.diagnostics, *retrieval.diagnostics))
+        return replace(
+            result,
+            messages=final,
+            selected_memory_ids=tuple(chosen),
+            excluded_memories=tuple(excluded),
+            memory_tokens=tokens,
+            budget=replace(
+                result.budget,
+                selected_total=total_tokens,
+                memory_tokens=total_tokens - result.budget.selected_total,
+            ),
+            diagnostics=(*result.diagnostics, *retrieval.diagnostics),
+        )
 
     def _fit_turns(self, turns, request, budget: int, *, suffix: bool):
         """Count the full candidate first, then search complete-turn boundaries.
@@ -153,6 +185,7 @@ class ContextAssembler:
         network round trip per historical turn. Never use additive estimates
         as the authority for the final request.
         """
+
         def candidate(size):
             chosen = (turns[-size:] if suffix else turns[:size]) if size else []
             return [m for turn in chosen for m in turn]
@@ -213,7 +246,9 @@ class ContextAssembler:
         mandatory = (ChatMessage(MessageRole.USER, pending.content),)
         mandatory_count = self.counter.count(mandatory)
         turns = complete_turns(history)
-        raw_request = lambda chosen: tuple(ChatMessage(m.role, m.content) for m in chosen) + mandatory
+        raw_request = lambda chosen: (
+            tuple(ChatMessage(m.role, m.content) for m in chosen) + mandatory
+        )
         raw = self._fit_turns(turns, raw_request, self.input_budget(), suffix=True)
         prefix: tuple[ChatMessage, ...] = ()
         covered: set[UUID] = set()
@@ -228,8 +263,10 @@ class ContextAssembler:
                 summarized = set(summary.source_message_ids)
                 recent = [turn for turn in turns if turn[0].id not in summarized]
                 with_summary = self._fit_turns(
-                    recent, lambda selected: wrapped + raw_request(selected),
-                    self.input_budget(), suffix=True,
+                    recent,
+                    lambda selected: wrapped + raw_request(selected),
+                    self.input_budget(),
+                    suffix=True,
                 )
                 retained = {m.id for m in with_summary}
                 raw_ids = {m.id for m in raw}
@@ -299,8 +336,10 @@ class ContextAssembler:
             if source_count.tokens < self.settings.summary_trigger_tokens:
                 return None
             bounded = self._fit_turns(
-                complete_turns(suffix), lambda chosen: summary_request(chosen, prior),
-                self.input_budget(self.settings.max_summary_tokens), suffix=False,
+                complete_turns(suffix),
+                lambda chosen: summary_request(chosen, prior),
+                self.input_budget(self.settings.max_summary_tokens),
+                suffix=False,
             )
             if not bounded:
                 diagnostics.append("summary_input_too_large")

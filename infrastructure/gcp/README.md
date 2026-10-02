@@ -36,3 +36,10 @@ automated tests use `InMemoryConversationRepository` and
 
 The worker and Pub/Sub subscription are retained by the bootstrap topology, but
 Phase 1 chat never publishes a Pub/Sub message. The worker is therefore idle.
+
+Phase 3 memory gates (`MEMORY_ENABLED`, `MEMORY_EXTRACTION_ENABLED`,
+`MEMORY_INSPECTION_ENABLED`) are explicitly false in bootstrap deployments.
+Memory KNN requires a composite vector index matching the configured dimension;
+provision it and wait for READY before intentionally enabling retrieval. The
+bootstrap does not provision the optional memory index. See the
+[Phase 3 guide](../../docs/phase-3-implementation-guide.md#provision-vector-indexes-before-enabling-retrieval).

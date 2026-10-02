@@ -1,4 +1,4 @@
-.PHONY: context-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend
+.PHONY: memory-eval context-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend
 .DEFAULT_GOAL := backend-test
 
 backend-build:
@@ -40,3 +40,7 @@ run-frontend:
 context-eval:
 
 	cd backend && python -m personal_ai.evaluation.context
+
+memory-eval:
+
+	cd backend && python -m personal_ai.evaluation.memory

@@ -45,6 +45,7 @@ class MemoryExtractionService:
             return ExtractionResult(reasons=("disabled",))
         deadline = monotonic() + self.settings.memory_timeout_seconds
         created, skipped, reasons = [], [], []
+        stage = "storage"
 
         def remaining():
             left = deadline - monotonic()
@@ -65,6 +66,7 @@ class MemoryExtractionService:
                 content_reason(m.content, self.settings) for m in turn if m.role.value == "user"
             ):
                 return ExtractionResult(reasons=("sensitive_or_external",))
+            stage = "extraction"
             candidates = self.extractor.extract(turn, timeout=remaining())
             for candidate in candidates[: self.settings.memory_max_candidates_per_turn]:
                 remaining()
@@ -77,6 +79,7 @@ class MemoryExtractionService:
                 memory_id = identity(completed.owner_id, source_hash, candidate)
                 from personal_ai.storage.errors import ResourceNotFoundError
 
+                stage = "storage"
                 try:
                     self.repository.get(
                         owner_id=completed.owner_id, memory_id=memory_id, timeout=remaining()
@@ -85,6 +88,7 @@ class MemoryExtractionService:
                     continue
                 except ResourceNotFoundError:
                     pass
+                stage = "embedding"
                 embeddings = self.embedder.embed([candidate.content], timeout=remaining())
                 if len(embeddings) != 1:
                     raise ValueError("embedding_invalid")
@@ -104,13 +108,14 @@ class MemoryExtractionService:
                     embedding_dimensions=self.settings.memory_embedding_dimensions,
                 )
                 remaining()
+                stage = "storage"
                 if source_messages(memory, self.messages, timeout=remaining()) is None:
                     reasons.append("branch_mismatch")
                     continue
                 _, fresh = self.repository.create(memory, timeout=remaining())
                 (created if fresh else skipped).append(memory.id)
         except Exception as error:  # noqa: BLE001 - optional work must never affect chat
-            reasons.append("timeout" if isinstance(error, TimeoutError) else "extraction_failed")
+            reasons.append("timeout" if isinstance(error, TimeoutError) else stage + "_failed")
         result = ExtractionResult(tuple(created), tuple(skipped), tuple(reasons))
         logger.info(
             "Memory extraction created=%s skipped=%s reasons=%s",

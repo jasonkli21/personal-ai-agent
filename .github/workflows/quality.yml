@@ -31,6 +31,7 @@ jobs:
       - run: python -m ruff check .
       - run: python -m pytest
       - run: python -m personal_ai.evaluation.context
+      - run: python -m personal_ai.evaluation.memory
       - run: uv build --no-build-isolation
 
   frontend:

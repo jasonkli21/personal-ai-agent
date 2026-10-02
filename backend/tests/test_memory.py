@@ -186,7 +186,17 @@ def test_optional_extraction_failure_is_safe(monkeypatch, stage):
         fail,
     )
     result = MemoryExtractionService(settings, repo, messages, extractor, embedder).run(turns[0][1])
-    assert result.reasons == (("timeout",) if stage == "timeout" else ("extraction_failed",))
+    assert result.reasons == (
+        ("timeout",)
+        if stage == "timeout"
+        else (
+            ("embedding_failed",)
+            if stage == "embed"
+            else ("storage_failed",)
+            if stage == "create"
+            else ("extraction_failed",)
+        )
+    )
     assert not repo.records
 
 
@@ -287,3 +297,102 @@ def test_injection_foreign_and_inactive_defense():
         .assemble([], pending, retrieval=retrieval)
         .selected_memory_ids
     )
+
+
+def test_long_history_summary_memory_and_recent_turns_share_one_budget():
+    from personal_ai.context.repositories import InMemorySummaryRepository
+    from personal_ai.evaluation.context import FactSummarizer
+    from personal_ai.evaluation.context import build_fixture as build_context
+    from personal_ai.evaluation.context import load_fixtures as context_fixtures
+
+    settings, _, messages, repo, _, _, query, embedder = seeded()
+    retrieval = MemoryRetriever(settings, repo, messages, embedder).retrieve(
+        "local", query.content, []
+    )
+    fixture = next(f for f in context_fixtures() if f["name"] == "beyond-fixed-cap")
+    active, pending, _ = build_context({**fixture, "words_per_message": 80})
+    settings = fixture_settings(
+        max_context_tokens=550,
+        max_response_tokens=30,
+        context_safety_margin_tokens=20,
+        max_summary_tokens=75,
+        summary_trigger_tokens=100,
+        memory_max_context_tokens=150,
+    )
+    assembler = ContextAssembler(
+        settings, FakeTokenCounter(), InMemorySummaryRepository(), FactSummarizer()
+    )
+    base = assembler.assemble(active, pending)
+    result = assembler.assemble(active, pending, refresh=False, retrieval=retrieval)
+    assert base.summary and result.summary
+    assert result.selected_memory_ids
+    assert result.messages[0].content.startswith("Historical personal memory")
+    assert result.messages[1].content.startswith("Historical working summary")
+    assert result.selected_message_ids == base.selected_message_ids
+    assert tuple(m.id for m in active[-2:]) == result.selected_message_ids[-3:-1]
+    assert result.selected_message_ids[-1] == pending.id
+    assert result.budget.selected_total == FakeTokenCounter().count(result.messages).tokens
+    assert result.budget.selected_total <= result.budget.input_budget
+
+
+def test_optional_memory_count_failure_keeps_precounted_base_request():
+    settings, _, messages, repo, _, _, pending, embedder = seeded()
+    retrieval = MemoryRetriever(settings, repo, messages, embedder).retrieve(
+        "local", pending.content, []
+    )
+
+    class MemoryFailingCounter(FakeTokenCounter):
+        def count(self, request):
+            if any("Historical personal memory" in m.content for m in request):
+                raise LLMUnavailableError("safe")
+            return super().count(request)
+
+    assembler = ContextAssembler(settings, MemoryFailingCounter())
+    base = assembler.assemble([], pending)
+    result = assembler.assemble([], pending, retrieval=retrieval)
+    assert result.messages == base.messages
+    assert result.budget == base.budget
+    assert result.diagnostics == ("memory_count_failed",)
+
+
+def test_late_extraction_result_cannot_embed_or_write():
+    import time
+
+    settings, _, messages, repo, turns, candidates, _, embedder = named()
+    settings.memory_timeout_seconds = 0.001
+
+    class SlowExtractor:
+        def extract(self, source_turn, *, timeout):
+            time.sleep(0.005)
+            return candidates
+
+    result = MemoryExtractionService(settings, repo, messages, SlowExtractor(), embedder).run(
+        turns[0][1]
+    )
+    assert result.reasons == ("timeout",)
+    assert not repo.records and not embedder.calls
+
+
+def test_fake_storage_rechecks_source_at_write_boundary():
+    _settings, _, messages, repo, turns, _, _, _ = seeded()
+    memory = next(iter(repo.records.values()))
+    repo.records.clear()
+    user = turns[0][0]
+    messages._messages[user.id] = user.model_copy(update={"status": MessageStatus.SUPERSEDED})
+    from personal_ai.storage.errors import ConversationConflictError
+
+    with pytest.raises(ConversationConflictError):
+        repo.create(memory)
+    assert not repo.records
+
+
+def test_example_environment_leaves_every_memory_gate_disabled():
+    from pathlib import Path
+
+    from personal_ai.api.dependencies import get_memory_repository
+    from personal_ai.settings import Settings
+
+    settings = Settings(_env_file=Path(__file__).parents[1] / ".env.example")
+    assert not settings.memory_enabled and not settings.memory_extraction_enabled
+    assert not settings.memory_inspection_enabled
+    assert get_memory_repository(settings) is None

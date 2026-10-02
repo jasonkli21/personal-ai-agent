@@ -1,7 +1,6 @@
 """Owner-scoped memory stores; production search is bounded indexed KNN only."""
 
 import logging
-from contextlib import nullcontext
 from threading import RLock
 from time import monotonic
 from uuid import UUID
@@ -31,14 +30,14 @@ def validate(memory):
 
 
 class InMemoryMemoryRepository:
-    def __init__(self, messages=None):
+    def __init__(self, messages):
         self.messages = messages
         self.records: dict[UUID, Memory] = {}
         self._lock = RLock()
 
     def create(self, memory, *, timeout=5):
         memory = validate(memory)
-        with self.messages._mutation_lock if self.messages is not None else nullcontext():
+        with self.messages._mutation_lock:
             return self._create(memory)
 
     def _create(self, memory):

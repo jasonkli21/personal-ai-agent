@@ -220,3 +220,29 @@ def test_read_only_inspection_never_embeds_or_writes_and_reports_exclusion(envir
     assert client.get(path, params={"memory_ids": "bad"}).status_code == 422
     repo.records[memory.id] = memory.model_copy(update={"owner_id": "foreign"})
     assert client.get(path, params={"memory_ids": str(memory.id)}).status_code == 404
+
+
+def test_client_closes_partial_response_without_extracting(environment, monkeypatch):
+    import asyncio
+
+    _, _, messages, _, pending, service, _, _ = environment
+    called = []
+    monkeypatch.setattr(
+        service._memory_extraction, "run", lambda completed: called.append(completed)
+    )
+
+    async def close_partial():
+        stream = service.send(
+            pending.conversation_id, pending.content, request_id="synthetic-cancel"
+        )
+        await anext(stream)
+        await anext(stream)
+        await anext(stream)
+        await stream.aclose()
+
+    asyncio.run(close_partial())
+    assert not called
+    assert (
+        messages.list_active(owner_id="local", conversation_id=pending.conversation_id)[-1].status
+        == MessageStatus.FAILED
+    )

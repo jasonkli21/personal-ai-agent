@@ -105,6 +105,8 @@ Run these commands from the repository root. They do not need cloud credentials 
 | `make frontend-test` | Frontend Vitest suite |
 | `make frontend-lint` | Frontend ESLint checks |
 | `make frontend-typecheck` | Frontend TypeScript checks |
+| `make context-eval` | Synthetic Phase 2 context evaluation |
+| `make memory-eval` | Synthetic Phase 3 memory evaluation |
 | `make backend-build` | Backend source distribution and wheel |
 | `make frontend-build` | Next.js production build |
 
@@ -179,3 +181,26 @@ appropriate for sensitive personal data.
 - Keep search providers and domain-specific APIs behind adapters.
 - Treat experiments as disposable until measured results justify promotion.
 - Avoid putting credentials or user data in version control.
+
+## Simple long-term memory
+
+Phase 3 is implemented locally and disabled by default. When deliberately enabled,
+the system extracts a few exact, attributable user statements from successfully
+completed turns, stores their provenance and compatible embeddings, and retrieves
+relevant historical context across conversations. Selected records pass through
+the same total token budget as working summaries and recent turns. Memory is
+fallible user knowledge, not external evidence or guaranteed recall. Current
+requests and corrections take precedence. There is no automatic contradiction
+resolution, editing, consolidation or forgetting.
+
+Review provider-data suitability before setting `MEMORY_ENABLED=true` and
+`MEMORY_EXTRACTION_ENABLED=true`; the current `local` owner and public bootstrap
+are not authentication. Provision the matching Firestore vector index before
+enabling retrieval. Run `make memory-eval` for fourteen offline synthetic cases.
+The development context inspector can estimate fit for explicitly supplied memory
+IDs when `MEMORY_INSPECTION_ENABLED=true` is set in both local environment files;
+it makes no provider calls and does not replay prior model requests.
+See the [Phase 3 guide](docs/phase-3-implementation-guide.md),
+[decisions](docs/decisions/0009-simple-attributable-memory.md), and
+[release evidence](docs/releases/phase-3-simple-memory.md) for configuration,
+index ordering, manual checks and remaining gaps. Phase 4 has not started.

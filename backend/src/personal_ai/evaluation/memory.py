@@ -119,7 +119,9 @@ def evaluate():
             build_fixture(f)
         )
         baseline = ContextAssembler(settings, FakeTokenCounter()).assemble([], pending)
-        created, skipped, ids = [], [], []
+        created, skipped, ids, extraction_reasons = [], [], [], []
+        if f.get("embedding_failure"):
+            embedder.vectors.pop(candidates[0].content, None)
         for turn, candidate in zip(turns, candidates, strict=True):
             service = MemoryExtractionService(
                 settings,
@@ -131,6 +133,7 @@ def evaluate():
             )
             result = service.run(turn[1])
             created.extend(result.created)
+            extraction_reasons.extend(result.reasons)
             ids.extend(result.created)
             if f.get("repeat_extraction"):
                 skipped.extend(service.run(turn[1]).skipped)
@@ -151,6 +154,8 @@ def evaluate():
                 messages=(replacement,),
                 updated_at=pending.created_at,
             )
+        if f.get("retrieval_failure"):
+            embedder.vectors.pop(pending.content, None)
         retrieval = MemoryRetriever(settings, repo, messages, embedder).retrieve(
             pending.owner_id, pending.content, [pending]
         )
@@ -168,7 +173,9 @@ def evaluate():
             and not baseline.selected_memory_ids
             and result.budget.selected_total <= result.budget.input_budget
             and result.selected_message_ids[-1] == pending.id
-            and len(created) == len(candidates)
+            and len(created) == f.get("expected_created", len(candidates))
+            and extraction_reasons == f.get("expected_extraction_reasons", [])
+            and list(retrieval.diagnostics) == f.get("expected_retrieval_diagnostics", [])
             and (not f.get("repeat_extraction") or skipped == ids)
         )
         rows.append(
@@ -184,6 +191,7 @@ def evaluate():
                 "extraction": {
                     "created": [str(i) for i in created],
                     "skipped": [str(i) for i in skipped],
+                    "reasons": extraction_reasons,
                 },
                 "embedding": {
                     "model": "fake-v1",
@@ -195,6 +203,7 @@ def evaluate():
                     for s in retrieval.candidates
                 ],
                 "selected": [str(i) for i in selected],
+                "retrieval_diagnostics": retrieval.diagnostics,
                 "excluded": [{"id": str(i), "reason": r} for i, r in retrieval.excluded],
                 "context": {
                     "selected_memory_ids": [str(i) for i in result.selected_memory_ids],

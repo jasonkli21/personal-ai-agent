@@ -2,7 +2,8 @@
 
 The [Phase 2 plan](phase-2-implementation-plan.md) is implemented locally. Real
 provider quality, emulator persistence, Docker CI, and deployed behavior remain
-explicit verification gaps. Phase 3 has not started. The Phase 1 fixes that were
+explicit verification gaps. Phase 3 simple memory is now implemented locally with gates disabled by default;
+see its [guide](phase-3-implementation-guide.md). The Phase 1 fixes that were
 already in the working tree are preserved.
 
 ## Plan-to-code map

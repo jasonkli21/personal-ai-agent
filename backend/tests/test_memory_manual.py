@@ -118,3 +118,90 @@ def test_emulator_create_and_get_synthetic_memory():
     stored = memories.get(owner_id=conversation.owner_id, memory_id=result.created[0])
     assert stored.content == user.content and stored.source_message_ids == (user.id,)
     assert service.run(assistant).skipped == result.created
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_MEMORY_TURN_MANUAL_TEST") != "1", reason="Opt-in end-to-end memory turn"
+)
+def test_live_synthetic_turn_persists_memory_and_retrieves_across_conversations():
+    import asyncio
+
+    from personal_ai.context import ContextAssembler
+    from personal_ai.llm import GeminiLLMClient
+    from personal_ai.llm.context import GeminiTokenCounter
+    from personal_ai.memory.services import MemoryRetriever
+    from personal_ai.services.chat_turns import ChatTurnService
+
+    settings = Settings(memory_enabled=True, memory_extraction_enabled=True)
+    assert settings.firestore_project_id, "Use a deliberate synthetic test project"
+    conversations = FirestoreConversationRepository(
+        project_id=settings.firestore_project_id, emulator_host=settings.firestore_emulator_host
+    )
+    messages = FirestoreMessageRepository(
+        project_id=settings.firestore_project_id, emulator_host=settings.firestore_emulator_host
+    )
+    memories = FirestoreMemoryRepository(
+        project_id=settings.firestore_project_id, emulator_host=settings.firestore_emulator_host
+    )
+    adapter = GeminiMemoryAdapter(settings)
+    extraction = MemoryExtractionService(settings, memories, messages, adapter, adapter)
+    outcomes = []
+
+    class RecordingExtraction:
+        def run(self, completed):
+            result = extraction.run(completed)
+            outcomes.append(result)
+            return result
+
+    owner = "memory-manual-" + str(uuid4())
+    now = datetime.now(UTC)
+    conversation = Conversation(
+        id=uuid4(),
+        owner_id=owner,
+        title="Synthetic live memory turn",
+        created_at=now,
+        updated_at=now,
+    )
+    conversations.create(conversation)
+    retriever = MemoryRetriever(settings, memories, messages, adapter)
+    service = ChatTurnService(
+        conversations,
+        messages,
+        GeminiLLMClient(settings),
+        owner_id=owner,
+        model=settings.ai_model,
+        context_assembler=ContextAssembler(settings, GeminiTokenCounter(settings)),
+        memory_retriever=retriever,
+        memory_extraction=RecordingExtraction(),
+    )
+
+    async def consume():
+        return [
+            event
+            async for event in service.send(
+                conversation.id, "I prefer quiet mountain cabins.", request_id="synthetic-manual"
+            )
+        ]
+
+    events = asyncio.run(consume())
+    assert any(event.startswith("event: response.completed") for event in events)
+    assert outcomes and len(outcomes[0].created) == 1
+    memory = memories.get(owner_id=owner, memory_id=outcomes[0].created[0])
+    assert memory.source_conversation_id == conversation.id and memory.source_message_ids
+    # A query in a separate conversation has no raw source turn as context.
+    later = Conversation(
+        id=uuid4(), owner_id=owner, title="Synthetic later query", created_at=now, updated_at=now
+    )
+    conversations.create(later)
+    user = Message(
+        id=uuid4(),
+        owner_id=owner,
+        conversation_id=later.id,
+        role="user",
+        content="Which lodging atmosphere do I prefer?",
+        status="completed",
+        created_at=now,
+    )
+    messages.create(user)
+    retrieved = retriever.retrieve(owner, user.content, [user])
+    assert memory.id in [s.memory.id for s in retrieved.selected]
