@@ -16,8 +16,10 @@ Firestore persistence, Gemini, and deployed GCP behavior (including browser
 disconnect propagation) still need verification. Deterministic ASGI disconnect
 and proxy cancellation regression tests now cover the local boundaries.
 Do not equate implemented code with a
-fully verified deployment. The active scope is **Phase 3 verification and handoff**;
-memory gates remain disabled by default and Phase 4 has not started.
+fully verified deployment. The active scope is **Phase 4 experimental-memory implementation**, explicitly
+authorized on 2026-10-02 after plan review. Memory gates remain disabled by
+default; Phase 1–3 external verification gaps remain open. See the
+[reviewed Phase 4 plan](phase-4-implementation-plan.md).
 
 Implemented:
 
@@ -108,7 +110,8 @@ These rules must hold as features are added:
 Follow [implementation plan](implementation-plan.md) in sequence. Phase 0–1
 code paths are delivered; use the [Phase 0–1 plan](phase-1-implementation-plan.md)
 and [implementation guide](phase-1-implementation-guide.md) to assess acceptance.
-The immediate target is verification closeout for delivered Phase 1–3 behavior:
+The active implementation target is the reviewed Phase 4 plan. Keep the following
+verification closeout work for delivered Phase 1–3 behavior visible:
 
 1. Verify Firestore Emulator persistence across an API restart.
 2. Maintain the disconnect, storage-failure, and concurrency regression suite;
@@ -161,6 +164,6 @@ Resolve these in short architecture decision records before implementation depen
    [architecture](architecture.md), [implementation guide](phase-1-implementation-guide.md),
    and the plan for the active task. Read [GCP deployment](gcp-deployment.md)
    when working on infrastructure.
-2. Default to Phase 3 verification unless the user explicitly advances the phase.
+2. Follow the authorized reviewed Phase 4 plan; do not advance to Phase 5.
 3. Preserve the architectural invariants above.
 4. Implement the smallest testable vertical slice of the current phase, update tests and docs, and do not expand into a later phase without a user decision.

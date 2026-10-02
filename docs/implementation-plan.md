@@ -43,7 +43,7 @@ criteria, see [Phase 2 implementation plan](phase-2-implementation-plan.md).
 Implemented locally with gates disabled by default. See the
 [task plan](phase-3-implementation-plan.md), [guide](phase-3-implementation-guide.md),
 and [release evidence](releases/phase-3-simple-memory.md). Credentialed verification
-remains pending; Phase 4 is not authorized.
+remains pending. Phase 4 was explicitly authorized on 2026-10-02.
 
 1. Define memory types: preference, episodic observation, semantic summary, and explicit user correction.
 2. Extract candidate memories from conversations.
@@ -55,6 +55,10 @@ remains pending; Phase 4 is not authorized.
 **Outcome:** the system remembers useful personal context across conversations.
 
 ## Phase 4 — Make memory experimental
+
+Planning reviewed on 2026-10-02; implementation is authorized. Follow the
+[Phase 4 task plan](phase-4-implementation-plan.md), including its reviewed
+execution contracts. Existing external verification gaps remain open.
 
 1. Implement memory scoring: semantic similarity, importance, recency, frequency, and confidence.
 2. Add consolidation jobs that turn related episodes into general preferences.

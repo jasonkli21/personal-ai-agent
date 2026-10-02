@@ -42,9 +42,10 @@ statements. Forgetting changes normal retrieval eligibility; it is not a data
 deletion mechanism and does not replace Phase 9 deletion controls.
 
 The normal chat API and SSE event contract remain unchanged. All lifecycle
-work is best-effort: a queue, worker, scorer, or consolidation failure returns
-to the existing Phase 3 retrieval behavior and never turns a model request that
-would otherwise fit into a failed chat turn.
+work is best-effort and never turns a model request that would otherwise fit
+into a failed chat turn. Scoring failure may use fixed ordering over already
+validated eligible source records; unavailable lifecycle/provenance state
+requires empty memory, never resurrection of excluded records.
 
 ## Dependency map
 
@@ -66,7 +67,8 @@ without expanding the phase.
 
 ### P4.0 — Establish lifecycle fixtures and comparison baselines
 
-**Dependencies:** Phase 3 completion review
+**Dependencies:** delivered Phase 3 contracts and offline baseline; outstanding
+credentialed Phase 1–3 checks remain documented, not implementation blockers
 
 **Goal:** make each experimental retrieval and lifecycle outcome measurable
 before it changes durable state or prompt context.
@@ -172,7 +174,7 @@ Define provider-neutral contracts (names may vary):
 | Memory job | `id`, `owner_id`, `job_type`, `candidate_memory_ids`, `policy_version`, `status`, `attempt_count`, `lease_expires_at`, `idempotency_key`, `created_at`, `updated_at` |
 
 `event_type` initially includes `consolidated`, `superseded`, `forgotten`,
-`reactivated`, and `review_required`; `actor` is `system` or `developer_test`.
+`reactivated`, `retrieved`, and `review_required`; `actor` is `system` or `developer_test`.
 Only an accepted future user-management phase may add a user actor.
 
 **Required configuration:**
@@ -441,11 +443,12 @@ token-budgeted context path.
   candidate validation. Apply lifecycle eligibility, scoring, and consolidation
   policy as configured, then pass the bounded result to the existing memory
   context selector.
-- Preserve a stable precedence: a selected current explicit correction; an
-  eligible consolidated record with its historical label; selected source
-  memories; Phase 2 summary/recent turns; then the pending user message. The
-  selector may exclude whole optional records for budget but must retain the
-  newest user message and Phase 2 safety margin.
+- Preserve Phase 2 allocation priority: count mandatory instructions and the
+  newest prompt, select fitting recent complete turns and a compatible summary,
+  then add whole optional memory records only in remaining budget. Within the
+  memory block, approved current corrections precede consolidated records and
+  selected sources; prompt layout remains memory, summary, chronological raw
+  history with the newest prompt last. Memory never evicts fitting Phase 2 context.
 - Extend development-only inspection with variant/policy versions, state,
   score components/bands, lifecycle event IDs, source counts, selected and
   excluded records, and token exclusion reasons. Do not reveal raw content
@@ -453,9 +456,11 @@ token-budgeted context path.
 
 **Requirements:**
 
-- A failed scorer, worker, lifecycle projection, or consolidator returns a
-  safe fixed/empty retrieval result according to configured fallback and never
-  makes optional memory mandatory.
+- A failed scorer uses fixed ordering only over lifecycle/provenance-validated
+  source records. Unknown or unavailable eligibility returns empty memory.
+  Worker/consolidator failure leaves committed valid state intact; optional
+  memory never becomes mandatory. Record requested and applied variants plus
+  fallback reason.
 - Prompts label consolidated information as historical personal context, never
   as external evidence or a current user statement. Do not include hidden
   scores, event IDs, rationale, or vectors in the prompt.
@@ -570,6 +575,165 @@ without weakening provenance, privacy, or Phase 3 reliability.
 **Out of scope:** production experiments on personal data, user controls,
 research-agent integration, Phase 5 migration, or operational retention.
 
+## Reviewed execution contracts (2026-10-02)
+
+The user explicitly authorized full Phase 4 implementation after this planning
+review. The following defaults resolve implementation gaps and take precedence
+where the task prose is less specific. Record them in accepted ADRs during P4.1;
+routine implementation choices require no further approval. Later phases remain
+out of scope. Planning review does not certify provider/emulator/cloud behavior.
+
+### Schema and attribution
+
+Phase 3 `Memory` schema v1 stores one source conversation, one completed turn,
+and at most two exact-excerpt user-message sources. Do not manufacture one of
+those fields for a multi-conversation consolidation or relax v1 excerpt checks.
+Introduce an explicitly discriminated derived schema (or separate derived record
+contract) with bounded `source_memory_ids`, per-source fingerprints, conversation,
+message and completed-turn references, derivation policy/version and source-set
+identity. Keep v1 reads/identities/serialization compatible without a backfill.
+Derived records must enter bounded indexed vector retrieval with compatible model
+and dimensions; document indexes for their chosen storage layout. Never substitute
+a collection scan. All direct sources must be original v1 records: no multi-hop
+consolidation. Validate every linked active completed user source on retrieval,
+inspection and mutation, including ancestor root cuts and conversation preparation
+reservations. One invalid source excludes the entire derived record.
+
+The default consolidator is deterministic and extractive: combine bounded exact
+user assertions on a policy-approved common subject, with source-to-excerpt
+coverage. A preference requires repeated explicit preference support, not inference
+from one experience. A semantic summary may join compatible episode excerpts with
+clear historical attribution. This satisfies P4.5 without an optional live synthesis
+adapter. Similar vectors alone do not establish a common subject. Reject unsupported
+paraphrases, sensitivity/external claims, mixed topics, and excessive output.
+Use the latest supporting effective time, never worker creation time, and confidence
+no higher than the least confident source. Preserve every original source.
+
+### State, policy and fallback
+
+A missing projection for a valid v1 record means initial active state with zero
+retrieval count; a corrupt/unavailable projection does not mean active. Projections
+are rebuildable from sequenced immutable events. Events carry expected state
+version and deterministic ordering; an idempotent identical replay returns the
+original outcome, while reuse of its key with different payload is rejected.
+`consolidated` adds a relation without suppressing its source; `review_required`
+does not suppress; `retrieved` increments usage without changing eligibility.
+`superseded` and `forgotten` exclude retrieval, and reactivation cannot bypass
+source validation or clear an active supersession. Define/test a transition table.
+
+`fixed` preserves Phase 3 candidate ordering and source-only selection with all
+Phase 4 mutations off. Once lifecycle actions are enabled, every variant honors
+committed lifecycle exclusions; fixed parity is against unchanged initial state,
+not permission to revive forgotten/superseded records. `scored` excludes derived
+records; `consolidated` allows them and suppresses duplicate source representation
+only within the selected block, without changing source state. If a derived record
+does not fit, its sources remain candidates for whole-record fit.
+
+Default score policy v1 uses weights .50 similarity, .15 importance, .15 recency,
+.10 frequency, .10 confidence, normalized by their positive total. Similarity is
+clamped cosine in [0,1] after Phase 3 minimum-similarity validation; recency is
+2 ** (-max(0, age_days) / half_life_days), default half-life 90 days; frequency is
+min(retrieval_count / 10, 1). Importance defaults are explicit correction 1.0,
+preference .8, semantic summary .6, episode .4; persist this versioned metadata in
+sidecar state for v1 and the derivation record for derived memories, without editing
+v1 text. Missing sidecar initializes from these explicit type rules; malformed
+metadata excludes. Derived importance cannot exceed the maximum supporting source
+importance. Policy identity includes all weights/normalization settings, so changed
+weights cannot silently reuse an identical policy identity. Reject NaN/infinite
+weights and unknown versions. Apply decay only through recency, never twice.
+
+Contradiction automation defaults to a small documented deterministic assertion
+matcher: require identical subject key, compatible types, explicit correction or
+explicit temporal replacement wording, strictly newer effective time and confidence
+at least .9. Unmatched language, equal timestamps and uncertain negation are
+review-only. No LLM decides supersession. Forgetting defaults to episodes or semantic
+summaries at least 365 days old, confidence below .5, zero successful retrievals,
+no explicit correction/current preference and no active dependent; record thresholds
+as versioned policy. Discover dependencies with bounded indexed reverse links.
+No match or unknown/incomplete dependency state means no mutation. Maintenance is
+triggered by explicit bounded jobs, not an unimplemented global scheduler.
+
+### Atomic commits and reliable jobs
+
+Re-read sources, ancestor/root-cut state, lifecycle versions, reverse dependencies
+and lease fencing token in the same transaction that creates derived records,
+relations, events and projections. A preflight read followed by independent writes
+is insufficient. In-memory fakes share source mutation locks for equivalent behavior.
+Bound source count, ancestor reads, transaction work, payload bytes and total
+execution time; reject an operation that cannot fit, without partial visibility.
+Existing Phase 3 deadlines and snapshot-independent reservation cleanup remain intact.
+
+Separate the durable job repository (claim/lease/complete/fail) from the Pub/Sub
+notification publisher. Persist a pending job before publishing; retain publish
+status and provide an explicit bounded pending-job republish/recovery command.
+No always-running scheduler is required, but publish failure must not strand a job
+without a documented tested recovery path. Candidate discovery uses bounded indexed
+same-owner/type queries, including related earlier turns, not only the newest
+extraction result. Empty extraction may skip consolidation but must not prevent
+independently eligible contradiction/forgetting jobs. Store job type, policy snapshot,
+source set, retry/terminal reason, next eligible attempt and a lease token/generation.
+Payload contains only job ID/schema version; derive owner and candidates from storage.
+
+Claims require an unexpired fencing token for every write, completion and failure;
+expired workers cannot apply after another worker reclaims. Default limits: four
+sources, three attempts, 30-second execution deadline and 60-second lease; ensure
+configuration cannot allow execution to outlive a lease without renewal. Transactional
+operation keys handle crashes after apply before acknowledgement. Complete/no-op and
+terminal failures acknowledge push delivery; retryable failures return a retryable
+HTTP status, active leases avoid premature acknowledgement, and terminal records
+retain safe reasons. Test publish-loss recovery, crash windows, stale lease holders,
+transaction conflicts and bounded processing in addition to duplicate delivery.
+
+The API image currently exposes an idle `/tasks/research` endpoint and is public,
+while the Cloud Run worker uses the same entry point. Add a separate worker app or
+explicit service-role gate so lifecycle mutation routes do not exist on the public
+API. Use Cloud Run IAM and Pub/Sub authenticated push for the private worker, with
+explicit worker runtime Firestore/required-secret permissions and API publisher
+permissions. Keep push invoker and worker runtime identities distinct. Update an
+existing subscription's endpoint/configuration, not only create a new subscription.
+Deployment defaults explicitly disable every Phase 4 mutation/inspection gate on
+both services; tests cover public API absence and disabled private-worker no-op.
+This private task boundary is required transport protection, not Phase 9 end-user
+authentication. Local tests use injected fakes without cloud tokens.
+
+### Completion accounting, inspection and delivery
+
+Frequency counts only IDs that the assembler actually injected, once per durably
+completed assistant after successful terminal send. Never count candidates, token
+exclusions, failed/cancelled turns or inspection. Use an idempotent `retrieved` event
+key containing owner, assistant and memory ID. Enqueue after extraction in the
+existing retained post-terminal task; failures cannot change SSE or assistant status.
+Document that process death before the durable enqueue may lose this optional work;
+recovery applies once a durable job exists, not an exactly-once chat promise.
+
+Extend the supplied-ID inspector: read bounded stored state/events and compute
+scores only from supplied/stored candidate metadata; never embed a query or invoke
+providers. If similarity is unavailable, show null score with an explicit reason,
+not invented relevance. Distinguish fit estimates from historical actual injection.
+Require backend/frontend development gates; reveal metadata only, retain foreign-ID
+404 behavior, and test no writes/provider/queue calls.
+
+Add `make memory-lifecycle-eval` and an offline CI step. Use shared named fixtures
+for the three variants and run all existing backend/frontend tests, lint, typecheck,
+context/memory evaluations plus this new suite. Dependency/build changes also need
+locked installation, backend/frontend builds and affected Docker builds if available;
+deployment changes need shell syntax checking. Finish with `git diff --check`.
+Promotion requires zero forbidden selections, false automatic contradiction actions,
+protected forgetting, provenance/owner violations, budget violations or lifecycle-
+induced chat failures, fixed baseline parity and deterministic replay. Report measured
+coverage/rank improvements without claiming universal recall improvement.
+
+Deliver in roughly four to six coherent commits (adjust for real boundaries):
+contracts/storage and fixtures; scoring/lifecycle policy; queue/worker/consolidation;
+chat/inspection integration; evaluation, operational docs and closeout. Do not commit
+once per plan task. The implementation agent owns its own acceptance review and fixes;
+the planning session performs no implementation or subsequent code review. Update
+phase status, implementation guide and dated release evidence with tested revision,
+commands, outcomes, commit map and explicit remaining external verification gaps.
+Full local implementation includes real adapters and opt-in check entry points;
+unavailable cloud/provider/emulator environments do not block offline completion
+and must never be recorded as passed. Do not deploy or promote gates as a side effect.
+
 ## Phase 4 completion review
 
 Before declaring Phase 4 done, verify all task acceptance criteria and answer
@@ -596,4 +760,7 @@ these questions:
 9. Has the implementation avoided search/evidence, entities, ranking, domain
    agents, authentication, user deletion/export, and other Phase 5+ scope?
 
-Only after all answers are yes should work advance to Phase 5.
+The implementation agent must answer each question with evidence, using “no” for
+question 4 and “yes” for the remaining questions. Record unavailable
+external checks separately. Completing Phase 4 does not authorize Phase 5; obtain
+an explicit later user instruction before advancing.
