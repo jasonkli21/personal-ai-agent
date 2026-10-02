@@ -77,8 +77,33 @@ class _LifecycleStreamingResponse(StreamingResponse):
     """Close async body iterators when the ASGI send path fails or is cancelled."""
 
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        terminal_sent = False
+
+        async def send_and_notify_terminal(message: dict) -> None:
+            nonlocal terminal_sent
+            await send(message)
+            body = message.get("body", b"")
+            if (
+                terminal_sent
+                or message.get("type") != "http.response.body"
+                or not isinstance(body, bytes)
+                or b"event: response.completed" not in body.splitlines()
+            ):
+                return
+            terminal_sent = True
+            callback = getattr(self.body_iterator, "terminal_sent", None)
+            if callback is not None:
+                try:
+                    callback()
+                except Exception as error:  # noqa: BLE001 - the response is already durable
+                    logger.info(
+                        "Post-completion callback failed request_id=%s error_class=%s",
+                        self.headers.get("X-Request-ID", "unknown"),
+                        type(error).__name__,
+                    )
+
         try:
-            await super().__call__(scope, receive, send)
+            await super().__call__(scope, receive, send_and_notify_terminal)
         finally:
             close = getattr(self.body_iterator, "aclose", None)
             if close is not None:

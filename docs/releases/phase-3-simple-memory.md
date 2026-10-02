@@ -101,3 +101,16 @@ semantic relevance or recreate an earlier live request.
 - No authentication, search/evidence, domain agent, consolidation or worker/Pub/Sub
   behavior was introduced. Normal bootstrap deploys explicitly disable all memory
   gates and omit optional memory-index provisioning.
+
+## Review follow-up (2026-10-02)
+
+The review fixes were checked on the working tree based at `9b8a28d` (the fixes
+were uncommitted when checked). Backend verification passed with 184 tests and
+5 opt-in skips; Ruff passed; all 14 memory evaluation fixtures passed; and
+`git diff --check` passed. The new terminal-cancellation regression simulates
+the client closing the stream after `response.completed` is successfully sent
+and verifies the bounded extraction still finishes. Extraction is now
+scheduled only after the ASGI send succeeds, so terminal delivery does not wait
+for memory processing. Process shutdown can still interrupt this in-process
+work. The deployed browser/proxy and credentialed provider, emulator, and vector
+index checks remain open.

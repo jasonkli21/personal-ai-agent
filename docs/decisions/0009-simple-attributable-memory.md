@@ -58,10 +58,13 @@ repository because the SDK decorator otherwise uses default retries. Source
 ancestor reads and completed-assistant validation share the write transaction,
 so a concurrent branch rewrite cannot persist an obsolete new memory.
 
-Extraction runs after the terminal SSE frame has been yielded, in a worker
-thread; no durable queue, replay guarantee or background worker is introduced.
-Client cancellation can skip extraction. Successful chat durability never depends
-on it. Deadline checks prevent processing late extractor/embedding results.
+After the ASGI layer successfully sends the terminal SSE frame, it schedules
+bounded extraction in a retained in-process task whose service work runs in a
+worker thread. Closing the client stream after that event does not cancel the
+task. Process shutdown can still interrupt it; no durable queue, replay
+guarantee or background worker is introduced. Successful chat durability never
+depends on extraction. Deadline checks prevent processing late
+extractor/embedding results.
 
 Read-only inspection accepts bounded explicitly supplied memory IDs. It validates
 ownership/provenance and estimates fit without embedding the query, searching

@@ -137,6 +137,43 @@ def test_extraction_rejects_unsupported_candidates(changes, reason):
 
 
 @pytest.mark.parametrize(
+    "source_text,candidate_text",
+    [
+        ("Translate this sentence: 'I prefer quiet mountain cabins.'", "I prefer quiet mountain cabins."),
+        ("Maybe I prefer quiet mountain cabins.", "I prefer quiet mountain cabins."),
+        ("I prefer quiet mountain cabins when I travel.", "I prefer quiet mountain cabins"),
+    ],
+)
+def test_extraction_rejects_quoted_hypothetical_or_clipped_assertions(
+    source_text, candidate_text
+):
+    settings, _, messages, repo, turns, candidates, _, embedder = named()
+    user = turns[0][0].model_copy(update={"content": source_text})
+    messages._messages[user.id] = user
+    candidate = candidates[0].model_copy(update={"content": candidate_text})
+    result = MemoryExtractionService(
+        settings, repo, messages, FakeMemoryExtractor([candidate]), embedder
+    ).run(turns[0][1])
+    assert result.reasons == ("unsupported_assertion",)
+    assert not embedder.calls and not repo.records
+
+
+def test_asserted_effective_date_must_be_in_candidate_excerpt():
+    settings, _, messages, repo, turns, candidates, _, embedder = named()
+    source_text = "I prefer quiet mountain cabins. The conference is on 2030-01-01."
+    user = turns[0][0].model_copy(update={"content": source_text})
+    messages._messages[user.id] = user
+    candidate = candidates[0].model_copy(
+        update={"effective_at": datetime.fromisoformat("2030-01-01T00:00:00+00:00")}
+    )
+    result = MemoryExtractionService(
+        settings, repo, messages, FakeMemoryExtractor([candidate]), embedder
+    ).run(turns[0][1])
+    assert result.reasons == ("unsupported_effective_time",)
+    assert not embedder.calls and not repo.records
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "I prefer password abcdef.",

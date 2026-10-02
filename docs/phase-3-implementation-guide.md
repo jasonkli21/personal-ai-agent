@@ -37,16 +37,20 @@ failure returns the already counted Phase 2 request. System instructions remain
 in the provider's system channel; the memory block precedes the summary and raw
 history. The newest user prompt remains last.
 
-After durable assistant completion and delivery of `response.completed`, bounded
-extraction runs in a worker thread on the completed turn. It does not add SSE
-messages or modify assistant status. If the consumer disconnects at completion,
-extraction can be skipped. There is no queue/replay or exactly-once processing
-promise; repeated attempts are idempotent. No worker or Pub/Sub flow is added.
+After durable assistant completion and a successful ASGI send of
+`response.completed`, the server schedules bounded extraction in a retained,
+in-process task that runs the service in a worker thread. Closing the browser or
+proxy stream after the terminal event does not cancel that task. It does not add
+SSE messages or modify assistant status. Process shutdown can still interrupt
+the work; there is no queue/replay or exactly-once processing promise, and
+repeated attempts are idempotent. No worker or Pub/Sub flow is added.
 
 Extraction persists exact excerpts beginning with one of the supported
-first-person markers. A `semantic_summary` is an explicit user generalization
+first-person markers, and accepts them only as unquoted, complete assertions
+that start at the beginning of a source sentence. A `semantic_summary` is an explicit user generalization
 such as “I usually take a sketchbook on walks,” rather than an inferred summary.
-The policy rejects unsupported model paraphrases. Sensitive/external terms and
+The policy rejects unsupported model paraphrases and asserted effective dates
+that do not appear in the retained excerpt. Sensitive/external terms and
 configured denied terms reject the supplied user statement before extraction or
 embedding. Deny rules are conservative heuristics, not a complete classifier.
 Review both provider-data suitability and the public unauthenticated deployment

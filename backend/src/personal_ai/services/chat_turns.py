@@ -46,6 +46,8 @@ class _ManagedStream:
     def __init__(self, iterator: AsyncIterator[str], on_abandon: Callable[[], object]) -> None:
         self._iterator = iterator.__aiter__()
         self._on_abandon = on_abandon
+        self._on_terminal_sent: Callable[[], object] | None = None
+        self._terminal_notified = False
         self._started = False
         self._closed = False
 
@@ -73,6 +75,16 @@ class _ManagedStream:
         else:
             self._on_abandon()
 
+    def set_terminal_callback(self, callback: Callable[[], object]) -> None:
+        self._on_terminal_sent = callback
+
+    def terminal_sent(self) -> None:
+        if self._terminal_notified:
+            return
+        self._terminal_notified = True
+        if self._on_terminal_sent is not None:
+            self._on_terminal_sent()
+
 
 class ChatTurnService:
     """Create append-only turns, stream model output, and finalize state."""
@@ -97,6 +109,7 @@ class ChatTurnService:
         self._context = context_assembler
         self._memory_retriever = memory_retriever
         self._memory_extraction = memory_extraction
+        self._post_completion_tasks: set[asyncio.Task[None]] = set()
         self._model = model
         self._stale_stream_after_seconds = stale_stream_after_seconds
 
@@ -264,10 +277,40 @@ class ChatTurnService:
         )
 
     def _stream(self, turn: _PreparedTurn) -> AsyncIterator[str]:
-        return _ManagedStream(
-            self._stream_events(turn),
-            lambda: self._abandon_before_start(turn),
+        completed: list[Message] = []
+        stream = _ManagedStream(
+            self._stream_events(turn, completed), lambda: self._abandon_before_start(turn)
         )
+        stream.set_terminal_callback(lambda: self._schedule_memory_extraction(completed, turn))
+        return stream
+
+    def _schedule_memory_extraction(
+        self, completed: list[Message], turn: _PreparedTurn
+    ) -> None:
+        if self._memory_extraction is None or not completed:
+            return
+
+        async def run() -> None:
+            try:
+                await anyio.to_thread.run_sync(self._memory_extraction.run, completed[0])
+            except Exception as error:  # noqa: BLE001 - optional post-completion work
+                logger.info(
+                    "Memory post-turn failed request_id=%s error_class=%s",
+                    turn.request_id,
+                    type(error).__name__,
+                )
+
+        try:
+            task = asyncio.create_task(run(), name="post-completion-memory-extraction")
+        except RuntimeError as error:
+            logger.info(
+                "Memory post-turn scheduling failed request_id=%s error_class=%s",
+                turn.request_id,
+                type(error).__name__,
+            )
+            return
+        self._post_completion_tasks.add(task)
+        task.add_done_callback(self._post_completion_tasks.discard)
 
     def _abandon_before_start(self, turn: _PreparedTurn) -> None:
         self._fail(turn.assistant, "client_cancelled", "")
@@ -282,7 +325,9 @@ class ChatTurnService:
             updated_at=now,
         )
 
-    async def _stream_events(self, turn: _PreparedTurn) -> AsyncIterator[str]:
+    async def _stream_events(
+        self, turn: _PreparedTurn, completed_turn: list[Message]
+    ) -> AsyncIterator[str]:
         parts: list[str] = []
         content_length = 0
         terminal = False
@@ -343,16 +388,10 @@ class ChatTurnService:
                 yield self._stale_turn_event(turn.assistant)
                 return
             terminal = True
+            completed_turn.append(completed)
             yield _sse(
                 "response.completed", SSEResponseCompleted(message=completed).model_dump_json()
             )
-            # The terminal frame has already been delivered. No extraction outcome
-            # can change the durable answer or create another SSE event.
-            if self._memory_extraction is not None:
-                try:
-                    await anyio.to_thread.run_sync(self._memory_extraction.run, completed)
-                except Exception as error:  # noqa: BLE001 - optional post-completion work
-                    logger.info("Memory post-turn failed error_class=%s", type(error).__name__)
         except asyncio.CancelledError:
             if not terminal:
                 self._fail(turn.assistant, "client_cancelled", "".join(parts))

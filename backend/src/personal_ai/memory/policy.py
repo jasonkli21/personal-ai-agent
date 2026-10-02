@@ -39,6 +39,31 @@ def content_reason(content, settings):
     return None
 
 
+def _standalone_assertion(candidate: str, source: str) -> bool:
+    """Require an unquoted, complete sentence rather than a prompt fragment."""
+    start = source.find(candidate)
+    while start >= 0:
+        end = start + len(candidate)
+        before = source[:start].rstrip()
+        after = source[end:]
+        after_text = after.lstrip()
+        starts_sentence = not before or before[-1] in ".!?"
+        ends_sentence = (
+            not after_text
+            or after_text[0] in ".!?"
+            or (candidate[-1] in ".!?" and after[:1].isspace())
+        )
+        # Quotes around the candidate or a trailing quote after its punctuation
+        # make it reported text, not an attributable user assertion.
+        quoted = (before and before[-1] in "\"'“‘") or (
+            after_text and after_text[0] in "\"'”’"
+        )
+        if starts_sentence and ends_sentence and not quoted:
+            return True
+        start = source.find(candidate, start + 1)
+    return False
+
+
 def candidate_reason(candidate, source, settings):
     users = [m for m in source if m.role.value == "user" and m.status.value == "completed"]
     selected = [m for m in users if m.id in candidate.source_message_ids]
@@ -46,6 +71,8 @@ def candidate_reason(candidate, source, settings):
         return "source_mismatch"
     if not any(candidate.content in m.content for m in selected):
         return "not_source_grounded"
+    if not any(_standalone_assertion(candidate.content, m.content) for m in selected):
+        return "unsupported_assertion"
     # Reject even a harmless excerpt when the supplied user statement contains sensitive data.
     if any(content_reason(m.content, settings) for m in selected):
         return "sensitive_or_external"
@@ -56,9 +83,7 @@ def candidate_reason(candidate, source, settings):
         for marker in TYPE_MARKERS[candidate.memory_type]
     ):
         return "unsupported_type"
-    # Only permit an asserted date explicitly present in the source wording.
-    if candidate.effective_at and not any(
-        candidate.effective_at.date().isoformat() in m.content for m in selected
-    ):
+    # An asserted date must belong to the exact statement being retained.
+    if candidate.effective_at and candidate.effective_at.date().isoformat() not in candidate.content:
         return "unsupported_effective_time"
     return content_reason(candidate.content, settings)

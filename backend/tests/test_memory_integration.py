@@ -1,6 +1,8 @@
 """Shared-fixture chat/inspection integration; providers and storage stay offline."""
 
+import asyncio
 import json
+from threading import Event
 from uuid import uuid4
 
 import pytest
@@ -117,6 +119,16 @@ def test_chat_succeeds_without_optional_memory(environment, monkeypatch, mode):
 def test_successful_post_completion_extraction_and_failure_isolated(environment, monkeypatch):
     client, _, messages, repo, pending, service, _, _ = environment
     candidate = service._memory_extraction.extractor.candidates[0]
+    original_run = service._memory_extraction.run
+
+    def signal_completion(event):
+        def run(completed):
+            try:
+                return original_run(completed)
+            finally:
+                event.set()
+
+        monkeypatch.setattr(service._memory_extraction, "run", run)
 
     class CurrentExtractor:
         def extract(self, source_turn, *, timeout):
@@ -124,10 +136,13 @@ def test_successful_post_completion_extraction_and_failure_isolated(environment,
             return [candidate.model_copy(update={"source_message_ids": (source_turn[0].id,)})]
 
     service._memory_extraction.extractor = CurrentExtractor()
+    completed_extraction = Event()
+    signal_completion(completed_extraction)
     response = client.post(
         f"/v1/conversations/{pending.conversation_id}/messages", json={"content": candidate.content}
     )
     assert events(response)[-1] == "response.completed"
+    assert completed_extraction.wait(timeout=1)
     assert len(repo.records) == 2
     assert all(m.source_message_ids for m in repo.records.values())
     monkeypatch.setattr(
@@ -135,10 +150,13 @@ def test_successful_post_completion_extraction_and_failure_isolated(environment,
         "extract",
         lambda *a, **kw: (_ for _ in ()).throw(ValueError("private")),
     )
+    failed_extraction = Event()
+    signal_completion(failed_extraction)
     response = client.post(
         f"/v1/conversations/{pending.conversation_id}/messages", json={"content": candidate.content}
     )
     assert events(response)[-1] == "response.completed"
+    assert failed_extraction.wait(timeout=1)
     assert "private" not in response.text
     assert (
         messages.list_active(owner_id="local", conversation_id=pending.conversation_id)[-1].status
@@ -246,3 +264,61 @@ def test_client_closes_partial_response_without_extracting(environment, monkeypa
         messages.list_active(owner_id="local", conversation_id=pending.conversation_id)[-1].status
         == MessageStatus.FAILED
     )
+
+
+def test_terminal_frame_cancellation_still_runs_bounded_extraction(environment):
+    from starlette.requests import ClientDisconnect
+
+    from personal_ai.api.routes import _sse_response
+
+    _, settings, messages, repo, pending, service, _, embedder = environment
+    candidate = service._memory_extraction.extractor.candidates[0]
+    finished = Event()
+    outcomes = []
+
+    class CurrentExtractor:
+        def extract(self, source_turn, *, timeout):
+            return [candidate.model_copy(update={"source_message_ids": (source_turn[0].id,)})]
+
+    extraction = MemoryExtractionService(settings, repo, messages, CurrentExtractor(), embedder)
+
+    class RecordingExtraction:
+        def run(self, completed):
+            result = extraction.run(completed)
+            outcomes.append(result)
+            finished.set()
+            return result
+
+    service._memory_extraction = RecordingExtraction()
+    stream = service.send(
+        pending.conversation_id, candidate.content, request_id="terminal-cancel"
+    )
+    response = _sse_response(stream, request_id="terminal-cancel")
+
+    async def close_after_terminal_frame():
+        terminal_sent = False
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            nonlocal terminal_sent
+            body = message.get("body", b"")
+            if b"event: response.completed" in body.splitlines():
+                terminal_sent = True
+                return
+            if terminal_sent and message.get("type") == "http.response.body":
+                raise OSError("simulated client cancellation after terminal event")
+
+        scope = {"type": "http", "asgi": {"spec_version": "2.4"}, "method": "POST"}
+        try:
+            await response(scope, receive, send)
+        except ClientDisconnect:
+            pass
+        assert terminal_sent
+        await asyncio.to_thread(finished.wait, 1)
+
+    asyncio.run(close_after_terminal_frame())
+    assert finished.is_set()
+    assert len(outcomes) == 1 and outcomes[0].created
+    assert len(repo.records) == 2
