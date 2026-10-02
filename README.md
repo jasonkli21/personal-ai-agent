@@ -115,7 +115,22 @@ model key and verify `AI_PROVIDER=gemini` and `AI_MODEL` in `backend/.env`.
 
 To verify that a check detects a failure, temporarily change either health-test assertion or the frontend expected application name, run its corresponding command, and then revert that temporary edit. CI runs the same five quality checks on pull requests and pushes to `main`; it does not deploy or use secrets.
 
-Start with the [project brief](docs/project-brief.md) in a new session. It captures the project intent, current state, guardrails, and immediate implementation target. See [architecture notes](docs/architecture.md) for component boundaries and [research-agent notes](docs/research-agent.md) for the future search-agent model.
+For AI coding sessions, follow [AGENTS.md](AGENTS.md), then start with the
+[project brief](docs/project-brief.md). It
+captures the project intent, current state, guardrails, and immediate
+implementation target. The
+[Phase 1 implementation plan](docs/phase-1-implementation-plan.md) defines the
+work and acceptance criteria; its companion
+[implementation guide](docs/phase-1-implementation-guide.md) maps every part to
+the delivered code, tests, and commits. See
+[architecture notes](docs/architecture.md) for component boundaries and
+[research-agent notes](docs/research-agent.md) for the future search-agent
+model.
+
+Phase 1 code is implemented; real persistence/provider/deployment and
+client-disconnect verification remain open. The
+[verification closeout plan](docs/phase-1-verification-plan.md) outlines that
+work. Phase 2 context-window management is planned, not started.
 
 ## Deploy and verify Phase 1
 

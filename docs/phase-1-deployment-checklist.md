@@ -52,11 +52,18 @@ content, or other personal data.
 
 | Item | Result | Evidence |
 | --- | --- | --- |
-| Local backend tests | Passed 2026-08-19 | 30 passed, 1 credentialed manual test skipped |
-| Local backend lint | Passed 2026-08-19 | Ruff reported all checks passed |
-| Local frontend tests | Passed 2026-08-19 | 8 passed |
-| Local frontend lint/type-check | Passed 2026-08-19 | ESLint and `tsc --noEmit` completed successfully |
+| Local backend tests | Passed 2026-10-01 | 32 passed, 1 credentialed manual test skipped |
+| Local backend lint | Passed 2026-10-01 | Ruff reported all checks passed |
+| Local frontend tests | Passed 2026-10-01 | 10 passed |
+| Local frontend lint/type-check | Passed 2026-10-01 | ESLint and `tsc --noEmit` completed successfully |
+| Firestore Emulator persistence across API restart | Not run | See verification closeout plan |
+| Automated client-disconnect integration | Not implemented | See verification closeout plan |
+| Credentialed Gemini smoke test | Not run | Opt-in manual test remains skipped |
 | Credentialed deployed smoke test | Not run | Requires user-supplied GCP access and a Gemini key; use Smoke test above. |
 
 This record deliberately does not claim a cloud deployment or smoke test that
 has not been performed in this repository session.
+
+See the [verification record](releases/phase-1-vertical-slice.md) for the tested
+revision and local execution details, and the
+[verification closeout plan](phase-1-verification-plan.md) for remaining work.

@@ -10,26 +10,43 @@ The end state is one reusable personal research platform with chat, memory, and 
 
 ## Current state
 
-This repository is a scaffold, not a working assistant.
+Phase 1 chat code is implemented. Offline quality checks pass, but real
+Firestore persistence, Gemini, deployed GCP behavior, and client-disconnect
+integration still need verification. Do not equate implemented code with a
+fully verified deployment. The active scope is **Phase 1 verification and
+handoff maintenance**; Phase 2 is planned, not started.
 
-Implemented only:
+Implemented:
 
 - Python/FastAPI and Next.js project structure.
 - Minimal API and worker health endpoints.
 - Web-to-API health check at `/api/health`.
+- Conversation creation, listing, and reopening through FastAPI and the UI.
+- Owner-scoped Firestore repositories and in-memory test repositories.
+- A provider-neutral LLM interface and Gemini streaming adapter with timeouts
+  and safe error mapping.
+- SSE chat streaming, persisted completion/failure states, regenerate, and
+  edit-and-retry flows with preserved superseded history.
+- A fixed history cap (40 messages by default) and response-size bounds.
+- Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.
 - Dockerfiles and a GCP bootstrap/deployment script.
 - Architecture, deployment, research-agent, and implementation-plan documents.
 
 Not implemented:
 
 - Authentication or authorization.
-- Conversation/message persistence.
-- Firestore reads or writes.
-- LLM or embedding calls.
-- Streaming chat.
+- Token-aware context selection, conversation summaries, or context inspection.
+- Embedding calls.
 - Memory extraction, retrieval, consolidation, contradiction handling, or forgetting.
 - Search-provider calls, evidence extraction, entity resolution, ranking, or domain agents.
 - Pub/Sub publishing or task processing beyond a worker acknowledgement endpoint.
+
+The research, context, memory, evidence, ranking, evaluation, and domain
+packages are placeholders; `entities` currently contains chat records.
+See the [implementation guide](phase-1-implementation-guide.md) for delivered
+code and the [verification record](releases/phase-1-vertical-slice.md) for
+dated evidence. The [verification closeout plan](phase-1-verification-plan.md)
+outlines the remaining work.
 
 ## Non-goals and constraints
 
@@ -51,7 +68,10 @@ The current intended stack is:
 - **Secrets:** Secret Manager.
 - **Initial model direction:** Gemini for hosted inference and embeddings, behind a replaceable provider interface.
 
-Cloud Run is used request-based with zero minimum instances in the scaffold. Firestore and Pub/Sub are provisioned early, but are not yet used by application behavior. See [GCP deployment](gcp-deployment.md) for the runnable topology, provisioning script, current quota notes, and security boundary.
+The deployment script configures request-based Cloud Run with zero minimum
+instances. Chat uses Firestore; Pub/Sub is provisioned but chat publishes no
+jobs and the worker only acknowledges delivery. See [GCP deployment](gcp-deployment.md)
+for the topology, provisioning script, quota notes, and security boundary.
 
 ## Architectural invariants
 
@@ -68,13 +88,19 @@ These rules must hold as features are added:
 
 ## Implementation order
 
-Follow [implementation plan](implementation-plan.md) in sequence. The immediate target is **Phase 1 only**; use the [Phase 0–1 implementation plan](phase-1-implementation-plan.md) as its task-level backlog:
+Follow [implementation plan](implementation-plan.md) in sequence. Phase 0–1
+code paths are delivered; use the [Phase 0–1 plan](phase-1-implementation-plan.md)
+and [implementation guide](phase-1-implementation-guide.md) to assess acceptance.
+The immediate target is closing the remaining Phase 1 verification gaps:
 
-1. Persist conversations and messages.
-2. Add FastAPI conversation and streaming-response endpoints.
-3. Add a minimal chat UI with conversation history.
-4. Add one LLM-provider adapter, configuration, timeout, and retry behavior.
-5. Support regenerate and edit/retry message flows.
+1. Verify Firestore Emulator persistence across an API restart.
+2. Add deterministic automated client-disconnect integration coverage.
+3. Run the opt-in Gemini smoke test and credentialed GCP deployment checklist
+   when the required environment is available.
+4. Record results, revision, and remaining gaps without storing secrets or chats.
+
+The next feature phase, once explicitly advanced, is the
+[Phase 2 context-window plan](phase-2-implementation-plan.md).
 
 Do not add long-term memory in Phase 1. Phase 2 handles context-window management; Phase 3 introduces simple memory only after basic chat is stable.
 
@@ -94,17 +120,22 @@ Phase 1 is complete when all of the following are true:
 
 Resolve these in short architecture decision records before implementation depends on them:
 
-- Exact Gemini SDK, model, and embedding-model choices.
+- Embedding-model choice when memory work begins. Chat already uses the Google
+  Gen AI SDK with runtime model selection; see [ADR 0001](decisions/0001-llm-provider-boundary.md).
 - Authentication approach for personal use and the point at which it becomes mandatory.
-- Firestore collection structure, document ownership, indexes, and schema-versioning approach.
-- Whether local development starts with Firestore Emulator, a local adapter, or a dedicated development GCP project.
+- Future Firestore schema migrations, backups, export, and deletion behavior.
+  Phase 1 collections, owner scoping, and indexes are implemented; see the
+  [API contract](api-contract.md) and [ADR 0002](decisions/0002-firestore-native-persistence.md).
 - Search providers and their data, pricing, and attribution requirements.
 - Travel and shopping providers, only when those domain phases begin.
 - Operational safeguards: budgets, usage alerts, logging retention, backups, export, and deletion behavior.
 
 ## How to start a new session
 
-1. Read this brief, then [architecture](architecture.md), [implementation plan](implementation-plan.md), and [GCP deployment](gcp-deployment.md).
-2. Confirm the active implementation phase; default to Phase 1 unless the user explicitly advances it.
+1. Follow the root [agent instructions](../AGENTS.md), then read this brief,
+   [architecture](architecture.md), [implementation guide](phase-1-implementation-guide.md),
+   and the plan for the active task. Read [GCP deployment](gcp-deployment.md)
+   when working on infrastructure.
+2. Default to Phase 1 verification unless the user explicitly advances the phase.
 3. Preserve the architectural invariants above.
 4. Implement the smallest testable vertical slice of the current phase, update tests and docs, and do not expand into a later phase without a user decision.
