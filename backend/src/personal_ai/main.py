@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from personal_ai.agents.research.contracts import ResearchError
 from personal_ai.api.decisions import router as decisions_router
 from personal_ai.api.domains import router as domains_router
+from personal_ai.api.iterative_research import router as iterative_research_router
 from personal_ai.api.research import router as research_router
 from personal_ai.api.routes import router as conversations_router
 from personal_ai.context import ContextError
@@ -21,6 +22,7 @@ from personal_ai.storage import ConversationConflictError, ResourceNotFoundError
 app = FastAPI(title="Personal AI System", version="0.1.0")
 app.include_router(conversations_router)
 app.include_router(research_router)
+app.include_router(iterative_research_router)
 app.include_router(decisions_router)
 app.include_router(domains_router)
 

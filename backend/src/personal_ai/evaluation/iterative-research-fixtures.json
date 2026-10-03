@@ -1,0 +1,765 @@
+[
+  {
+    "name": "sufficient-first-pass",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic observatory schedule?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/schedule",
+        "title": "Synthetic schedule",
+        "text": "Synthetic observatory opens Saturday."
+      }
+    ],
+    "followup_sources": [],
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 1,
+      "stop_reason": "sufficient",
+      "state": "completed",
+      "unresolved_gaps": 0,
+      "gap_classes": [],
+      "followup_query_count": 0,
+      "decision_state": null,
+      "iteration_count": 1
+    },
+    "single_pass": {
+      "state": "completed",
+      "query_count": 1,
+      "source_count": 1,
+      "selected_evidence": 1,
+      "tokens": 995,
+      "provider_cost_usd": "0",
+      "decision_state": "not_requested"
+    },
+    "meaningful_improvement": "No extra query; preserve the same selected evidence.",
+    "comparison_expectation": "no_extra_search"
+  },
+  {
+    "name": "missing-required-fact",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic Widget price and material?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/widget",
+        "title": "Synthetic widget",
+        "text": "Synthetic Widget is a blue sample product."
+      }
+    ],
+    "followup_sources": [
+      [
+        {
+          "url": "https://example.org/widget-price",
+          "title": "Synthetic widget price",
+          "text": "Synthetic Widget price is $40 USD and its material is steel."
+        }
+      ]
+    ],
+    "decision_intent": {
+      "candidates": [
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic Widget"
+        }
+      ],
+      "constraints": [
+        {
+          "id": "30000000-0000-4000-8000-000000000001",
+          "attribute": "price",
+          "operator": "maximum",
+          "value": {
+            "kind": "money",
+            "amount": "50",
+            "currency": "USD"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        }
+      ]
+    },
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 2,
+      "stop_reason": "no_productive_query",
+      "state": "insufficient",
+      "unresolved_gaps": 2,
+      "gap_classes": [
+        "candidate_coverage",
+        "required_fact_missing"
+      ],
+      "followup_query_count": 1,
+      "followup_query_contains": [
+        "Synthetic Widget price and material?",
+        "site:example.org"
+      ],
+      "decision_state": "research_needed",
+      "iteration_count": 3
+    },
+    "single_pass": {
+      "state": "completed",
+      "query_count": 1,
+      "source_count": 1,
+      "selected_evidence": 1,
+      "tokens": 1002,
+      "provider_cost_usd": "0",
+      "decision_state": "research_needed"
+    },
+    "meaningful_improvement": "Add a focused cited price observation while keeping the $50 hard limit; Phase 6 remains research_needed until a verified typed claim exists.",
+    "comparison_expectation": "followup_adds_coverage_without_recommendation"
+  },
+  {
+    "name": "stale-required-evidence",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic lab current hours?",
+    "freshness": "current",
+    "initial_sources": [
+      {
+        "url": "https://example.org/hours",
+        "title": "Synthetic hours",
+        "text": "Synthetic lab opens at 9 AM.",
+        "published_at": "2026-10-01T10:00:00Z"
+      }
+    ],
+    "followup_sources": [
+      [
+        {
+          "url": "https://example.org/hours-current",
+          "title": "Synthetic hours update",
+          "text": "Synthetic lab opens at 10 AM."
+        }
+      ]
+    ],
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 2,
+      "stop_reason": "sufficient",
+      "state": "completed",
+      "unresolved_gaps": 0,
+      "gap_classes": [],
+      "followup_query_count": 1,
+      "followup_query_contains": [
+        "Synthetic lab current hours?",
+        "site:example.org"
+      ],
+      "decision_state": null,
+      "iteration_count": 2
+    },
+    "single_pass": {
+      "state": "insufficient",
+      "query_count": 1,
+      "source_count": 1,
+      "selected_evidence": 0,
+      "tokens": 626,
+      "provider_cost_usd": "0",
+      "decision_state": "not_requested"
+    },
+    "meaningful_improvement": "Replace stale-only coverage with fresh evidence while retaining the old observation in history.",
+    "comparison_expectation": "fresh_evidence_recovers_answer"
+  },
+  {
+    "name": "conflicting-source-observations",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic telescope aperture?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/telescope",
+        "title": "Telescope specs",
+        "text": "Synthetic telescope aperture is 80 mm."
+      },
+      {
+        "url": "https://example.org/telescope-copy",
+        "title": "Telescope specs copy",
+        "text": "Synthetic telescope aperture is not 80 mm."
+      }
+    ],
+    "followup_sources": [
+      [
+        {
+          "url": "https://example.org/telescope-spec",
+          "title": "Synthetic spec sheet",
+          "text": "Synthetic telescope aperture is 100 mm."
+        }
+      ]
+    ],
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 2,
+      "stop_reason": "no_productive_query",
+      "state": "insufficient",
+      "unresolved_gaps": 2,
+      "gap_classes": [
+        "source_conflict"
+      ],
+      "followup_query_count": 1,
+      "followup_query_contains": [
+        "Synthetic telescope aperture?",
+        "site:example.org"
+      ],
+      "decision_state": null,
+      "iteration_count": 3
+    },
+    "single_pass": {
+      "state": "completed",
+      "query_count": 1,
+      "source_count": 2,
+      "selected_evidence": 2,
+      "tokens": 1314,
+      "provider_cost_usd": "0",
+      "decision_state": "not_requested"
+    },
+    "meaningful_improvement": "Make the later observation visible and retain the unresolved conflict; do not choose a source silently.",
+    "comparison_expectation": "conflict_remains_visible"
+  },
+  {
+    "name": "ambiguous-candidate-identity",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic Alpha and Alpha Plus product specs?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/alpha",
+        "title": "Alpha products",
+        "text": "Synthetic Alpha and Synthetic Alpha Plus share a product listing."
+      }
+    ],
+    "followup_sources": [
+      [
+        {
+          "url": "https://example.org/alpha-model",
+          "title": "Synthetic model labels",
+          "text": "Synthetic Alpha model A-1 and Synthetic Alpha Plus model A-2 are separate items."
+        }
+      ]
+    ],
+    "decision_intent": {
+      "candidates": [
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic Alpha"
+        },
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic Alpha Plus"
+        }
+      ],
+      "constraints": [
+        {
+          "id": "30000000-0000-4000-8000-000000000002",
+          "attribute": "model",
+          "operator": "exact",
+          "value": {
+            "kind": "text",
+            "value": "A-1"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        }
+      ]
+    },
+    "budget": {
+      "iterations": 3,
+      "queries": 2,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 2,
+      "stop_reason": "query_budget_exhausted",
+      "state": "insufficient",
+      "unresolved_gaps": 4,
+      "gap_classes": [
+        "candidate_coverage",
+        "required_fact_missing"
+      ],
+      "followup_query_count": 1,
+      "followup_query_contains": [
+        "Synthetic Alpha and Alpha Plus product specs?",
+        "site:example.org"
+      ],
+      "decision_state": "research_needed",
+      "iteration_count": 2
+    },
+    "single_pass": {
+      "state": "completed",
+      "query_count": 1,
+      "source_count": 1,
+      "selected_evidence": 1,
+      "tokens": 1033,
+      "provider_cost_usd": "0",
+      "decision_state": "research_needed"
+    },
+    "meaningful_improvement": "Keep identity and required-model gaps visible; do not infer either product mapping from ambiguous snippets.",
+    "comparison_expectation": "ambiguous_identity_fails_closed"
+  },
+  {
+    "name": "no-viable-candidate-evidence",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic Widget availability?",
+    "freshness": "current",
+    "initial_sources": [],
+    "followup_sources": [],
+    "decision_intent": {
+      "candidates": [
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic Widget"
+        }
+      ],
+      "constraints": [
+        {
+          "id": "30000000-0000-4000-8000-000000000003",
+          "attribute": "availability",
+          "operator": "availability",
+          "value": {
+            "kind": "availability",
+            "value": "available"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        }
+      ]
+    },
+    "budget": {
+      "iterations": 3,
+      "queries": 1,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 1,
+      "stop_reason": "provider_error",
+      "state": "failed",
+      "unresolved_gaps": 2,
+      "gap_classes": [
+        "candidate_coverage",
+        "required_fact_missing"
+      ],
+      "followup_query_count": 0,
+      "decision_state": "research_needed",
+      "iteration_count": 1
+    },
+    "adapter_error": "search_unavailable",
+    "single_pass": {
+      "state": "failed",
+      "query_count": 1,
+      "source_count": 0,
+      "selected_evidence": 0,
+      "tokens": 0,
+      "provider_cost_usd": "0",
+      "decision_state": "research_needed"
+    },
+    "meaningful_improvement": "Report unavailable evidence and the required availability gap; do not claim a viable candidate.",
+    "comparison_expectation": "provider_failure_fails_closed"
+  },
+  {
+    "name": "repeated-query-suppression",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic comet visibility?",
+    "freshness": "general",
+    "initial_sources": [],
+    "followup_sources": [],
+    "planner_query_override": "Synthetic comet visibility?",
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 1,
+      "stop_reason": "no_productive_query",
+      "state": "insufficient",
+      "unresolved_gaps": 1,
+      "gap_classes": [
+        "initial_coverage"
+      ],
+      "followup_query_count": 0,
+      "decision_state": null,
+      "iteration_count": 2
+    },
+    "single_pass": {
+      "state": "insufficient",
+      "query_count": 1,
+      "source_count": 0,
+      "selected_evidence": 0,
+      "tokens": 625,
+      "provider_cost_usd": "0",
+      "decision_state": "not_requested"
+    },
+    "meaningful_improvement": "Suppress a normalized repeat and stop without a second adapter call.",
+    "comparison_expectation": "repeat_is_not_dispatched"
+  },
+  {
+    "name": "query-budget-exhaustion",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic sample return date?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/sample",
+        "title": "Synthetic sample",
+        "text": "A synthetic sample was returned to storage."
+      }
+    ],
+    "followup_sources": [],
+    "budget": {
+      "iterations": 4,
+      "queries": 1,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 1,
+      "stop_reason": "query_budget_exhausted",
+      "state": "insufficient",
+      "unresolved_gaps": 2,
+      "gap_classes": [
+        "candidate_coverage",
+        "required_fact_missing"
+      ],
+      "followup_query_count": 0,
+      "decision_state": "research_needed",
+      "iteration_count": 1
+    },
+    "decision_intent": {
+      "candidates": [
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic sample"
+        }
+      ],
+      "constraints": [
+        {
+          "id": "30000000-0000-4000-8000-000000000004",
+          "attribute": "return_date",
+          "operator": "exact",
+          "value": {
+            "kind": "date",
+            "value": "2026-10-01"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        }
+      ]
+    },
+    "single_pass": {
+      "state": "completed",
+      "query_count": 1,
+      "source_count": 1,
+      "selected_evidence": 1,
+      "tokens": 995,
+      "provider_cost_usd": "0",
+      "decision_state": "research_needed"
+    },
+    "meaningful_improvement": "No follow-up after query capacity is exhausted; expose the missing required date.",
+    "comparison_expectation": "query_budget_refuses_followup"
+  },
+  {
+    "name": "source-domain-filter",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic public exhibit schedule?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://unlisted.example.net/schedule",
+        "title": "Unlisted source",
+        "text": "Synthetic public exhibit opens Sunday."
+      }
+    ],
+    "followup_sources": [],
+    "budget": {
+      "iterations": 3,
+      "queries": 2,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 1,
+      "stop_reason": "no_productive_query",
+      "state": "insufficient",
+      "unresolved_gaps": 1,
+      "gap_classes": [
+        "initial_coverage"
+      ],
+      "followup_query_count": 0,
+      "decision_state": null,
+      "iteration_count": 2
+    },
+    "single_pass": {
+      "state": "completed",
+      "query_count": 1,
+      "source_count": 1,
+      "selected_evidence": 1,
+      "tokens": 1006,
+      "provider_cost_usd": "0",
+      "decision_state": "not_requested"
+    },
+    "meaningful_improvement": "Keep the unlisted host out of evidence and synthesis.",
+    "comparison_expectation": "unlisted_source_is_excluded"
+  },
+  {
+    "name": "token-budget-exhaustion",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic observatory schedule?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/schedule",
+        "title": "Synthetic schedule",
+        "text": "Synthetic observatory opens Saturday."
+      }
+    ],
+    "followup_sources": [],
+    "budget": {
+      "iterations": 3,
+      "queries": 1,
+      "sources": 12,
+      "tokens": 512,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 512
+    },
+    "expected": {
+      "queries": 1,
+      "stop_reason": "token_budget_exhausted",
+      "state": "insufficient",
+      "unresolved_gaps": 0,
+      "gap_classes": [],
+      "followup_query_count": 0,
+      "decision_state": null,
+      "iteration_count": 1
+    },
+    "single_pass": {
+      "state": "completed",
+      "query_count": 1,
+      "source_count": 1,
+      "selected_evidence": 1,
+      "tokens": 995,
+      "provider_cost_usd": "0",
+      "decision_state": "not_requested"
+    },
+    "meaningful_improvement": "Stop with a cited evidence record but no synthesis when the input budget cannot fit.",
+    "comparison_expectation": "token_budget_refuses_synthesis"
+  },
+  {
+    "name": "elapsed-budget-exhaustion",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic observatory schedule?",
+    "freshness": "general",
+    "initial_sources": [],
+    "followup_sources": [],
+    "budget": {
+      "iterations": 3,
+      "queries": 1,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 1,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 0,
+      "stop_reason": "elapsed_budget_exhausted",
+      "state": "insufficient",
+      "unresolved_gaps": 1,
+      "gap_classes": [
+        "initial_coverage"
+      ],
+      "followup_query_count": 0,
+      "decision_state": null,
+      "iteration_count": 1
+    },
+    "clock_advance_before_search": 2,
+    "single_pass": {
+      "state": "insufficient",
+      "query_count": 1,
+      "source_count": 0,
+      "selected_evidence": 0,
+      "tokens": 630,
+      "provider_cost_usd": "0",
+      "decision_state": "not_requested"
+    },
+    "meaningful_improvement": "Refuse a dispatch that cannot fit inside the elapsed-time ceiling.",
+    "comparison_expectation": "elapsed_budget_refuses_dispatch"
+  },
+  {
+    "name": "cancel-before-late-write",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic observatory schedule?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/schedule",
+        "title": "Synthetic schedule",
+        "text": "Synthetic observatory opens Saturday."
+      }
+    ],
+    "followup_sources": [],
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 1,
+      "stop_reason": "cancelled",
+      "state": "cancelled",
+      "unresolved_gaps": 1,
+      "gap_classes": [
+        "initial_coverage"
+      ],
+      "followup_query_count": 0,
+      "decision_state": null,
+      "iteration_count": 1
+    },
+    "cancel_after_event": "searching",
+    "single_pass": {
+      "state": "completed",
+      "query_count": 1,
+      "source_count": 1,
+      "selected_evidence": 1,
+      "tokens": 995,
+      "provider_cost_usd": "0",
+      "decision_state": "not_requested"
+    },
+    "meaningful_improvement": "Cancellation is terminal, and the committed query reservation cannot produce a late evidence write.",
+    "comparison_expectation": "cancel_fences_late_evidence"
+  },
+  {
+    "name": "uncertain-provider-attempt-recovery",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic asteroid sample?",
+    "freshness": "general",
+    "initial_sources": [],
+    "followup_sources": [],
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 1,
+      "stop_reason": "side_effect_uncertain",
+      "state": "insufficient",
+      "unresolved_gaps": 1,
+      "gap_classes": [
+        "initial_coverage"
+      ],
+      "followup_query_count": 0,
+      "decision_state": null,
+      "iteration_count": 1
+    },
+    "adapter_cancellation": true,
+    "single_pass": {
+      "state": "insufficient",
+      "query_count": 1,
+      "source_count": 0,
+      "selected_evidence": 0,
+      "tokens": 624,
+      "provider_cost_usd": "0",
+      "decision_state": "not_requested"
+    },
+    "meaningful_improvement": "Settle the uncertain provider reservation and never repeat an attempt whose result was not committed.",
+    "comparison_expectation": "uncertain_attempt_is_not_replayed"
+  }
+]

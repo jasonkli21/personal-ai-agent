@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "iterative-research-evaluation-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "synthetic", "single_pass_baseline", "paired_count", "passed", "results"],
+  "properties": {
+    "schema_version": {"const": "iterative-research-evaluation-v1"},
+    "synthetic": {"const": true},
+    "single_pass_baseline": {"const": "research-v1"},
+    "paired_count": {"type": "integer", "minimum": 10},
+    "passed": {"type": "boolean"},
+    "results": {"type": "array", "minItems": 10, "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "passed", "single_pass", "iterative", "comparison"],
+      "properties": {
+        "name": {"type": "string"},
+        "passed": {"type": "boolean"},
+        "single_pass": {"type": "object"},
+        "comparison": {
+          "type": "object", "additionalProperties": false,
+          "required": ["expectation", "claim", "passed", "query_delta", "accepted_source_delta", "selected_evidence_delta"],
+          "properties": {
+            "expectation": {"enum": ["no_extra_search", "followup_adds_coverage_without_recommendation", "fresh_evidence_recovers_answer", "conflict_remains_visible", "ambiguous_identity_fails_closed", "provider_failure_fails_closed", "repeat_is_not_dispatched", "query_budget_refuses_followup", "unlisted_source_is_excluded", "token_budget_refuses_synthesis", "elapsed_budget_refuses_dispatch", "cancel_fences_late_evidence", "uncertain_attempt_is_not_replayed"]},
+            "claim": {"type": "string"},
+            "passed": {"type": "boolean"},
+            "query_delta": {"type": "integer"},
+            "accepted_source_delta": {"type": "integer"},
+            "selected_evidence_delta": {"type": "integer"}
+          }
+        },
+        "iterative": {
+          "type": "object", "additionalProperties": false,
+          "required": ["state", "stop_reason", "query_count", "source_count", "accepted_source_count", "selected_evidence_count", "token_count", "provider_cost_usd", "open_gap_count", "unresolved_gap_count", "gap_classes", "iteration_count", "followup_query_count", "followup_queries", "decision_state", "event_count", "observed_adapter_calls", "answer_present", "started_attempt_count", "uncertain_ledger_count"],
+          "properties": {
+            "state": {"enum": ["completed", "insufficient", "failed", "cancelled"]},
+            "stop_reason": {"type": "string"},
+            "query_count": {"type": "integer", "minimum": 0, "maximum": 3},
+            "source_count": {"type": "integer", "minimum": 0, "maximum": 12},
+            "accepted_source_count": {"type": "integer", "minimum": 0, "maximum": 12},
+            "selected_evidence_count": {"type": "integer", "minimum": 0, "maximum": 12},
+            "token_count": {"type": "integer", "minimum": 0},
+            "provider_cost_usd": {"type": "string"},
+            "open_gap_count": {"type": "integer", "minimum": 0, "maximum": 30},
+            "unresolved_gap_count": {"type": "integer", "minimum": 0, "maximum": 30},
+            "gap_classes": {"type": "array", "items": {"enum": ["initial_coverage", "required_fact_missing", "evidence_stale", "source_conflict", "candidate_coverage", "identity_ambiguity", "citation_support"]}},
+            "iteration_count": {"type": "integer", "minimum": 1, "maximum": 5},
+            "followup_query_count": {"type": "integer", "minimum": 0, "maximum": 2},
+            "followup_queries": {"type": "array", "items": {"type": "string", "maxLength": 500}},
+            "decision_state": {"type": ["string", "null"]},
+            "event_count": {"type": "integer", "minimum": 1, "maximum": 128},
+            "observed_adapter_calls": {"type": "integer", "minimum": 0, "maximum": 3},
+            "answer_present": {"type": "boolean"},
+            "started_attempt_count": {"type": "integer", "minimum": 0, "maximum": 18},
+            "uncertain_ledger_count": {"type": "integer", "minimum": 0, "maximum": 128}
+          }
+        }
+      }
+    }}
+  }
+}
