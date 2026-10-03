@@ -1,6 +1,8 @@
 import asyncio
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from time import monotonic
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -9,6 +11,7 @@ import pytest
 from personal_ai.decisions.contracts import (
     Candidate,
     ClaimProposal,
+    Constraint,
     DecisionCreateRequest,
     Preference,
 )
@@ -17,6 +20,7 @@ from personal_ai.domains.contracts import (
     DomainComparisonCreateRequest,
     DomainContractError,
     DomainLookupRequest,
+    DomainLookupReservation,
     DomainRegistration,
     ProviderObservationExtension,
 )
@@ -29,8 +33,9 @@ from personal_ai.domains.providers import (
     OpenFoodFactsAdapter,
     ShoppingProductRecord,
     TravelPlaceRecord,
+    _ProcessRateLimiter,
 )
-from personal_ai.domains.repositories import InMemoryDomainRepository
+from personal_ai.domains.repositories import DomainRepositoryError, InMemoryDomainRepository
 from personal_ai.domains.service import DomainService
 from personal_ai.domains.shopping.models import (
     ProductVariantIdentity,
@@ -47,7 +52,16 @@ from personal_ai.domains.travel.models import (
     local_time_to_utc,
 )
 from personal_ai.domains.travel.module import TravelModule
-from personal_ai.entities.research import AvailabilityValue, LocationValue, MoneyValue
+from personal_ai.entities.research import (
+    AvailabilityValue,
+    BooleanValue,
+    EntityClaim,
+    EvidenceReference,
+    LocationValue,
+    MoneyValue,
+    NumberValue,
+    TextValue,
+)
 from personal_ai.evaluation.research import build_fixture
 from personal_ai.settings import Settings
 from personal_ai.storage.errors import ResourceNotFoundError
@@ -91,6 +105,17 @@ def test_registrations_are_versioned_unique_and_disabled_by_default():
             privacy_policy="Do not send private data.",
             retention_policy="Keep sourced facts expiring.",
         )
+
+
+@pytest.mark.parametrize("domain,module", [("travel", TravelModule()), ("shopping", ShoppingModule())])
+def test_availability_policy_marker_cannot_remove_a_user_requirement(domain, module):
+    fixture = next(item for item in fixture_registry() if item.domain_id == domain)
+    original = fixture.request.decision.constraints[0]
+    user_constraint = original.model_copy(update={"source_record_id": f"{domain}-policy-v2"})
+    request = fixture.request.decision.model_copy(update={"constraints": (user_constraint,)})
+    prepared = module.prepare_decision(request)
+    assert user_constraint in prepared.constraints
+    assert module.prepare_decision(prepared) == prepared
 
 
 def test_travel_time_zone_window_and_dst_boundaries():
@@ -221,11 +246,117 @@ def test_empty_place_lookup_returns_a_research_needed_comparison():
     assert result.comparison.rows == ()
 
 
+def test_lookup_replay_returns_saved_comparison_without_repeating_provider_work():
+    record = TravelPlaceRecord(
+        name="Synthetic Museum",
+        provider_object_id="node/9001",
+        osm_type="node",
+        latitude=37.7,
+        longitude=-122.4,
+        place_type="tourism=museum",
+        display_name="Synthetic Museum, Example City",
+        url="https://example.org/museum",
+    )
+    adapter = FakeTravelPlaceAdapter((record,))
+    ticks = iter(FIXTURE_NOW + timedelta(seconds=offset) for offset in range(20))
+    service = _service(domains=("travel",), adapters={"travel": adapter})
+    service.clock = lambda: next(ticks)
+    key = uuid4()
+    request = DomainLookupRequest(idempotency_key=key, query="Synthetic Museum")
+
+    first = asyncio.run(service.lookup("travel", request))
+    class RejectAdapterResolution(dict):
+        def get(self, key, default=None):
+            raise AssertionError(f"completed replay resolved adapter for {key}")
+
+    service.adapters = RejectAdapterResolution()
+    replay = asyncio.run(service.lookup("travel", request))
+    assert replay == first
+    assert len(adapter.calls) == 1
+
+    with pytest.raises(DomainContractError, match="idempotency_conflict"):
+        asyncio.run(service.lookup("travel", request.model_copy(update={"query": "Different place"})))
+    assert len(adapter.calls) == 1
+
+
+def test_lookup_fences_concurrent_dispatch_and_does_not_repeat_uncertain_work():
+    async def concurrent_case():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class BlockingAdapter(FakeTravelPlaceAdapter):
+            async def lookup(self, query, limit):
+                self.calls.append((query, limit))
+                started.set()
+                await release.wait()
+                return ()
+
+        adapter = BlockingAdapter()
+        service = _service(domains=("travel",), adapters={"travel": adapter})
+        request = DomainLookupRequest(idempotency_key=uuid4(), query="Example City")
+        first_task = asyncio.create_task(service.lookup("travel", request))
+        await started.wait()
+        with pytest.raises(DomainContractError, match="domain_lookup_in_progress"):
+            await service.lookup("travel", request)
+        release.set()
+        await first_task
+        assert len(adapter.calls) == 1
+
+    asyncio.run(concurrent_case())
+
+    uncertain_adapter = FakeTravelPlaceAdapter(error=RuntimeError("simulated lost provider outcome"))
+    service = _service(domains=("travel",), adapters={"travel": uncertain_adapter})
+    request = DomainLookupRequest(idempotency_key=uuid4(), query="Example City")
+    with pytest.raises(DomainContractError, match="domain_lookup_outcome_unknown"):
+        asyncio.run(service.lookup("travel", request))
+    with pytest.raises(DomainContractError, match="domain_lookup_outcome_unknown"):
+        asyncio.run(service.lookup("travel", request))
+    assert len(uncertain_adapter.calls) == 1
+
+    failed_adapter = FakeTravelPlaceAdapter(error=DomainProviderError("travel_provider_unavailable", 503))
+    service = _service(domains=("travel",), adapters={"travel": failed_adapter})
+    request = DomainLookupRequest(idempotency_key=uuid4(), query="Example City")
+    for _ in range(2):
+        with pytest.raises(DomainProviderError, match="travel_provider_unavailable"):
+            asyncio.run(service.lookup("travel", request))
+    assert len(failed_adapter.calls) == 1
+
+
+def test_lookup_repository_fences_completion_and_records_completed_result():
+    repository = InMemoryDomainRepository()
+    now = FIXTURE_NOW
+    reservation = DomainLookupReservation(
+        id=uuid4(),
+        owner_id="local",
+        domain_id="travel",
+        idempotency_key=uuid4(),
+        request_fingerprint="a" * 64,
+        fence_token=uuid4(),
+        created_at=now,
+        updated_at=now,
+    )
+    assert repository.reserve_lookup(reservation) == reservation
+    fixture = next(item for item in fixture_registry() if item.fixture_id == "travel-research-needed")
+    result = _service(domains=("travel",)).create("travel", fixture.request)
+    with pytest.raises(DomainRepositoryError, match="domain_lookup_fence_lost"):
+        repository.complete_lookup(reservation.id, uuid4(), result)
+    assert not repository.results
+    completed = repository.complete_lookup(reservation.id, reservation.fence_token, result)
+    assert completed == result
+    assert repository.lookups[reservation.id].state == "completed"
+    assert repository.lookups[reservation.id].comparison_id == result.comparison.id
+
+    isolated = reservation.model_copy(update={"id": uuid4(), "owner_id": "another-owner"})
+    repository.reserve_lookup(isolated)
+    with pytest.raises(DomainRepositoryError, match="domain_lookup_result_conflict"):
+        repository.complete_lookup(isolated.id, isolated.fence_token, result)
+
+
 class _NoWait:
     def __init__(self):
         self.intervals = []
 
-    async def wait(self, interval):
+    async def wait(self, interval, *, deadline):
         self.intervals.append(interval)
 
 
@@ -308,6 +439,70 @@ def test_open_food_facts_adapter_requests_only_product_fields_and_uses_staging_a
     assert evidence[0].title == "Synthetic oat drink"
 
 
+def test_rate_limiter_rejects_future_slots_without_extending_the_queue():
+    limiter = _ProcessRateLimiter()
+    limiter.next_request = monotonic() + 0.15
+    reserved_slot = limiter.next_request
+    with pytest.raises(TimeoutError, match="deadline"):
+        asyncio.run(limiter.wait(1, deadline=monotonic() + 0.03))
+    assert limiter.next_request == reserved_slot
+
+
+def test_provider_deadline_covers_rate_wait_and_slow_response_body():
+    base = Settings(
+        _env_file=None,
+        ai_provider="gemini",
+        ai_model="synthetic",
+        travel_provider_policy_approved=True,
+        travel_osm_contact_email="operator@example.org",
+        travel_osm_user_agent="PersonalAISystem/0.1 contact operator@example.org",
+        domain_provider_timeout_seconds=0.03,
+    )
+    transport_called = False
+
+    def respond(_request):
+        nonlocal transport_called
+        transport_called = True
+        return httpx.Response(200, headers={"content-type": "application/json"}, json=[])
+
+    class SlowLimiter:
+        async def wait(self, _interval, *, deadline):
+            await asyncio.sleep(max(0, deadline - monotonic()) + 0.01)
+
+    queued = NominatimPlaceAdapter(
+        base,
+        transport=httpx.MockTransport(respond),
+        rate_limiter=SlowLimiter(),
+    )
+    with pytest.raises(DomainProviderError, match="travel_provider_timeout"):
+        asyncio.run(queued.lookup("Example Park", 1))
+    assert not transport_called
+
+    class SlowBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"["
+            await asyncio.sleep(0.1)
+            yield b"]"
+
+        async def aclose(self):
+            return None
+
+    def trickle(_request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            stream=SlowBody(),
+        )
+
+    streaming = NominatimPlaceAdapter(
+        base,
+        transport=httpx.MockTransport(trickle),
+        rate_limiter=_NoWait(),
+    )
+    with pytest.raises(DomainProviderError, match="travel_provider_timeout"):
+        asyncio.run(streaming.lookup("Example Park", 1))
+
+
 def test_external_provider_adapter_fails_closed_without_policy_approval():
     settings = Settings(
         _env_file=None,
@@ -331,7 +526,13 @@ def test_domain_comparisons_share_constraints_and_preserve_source_rows():
     fixture = next(item for item in fixture_registry() if item.fixture_id == "shopping-wrong-variant-excluded")
     result = _service(domains=("shopping",)).create("shopping", fixture.request)
     assert result.comparison.state == "recommended"
-    assert len(result.comparison.constraints) == 4
+    assert len(result.comparison.constraints) == 5
+    availability = next(
+        constraint for constraint in result.comparison.constraints
+        if constraint.attribute == "availability"
+        and constraint.source_record_id == "shopping-policy-v2"
+    )
+    assert availability.required and availability.missing_policy == "fail_closed"
     selected = next(row for row in result.comparison.rows if row.selected)
     excluded = next(row for row in result.comparison.rows if not row.eligible)
     assert selected.name == "Aster Trail Headlamp — Synthetic A"
@@ -429,7 +630,7 @@ def test_phase_five_research_citations_carry_through_the_domain_comparison():
         InMemoryDomainRepository(),
         research_repository=research_service.repository,
         owner_id="local",
-        clock=lambda: datetime.now(UTC),
+        clock=lambda: FIXTURE_NOW,
     )
 
     result = service.create("travel", request)
@@ -469,3 +670,229 @@ def test_brave_domain_sources_require_explicit_storage_rights_gate():
         research_provider_storage_approved=True,
     )
     service._validate_provider_observations(TravelModule(), (source,))
+
+
+def test_domain_availability_policy_adds_a_separate_mandatory_constraint():
+    for module in (TravelModule(), ShoppingModule()):
+        key = uuid4()
+        optional = Constraint(
+            id=uuid4(),
+            attribute="availability",
+            operator="availability",
+            value=AvailabilityValue(value="available"),
+            required=False,
+            missing_policy="allow_unknown",
+        )
+        prepared = module.prepare_decision(DecisionCreateRequest(
+            idempotency_key=key,
+            constraints=(optional,),
+        ))
+        requirements = [item for item in prepared.constraints if item.attribute == "availability"]
+        assert optional in requirements
+        mandatory = [item for item in requirements if item.source == "system"]
+        assert len(mandatory) == 1
+        assert mandatory[0].required and mandatory[0].missing_policy == "fail_closed"
+        assert mandatory[0].value == AvailabilityValue(value="available")
+        assert module.prepare_decision(prepared).constraints == prepared.constraints
+
+
+def _feature_claim(
+    entity_id,
+    attribute,
+    value,
+    *,
+    status="verified",
+    scope=None,
+    observed_at=FIXTURE_NOW,
+    expires_at=None,
+    evidence_id=None,
+):
+    expiry = expires_at or (observed_at + timedelta(days=2))
+    evidence_id = evidence_id or uuid4()
+    observation_id = uuid4()
+    reference = EvidenceReference(
+        evidence_id=evidence_id,
+        source_observation_id=observation_id,
+        owner_id="local",
+        origin="supplied",
+        url="https://example.org/feature-source",
+        title="Synthetic feature evidence",
+        observed_at=observed_at,
+        expires_at=expiry,
+        expiry_policy="supplied",
+        content_fingerprint="f" * 64,
+    )
+    return EntityClaim(
+        id=uuid4(),
+        entity_id=entity_id,
+        owner_id="local",
+        attribute=attribute,
+        typed_value=value,
+        original_value=str(getattr(value, "value", getattr(value, "amount", value))),
+        currency=value.currency if isinstance(value, MoneyValue) else None,
+        evidence_refs=(reference,),
+        evidence_ids=(evidence_id,),
+        observed_at=observed_at,
+        expires_at=expiry,
+        claim_status=status,
+        verification_policy_version="claim-verification-v2",
+        scope=scope,
+    )
+
+
+def _feature_evaluation(entity_id):
+    return SimpleNamespace(entity_id=entity_id, attribute_statuses=())
+
+
+def _domain_feature(result, name):
+    return next(item for item in result if item.name == name)
+
+
+def test_domain_features_omit_conflicting_and_stale_claim_values():
+    entity_id = uuid4()
+    location = LocationValue(latitude=37.7, longitude=-122.4)
+    claims = (
+        _feature_claim(entity_id, "location", location),
+        _feature_claim(
+            entity_id,
+            "location",
+            LocationValue(latitude=40.7, longitude=-74.0),
+            status="unverified",
+        ),
+        _feature_claim(
+            entity_id,
+            "amenity_wifi",
+            BooleanValue(value=True),
+            observed_at=FIXTURE_NOW - timedelta(days=3),
+            expires_at=FIXTURE_NOW - timedelta(days=1),
+        ),
+    )
+    preference = Preference(attribute="location", target=location)
+    travel = TravelModule().calculate_features(
+        entities=(),
+        claims_by_entity={entity_id: claims},
+        constraints=(),
+        preferences=(preference,),
+        evaluations=(_feature_evaluation(entity_id),),
+        eligible_entity_ids=(entity_id,),
+        now=FIXTURE_NOW,
+        context={},
+    )[entity_id]
+    assert _domain_feature(travel, "travel.location_fit").value is None
+    assert not _domain_feature(travel, "travel.location_fit").evidence_ids
+
+    stale_and_retracted = {
+        "stale": _feature_claim(
+            uuid4(), "review_count", NumberValue(value=Decimal(20)),
+            observed_at=FIXTURE_NOW - timedelta(days=3),
+            expires_at=FIXTURE_NOW - timedelta(days=1),
+        ),
+        "retracted": _feature_claim(
+            uuid4(), "review_count", NumberValue(value=Decimal(20)), status="retracted",
+        ),
+    }
+    claims_by_entity = {
+        name: (claim,)
+        for name, claim in stale_and_retracted.items()
+    }
+    ids_by_entity = {name: claim.entity_id for name, claim in stale_and_retracted.items()}
+    shopping = ShoppingModule().calculate_features(
+        entities=(),
+        claims_by_entity={ids_by_entity[name]: value for name, value in claims_by_entity.items()},
+        constraints=(),
+        preferences=(),
+        evaluations=tuple(_feature_evaluation(entity_id) for entity_id in ids_by_entity.values()),
+        eligible_entity_ids=tuple(ids_by_entity.values()),
+        now=FIXTURE_NOW,
+        context={},
+    )
+    assert all(
+        _domain_feature(features, "shopping.review_evidence_quality").value is None
+        for features in shopping.values()
+    )
+
+
+def test_travel_value_feature_uses_only_the_budget_price_basis_and_currency():
+    entity_id = uuid4()
+    claims = (
+        _feature_claim(entity_id, "nightly_price", MoneyValue(amount=Decimal(5), currency="USD")),
+        _feature_claim(entity_id, "total_price", MoneyValue(amount=Decimal(300), currency="USD")),
+    )
+    budget = Constraint(
+        id=uuid4(),
+        attribute="total_price",
+        operator="maximum",
+        value=MoneyValue(amount=Decimal(500), currency="USD"),
+    )
+    features = TravelModule().calculate_features(
+        entities=(),
+        claims_by_entity={entity_id: claims},
+        constraints=(budget,),
+        preferences=(),
+        evaluations=(_feature_evaluation(entity_id),),
+        eligible_entity_ids=(entity_id,),
+        now=FIXTURE_NOW,
+        context={},
+    )[entity_id]
+    value = _domain_feature(features, "travel.value_fit")
+    assert value.value == pytest.approx(0.4)
+    assert value.evidence_ids == claims[1].evidence_ids
+
+    first, second = uuid4(), uuid4()
+    incomparable = {
+        first: (_feature_claim(first, "nightly_price", MoneyValue(amount=Decimal(100), currency="USD")),),
+        second: (_feature_claim(second, "total_price", MoneyValue(amount=Decimal(150), currency="EUR")),),
+    }
+    unbudgeted = TravelModule().calculate_features(
+        entities=(),
+        claims_by_entity=incomparable,
+        constraints=(),
+        preferences=(),
+        evaluations=tuple(_feature_evaluation(item) for item in incomparable),
+        eligible_entity_ids=tuple(incomparable),
+        now=FIXTURE_NOW,
+        context={},
+    )
+    assert all(_domain_feature(items, "travel.value_fit").value is None for items in unbudgeted.values())
+
+
+def test_shopping_feature_uses_preference_scope_and_omits_disagreement():
+    entity_id = uuid4()
+    requested = _feature_claim(
+        entity_id, "compatibility", TextValue(value="USB-C"), scope="requested-port",
+    )
+    other_scope = _feature_claim(
+        entity_id, "compatibility", TextValue(value="Lightning"), scope="other-port",
+    )
+    preference = Preference(
+        attribute="compatibility", target=TextValue(value="USB-C"), scope="requested-port",
+    )
+    scoped = ShoppingModule().calculate_features(
+        entities=(),
+        claims_by_entity={entity_id: (requested, other_scope)},
+        constraints=(),
+        preferences=(preference,),
+        evaluations=(_feature_evaluation(entity_id),),
+        eligible_entity_ids=(entity_id,),
+        now=FIXTURE_NOW,
+        context={},
+    )[entity_id]
+    spec = _domain_feature(scoped, "shopping.specification_fit")
+    assert spec.value == 1
+    assert spec.evidence_ids == requested.evidence_ids
+
+    disagreement = _feature_claim(
+        entity_id, "compatibility", TextValue(value="Lightning"),
+        status="unverified", scope="requested-port",
+    )
+    conflicted = ShoppingModule().calculate_features(
+        entities=(),
+        claims_by_entity={entity_id: (requested, disagreement)},
+        constraints=(),
+        preferences=(preference,),
+        evaluations=(_feature_evaluation(entity_id),),
+        eligible_entity_ids=(entity_id,),
+        now=FIXTURE_NOW,
+        context={},
+    )[entity_id]
+    assert _domain_feature(conflicted, "shopping.specification_fit").value is None

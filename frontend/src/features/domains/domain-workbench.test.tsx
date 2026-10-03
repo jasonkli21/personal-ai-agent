@@ -117,6 +117,86 @@ describe("domain comparison workbench", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
+  it("accepts public HTTP evidence and policy links allowed by the shared URL policy", async () => {
+    const httpResult = structuredClone(result);
+    httpResult.comparison.rows[0].cells[0].sources[0].url = "http://example.org/offer";
+    httpResult.comparison.rows[0].cells[0].sources[0].policy_url = "http://example.org/policy";
+    httpResult.provider_observations = [{
+      provider: "synthetic",
+      attribution: "Synthetic source",
+      policy_url: "http://example.org/provider-policy",
+      observed_at: "2026-10-01T12:00:00Z",
+      expires_at: "2026-10-02T12:00:00Z",
+    }];
+    fetchMock.mockResolvedValueOnce(json([fixture])).mockResolvedValueOnce(json(httpResult));
+    render(<DomainWorkbench domain="shopping" adapter="fake" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run synthetic example" }));
+    expect(await screen.findByRole("link", { name: "Synthetic merchant offer" }))
+      .toHaveAttribute("href", "http://example.org/offer");
+    expect(screen.getByRole("link", { name: "Source use and attribution policy" }))
+      .toHaveAttribute("href", "http://example.org/policy");
+    expect(screen.getByRole("link", { name: "Provider policy" }))
+      .toHaveAttribute("href", "http://example.org/provider-policy");
+  });
+
+  it("turns malformed rendered fields into a recoverable error", async () => {
+    const malformed = structuredClone(result) as unknown as Record<string, unknown>;
+    const registration = malformed.registration as { fields: Record<string, unknown>[] };
+    delete registration.fields[0].label;
+    fetchMock.mockResolvedValueOnce(json([fixture])).mockResolvedValueOnce(json(malformed));
+    render(<DomainWorkbench domain="shopping" adapter="fake" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run synthetic example" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("invalid field registration");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("rejects absent exclusion reasons before the workbench renders them", async () => {
+    const malformed = structuredClone(result) as unknown as Record<string, unknown>;
+    const comparison = malformed.comparison as { rows: Record<string, unknown>[] };
+    delete comparison.rows[0].exclusion_reasons;
+    fetchMock.mockResolvedValueOnce(json([fixture])).mockResolvedValueOnce(json(malformed));
+    render(<DomainWorkbench domain="shopping" adapter="fake" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run synthetic example" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("invalid candidate");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("rejects unsafe cell policy links", async () => {
+    const malformed = structuredClone(result) as unknown as Record<string, unknown>;
+    const comparison = malformed.comparison as { rows: Array<{ cells: Array<{ sources: Array<Record<string, unknown>> }> }> };
+    comparison.rows[0].cells[0].sources[0].policy_url = "javascript:alert(1)";
+    malformed.provider_observations = [{
+      provider: "synthetic",
+      attribution: "Synthetic source",
+      policy_url: "javascript:alert(1)",
+      observed_at: "2026-10-01T12:00:00Z",
+      expires_at: "2026-10-02T12:00:00Z",
+    }];
+    fetchMock.mockResolvedValueOnce(json([fixture])).mockResolvedValueOnce(json(malformed));
+    render(<DomainWorkbench domain="shopping" adapter="fake" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run synthetic example" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("unsafe source link");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("rejects unsafe provider policy links when cell links are safe", async () => {
+    const malformed = structuredClone(result) as unknown as Record<string, unknown>;
+    const comparison = malformed.comparison as { rows: Array<{ cells: Array<{ sources: Array<Record<string, unknown>> }> }> };
+    comparison.rows[0].cells[0].sources[0].policy_url = null;
+    malformed.provider_observations = [{
+      provider: "synthetic",
+      attribution: "Synthetic source",
+      policy_url: "https://[3fff::1]/policy",
+      observed_at: "2026-10-01T12:00:00Z",
+      expires_at: "2026-10-02T12:00:00Z",
+    }];
+    fetchMock.mockResolvedValueOnce(json([fixture])).mockResolvedValueOnce(json(malformed));
+    render(<DomainWorkbench domain="shopping" adapter="fake" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run synthetic example" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("invalid provider metadata");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
   it("explains when a lookup has no candidates instead of blaming the filters", async () => {
     fetchMock.mockResolvedValueOnce(json([fixture])).mockResolvedValueOnce(json({
       ...result,

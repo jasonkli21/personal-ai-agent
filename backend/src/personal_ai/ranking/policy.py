@@ -569,6 +569,64 @@ def _status(
     )
 
 
+def attribute_status_for_claims(
+    attribute: str,
+    scope: str | None,
+    claims: tuple[EntityClaim, ...],
+    now: datetime,
+) -> AttributeStatus:
+    """Return the shared freshness/conflict status used by constraints and features."""
+    return _status(attribute, scope, claims, now)
+
+
+def verified_claims_for_feature(
+    claims: tuple[EntityClaim, ...],
+    attribute: str,
+    now: datetime,
+    *,
+    evaluation=None,
+    scope: str | None = None,
+) -> tuple[AttributeStatus, tuple[EntityClaim, ...]]:
+    """Select only claims admitted by the shared status policy for one feature.
+
+    An omitted scope is inferred only when the candidate has one scope for the
+    attribute. Multiple scopes are incomparable for a domain feature and are
+    therefore omitted even if their values happen to match.
+    """
+    matching = tuple(item for item in claims if item.attribute == attribute)
+    scopes = {item.scope for item in matching}
+    if scope is None:
+        if len(scopes) > 1:
+            return attribute_status_for_claims(attribute, None, matching, now), ()
+        scope = next(iter(scopes)) if scopes else None
+
+    statuses = getattr(evaluation, "attribute_statuses", ()) if evaluation is not None else ()
+    status = next(
+        (
+            item for item in statuses
+            if item.attribute == attribute and item.scope == scope
+        ),
+        None,
+    )
+    if status is None:
+        status = attribute_status_for_claims(attribute, scope, matching, now)
+    if status.status != "verified":
+        return status, ()
+
+    selected = tuple(sorted(
+        (
+            item for item in matching
+            if item.scope == scope
+            and item.id in status.claim_ids
+            and item.claim_status == "verified"
+            and item.verification_policy_version == CLAIM_VERIFICATION_POLICY_VERSION
+            and item.expires_at > now
+        ),
+        key=lambda item: str(item.id),
+    ))
+    return status, selected
+
+
 def _numeric(value: TypedValue) -> tuple[Decimal, str] | None:
     if isinstance(value, NumberValue):
         return value.value, "number"

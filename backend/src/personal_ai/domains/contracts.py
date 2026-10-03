@@ -1,6 +1,8 @@
 """Versioned contracts for thin, evidence-backed domain modules."""
 
+import json
 from datetime import datetime
+from hashlib import sha256
 from typing import Literal
 from uuid import UUID
 
@@ -216,6 +218,49 @@ class DomainLookupRequest(DecisionRecord):
         if not value or any(ord(char) < 32 for char in value):
             raise ValueError("invalid domain query")
         return value
+
+    def fingerprint(self, owner_id: str, domain_id: str) -> str:
+        """Hash normalized lookup inputs without retaining the submitted query."""
+        payload = {
+            "owner_id": owner_id,
+            "domain_id": domain_id,
+            "request": self.model_dump(mode="json", exclude={"idempotency_key"}),
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return sha256(canonical.encode()).hexdigest()
+
+
+class DomainLookupReservation(DecisionRecord):
+    """Durable, fenced idempotency state for provider-backed lookups."""
+
+    id: UUID
+    owner_id: str = Field(min_length=1, max_length=200)
+    domain_id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,40}$")
+    idempotency_key: UUID
+    request_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    fence_token: UUID
+    state: Literal["reserved", "completed", "failed", "uncertain"] = "reserved"
+    comparison_id: UUID | None = None
+    failure_kind: Literal["provider", "contract"] | None = None
+    failure_code: str | None = Field(default=None, min_length=1, max_length=100)
+    failure_status: int | None = Field(default=None, ge=400, le=599)
+    created_at: datetime
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def state_payload_is_consistent(self):
+        has_failure = any((self.failure_kind, self.failure_code, self.failure_status))
+        if self.state == "completed":
+            if self.comparison_id is None or has_failure:
+                raise ValueError("completed lookup requires only a comparison mapping")
+        elif self.state == "failed":
+            if self.comparison_id is not None or not all((self.failure_kind, self.failure_code, self.failure_status)):
+                raise ValueError("failed lookup requires a safe failure result")
+        elif self.state in {"reserved", "uncertain"} and (self.comparison_id is not None or has_failure):
+            raise ValueError("active or uncertain lookup cannot expose a result")
+        if self.updated_at < self.created_at:
+            raise ValueError("invalid lookup reservation timestamps")
+        return self
 
 
 class DomainFixtureDescription(DecisionRecord):

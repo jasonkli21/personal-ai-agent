@@ -35,6 +35,7 @@ from personal_ai.entities.research import (
     TextValue,
     TypedValue,
 )
+from personal_ai.ranking.policy import verified_claims_for_feature
 
 _FIELDS = (
     DomainField(key="place_type", label="Place type", value_kinds=("text",)),
@@ -57,7 +58,7 @@ _FIELDS = (
 
 
 class TravelModule:
-    policy_version = "travel-features-v1"
+    policy_version = "travel-features-v2"
     registration = DomainRegistration(
         domain_id="travel",
         supported_entity_types=("place", "object"),
@@ -71,7 +72,7 @@ class TravelModule:
         supported_features=("location_fit", "value_fit", "amenity_fit"),
         source_policy_version="travel-sources-v1",
         field_schema_version="travel-comparison-v1",
-        feature_policy_version="travel-features-v1",
+        feature_policy_version="travel-features-v2",
         fields=_FIELDS,
         source_adapters=("phase5-research", "fake", "brave", "osm_nominatim"),
         privacy_policy=(
@@ -99,20 +100,25 @@ class TravelModule:
             }
             for constraint in request.constraints
         )
-        constraints = request.constraints
-        if booking_like and not any(item.attribute == "availability" for item in constraints):
+        if booking_like:
+            marker = "travel-policy-v2"
             availability = Constraint(
-                id=uuid5(request.idempotency_key, "travel-required-availability-v1"),
+                id=uuid5(request.idempotency_key, "travel-required-availability-v2"),
                 attribute="availability",
                 operator="availability",
                 value=AvailabilityValue(value="available"),
                 required=True,
                 missing_policy="fail_closed",
                 source="system",
-                source_record_id="travel-policy-v1",
+                source_record_id=marker,
             )
-            constraints = (*constraints, availability)
-            request = request.model_copy(update={"constraints": constraints})
+            constraints = tuple(
+                item for item in request.constraints
+                if item != availability
+            )
+            request = request.model_copy(update={
+                "constraints": (*constraints, availability),
+            })
         self.validate_decision(request)
         return request
 
@@ -232,16 +238,7 @@ class TravelModule:
         context: dict,
     ) -> dict[UUID, tuple[FeatureScore, ...]]:
         del context
-        fresh = {
-            entity_id: tuple(
-                item for item in claims_by_entity.get(entity_id, ())
-                if item.claim_status == "verified"
-                and item.verification_policy_version == "claim-verification-v2"
-                and item.expires_at > now
-            )
-            for entity_id in eligible_entity_ids
-        }
-        del entities, evaluations
+        evaluations_by_id = {item.entity_id: item for item in evaluations}
         geo = next((item for item in constraints if item.operator == "geospatial" and item.attribute == "location"), None)
         if geo is not None and geo.value is not None:
             target = (geo.value.latitude, geo.value.longitude)
@@ -254,30 +251,63 @@ class TravelModule:
             target = (preference.target.latitude, preference.target.longitude) if preference else None
             radius = None
 
-        budget = next(
-            (item.value for item in constraints if item.operator == "maximum" and item.attribute in {"nightly_price", "total_price"} and isinstance(item.value, MoneyValue)),
-            None,
+        price_budgets = tuple(
+            item for item in constraints
+            if item.operator == "maximum"
+            and item.attribute in {"nightly_price", "total_price"}
+            and isinstance(item.value, MoneyValue)
         )
-        price_claims: dict[UUID, EntityClaim] = {}
-        for entity_id, claims in fresh.items():
-            price_claims[entity_id] = next(
-                (claim for claim in claims if claim.attribute in {"nightly_price", "total_price"} and isinstance(claim.typed_value, MoneyValue)),
-                None,
+        price_budget = price_budgets[0] if len(price_budgets) == 1 else None
+        price_claims: dict[UUID, tuple[EntityClaim, ...]] = {}
+        for entity_id in eligible_entity_ids:
+            claims = tuple(claims_by_entity.get(entity_id, ()))
+            evaluation = evaluations_by_id.get(entity_id)
+            if price_budget is not None:
+                _, selected = verified_claims_for_feature(
+                    claims, price_budget.attribute, now,
+                    evaluation=evaluation, scope=price_budget.scope,
+                )
+            elif not price_budgets:
+                selected = _verified_travel_price_claims(evaluation, claims, now)
+            else:
+                selected = ()
+            price_claims[entity_id] = tuple(
+                item for item in selected if isinstance(item.typed_value, MoneyValue)
             )
+        price_choice = {
+            entity_id: selected[0]
+            for entity_id, selected in price_claims.items()
+            if selected
+        }
+        comparable_keys = {
+            (item.attribute, item.scope, item.typed_value.currency)
+            for item in price_choice.values()
+        }
+        shared_price_key = next(iter(comparable_keys)) if len(comparable_keys) == 1 else None
         comparable = [
-            claim.typed_value.amount for claim in price_claims.values()
-            if claim is not None and (budget is None or claim.typed_value.currency == budget.currency)
+            item.typed_value.amount
+            for item in price_choice.values()
+            if shared_price_key is not None
+            and (item.attribute, item.scope, item.typed_value.currency) == shared_price_key
         ]
-        cheapest, priciest = (min(comparable), max(comparable)) if comparable else (None, None)
+        cheapest, priciest = (min(comparable), max(comparable)) if len(comparable) >= 2 else (None, None)
         amenity_preferences = [
             item for item in preferences
             if item.attribute.startswith("amenity_") and isinstance(item.target, BooleanValue)
         ]
         output = {}
         for entity_id in eligible_entity_ids:
-            claims = fresh[entity_id]
+            claims = tuple(claims_by_entity.get(entity_id, ()))
+            evaluation = evaluations_by_id.get(entity_id)
             evidence = lambda selected: tuple(sorted({ref.evidence_id for claim in selected for ref in claim.evidence_refs}, key=str))
-            location_claim = next((item for item in claims if item.attribute == "location" and isinstance(item.typed_value, LocationValue)), None)
+            location_scope = geo.scope if geo is not None else preference.scope if target is not None and preference else None
+            _, location_claims = verified_claims_for_feature(
+                claims, "location", now, evaluation=evaluation, scope=location_scope,
+            ) if target is not None else (None, ())
+            location_claim = next(
+                (item for item in location_claims if isinstance(item.typed_value, LocationValue)),
+                None,
+            )
             location_fit = None
             if target and location_claim:
                 distance = _distance_km(
@@ -285,32 +315,43 @@ class TravelModule:
                     (location_claim.typed_value.latitude, location_claim.typed_value.longitude),
                 )
                 location_fit = max(0.0, 1.0 - distance / radius) if radius else 1.0 / (1.0 + distance)
-            price_claim = price_claims.get(entity_id)
+            selected_price_claims = price_claims.get(entity_id, ())
+            price_claim = price_choice.get(entity_id)
             value_fit = None
-            if price_claim is not None:
+            if price_claim is not None and price_budget is not None:
                 amount = price_claim.typed_value.amount
-                currency = budget.currency if budget else price_claim.typed_value.currency
-                if price_claim.typed_value.currency == currency:
-                    if budget is not None and budget.amount > 0:
-                        value_fit = max(0.0, min(1.0, 1.0 - float(amount / budget.amount)))
-                    elif cheapest is not None and priciest is not None:
-                        value_fit = (
-                            1.0 if priciest == cheapest
-                            else max(0.0, min(1.0, float((priciest - amount) / (priciest - cheapest))))
-                        )
-            amenity_claims = {claim.attribute: claim for claim in claims if claim.attribute.startswith("amenity_") and isinstance(claim.typed_value, BooleanValue)}
+                if price_claim.typed_value.currency == price_budget.value.currency and price_budget.value.amount > 0:
+                    value_fit = max(0.0, min(1.0, 1.0 - float(amount / price_budget.value.amount)))
+            elif (
+                price_claim is not None
+                and shared_price_key is not None
+                and (price_claim.attribute, price_claim.scope, price_claim.typed_value.currency) == shared_price_key
+                and cheapest is not None and priciest is not None
+            ):
+                amount = price_claim.typed_value.amount
+                value_fit = (
+                    1.0 if priciest == cheapest
+                    else max(0.0, min(1.0, float((priciest - amount) / (priciest - cheapest))))
+                )
+            resolved_amenity_preferences = []
+            for item in amenity_preferences:
+                _, selected = verified_claims_for_feature(
+                    claims, item.attribute, now, evaluation=evaluation, scope=item.scope,
+                )
+                selected = tuple(claim for claim in selected if isinstance(claim.typed_value, BooleanValue))
+                if selected:
+                    resolved_amenity_preferences.append((item, selected))
             amenity_fit = (
                 sum(
-                    item.attribute in amenity_claims
-                    and amenity_claims[item.attribute].typed_value.value == item.target.value
-                    for item in amenity_preferences
-                ) / len(amenity_preferences)
-                if amenity_preferences else None
+                    any(claim.typed_value.value == preference.target.value for claim in selected)
+                    for preference, selected in resolved_amenity_preferences
+                ) / len(resolved_amenity_preferences)
+                if resolved_amenity_preferences else None
             )
             output[entity_id] = (
                 FeatureScore(name="travel.location_fit", value=location_fit, weight=0.40, evidence_ids=evidence((location_claim,)) if location_claim and location_fit is not None else (), missing_treatment="omit"),
-                FeatureScore(name="travel.value_fit", value=value_fit, weight=0.35, evidence_ids=evidence((price_claim,)) if price_claim and value_fit is not None else (), missing_treatment="omit"),
-                FeatureScore(name="travel.amenity_fit", value=amenity_fit, weight=0.25, evidence_ids=evidence(tuple(amenity_claims.values())) if amenity_fit is not None else (), missing_treatment="omit"),
+                FeatureScore(name="travel.value_fit", value=value_fit, weight=0.35, evidence_ids=evidence(selected_price_claims) if selected_price_claims and value_fit is not None else (), missing_treatment="omit"),
+                FeatureScore(name="travel.amenity_fit", value=amenity_fit, weight=0.25, evidence_ids=evidence(tuple(claim for _, selected in resolved_amenity_preferences for claim in selected)) if amenity_fit is not None else (), missing_treatment="omit"),
             )
         return output
 
@@ -326,6 +367,22 @@ def _distance_km(left: tuple[float, float], right: tuple[float, float]) -> float
     delta_lat, delta_lon = lat2 - lat1, lon2 - lon1
     value = sin(delta_lat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(delta_lon / 2) ** 2
     return 6371.0088 * 2 * asin(sqrt(value))
+
+
+def _verified_travel_price_claims(evaluation, claims, now):
+    available = tuple(
+        item for item in claims
+        if item.attribute in {"nightly_price", "total_price"}
+        and isinstance(item.typed_value, MoneyValue)
+    )
+    bases = {item.attribute for item in available}
+    if len(bases) != 1:
+        return ()
+    attribute = next(iter(bases))
+    _, selected = verified_claims_for_feature(
+        tuple(claims), attribute, now, evaluation=evaluation,
+    )
+    return tuple(item for item in selected if isinstance(item.typed_value, MoneyValue))
 
 
 def format_value(value: TypedValue) -> str:

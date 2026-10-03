@@ -25,6 +25,16 @@ the implementation adds no composite Firestore index. Synthetic fixtures cover
 missing, stale, conflicting, out-of-radius, wrong-variant, incomplete-cost, and
 inconsistent-quoted-total cases.
 
+Provider-backed lookups reserve an owner/domain/idempotency-key fingerprint
+before dispatch. The durable reservation stores a hash of the normalized request,
+a fence token, state, and—after successful persistence—a pointer to the saved
+comparison; it does not retain the raw query. A matching completed retry returns
+that comparison without resolving or calling a provider adapter. Reusing the key
+with different input conflicts before dispatch. Concurrent reservations return
+in-progress, and an outcome that may have crossed a provider boundary is kept
+uncertain; neither state silently dispatches the provider again. Known failures
+are recorded as safe error metadata for matching retries.
+
 ### Travel
 
 Travel constraints cover destination radius, local-date stay windows, party
@@ -37,8 +47,11 @@ rejects daylight-saving gaps or ambiguous times without an explicit fold.
 
 The Nominatim adapter accepts one explicit place or area query. Its endpoint,
 response size, timeout, redirects, request interval, and result count are
-bounded. A Firestore transaction shares request slots across API instances at
-one request per second. Configure `TRAVEL_OSM_USER_AGENT` and
+bounded. One elapsed deadline covers rate-slot reservation and waiting, the
+provider request, and consumption of the full response body. A Firestore
+transaction shares request slots across API instances at one request per
+second; a slot beyond the remaining deadline is rejected without extending the
+queue. Configure `TRAVEL_OSM_USER_AGENT` and
 `TRAVEL_OSM_CONTACT_EMAIL`; show the OSM attribution and Nominatim policy notice
 before enabling it. Query text is sent to the provider, so users are told not to
 include private itinerary details. The default adapter is synthetic and the
@@ -47,8 +60,9 @@ provider gate is off.
 Nominatim supplies place identity and coordinates only. This phase does not
 include hotel, flight, restaurant, or live lodging-availability adapters.
 Travel decisions involving dates, rates, or availability add a fail-closed
-current-availability requirement; place results alone therefore do not qualify
-as a bookable or available stay.
+current-availability requirement independently of caller-supplied availability
+preferences; an optional `allow_unknown` requirement cannot weaken it. Place
+results alone therefore do not qualify as a bookable or available stay.
 
 ### Shopping
 
@@ -74,8 +88,18 @@ is off.
 Open Food Facts identifies catalog products; it does not provide the merchant
 offers used by the synthetic comparison fixtures. No live merchant offer,
 stock, shipping, return-policy, delivery, or review provider is connected.
-Shopping decisions add a fail-closed availability requirement, so a catalog
-match without a separate fresh offer remains `research_needed`.
+Shopping decisions independently add a required, fail-closed availability
+constraint, so a caller-supplied optional availability constraint cannot
+weaken it. A catalog match without a separate fresh offer remains
+`research_needed`.
+
+Travel and shopping feature calculations use the shared claim status, scope,
+and claim IDs. Conflicting verified/unverified values, stale or retracted
+claims, and ambiguous scopes do not contribute to a feature. Travel value
+scores compare only the applicable budget basis and currency; without a budget,
+only candidates sharing one price basis, scope, and currency are comparable.
+Shopping price scores likewise require a shared currency and scope. Incomparable
+values are omitted from the score.
 
 ### Phase 5 source reuse
 
@@ -115,6 +139,9 @@ and error states, loading a saved comparison by ID, visible shared constraints,
 local eligible/fresh/conflict filters, per-candidate rationale, freshness and
 conflict states, and links to original evidence and provider policies. Filters
 only change presentation. There are no booking or purchase actions.
+The client validates the fields the workbench renders, including exclusion
+reasons and provider metadata, and applies the public HTTP(S) link policy to
+source and policy links. Invalid responses become recoverable UI errors.
 
 ## Evaluation and checks
 

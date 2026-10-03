@@ -1,11 +1,12 @@
 """Owner-scoped storage for Phase 7 registration and comparison snapshots."""
 
+from datetime import UTC, datetime
 from threading import RLock
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from personal_ai.domains.contracts import DomainComparisonResult
-from personal_ai.storage.errors import ResourceNotFoundError
+from personal_ai.domains.contracts import DomainComparisonResult, DomainLookupReservation
+from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
 
 
 class DomainRepositoryError(Exception):
@@ -19,12 +20,43 @@ class DomainRepository(Protocol):
 
     def get(self, owner_id: str, comparison_id: UUID) -> DomainComparisonResult: ...
 
+    def reserve_lookup(self, reservation: DomainLookupReservation) -> DomainLookupReservation: ...
+
+    def fail_lookup(
+        self,
+        reservation_id: UUID,
+        fence_token: UUID,
+        *,
+        state: Literal["failed", "uncertain"],
+        failure_kind: str | None = None,
+        failure_code: str | None = None,
+        failure_status: int | None = None,
+    ) -> DomainLookupReservation: ...
+
+    def complete_lookup(
+        self,
+        reservation_id: UUID,
+        fence_token: UUID,
+        result: DomainComparisonResult,
+    ) -> DomainComparisonResult: ...
+
+
+def lookup_reservation_id(owner_id: str, domain_id: str, idempotency_key: UUID) -> UUID:
+    return uuid5(NAMESPACE_URL, f"domain-lookup-v1:{owner_id}:{domain_id}:{idempotency_key}")
+
+
+def _updated_reservation(reservation: DomainLookupReservation, **updates):
+    values = reservation.model_dump()
+    values.update(updates)
+    return DomainLookupReservation.model_validate(values)
+
 
 class InMemoryDomainRepository:
     """Deterministic owner-isolated domain repository used by fixtures and tests."""
 
     def __init__(self):
         self.results: dict[UUID, DomainComparisonResult] = {}
+        self.lookups: dict[UUID, DomainLookupReservation] = {}
         self.lock = RLock()
 
     def create(self, result):
@@ -48,6 +80,72 @@ class InMemoryDomainRepository:
                 raise ResourceNotFoundError("domain comparison not found")
             return result
 
+    def reserve_lookup(self, reservation):
+        with self.lock:
+            existing = self.lookups.get(reservation.id)
+            if existing is not None:
+                if (
+                    existing.owner_id != reservation.owner_id
+                    or existing.domain_id != reservation.domain_id
+                    or existing.idempotency_key != reservation.idempotency_key
+                ):
+                    raise DomainRepositoryError("domain_lookup_reservation_conflict")
+                return existing
+            self.lookups[reservation.id] = reservation
+            return reservation
+
+    def fail_lookup(
+        self,
+        reservation_id,
+        fence_token,
+        *,
+        state: Literal["failed", "uncertain"],
+        failure_kind=None,
+        failure_code=None,
+        failure_status=None,
+    ):
+        with self.lock:
+            current = self.lookups.get(reservation_id)
+            if current is None or current.fence_token != fence_token:
+                raise DomainRepositoryError("domain_lookup_fence_lost")
+            if current.state != "reserved":
+                return current
+            failed = _updated_reservation(
+                current,
+                state=state,
+                failure_kind=failure_kind,
+                failure_code=failure_code,
+                failure_status=failure_status,
+                updated_at=max(current.updated_at, datetime.now(UTC)),
+            )
+            self.lookups[reservation_id] = failed
+            return failed
+
+    def complete_lookup(self, reservation_id, fence_token, result):
+        with self.lock:
+            current = self.lookups.get(reservation_id)
+            if current is None:
+                raise DomainRepositoryError("domain_lookup_reservation_missing")
+            if (
+                current.owner_id != result.comparison.owner_id
+                or current.domain_id != result.comparison.domain_id
+            ):
+                raise DomainRepositoryError("domain_lookup_result_conflict")
+            if current.state == "completed":
+                if current.comparison_id != result.comparison.id:
+                    raise DomainRepositoryError("domain_lookup_result_conflict")
+                return self.get(result.comparison.owner_id, current.comparison_id)
+            if current.state != "reserved" or current.fence_token != fence_token:
+                raise DomainRepositoryError("domain_lookup_fence_lost")
+            saved = self.create(result)
+            self.lookups[reservation_id] = _updated_reservation(
+                current,
+                state="completed",
+                comparison_id=saved.comparison.id,
+                updated_at=max(current.updated_at, saved.comparison.rendered_at),
+            )
+            return saved
+
 
 class FirestoreDomainRepository:
     """Point-lookup persistence; no domain-specific entity or ranking store."""
@@ -60,6 +158,7 @@ class FirestoreDomainRepository:
         self.claims = self.client.collection("domain_claim_extensions")
         self.observations = self.client.collection("provider_observations")
         self.comparisons = self.client.collection("domain_comparison_views")
+        self.lookups = self.client.collection("domain_lookup_idempotency")
 
     @staticmethod
     def _run(operation):
@@ -77,12 +176,24 @@ class FirestoreDomainRepository:
         return record.model_dump(mode="json")
 
     def create(self, result):
+        return self._persist(result)
+
+    def complete_lookup(self, reservation_id, fence_token, result):
+        return self._persist(result, reservation_id=reservation_id, fence_token=fence_token)
+
+    def _persist(self, result, *, reservation_id=None, fence_token=None):
         from personal_ai.domains.contracts import DomainRegistration
         from personal_ai.storage.transactions import bounded_transaction
 
         snapshot = result.comparison
         comparison_ref = self.comparisons.document(str(snapshot.id))
-        registration_ref = self.registrations.document(result.registration.domain_id)
+        reservation_ref = self.lookups.document(str(reservation_id)) if reservation_id else None
+        registration = result.registration
+        registration_ref = self.registrations.document(str(uuid5(
+            NAMESPACE_URL,
+            f"domain-registration-v1:{registration.domain_id}:{registration.field_schema_version}:"
+            f"{registration.feature_policy_version}:{registration.source_policy_version}",
+        )))
         claim_refs = [
             (item, self.claims.document(str(uuid5(
                 NAMESPACE_URL, f"domain-claim-v1:{item.domain_id}:{item.claim_id}"
@@ -95,8 +206,38 @@ class FirestoreDomainRepository:
         ]
 
         def operation(transaction, timeout):
-            del timeout
+            current_reservation = None
+            if reservation_ref is not None:
+                current = next(transaction.get(reservation_ref), None)
+                if current is None or not current.exists:
+                    raise DomainRepositoryError("domain_lookup_reservation_missing")
+                current_reservation = DomainLookupReservation.model_validate(current.to_dict())
+                if (
+                    current_reservation.owner_id != snapshot.owner_id
+                    or current_reservation.domain_id != snapshot.domain_id
+                ):
+                    raise DomainRepositoryError("domain_lookup_result_conflict")
+                if current_reservation.state == "completed":
+                    existing = next(transaction.get(comparison_ref), None)
+                    if existing is None or not existing.exists:
+                        raise DomainRepositoryError("domain_lookup_result_missing")
+                    from personal_ai.domains.contracts import DomainComparisonResult
+
+                    saved = DomainComparisonResult.model_validate(existing.to_dict())
+                    if (
+                        current_reservation.comparison_id != snapshot.id
+                        or saved.comparison.owner_id != snapshot.owner_id
+                        or saved.comparison.domain_id != snapshot.domain_id
+                    ):
+                        raise DomainRepositoryError("domain_lookup_result_conflict")
+                    return saved
+                if (
+                    current_reservation.state != "reserved"
+                    or current_reservation.fence_token != fence_token
+                ):
+                    raise DomainRepositoryError("domain_lookup_fence_lost")
             existing_snapshot = next(transaction.get(comparison_ref), None)
+            existing_result = None
             if existing_snapshot is not None and existing_snapshot.exists:
                 from personal_ai.domains.contracts import DomainComparisonResult
 
@@ -107,7 +248,7 @@ class FirestoreDomainRepository:
                     or existing.comparison.decision_id != snapshot.decision_id
                 ):
                     raise DomainRepositoryError("domain_comparison_conflict")
-                return False
+                existing_result = existing
 
             record_refs = [(record, reference, next(transaction.get(reference), None))
                            for record, reference in [(result.registration, registration_ref), *claim_refs, *observation_refs]]
@@ -132,13 +273,95 @@ class FirestoreDomainRepository:
                 if reference == registration_ref or current is not None and current.exists:
                     continue
                 transaction.create(reference, self._data(record))
-            transaction.create(comparison_ref, self._data(result))
-            return True
+            if existing_result is None:
+                transaction.create(comparison_ref, self._data(result))
+            saved = existing_result or result
+            if reservation_ref is not None and current_reservation is not None:
+                completed = _updated_reservation(
+                    current_reservation,
+                    state="completed",
+                    comparison_id=saved.comparison.id,
+                    updated_at=max(current_reservation.updated_at, saved.comparison.rendered_at),
+                )
+                transaction.set(reservation_ref, self._data(completed))
+            return saved
 
-        created = self._run(lambda: bounded_transaction(self.client, operation))
-        if not created:
-            return self.get(snapshot.owner_id, snapshot.id)
-        return result
+        return self._run(lambda: bounded_transaction(self.client, operation))
+
+    def reserve_lookup(self, reservation):
+        from personal_ai.storage.transactions import bounded_transaction
+
+        reference = self.lookups.document(str(reservation.id))
+
+        def operation(transaction, timeout):
+            del timeout
+            snapshot = next(transaction.get(reference), None)
+            if snapshot is not None and snapshot.exists:
+                existing = DomainLookupReservation.model_validate(snapshot.to_dict())
+                if (
+                    existing.owner_id != reservation.owner_id
+                    or existing.domain_id != reservation.domain_id
+                    or existing.idempotency_key != reservation.idempotency_key
+                ):
+                    raise DomainRepositoryError("domain_lookup_reservation_conflict")
+                return existing
+            transaction.create(reference, self._data(reservation))
+            return reservation
+
+        try:
+            return self._run(lambda: bounded_transaction(self.client, operation))
+        except StorageUnavailableError:
+            # A competing transaction may have won the create after our
+            # initial read. Resolve the durable winner so callers fail closed
+            # as in-progress instead of treating a normal fence race as outage.
+            snapshot = self._run(lambda: reference.get(retry=None, timeout=5))
+            if not snapshot.exists:
+                raise
+            existing = DomainLookupReservation.model_validate(snapshot.to_dict())
+            if (
+                existing.owner_id != reservation.owner_id
+                or existing.domain_id != reservation.domain_id
+                or existing.idempotency_key != reservation.idempotency_key
+            ):
+                raise DomainRepositoryError("domain_lookup_reservation_conflict")
+            return existing
+
+    def fail_lookup(
+        self,
+        reservation_id,
+        fence_token,
+        *,
+        state: Literal["failed", "uncertain"],
+        failure_kind=None,
+        failure_code=None,
+        failure_status=None,
+    ):
+        from personal_ai.storage.transactions import bounded_transaction
+
+        reference = self.lookups.document(str(reservation_id))
+
+        def operation(transaction, timeout):
+            del timeout
+            snapshot = next(transaction.get(reference), None)
+            if snapshot is None or not snapshot.exists:
+                raise DomainRepositoryError("domain_lookup_reservation_missing")
+            current = DomainLookupReservation.model_validate(snapshot.to_dict())
+            if current.fence_token != fence_token:
+                raise DomainRepositoryError("domain_lookup_fence_lost")
+            if current.state != "reserved":
+                return current
+            failed = _updated_reservation(
+                current,
+                state=state,
+                failure_kind=failure_kind,
+                failure_code=failure_code,
+                failure_status=failure_status,
+                updated_at=max(current.updated_at, datetime.now(UTC)),
+            )
+            transaction.set(reference, self._data(failed))
+            return failed
+
+        return self._run(lambda: bounded_transaction(self.client, operation))
 
     def get(self, owner_id: str, comparison_id: UUID) -> DomainComparisonResult:
         from personal_ai.domains.contracts import DomainComparisonResult

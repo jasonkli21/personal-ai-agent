@@ -1,9 +1,11 @@
 """Domain adapters and views layered over the shared Phase 5–6 services."""
 
+import asyncio
 from datetime import UTC, datetime
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from personal_ai.decisions.contracts import DecisionCreateRequest
+from personal_ai.decisions.repositories import DecisionError
 from personal_ai.decisions.service import DecisionService
 from personal_ai.domains.contracts import (
     ComparisonCell,
@@ -16,6 +18,7 @@ from personal_ai.domains.contracts import (
     DomainContractError,
     DomainInspection,
     DomainLookupRequest,
+    DomainLookupReservation,
     ProviderObservationExtension,
 )
 from personal_ai.domains.providers import (
@@ -23,7 +26,11 @@ from personal_ai.domains.providers import (
     FirestoreProviderRateLimiter,
 )
 from personal_ai.domains.registry import DomainModule, get_domain, registry
-from personal_ai.domains.repositories import DomainRepository, DomainRepositoryError
+from personal_ai.domains.repositories import (
+    DomainRepository,
+    DomainRepositoryError,
+    lookup_reservation_id,
+)
 from personal_ai.entities.research import EntityClaim
 from personal_ai.storage.errors import ResourceNotFoundError
 
@@ -71,6 +78,15 @@ class DomainService:
         return self._module(domain_id)
 
     def create(self, domain_id: str, request: DomainComparisonCreateRequest) -> DomainComparisonResult:
+        return self._create(domain_id, request)
+
+    def _create(
+        self,
+        domain_id: str,
+        request: DomainComparisonCreateRequest,
+        *,
+        lookup_reservation: DomainLookupReservation | None = None,
+    ) -> DomainComparisonResult:
         module = self._module(domain_id)
         if len(request.decision.candidates) > min(
             self.settings.domain_max_comparison_rows,
@@ -109,7 +125,16 @@ class DomainService:
         if previous is not None:
             if previous.comparison.decision_id != decision_result.decision.id:
                 raise DomainContractError("domain_comparison_conflict", 409)
-            return previous
+            if lookup_reservation is None:
+                return previous
+            try:
+                return self.repository.complete_lookup(
+                    lookup_reservation.id,
+                    lookup_reservation.fence_token,
+                    previous,
+                )
+            except DomainRepositoryError as error:
+                raise DomainContractError(error.code, 409) from error
 
         self._validate_decision_references(decision_result, provider_observations)
         extension_claims = self._domain_claims(module, decision_result.claims)
@@ -144,6 +169,12 @@ class DomainService:
             domain_claims=extension_claims,
         )
         try:
+            if lookup_reservation is not None:
+                return self.repository.complete_lookup(
+                    lookup_reservation.id,
+                    lookup_reservation.fence_token,
+                    result,
+                )
             return self.repository.create(result)
         except DomainRepositoryError as error:
             raise DomainContractError(error.code, 409) from error
@@ -152,55 +183,128 @@ class DomainService:
         module = self._module(domain_id)
         if request.max_results > self.settings.domain_max_results:
             raise DomainContractError("domain_result_limit")
-        adapter = self.adapters.get(domain_id)
-        if adapter is None:
-            rate_limiter = None
-            if domain_id == "travel" and self.settings.travel_places_adapter == "osm_nominatim":
-                rate_limiter = self._firestore_rate_limiter("osm_nominatim")
-            elif domain_id == "shopping" and self.settings.shopping_products_adapter == "open_food_facts":
-                rate_limiter = self._firestore_rate_limiter("open_food_facts")
-            adapter = module.get_adapter(self.settings, rate_limiter=rate_limiter)
-        if domain_id == "travel":
-            records = await adapter.lookup(request.query, request.max_results)
-            if len(records) > request.max_results:
-                raise DomainProviderError("travel_provider_invalid_response")
-            provider = "osm_nominatim" if adapter.name == "osm_nominatim" else "fake_travel_places"
-            candidates, evidence, observations = module.map_place_records(
-                tuple(records),
-                owner_id=self.owner_id,
-                provider=provider,
-                now=self.clock().astimezone(UTC),
-                ttl_seconds=self.settings.travel_place_ttl_seconds,
-            )
-        elif domain_id == "shopping":
-            product = await adapter.lookup_barcode(request.query)
-            records = (product,) if product is not None else ()
-            provider = "open_food_facts" if adapter.name == "open_food_facts" else "fake_shopping_catalog"
-            candidates, evidence, observations = module.map_product_records(
-                tuple(records),
-                owner_id=self.owner_id,
-                provider=provider,
-                now=self.clock().astimezone(UTC),
-                ttl_seconds=self.settings.shopping_product_ttl_seconds,
-            )
-        else:
-            raise ResourceNotFoundError("domain not found")
-        if len(candidates) > self.settings.decision_max_candidates:
-            raise DomainContractError("domain_result_limit")
-        decision = DecisionCreateRequest(
+        # Reject malformed domain constraints before reserving an idempotency key
+        # or making a provider request.
+        module.prepare_decision(DecisionCreateRequest(
             idempotency_key=request.idempotency_key,
-            candidates=candidates,
             constraints=request.constraints,
             preferences=request.preferences,
-            supplied_evidence=evidence,
+        ))
+        now = self.clock().astimezone(UTC)
+        proposed_fence_token = uuid4()
+        reservation = DomainLookupReservation(
+            id=lookup_reservation_id(self.owner_id, domain_id, request.idempotency_key),
+            owner_id=self.owner_id,
+            domain_id=domain_id,
+            idempotency_key=request.idempotency_key,
+            request_fingerprint=request.fingerprint(self.owner_id, domain_id),
+            fence_token=proposed_fence_token,
+            created_at=now,
+            updated_at=now,
         )
-        return self.create(
-            domain_id,
-            DomainComparisonCreateRequest(
-                decision=decision,
-                provider_observations=observations,
-            ),
-        )
+        try:
+            reservation = self.repository.reserve_lookup(reservation)
+        except DomainRepositoryError as error:
+            raise DomainContractError(error.code, 409) from error
+        if reservation.request_fingerprint != request.fingerprint(self.owner_id, domain_id):
+            raise DomainContractError("idempotency_conflict", 409)
+        if reservation.state == "completed":
+            if reservation.comparison_id is None:
+                raise DomainContractError("domain_lookup_result_missing", 503)
+            return self.detail(domain_id, reservation.comparison_id)
+        if reservation.state == "failed":
+            code = reservation.failure_code or "domain_lookup_failed"
+            status = reservation.failure_status or 503
+            if reservation.failure_kind == "provider":
+                raise DomainProviderError(code, status)
+            raise DomainContractError(code, status)
+        if reservation.state == "uncertain":
+            raise DomainContractError("domain_lookup_outcome_unknown", 503)
+        # A record already in reserved state belongs to another dispatch unless
+        # its fencing token matches the token minted for this attempt.
+        if reservation.fence_token != proposed_fence_token:
+            raise DomainContractError("domain_lookup_in_progress", 409)
+        try:
+            adapter = self.adapters.get(domain_id)
+            if adapter is None:
+                rate_limiter = None
+                if domain_id == "travel" and self.settings.travel_places_adapter == "osm_nominatim":
+                    rate_limiter = self._firestore_rate_limiter("osm_nominatim")
+                elif domain_id == "shopping" and self.settings.shopping_products_adapter == "open_food_facts":
+                    rate_limiter = self._firestore_rate_limiter("open_food_facts")
+                adapter = module.get_adapter(self.settings, rate_limiter=rate_limiter)
+            if domain_id == "travel":
+                records = await adapter.lookup(request.query, request.max_results)
+                if len(records) > request.max_results:
+                    raise DomainProviderError("travel_provider_invalid_response")
+                provider = "osm_nominatim" if adapter.name == "osm_nominatim" else "fake_travel_places"
+                candidates, evidence, observations = module.map_place_records(
+                    tuple(records),
+                    owner_id=self.owner_id,
+                    provider=provider,
+                    now=self.clock().astimezone(UTC),
+                    ttl_seconds=self.settings.travel_place_ttl_seconds,
+                )
+            elif domain_id == "shopping":
+                product = await adapter.lookup_barcode(request.query)
+                records = (product,) if product is not None else ()
+                provider = "open_food_facts" if adapter.name == "open_food_facts" else "fake_shopping_catalog"
+                candidates, evidence, observations = module.map_product_records(
+                    tuple(records),
+                    owner_id=self.owner_id,
+                    provider=provider,
+                    now=self.clock().astimezone(UTC),
+                    ttl_seconds=self.settings.shopping_product_ttl_seconds,
+                )
+            else:
+                raise ResourceNotFoundError("domain not found")
+            if len(candidates) > self.settings.decision_max_candidates:
+                raise DomainContractError("domain_result_limit")
+            decision = DecisionCreateRequest(
+                idempotency_key=request.idempotency_key,
+                candidates=candidates,
+                constraints=request.constraints,
+                preferences=request.preferences,
+                supplied_evidence=evidence,
+            )
+            return self._create(
+                domain_id,
+                DomainComparisonCreateRequest(
+                    decision=decision,
+                    provider_observations=observations,
+                ),
+                lookup_reservation=reservation,
+            )
+        except DomainProviderError as error:
+            self._fail_lookup(reservation, state="failed", kind="provider", error=error)
+            raise
+        except (DomainContractError, DecisionError) as error:
+            self._fail_lookup(reservation, state="failed", kind="contract", error=error)
+            raise
+        except asyncio.CancelledError:
+            self._fail_lookup(reservation, state="uncertain")
+            raise
+        except Exception as error:
+            self._fail_lookup(reservation, state="uncertain")
+            raise DomainContractError("domain_lookup_outcome_unknown", 503) from error
+
+    def _fail_lookup(self, reservation, *, state, kind=None, error=None):
+        try:
+            self.repository.fail_lookup(
+                reservation.id,
+                reservation.fence_token,
+                state=state,
+                failure_kind=kind,
+                failure_code=getattr(error, "code", None),
+                failure_status=getattr(error, "status", None),
+            )
+        except Exception as storage_error:  # noqa: BLE001 - retain conservative reserved state
+            import logging
+
+            logging.getLogger(__name__).info(
+                "Domain lookup reservation could not be finalized error_class=%s",
+                type(storage_error).__name__,
+            )
 
     def detail(self, domain_id: str, comparison_id: UUID) -> DomainComparisonResult:
         self._module(domain_id)

@@ -43,6 +43,7 @@ from personal_ai.entities.research import (
     TextValue,
     TypedValue,
 )
+from personal_ai.ranking.policy import verified_claims_for_feature
 
 _CLAIM_FIELDS = (
     ("product_variant", "Product variant", "text", False),
@@ -80,7 +81,7 @@ _FEATURE_FIELDS = (
 
 
 class ShoppingModule:
-    policy_version = "shopping-features-v1"
+    policy_version = "shopping-features-v2"
     registration = DomainRegistration(
         domain_id="shopping",
         supported_entity_types=("object",),
@@ -93,7 +94,7 @@ class ShoppingModule:
         supported_features=("offer_value", "specification_fit", "delivery_fit", "review_evidence_quality"),
         source_policy_version="shopping-sources-v1",
         field_schema_version="shopping-comparison-v1",
-        feature_policy_version="shopping-features-v1",
+        feature_policy_version="shopping-features-v2",
         fields=tuple(
             [DomainField(key=key, label=label, value_kinds=(kind,), required_for_recommendation=required)
              for key, label, kind, required in _CLAIM_FIELDS]
@@ -121,18 +122,19 @@ class ShoppingModule:
 
     def prepare_decision(self, request: DecisionCreateRequest) -> DecisionCreateRequest:
         constraints = request.constraints
-        if not any(item.attribute == "availability" for item in constraints):
-            availability = Constraint(
-                id=uuid5(request.idempotency_key, "shopping-required-availability-v1"),
-                attribute="availability",
-                operator="availability",
-                value=AvailabilityValue(value="available"),
-                required=True,
-                missing_policy="fail_closed",
-                source="system",
-                source_record_id="shopping-policy-v1",
-            )
-            request = request.model_copy(update={"constraints": (*constraints, availability)})
+        marker = "shopping-policy-v2"
+        availability = Constraint(
+            id=uuid5(request.idempotency_key, "shopping-required-availability-v2"),
+            attribute="availability",
+            operator="availability",
+            value=AvailabilityValue(value="available"),
+            required=True,
+            missing_policy="fail_closed",
+            source="system",
+            source_record_id=marker,
+        )
+        constraints = tuple(item for item in constraints if item != availability)
+        request = request.model_copy(update={"constraints": (*constraints, availability)})
         self.validate_decision(request)
         return request
 
@@ -430,58 +432,80 @@ class ShoppingModule:
         now: datetime,
         context: dict,
     ) -> dict[UUID, tuple[FeatureScore, ...]]:
-        del entities, evaluations, context
-        claims = {
-            entity_id: tuple(
-                item for item in claims_by_entity.get(entity_id, ())
-                if item.claim_status == "verified"
-                and item.verification_policy_version == "claim-verification-v2"
-                and item.expires_at > now
+        del entities, context
+        claims = {entity_id: tuple(claims_by_entity.get(entity_id, ())) for entity_id in eligible_entity_ids}
+        evaluations_by_id = {item.entity_id: item for item in evaluations}
+        price_by_entity = {}
+        for entity_id, entity_claims in claims.items():
+            _, selected = verified_claims_for_feature(
+                entity_claims, "total_price", now,
+                evaluation=evaluations_by_id.get(entity_id),
             )
-            for entity_id in eligible_entity_ids
-        }
-        price_by_entity = {
-            entity_id: next(
-                (item for item in items if item.attribute == "total_price" and isinstance(item.typed_value, MoneyValue)),
-                None,
+            price_by_entity[entity_id] = tuple(
+                item for item in selected if isinstance(item.typed_value, MoneyValue)
             )
-            for entity_id, items in claims.items()
+        price_choice = {
+            entity_id: selected[0]
+            for entity_id, selected in price_by_entity.items()
+            if selected
         }
-        currencies: dict[str, list[Decimal]] = {}
-        for item in price_by_entity.values():
-            if item is not None:
-                currencies.setdefault(item.typed_value.currency, []).append(item.typed_value.amount)
-        preference_fields = {
-            item.attribute: item.target
-            for item in preferences
+        price_groups: dict[tuple[str, str | None], list[tuple[UUID, Decimal]]] = {}
+        for entity_id, item in price_choice.items():
+            price_groups.setdefault((item.typed_value.currency, item.scope), []).append(
+                (entity_id, item.typed_value.amount)
+            )
+        preference_fields = tuple(
+            item for item in preferences
             if item.attribute in {"model", "size", "color", "condition", "material", "capacity", "compatibility", "dimensions", "style"}
-        }
-        delivery_deadline = next(
-            (item.value for item in constraints if item.attribute == "delivery_date" and item.operator in {"maximum", "date_window"}),
-            None,
         )
+        delivery_constraints = tuple(
+            item for item in constraints
+            if item.attribute == "delivery_date" and item.operator in {"maximum", "date_window"}
+        )
+        delivery_constraint = delivery_constraints[0] if len(delivery_constraints) == 1 else None
+        delivery_deadline = delivery_constraint.value if delivery_constraint is not None else None
         output = {}
         for entity_id in eligible_entity_ids:
             items = claims[entity_id]
             ids = lambda selected: tuple(sorted({ref.evidence_id for claim in selected for ref in claim.evidence_refs}, key=str))
-            price_claim = price_by_entity.get(entity_id)
+            evaluation = evaluations_by_id.get(entity_id)
+            selected_price_claims = price_by_entity.get(entity_id, ())
+            price_claim = price_choice.get(entity_id)
             offer_value = None
             if price_claim is not None:
-                comparable = currencies.get(price_claim.typed_value.currency, [])
-                if comparable:
-                    lowest, highest = min(comparable), max(comparable)
+                comparable = price_groups.get((price_claim.typed_value.currency, price_claim.scope), [])
+                if len({candidate_id for candidate_id, _ in comparable}) >= 2:
+                    amounts = [amount for _, amount in comparable]
+                    lowest, highest = min(amounts), max(amounts)
                     offer_value = 1.0 if lowest == highest else max(
                         0.0, min(1.0, float((highest - price_claim.typed_value.amount) / (highest - lowest)))
                     )
             spec_matches = 0
+            resolved_specifications = 0
             spec_evidence = []
-            for attribute, desired in preference_fields.items():
-                actual = next((item for item in items if item.attribute == attribute), None)
-                if actual is not None and _same_value(actual.typed_value, desired):
+            for preference in preference_fields:
+                _, actual_claims = verified_claims_for_feature(
+                    items, preference.attribute, now,
+                    evaluation=evaluation, scope=preference.scope,
+                )
+                actual_claims = tuple(
+                    item for item in actual_claims if isinstance(item.typed_value, type(preference.target))
+                )
+                if not actual_claims:
+                    continue
+                resolved_specifications += 1
+                if _same_value(actual_claims[0].typed_value, preference.target):
                     spec_matches += 1
-                    spec_evidence.append(actual)
-            specification_fit = spec_matches / len(preference_fields) if preference_fields else None
-            delivery_claim = next((item for item in items if item.attribute == "delivery_date"), None)
+                spec_evidence.extend(actual_claims)
+            specification_fit = (
+                spec_matches / resolved_specifications if resolved_specifications else None
+            )
+            _, delivery_claims = verified_claims_for_feature(
+                items, "delivery_date", now,
+                evaluation=evaluation,
+                scope=delivery_constraint.scope if delivery_constraint is not None else None,
+            ) if delivery_constraint is not None else (None, ())
+            delivery_claim = next((item for item in delivery_claims if hasattr(item.typed_value, "value")), None)
             delivery_fit = None
             if delivery_claim is not None and hasattr(delivery_claim.typed_value, "value") and delivery_deadline is not None:
                 delivery_date = delivery_claim.typed_value.value
@@ -495,7 +519,10 @@ class ShoppingModule:
                     days = (delivery_date - now.date()).days
                     allowed_days = max(1, (deadline - now.date()).days)
                     delivery_fit = max(0.0, min(1.0, 1.0 - days / allowed_days))
-            review_count = next((item for item in items if item.attribute == "review_count" and isinstance(item.typed_value, NumberValue)), None)
+            _, review_count_claims = verified_claims_for_feature(
+                items, "review_count", now, evaluation=evaluation,
+            )
+            review_count = next((item for item in review_count_claims if isinstance(item.typed_value, NumberValue)), None)
             review_quality = None
             if review_count is not None:
                 count = float(review_count.typed_value.value)
@@ -503,7 +530,7 @@ class ShoppingModule:
                 recency = max(0.0, 1.0 - age_days / 180.0)
                 review_quality = min(1.0, math.log1p(count) / math.log1p(500)) * recency
             output[entity_id] = (
-                FeatureScore(name="shopping.offer_value", value=offer_value, weight=0.45, evidence_ids=ids((price_claim,)) if price_claim and offer_value is not None else (), missing_treatment="omit"),
+                FeatureScore(name="shopping.offer_value", value=offer_value, weight=0.45, evidence_ids=ids(selected_price_claims) if selected_price_claims and offer_value is not None else (), missing_treatment="omit"),
                 FeatureScore(name="shopping.specification_fit", value=specification_fit, weight=0.25, evidence_ids=ids(tuple(spec_evidence)) if specification_fit is not None else (), missing_treatment="omit"),
                 FeatureScore(name="shopping.delivery_fit", value=delivery_fit, weight=0.15, evidence_ids=ids((delivery_claim,)) if delivery_claim and delivery_fit is not None else (), missing_treatment="omit"),
                 FeatureScore(name="shopping.review_evidence_quality", value=review_quality, weight=0.15, evidence_ids=ids((review_count,)) if review_count and review_quality is not None else (), missing_treatment="omit"),
