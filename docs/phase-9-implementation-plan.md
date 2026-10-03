@@ -252,6 +252,33 @@ pause/replay, backup restore, export/deletion support, and evaluation
 regression. Link it from deployment documentation and review it on each
 material architecture or provider change.
 
+## Implementation status (2026-10-03)
+
+Phase 9 code is implemented through the local repository and has not been
+deployed. “Implemented” below means code or deployment-script support exists;
+it does not mean that a Google Cloud project, provider contract, or production
+operation has been verified.
+
+| Workstream | Repository status | Open acceptance evidence |
+| --- | --- | --- |
+| P9.0 threat model | Implemented and accepted in ADR 0018 | Operator ownership and periodic review remain manual |
+| P9.1 identity and authorization | Google OIDC, opaque owner mapping, owner-scoped API/worker/export gates, migration tool, and browser sign-in implemented | Real Google sign-in, Firestore mapping, migration dry run, and cross-owner project-wide review remain unverified |
+| P9.2 secrets and provider policy | Runtime config validation, numeric Secret Manager binding, service identities, and provider-data register implemented | Provider retention/training/residency terms and secret rotation rehearsal remain open |
+| P9.3 end-to-end protections | Pure ASGI auth, exact origin allowlist, safe errors, headers, worker verification, and account proxy implemented | Cloud IAM, provider egress, and deployed abuse probes remain open |
+| P9.4 observability and limits | Allowlisted request logs, correlation IDs, durable rate limits, and UTC-day reservations implemented | Cloud dashboards, alerts, access policy, and provider-specific concurrency measurements remain open |
+| P9.5 cost controls | Conservative provider/token reservations and feature/provider kill switches implemented | Reservations do not settle against actual usage; budget alerts and cost reconciliation remain open |
+| P9.6 deployment | Clean-revision Cloud Build, digest deployment, private API/worker, exact identities, indexes, TTL configuration, and rollback instructions implemented | No staging rehearsal, IAM verification, traffic rollback, or egress restriction has run |
+| P9.7 maintenance | Authenticated bounded expiry/republish handler and paused 15-minute schedule implemented | Schedule stays paused; no duplicate/delay/failure rehearsal or monitoring exists |
+| P9.8 backup/export/deletion | Optional daily backup schedule support, bounded JSON export, and account UI/request audit workflow implemented | No restore drill or export-fidelity check; confirmed deletion stops for operator action and does not physically delete records or backups |
+| P9.9 evaluation/release gate | Checklist and runbook implemented; existing offline suites remain available | No versioned release-result artifact, blocking promotion gate, or end-to-end readiness rehearsal exists |
+
+The phase remains **incomplete** until each open acceptance item above is
+closed with dated evidence. Feature flags, scheduler activation, backup setup,
+export, and deletion remain disabled by default in the deployment script.
+The local validation results and external verification gaps are recorded in
+the [Phase 9 implementation evidence](phase-9-implementation-evidence.md) for
+revision `dd27cc0`.
+
 ## Phase 9 completion review
 
 Before declaring Phase 9 done, verify all task acceptance criteria and answer:

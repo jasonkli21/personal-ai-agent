@@ -42,9 +42,9 @@ Collections covered: conversations, messages, conversation summaries,
 research sessions and request keys, iterative research runs and keys, memories
 and derived/lifecycle records, decision snapshots/evidence/claims/matches,
 owner-specific canonical entity aliases, and domain registrations/claims/
-observations/comparisons/lookup idempotency records. Shared `*` catalog rows,
-identity mappings, audit events, rate counters, and daily budget summaries are
-not reassigned.
+observations/comparisons/lookup idempotency records, and audit events. Shared
+`*` catalog rows, identity mappings, rate counters, and daily budget summaries
+are not reassigned.
 
 The tool itself was verified offline for syntax and safety review only. No
 Firestore project, emulator, backup, or migration was accessed during Phase 9
