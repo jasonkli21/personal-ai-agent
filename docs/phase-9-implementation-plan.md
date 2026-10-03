@@ -106,7 +106,10 @@ revisit the model after every material provider or data-flow change.
 ### P9.1 — Select and implement personal authentication and authorization
 
 **Dependencies:** P9.0  
-**Decision required:** yes
+**Decision:** accepted as [ADR 0018](decisions/0018-personal-oidc-authentication.md):
+Google Identity Services OIDC ID tokens, an exact verified-account allowlist,
+stable `sub`-based owner mapping, and private Cloud Run API invocation. This
+supports one personal account and is not a general multi-tenant identity model.
 
 **Goal:** replace the Phase 1 `local` identity safely.
 
