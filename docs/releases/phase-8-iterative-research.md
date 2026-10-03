@@ -1,7 +1,7 @@
 # Phase 8 iterative research release evidence
 
 **Date:** 2026-10-03
-**Tested revision:** working tree based on `e67a38a` (`codex/phase-6-decision-support`); Phase 8 review remediation is uncommitted.
+**Tested revision:** `54048e5` (`codex/phase-6-decision-support`), containing the completed Phase 8 review remediation and final light pass.
 **Environment:** Python 3.11.15, uv 0.11.13, pnpm 11.19.0, bundled Node 24.19.0.
 
 Phase 8 adds separately gated, bounded iterative research over the existing

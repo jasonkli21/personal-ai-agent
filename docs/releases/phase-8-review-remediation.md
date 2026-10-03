@@ -5,8 +5,7 @@ Date: 2026-10-03 (America/Los_Angeles).
 Reviewed from clean HEAD `e67a38a`, together against `cb38e1b`:
 `d94f759` (contracts/storage), `4a3e9bf` (orchestration/evaluation/API),
 `3674935a5159b4387daf93be8606f854635c1546` (UI/docs), and
-`e67a38a` (release evidence). Remediation is complete in the uncommitted
-working tree based on `e67a38a`; verification is recorded in
+`e67a38a` (release evidence). Remediation and the final light pass are committed in `54048e5`; verification is recorded in
 [Phase 8 release evidence](phase-8-iterative-research.md).
 
 ## Review findings
