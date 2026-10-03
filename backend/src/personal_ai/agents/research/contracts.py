@@ -92,6 +92,14 @@ class ResearchSession(ResearchRecord):
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate record id")
         queries = {r.id for r in self.queries}
+        if tuple(item.sequence for item in self.queries) != tuple(range(len(self.queries))):
+            raise ValueError("query sequence must be contiguous")
+        if any(
+            query.parent_query_id is not None
+            and query.parent_query_id not in {old.id for old in self.queries[:query.sequence]}
+            for query in self.queries
+        ):
+            raise ValueError("unknown parent query")
         attempts = {r.id: r for r in self.attempts}
         sources = {r.id: r for r in self.observations}
         evidence = {r.id: r for r in self.evidence}

@@ -37,7 +37,12 @@ class SearchQuery(ResearchRecord):
     session_id: UUID
     owner_id: str = Field(min_length=1, max_length=200)
     normalized_query: str = Field(min_length=1, max_length=500)
-    rationale_code: Literal["question", "terminology"] = "question"
+    rationale_code: Literal[
+        "question", "terminology", "required_fact_missing", "evidence_stale",
+        "source_conflict", "candidate_coverage", "identity_ambiguity",
+    ] = "question"
+    parent_query_id: UUID | None = None
+    gap_id: UUID | None = None
     sequence: int = Field(ge=0, le=2)
     state: Literal["planned", "completed", "failed"] = "planned"
     created_at: datetime

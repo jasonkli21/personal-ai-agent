@@ -1,6 +1,7 @@
 """Typed application configuration loaded from the environment."""
 
 import math
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, model_validator
@@ -92,6 +93,22 @@ class Settings(BaseSettings):
     research_timeout_seconds: float = Field(default=30, gt=0, le=120)
     research_provider_timeout_seconds: float = Field(default=10, gt=0, le=30)
     research_min_request_interval_seconds: float = Field(default=1, ge=1, le=60)
+    iterative_research_enabled: bool = False
+    iterative_progress_enabled: bool = False
+    iterative_research_policy_version: str = Field(
+        default="iterative-research-policy-v1", pattern=r"^iterative-research-policy-v1$"
+    )
+    iterative_max_iterations: int = Field(default=3, ge=1, le=5)
+    iterative_max_queries: int = Field(default=3, ge=1, le=3)
+    iterative_max_sources: int = Field(default=12, ge=1, le=12)
+    iterative_max_elapsed_seconds: int = Field(default=90, ge=1, le=300)
+    iterative_max_tokens: int = Field(default=16_000, ge=512, le=32_768)
+    iterative_max_provider_cost_usd: Decimal = Field(default=Decimal("0.05"), ge=0, le=Decimal("1.00"))
+    iterative_allowed_domains: tuple[str, ...] = Field(default=("example.org",), min_length=1, max_length=12)
+    iterative_synthesis_reserve_tokens: int = Field(default=4096, ge=128, le=8192)
+    iterative_synthesis_reserve_seconds: int = Field(default=20, ge=1, le=60)
+    iterative_search_cost_usd: Decimal = Field(default=Decimal("0.005"), ge=0, le=Decimal("0.10"))
+    iterative_synthesis_cost_usd: Decimal = Field(default=Decimal("0.005"), ge=0, le=Decimal("0.10"))
 
     travel_enabled: bool = False
     shopping_enabled: bool = False
@@ -169,15 +186,30 @@ class Settings(BaseSettings):
             raise ValueError("memory_configuration_invalid")
         if self.memory_consolidation_enabled and not self.memory_lifecycle_worker_enabled:
             raise ValueError("memory_configuration_invalid")
-        if self.research_enabled:
-            if self.research_max_evidence_context_tokens > available:
-                raise ValueError("research_configuration_invalid")
-            if self.research_search_adapter == "brave" and (
+        if self.research_enabled and self.research_max_evidence_context_tokens > available:
+            raise ValueError("research_configuration_invalid")
+        if self.iterative_research_enabled and not self.research_enabled:
+            raise ValueError("iterative_research_configuration_invalid")
+        if (
+            self.iterative_max_queries > 3
+            or self.iterative_synthesis_reserve_tokens > self.iterative_max_tokens
+            or self.iterative_synthesis_reserve_seconds > self.iterative_max_elapsed_seconds
+            or self.iterative_synthesis_cost_usd > self.iterative_max_provider_cost_usd
+        ):
+            raise ValueError("iterative_research_configuration_invalid")
+        domains = tuple(domain.lower().rstrip(".") for domain in self.iterative_allowed_domains)
+        if (
+            domains != self.iterative_allowed_domains
+            or len(set(domains)) != len(domains)
+            or any(not domain or "." not in domain or ".." in domain for domain in domains)
+        ):
+            raise ValueError("iterative_research_configuration_invalid")
+        if self.research_enabled and self.research_search_adapter == "brave" and (
                 self.research_storage != "firestore"
                 or not self.research_provider_storage_approved
                 or not self.research_api_key.get_secret_value()
-            ):
-                raise ValueError("research_configuration_invalid")
+        ):
+            raise ValueError("research_configuration_invalid")
         decision_weights = (self.decision_feature_preference_weight,)
         domain_gates = (self.travel_enabled, self.shopping_enabled)
         if (

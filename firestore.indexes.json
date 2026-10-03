@@ -377,6 +377,51 @@
       "indexes": []
     },
     {
+      "collectionGroup": "iterative_research_runs",
+      "fieldPath": "budget",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "iterative_research_runs",
+      "fieldPath": "decision_intent",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "iterative_research_runs",
+      "fieldPath": "usage",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "iterative_research_runs",
+      "fieldPath": "iterations",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "iterative_research_runs",
+      "fieldPath": "assessments",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "iterative_research_runs",
+      "fieldPath": "gaps",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "iterative_research_runs",
+      "fieldPath": "events",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "iterative_research_runs",
+      "fieldPath": "ledger",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "iterative_research_runs",
+      "fieldPath": "decision_ids",
+      "indexes": []
+    },
+    {
       "collectionGroup": "entity_claims",
       "fieldPath": "evidence_refs",
       "indexes": []
