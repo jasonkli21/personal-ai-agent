@@ -26,7 +26,7 @@ def environment():
         app.dependency_overrides = previous
 
 
-def make_request(question="Private synthetic observatory schedule?"):
+def make_request(question="Synthetic observatory schedule?"):
     return IterativeResearchRequest(question=question, idempotency_key=uuid4())
 
 
@@ -61,6 +61,24 @@ def test_iterative_routes_stream_persisted_replay_and_owner_fencing(environment)
         if line.startswith("data: ")
     ]
     assert [item["sequence"] for item in replay_payloads] == list(range(4, len(payloads)))
+    resumed = client.post(
+        f"/v1/research/iterative/runs/{run_id}/resume",
+        headers={"Last-Event-ID": "0"},
+    )
+    resumed_payloads = [
+        json.loads(line[6:])
+        for line in resumed.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [item["sequence"] for item in resumed_payloads] == list(range(1, len(payloads)))
+    assert client.post(
+        f"/v1/research/iterative/runs/{run_id}/resume",
+        headers={"Last-Event-ID": str(len(payloads))},
+    ).status_code == 422
+    assert client.get(
+        f"/v1/research/iterative/runs/{run_id}/events?after=0",
+        headers={"Last-Event-ID": "bad"},
+    ).status_code == 422
     assert len(service.adapter.calls) == 1
     assert client.post(f"/v1/research/iterative/runs/{run_id}/cancel").json()["state"] == "completed"
 

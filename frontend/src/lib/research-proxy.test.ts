@@ -48,3 +48,18 @@ it("proxies an enabled reconnect route through the same-origin API boundary", as
   expect(response.status).toBe(200);
   expect(fetch).toHaveBeenCalledWith("http://localhost:8000/v1/research/iterative/runs/run-1/events?after=2", expect.objectContaining({ cache: "no-store" }));
 });
+
+it("forwards the resume cursor header to the backend", async () => {
+  vi.stubEnv("RESEARCH_ENABLED", "true");
+  vi.stubEnv("ITERATIVE_RESEARCH_ENABLED", "true");
+  vi.stubEnv("ITERATIVE_PROGRESS_ENABLED", "true");
+  const fetch = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+  vi.stubGlobal("fetch", fetch);
+  await proxyIterativeResearchApi(
+    new NextRequest("http://localhost/api/research/iterative/runs/run-1/resume", {
+      method: "POST", headers: { "Last-Event-ID": "7" },
+    }),
+    "/runs/run-1/resume",
+  );
+  expect(fetch.mock.calls[0][1].headers).toMatchObject({ "Last-Event-ID": "7" });
+});

@@ -1,66 +1,56 @@
 # Phase 8 iterative research release evidence
 
-**Date:** 2026-10-03  
-**Tested code revision:** `3674935a5159b4387daf93be8606f854635c1546`  
-**Branch:** `codex/phase-6-decision-support`
+**Date:** 2026-10-03
+**Tested revision:** working tree based on `e67a38a` (`codex/phase-6-decision-support`); Phase 8 review remediation is uncommitted.
+**Environment:** Python 3.11.15, uv 0.11.13, pnpm 11.19.0, bundled Node 24.19.0.
 
 Phase 8 adds separately gated, bounded iterative research over the existing
-Phase 5 evidence pipeline and Phase 6 decision service. Runs persist a frozen
-policy and budget snapshot, lease/revision-fenced transitions, named evidence
-gaps, safe ordered events, and planned/settled ledger entries for iterations,
-queries, sources, tokens, estimated provider cost, elapsed time, and allowed
-domains. Follow-up proposals contain a permitted template and IDs tied to a
-named gap; they cannot supply free-form facts, queries, or changed constraints.
-The browser exposes iteration only after all server and public feature gates
-are enabled. Existing single-pass research remains the default.
+Phase 5 evidence pipeline and Phase 6 decision service. A saved run freezes its
+dispatch and resource policy, fences its backing Phase 5 session, records
+immutable assessment-qualified gap history, and charges provider uncertainty
+conservatively. Supported typed price proposals include exact evidence IDs and
+still pass through Phase 6 verification. Browser replay validates the saved
+cursor and response shapes. Existing single-pass research remains the default;
+all Phase 8 gates remain off.
 
 ## Offline verification
 
-The code revision above passed these checks on 2026-10-03:
+Checks run on 2026-10-03 against the working tree described above:
 
 | Check | Result |
 | --- | --- |
-| Backend tests (`.venv/bin/python -m pytest -q`) | 427 passed, 12 skipped |
-| Backend lint (`.venv/bin/ruff check .`) | Passed |
-| Context evaluation | Passed |
-| Memory evaluation | Passed |
-| Memory lifecycle evaluation | Passed |
-| Phase 5 research evaluation | Passed |
-| Phase 6 decision evaluation | Passed |
-| Phase 7 domain evaluation | Passed |
-| Iterative research evaluation | Passed, 13/13 paired synthetic cases |
-| Frontend tests | 73 passed across 13 files |
-| Frontend lint and typecheck | Passed |
-| Backend package build (`uv build --no-build-isolation`) | Passed |
-| Frontend production build | Passed |
-| `git diff --check` | Passed |
+| Backend tests (`make backend-test`) | 433 passed, 12 skipped. |
+| Backend lint (`make backend-lint`) | Passed (Ruff). |
+| Context, memory, memory lifecycle, Phase 5 research, Phase 6 decision, and Phase 7 domain evaluations | Passed. |
+| Phase 8 paired evaluation | Passed, 18/18 deterministic synthetic pairs, including a full three-query/six-assessment run and safe follow-up decision improvement. |
+| Frontend tests (`make frontend-test`) | 78 passed across 13 files. |
+| Frontend lint and typecheck | Passed. |
+| Frontend production build | Passed. |
+| Backend package build (`uv build --no-build-isolation`) | Passed with an isolated cache under `/private/tmp`. |
+| `git diff --check` | Passed. |
 
-The iterative evaluator executes the actual Phase 5 single-pass service and
-Phase 8 orchestrator on each shared synthetic case; it does not call a judge
-model or external provider. Cases include sufficient first-pass evidence,
-missing and stale required evidence, conflicts, ambiguous identity, unavailable
-evidence, repeated-query suppression, budget stops, domain exclusion,
-cancellation fencing, and uncertain provider recovery. Tests include retry
-restart at a durable safe boundary, Firestore-shaped owner/revision transaction
-checks, expired citations, reconnect reads, safe event payloads, and disabled
-defaults.
+The Phase 8 evaluator executes the real Phase 5 and Phase 8 services against
+shared synthetic sources and deterministic clocks. It makes no judge-model or
+external-provider calls. It includes verified decision improvement after a
+follow-up and fail-closed stale, conflicting, wrong-variant, and wrong-scope
+price cases. Regressions cover pending-session Phase 5 bypass, persistent gap
+provenance, elapsed overrun during synthesis, exact hostnames, nonempty event
+cursors, and malformed browser progress/details.
 
-Verification used Python 3.11.15, uv 0.11.13, and pnpm 11.19.0. Node 22 was
-unavailable in the environment; the bundled Node 24.19.0 runtime was used for
-frontend checks. The frontend build emitted existing Autoprefixer and Next.js
-ESLint-plugin configuration warnings, but completed successfully. The backend
-test run emitted the existing Starlette/httpx deprecation warning.
+The frontend build emitted existing Autoprefixer and Next.js ESLint-plugin
+configuration warnings. The backend suite emitted a Starlette/httpx
+deprecation warning. Node 22 was unavailable; frontend checks used bundled
+Node 24.19.0 and pnpm 11.19.0.
 
 ## Remaining verification gaps
 
-Docker was unavailable, so backend and frontend container builds were not run.
 No Firestore emulator, deployed GCP project, search provider, or model provider
-was configured or contacted. The Firestore repository tests use an offline
-SDK-shaped fake; deployed transaction/restart behavior and index readiness
-remain unverified. Real provider quotas, attribution rules, and billing are
-unverified; cost values remain configured estimates because the current
-provider boundary exposes no billing metadata. Production browser disconnect
-behavior, public authentication, and retention/deletion operations remain
-future operational work. The `local` owner is still not an authenticated
-personal-data boundary. All iterative and progress gates remain disabled by
+was configured or contacted. Firestore transaction/restart behavior and index
+readiness remain unverified in a deployed environment. Provider quotas,
+attribution and actual billing are unverified; search and synthesis cost
+entries remain configured estimates because the provider boundary exposes no
+billing metadata. Browser disconnect behavior in deployment, public
+authentication, and retention/deletion operations remain operational work.
+The fixed `local` owner is not an authenticated personal-data boundary. No
+Docker build was run. All iterative and progress gates remain disabled by
 default.

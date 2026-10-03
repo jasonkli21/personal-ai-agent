@@ -128,8 +128,9 @@ async def start_iterative_research(
     service: Annotated[IterativeResearchService, Depends(iterative_research_service)],
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ):
-    run, token = await service.start(request)
-    return _stream(service.stream(run, token, _event_cursor(-1, last_event_id)))
+    cursor = _event_cursor(-1, last_event_id)
+    run, token = await service.start(request, cursor)
+    return _stream(service.stream(run, token, cursor))
 
 
 @router.get("/runs/{run_id}")
@@ -149,7 +150,8 @@ async def iterative_research_events(
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ):
     cursor = _event_cursor(after, last_event_id)
-    await service.get(run_id)
+    run = await service.get(run_id)
+    service._validate_cursor(run, cursor)
     return _stream(service.event_stream(run_id, cursor))
 
 
@@ -167,5 +169,6 @@ async def resume_iterative_research(
     service: Annotated[IterativeResearchService, Depends(iterative_research_service)],
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ):
-    run, token = await service.resume(run_id)
-    return _stream(service.stream(run, token, _event_cursor(-1, last_event_id)))
+    cursor = _event_cursor(-1, last_event_id)
+    run, token = await service.resume(run_id, cursor)
+    return _stream(service.stream(run, token, cursor))

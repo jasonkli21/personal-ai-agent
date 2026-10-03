@@ -89,6 +89,8 @@ class ResearchService:
 
     async def prepare_run(self, session_id):
         session = await self.detail(session_id)
+        if session.iterative_run_id is not None:
+            raise ResearchError("research_session_owned_by_iterative_run", 409)
         if session.state not in {"pending", "running"}:
             return session
         now = self.clock()

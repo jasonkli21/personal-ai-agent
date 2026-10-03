@@ -30,6 +30,9 @@ class DecisionIntent(ResearchRecord):
             raise ValueError("iterative constraints must come from the user")
         if len({item.id for item in self.constraints}) != len(self.constraints):
             raise ValueError("duplicate iterative constraint")
+        # One assessor gap can be emitted per candidate/constraint pair.
+        if len(self.candidates) * len(self.constraints) > 30:
+            raise ValueError("too many candidate/constraint combinations")
         return self
 
 
@@ -107,6 +110,10 @@ class BudgetSnapshot(ResearchRecord):
     synthesis_reserve_tokens: int = Field(ge=128, le=8192)
     synthesis_reserve_seconds: int = Field(ge=1, le=60)
     synthesis_reserve_cost_usd: Decimal = Field(ge=0, le=Decimal("0.10"))
+    search_cost_usd: Decimal = Field(default=Decimal("0.005"), ge=0, le=Decimal("0.10"))
+    provider_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    attempt_limit: int = Field(default=2, ge=1, le=3)
+    synthesis_output_tokens: int = Field(default=4096, ge=128, le=8192)
 
     @model_validator(mode="after")
     def valid_domains_and_reserve(self):
@@ -128,6 +135,8 @@ class BudgetSnapshot(ResearchRecord):
             raise ValueError("synthesis reserve exceeds elapsed budget")
         if self.synthesis_reserve_cost_usd > self.max_provider_cost_usd:
             raise ValueError("synthesis reserve exceeds cost budget")
+        if self.synthesis_output_tokens > self.synthesis_reserve_tokens:
+            raise ValueError("synthesis output reserve exceeds synthesis token reserve")
         return self
 
 
@@ -159,7 +168,10 @@ class BudgetLedgerEntry(ResearchRecord):
     def settlement_matches_status(self):
         if (self.status == "reserved") != (self.settled is None):
             raise ValueError("invalid budget ledger settlement")
-        if self.settled is not None and self.settled > self.reserved:
+        if (
+            self.settled is not None and self.settled > self.reserved
+            and self.dimension != "elapsed_seconds"
+        ):
             raise ValueError("settlement exceeds reservation")
         if self.status == "uncertain" and self.settled != self.reserved:
             raise ValueError("uncertain work must settle its full reservation")
@@ -193,7 +205,9 @@ class IterationRecord(ResearchRecord):
 class EvidenceGap(ResearchRecord):
     id: UUID
     run_id: UUID
+    assessment_id: UUID
     iteration_id: UUID
+    semantic_key: str = Field(min_length=1, max_length=300)
     gap_class: EvidenceGapClass
     target_id: UUID | None = None
     constraint_id: UUID | None = None
@@ -242,7 +256,7 @@ class SufficiencyAssessment(ResearchRecord):
     run_id: UUID
     iteration_id: UUID
     sufficient: bool
-    gap_ids: tuple[UUID, ...] = Field(default=(), max_length=30)
+    gap_ids: tuple[UUID, ...] = Field(default=(), max_length=512)
     reason_code: Literal[
         "evidence_covers_question", "required_fact_missing", "stale_only",
         "conflict_unresolved", "candidate_coverage_missing", "identity_ambiguous",
@@ -257,7 +271,7 @@ class SafeEventPayload(ResearchRecord):
     query_count: int | None = Field(default=None, ge=0, le=3)
     source_count: int | None = Field(default=None, ge=0, le=12)
     evidence_count: int | None = Field(default=None, ge=0, le=12)
-    gap_count: int | None = Field(default=None, ge=0, le=30)
+    gap_count: int | None = Field(default=None, ge=0, le=160)
     citation_count: int | None = Field(default=None, ge=0, le=144)
     stop_reason: StopReason | None = None
     state: RunState | None = None
@@ -302,11 +316,11 @@ class ResearchRun(ResearchRecord):
     ] | None = None
     usage: BudgetUsage = Field(default_factory=BudgetUsage)
     iterations: tuple[IterationRecord, ...] = Field(default=(), max_length=5)
-    assessments: tuple[SufficiencyAssessment, ...] = Field(default=(), max_length=5)
-    gaps: tuple[EvidenceGap, ...] = Field(default=(), max_length=30)
+    assessments: tuple[SufficiencyAssessment, ...] = Field(default=(), max_length=6)
+    gaps: tuple[EvidenceGap, ...] = Field(default=(), max_length=512)
     events: tuple[RunEvent, ...] = Field(default=(), max_length=128)
     ledger: tuple[BudgetLedgerEntry, ...] = Field(default=(), max_length=128)
-    decision_ids: tuple[UUID, ...] = Field(default=(), max_length=5)
+    decision_ids: tuple[UUID, ...] = Field(default=(), max_length=6)
     revision: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
@@ -328,6 +342,10 @@ class ResearchRun(ResearchRecord):
             )
         ):
             raise ValueError("foreign run record")
+        assessment_ids = {item.id for item in self.assessments}
+        iteration_ids = {item.id for item in self.iterations}
+        if any(item.assessment_id not in assessment_ids or item.iteration_id not in iteration_ids for item in self.gaps):
+            raise ValueError("gap provenance is incomplete")
         if tuple(event.sequence for event in self.events) != tuple(range(len(self.events))):
             raise ValueError("event sequence must be contiguous")
         if len({event.idempotency_key for event in self.events}) != len(self.events):
@@ -397,6 +415,18 @@ def validate_run_transition(
                 raise ValueError("budget ledger is append-only")
             if entry == old:
                 continue
+            resized_reservation = (
+                old.status == entry.status == "reserved"
+                and old.settled is None and entry.settled is None
+                and old.id == entry.id and old.run_id == entry.run_id
+                and old.iteration_id == entry.iteration_id
+                and old.dimension == entry.dimension
+                and old.idempotency_key == entry.idempotency_key
+                and old.created_at == entry.created_at
+                and entry.reserved >= old.reserved
+            )
+            if resized_reservation:
+                continue
             if old.status != "reserved" or entry.model_copy(update={"status": "reserved", "settled": None}) != old.model_copy(update={"status": "reserved", "settled": None}):
                 raise ValueError("budget ledger is append-only")
             if entry.status == "reserved" or entry.settled is None:
@@ -434,7 +464,8 @@ def validate_run_transition(
         )
     ):
         raise ValueError("gap records are append-only except status")
-    if candidate.usage.iterations > candidate.budget.max_iterations or candidate.usage.queries > candidate.budget.max_queries or candidate.usage.sources > candidate.budget.max_sources or candidate.usage.tokens > candidate.budget.max_tokens or candidate.usage.provider_cost_usd > candidate.budget.max_provider_cost_usd or candidate.usage.elapsed_seconds > candidate.budget.max_elapsed_seconds or candidate.usage.allowed_domains > len(candidate.budget.allowed_domains):
+    elapsed_overrun_recorded = terminal and candidate.state != RunState.COMPLETED
+    if candidate.usage.iterations > candidate.budget.max_iterations or candidate.usage.queries > candidate.budget.max_queries or candidate.usage.sources > candidate.budget.max_sources or candidate.usage.tokens > candidate.budget.max_tokens or candidate.usage.provider_cost_usd > candidate.budget.max_provider_cost_usd or candidate.usage.elapsed_seconds > candidate.budget.max_elapsed_seconds and not elapsed_overrun_recorded or candidate.usage.allowed_domains > len(candidate.budget.allowed_domains):
         raise ValueError("budget usage exceeds immutable limits")
     dimensions = {
         "iterations": (candidate.usage.iterations, candidate.budget.max_iterations),
@@ -449,5 +480,8 @@ def validate_run_transition(
         ledger = [entry for entry in candidate.ledger if entry.dimension == dimension]
         settled = sum((entry.settled or Decimal(0) for entry in ledger), Decimal(0))
         reserved = sum((entry.reserved for entry in ledger if entry.status == "reserved"), Decimal(0))
-        if settled != Decimal(used) or settled + reserved > Decimal(maximum):
+        if settled != Decimal(used) or (
+            settled + reserved > Decimal(maximum)
+            and not (dimension == "elapsed_seconds" and elapsed_overrun_recorded and reserved == 0)
+        ):
             raise ValueError(f"{dimension} usage and ledger disagree")

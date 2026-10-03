@@ -17,6 +17,10 @@ class FakeLLMClient:
         for delta in self.deltas:
             yield delta
 
+    async def stream_bounded(self, messages, *, max_output_tokens: int, timeout_seconds: float):
+        async for delta in self.stream(messages):
+            yield delta
+
 
 class FakeResearchLLMClient:
     """Offline literal-excerpt synthesis; no model or search network calls."""
@@ -34,3 +38,7 @@ class FakeResearchLLMClient:
             item = json.loads(line)
             excerpts.append({"evidence_id": item["evidence_id"], "quote": item["passage"]})
         yield json.dumps({"excerpts": excerpts})
+
+    async def stream_bounded(self, messages, *, max_output_tokens: int, timeout_seconds: float):
+        async for delta in self.stream(messages):
+            yield delta

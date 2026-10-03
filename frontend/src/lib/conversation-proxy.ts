@@ -13,7 +13,12 @@ export async function proxyApi(request: NextRequest, path: string) {
     const response = await fetch(`${baseUrl}${path}`, {
       method: request.method,
       body: request.method === "POST" ? await request.text() : undefined,
-      headers: request.method === "POST" ? { "Content-Type": "application/json" } : undefined,
+      headers: {
+        ...(request.method === "POST" ? { "Content-Type": "application/json" } : {}),
+        ...(request.headers.get("Last-Event-ID")
+          ? { "Last-Event-ID": request.headers.get("Last-Event-ID")! }
+          : {}),
+      },
       cache: "no-store",
       signal: upstreamAbort.signal,
     });

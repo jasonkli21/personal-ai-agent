@@ -19,6 +19,8 @@ def key_id(session):
 
 
 def claim_session(session, token, now, deadline):
+    if session.iterative_run_id is not None:
+        raise ResearchError("research_session_owned_by_iterative_run", 409)
     if session.state != "pending":
         raise ResearchError("research_busy", 409)
     if session.expires_at <= now:
@@ -34,8 +36,15 @@ def claim_session(session, token, now, deadline):
 
 
 def validate_save(current, candidate):
+    pending_iterative_cancel = (
+        current.state == "pending"
+        and current.iterative_run_id is not None
+        and candidate.state in {"insufficient", "failed"}
+        and candidate.answer is None
+        and not candidate.citations
+    )
     if (
-        current.state != "running"
+        (current.state != "running" and not pending_iterative_cancel)
         or current.run_token != candidate.run_token
         or current.revision + 1 != candidate.revision
     ):
@@ -44,6 +53,7 @@ def validate_save(current, candidate):
         current.request != candidate.request
         or current.created_at != candidate.created_at
         or current.policy_version != candidate.policy_version
+        or current.iterative_run_id != candidate.iterative_run_id
         or current.execution_deadline != candidate.execution_deadline
         or candidate.state not in {"running", "completed", "insufficient", "failed"}
     ):

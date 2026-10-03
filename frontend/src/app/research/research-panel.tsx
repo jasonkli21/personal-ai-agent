@@ -202,6 +202,11 @@ export default function ResearchPanel({ initialSessionId, initialRunId, iterativ
   }, [session]);
 
   const resultExpired = expiredLocally || Boolean(session?.state === "completed" && Date.parse(session.expires_at) <= Date.now());
+  const visibleGaps = (() => {
+    const latest = new Map<string, IterativeRun["gaps"][number]>();
+    for (const gap of iterativeRun?.gaps ?? []) latest.set(gap.semantic_key, gap);
+    return [...latest.values()].filter(gap => gap.status !== "resolved");
+  })();
 
   return <main className={styles.page}>
     <Link href="/">Back to chat</Link>
@@ -240,9 +245,9 @@ export default function ResearchPanel({ initialSessionId, initialRunId, iterativ
       <h2>{iterativeRun.state === "completed" ? "Sufficient cited result" : iterativeRun.state === "insufficient" ? "Incomplete research" : iterativeRun.state === "cancelled" ? "Research cancelled" : iterativeRun.state === "failed" ? "Research failed" : "Research in progress"}</h2>
       <p>Iteration {iterativeRun.usage.iterations} of {iterativeRun.budget.max_iterations}; {iterativeRun.usage.queries} of {iterativeRun.budget.max_queries} queries; {iterativeRun.usage.sources} of {iterativeRun.budget.max_sources} sources.</p>
       <p>Stop reason: {iterativeRun.terminal_reason ?? "still running"}. Decision status: {iterativeRun.decision_state ?? "not requested"}.</p>
-      {iterativeRun.gaps.some(gap => gap.status !== "resolved") && <>
+      {visibleGaps.length > 0 && <>
         <h3>Unresolved evidence gaps</h3>
-        <ul>{iterativeRun.gaps.filter(gap => gap.status !== "resolved").map((gap, index) => <li key={`${gap.gap_class}-${gap.reason_code}-${index}`}>
+        <ul>{visibleGaps.map(gap => <li key={gap.semantic_key}>
           {gap.gap_class.replaceAll("_", " ")} — {gap.status}{gap.required ? " (required)" : ""}
         </li>)}</ul>
       </>}

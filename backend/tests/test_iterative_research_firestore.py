@@ -68,6 +68,7 @@ def pending_session(run):
         created_at=NOW,
         updated_at=NOW,
         expires_at=NOW + timedelta(hours=1),
+        iterative_run_id=run.id,
     )
 
 

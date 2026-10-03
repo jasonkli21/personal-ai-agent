@@ -63,7 +63,7 @@
         {
           "url": "https://example.org/widget-price",
           "title": "Synthetic widget price",
-          "text": "Synthetic Widget price is $40 USD and its material is steel."
+          "text": "Synthetic Widget costs $40 USD. Synthetic Widget material is steel."
         }
       ]
     ],
@@ -104,20 +104,17 @@
     },
     "expected": {
       "queries": 2,
-      "stop_reason": "no_productive_query",
-      "state": "insufficient",
-      "unresolved_gaps": 2,
-      "gap_classes": [
-        "candidate_coverage",
-        "required_fact_missing"
-      ],
+      "stop_reason": "sufficient",
+      "state": "completed",
+      "unresolved_gaps": 0,
+      "gap_classes": [],
       "followup_query_count": 1,
       "followup_query_contains": [
         "Synthetic Widget price and material?",
         "site:example.org"
       ],
-      "decision_state": "research_needed",
-      "iteration_count": 3
+      "decision_state": "recommended",
+      "iteration_count": 2
     },
     "single_pass": {
       "state": "completed",
@@ -128,8 +125,8 @@
       "provider_cost_usd": "0",
       "decision_state": "research_needed"
     },
-    "meaningful_improvement": "Add a focused cited price observation while keeping the $50 hard limit; Phase 6 remains research_needed until a verified typed claim exists.",
-    "comparison_expectation": "followup_adds_coverage_without_recommendation"
+    "meaningful_improvement": "A follow-up supplies an explicit, exact-ID price proposal; Phase 6 verifies it, applies the unchanged $50 hard limit, and changes research_needed to recommended.",
+    "comparison_expectation": "followup_improves_verified_decision"
   },
   {
     "name": "stale-required-evidence",
@@ -233,7 +230,7 @@
       "queries": 2,
       "stop_reason": "no_productive_query",
       "state": "insufficient",
-      "unresolved_gaps": 2,
+      "unresolved_gaps": 1,
       "gap_classes": [
         "source_conflict"
       ],
@@ -761,5 +758,379 @@
     },
     "meaningful_improvement": "Settle the uncertain provider reservation and never repeat an attempt whose result was not committed.",
     "comparison_expectation": "uncertain_attempt_is_not_replayed"
+  },
+  {
+    "name": "stale-price-claim-rejected",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic Widget current price?",
+    "freshness": "current",
+    "initial_sources": [
+      {
+        "url": "https://example.org/widget-stale",
+        "title": "Old widget price",
+        "text": "Synthetic Widget costs $40 USD.",
+        "published_at": "2026-10-01T10:00:00Z"
+      }
+    ],
+    "followup_sources": [
+      [
+        {
+          "url": "https://example.org/widget-stale-copy",
+          "title": "Old widget price copy",
+          "text": "Synthetic Widget costs $40 USD.",
+          "published_at": "2026-10-01T10:00:00Z"
+        }
+      ]
+    ],
+    "decision_intent": {
+      "candidates": [
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic Widget"
+        }
+      ],
+      "constraints": [
+        {
+          "id": "30000000-0000-4000-8000-000000000099",
+          "attribute": "price",
+          "operator": "maximum",
+          "value": {
+            "kind": "money",
+            "amount": "50",
+            "currency": "USD"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        }
+      ]
+    },
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "state": "insufficient",
+      "decision_state": "research_needed",
+      "followup_query_count": 1
+    },
+    "meaningful_improvement": "Fail closed because Phase 6 cannot verify a fresh, conflict-free, correctly scoped typed price claim for the requested candidate.",
+    "comparison_expectation": "unsupported_claim_fails_closed"
+  },
+  {
+    "name": "conflicting-price-claim-rejected",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic Widget price?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/widget-40",
+        "title": "Widget price one",
+        "text": "Synthetic Widget costs $40 USD."
+      },
+      {
+        "url": "https://example.org/widget-60",
+        "title": "Widget price two",
+        "text": "Synthetic Widget costs $60 USD."
+      }
+    ],
+    "followup_sources": [
+      [
+        {
+          "url": "https://example.org/widget-confirm",
+          "title": "Widget price confirmation",
+          "text": "Synthetic Widget costs $40 USD."
+        }
+      ]
+    ],
+    "decision_intent": {
+      "candidates": [
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic Widget"
+        }
+      ],
+      "constraints": [
+        {
+          "id": "30000000-0000-4000-8000-000000000099",
+          "attribute": "price",
+          "operator": "maximum",
+          "value": {
+            "kind": "money",
+            "amount": "50",
+            "currency": "USD"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        }
+      ]
+    },
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "state": "insufficient",
+      "decision_state": "research_needed",
+      "followup_query_count": 1
+    },
+    "meaningful_improvement": "Fail closed because Phase 6 cannot verify a fresh, conflict-free, correctly scoped typed price claim for the requested candidate.",
+    "comparison_expectation": "unsupported_claim_fails_closed"
+  },
+  {
+    "name": "wrong-variant-price-rejected",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic Widget model A-1 price?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/widget-a2",
+        "title": "Widget model A-2 price",
+        "text": "Synthetic Widget model A-2 costs $40 USD."
+      }
+    ],
+    "followup_sources": [
+      [
+        {
+          "url": "https://example.org/widget-a2-copy",
+          "title": "Widget model A-2 price copy",
+          "text": "Synthetic Widget model A-2 costs $40 USD."
+        }
+      ]
+    ],
+    "decision_intent": {
+      "candidates": [
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic Widget",
+          "identifiers": {
+            "model": "A-1"
+          }
+        }
+      ],
+      "constraints": [
+        {
+          "id": "30000000-0000-4000-8000-000000000099",
+          "attribute": "price",
+          "operator": "maximum",
+          "value": {
+            "kind": "money",
+            "amount": "50",
+            "currency": "USD"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        }
+      ]
+    },
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "state": "insufficient",
+      "decision_state": "research_needed",
+      "followup_query_count": 1
+    },
+    "meaningful_improvement": "Fail closed because Phase 6 cannot verify a fresh, conflict-free, correctly scoped typed price claim for the requested candidate.",
+    "comparison_expectation": "unsupported_claim_fails_closed"
+  },
+  {
+    "name": "wrong-scope-price-rejected",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic Widget new price?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/widget-used",
+        "title": "Used widget price",
+        "text": "Synthetic Widget price is $40 USD."
+      }
+    ],
+    "followup_sources": [
+      [
+        {
+          "url": "https://example.org/widget-used-copy",
+          "title": "Used widget price copy",
+          "text": "Synthetic Widget price is $40 USD."
+        }
+      ]
+    ],
+    "decision_intent": {
+      "candidates": [
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic Widget"
+        }
+      ],
+      "constraints": [
+        {
+          "id": "30000000-0000-4000-8000-000000000099",
+          "attribute": "price",
+          "operator": "maximum",
+          "value": {
+            "kind": "money",
+            "amount": "50",
+            "currency": "USD"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user",
+          "scope": "new"
+        }
+      ]
+    },
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "state": "insufficient",
+      "decision_state": "research_needed",
+      "followup_query_count": 1
+    },
+    "meaningful_improvement": "Fail closed because Phase 6 cannot verify a fresh, conflict-free, correctly scoped typed price claim for the requested candidate.",
+    "comparison_expectation": "unsupported_claim_fails_closed"
+  },
+  {
+    "name": "three-query-required-claim-history",
+    "clock": "2026-10-02T12:00:00Z",
+    "question": "Synthetic Widget price weight and color?",
+    "freshness": "general",
+    "initial_sources": [
+      {
+        "url": "https://example.org/widget",
+        "title": "Widget overview",
+        "text": "Synthetic Widget product overview."
+      }
+    ],
+    "followup_sources": [
+      [
+        {
+          "url": "https://example.org/widget-price",
+          "title": "Widget price",
+          "text": "Synthetic Widget costs $40 USD."
+        }
+      ],
+      [
+        {
+          "url": "https://example.org/widget-weight",
+          "title": "Widget weight",
+          "text": "Synthetic Widget shipping weight is 2 kilograms."
+        }
+      ]
+    ],
+    "decision_intent": {
+      "candidates": [
+        {
+          "entity_type": "object",
+          "canonical_name": "Synthetic Widget"
+        }
+      ],
+      "constraints": [
+        {
+          "id": "30000000-0000-4000-8000-000000000011",
+          "attribute": "price",
+          "operator": "maximum",
+          "value": {
+            "kind": "money",
+            "amount": "60",
+            "currency": "USD"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        },
+        {
+          "id": "30000000-0000-4000-8000-000000000012",
+          "attribute": "weight",
+          "operator": "maximum",
+          "value": {
+            "kind": "number",
+            "value": 3
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        },
+        {
+          "id": "30000000-0000-4000-8000-000000000013",
+          "attribute": "color",
+          "operator": "exact",
+          "value": {
+            "kind": "text",
+            "value": "black"
+          },
+          "required": true,
+          "missing_policy": "fail_closed",
+          "source": "user"
+        }
+      ]
+    },
+    "budget": {
+      "iterations": 3,
+      "queries": 3,
+      "sources": 12,
+      "tokens": 16000,
+      "provider_cost_usd": "0.05",
+      "elapsed_seconds": 90,
+      "allowed_domains": [
+        "example.org"
+      ],
+      "synthesis_reserve_tokens": 4096
+    },
+    "expected": {
+      "queries": 3,
+      "stop_reason": "iteration_budget_exhausted",
+      "state": "insufficient",
+      "decision_state": "research_needed",
+      "max_assessments": 6,
+      "iteration_count": 3
+    },
+    "single_pass": {
+      "state": "completed",
+      "query_count": 1,
+      "source_count": 1,
+      "selected_evidence": 1,
+      "tokens": 996,
+      "provider_cost_usd": "0",
+      "decision_state": "research_needed"
+    },
+    "meaningful_improvement": "Exercise the complete three-query loop with multiple required facts; keep the saved run bounded and fail closed rather than converting schema capacity into provider_error.",
+    "comparison_expectation": "three_query_gap_history_bounded"
   }
 ]

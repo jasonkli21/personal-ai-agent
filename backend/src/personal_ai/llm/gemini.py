@@ -31,18 +31,32 @@ class GeminiLLMClient:
         Cancelling this iterator cancels the timeout scope and stops consuming the
         provider's async stream, allowing the caller to persist an incomplete turn.
         """
+        bounded = self.stream_bounded(
+            messages,
+            max_output_tokens=self._settings.max_response_tokens,
+            timeout_seconds=self._settings.request_timeout_seconds,
+        )
+        try:
+            async for item in bounded:
+                yield item
+        finally:
+            await _close_async_resource(bounded)
+
+    async def stream_bounded(
+        self, messages: Sequence[ChatMessage], *, max_output_tokens: int, timeout_seconds: float
+    ) -> AsyncIterator[str]:
         self._validate_request(messages)
         client = self._client
         owns_client = client is None
         try:
             if client is None:
                 client = self._build_client()
-            async with asyncio.timeout(self._settings.request_timeout_seconds):
+            async with asyncio.timeout(timeout_seconds):
                 stream = await client.aio.models.generate_content_stream(
                     model=self._settings.ai_model,
                     contents=_gemini_contents(messages),
                     config={"system_instruction": _system_instruction(messages),
-                            "max_output_tokens": self._settings.max_response_tokens},
+                            "max_output_tokens": max_output_tokens},
                 )
                 provider_iterator = stream.__aiter__()
                 try:

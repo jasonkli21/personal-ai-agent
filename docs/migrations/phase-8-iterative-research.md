@@ -10,9 +10,10 @@ Phase 8 adds two top-level collections without changing existing records:
   owner-scoped idempotency key to a run ID. The mapping stores no question or
   query text.
 
-The run has a bounded 128-event/ledger cap, 5-iteration cap, 30-gap cap, 3-query
-cap, and 12-source/citation-selection cap, matching the Phase 5 aggregate's
-current storage limits. Full evidence and source text remain in
+The run has a bounded 128-event/ledger cap, 5-iteration cap, 6-assessment cap,
+512 immutable gap-history cap, 6-decision-snapshot cap, 3-query cap, and
+12-source/citation-selection cap. Candidate/constraint combinations are
+bounded to 30. Full evidence and source text remain in
 `research_sessions`; the run does not copy provider passages. There are no
 collection scans or composite queries for runs: run and idempotency mappings
 are point reads. `firestore.indexes.json` disables indexing on the run's

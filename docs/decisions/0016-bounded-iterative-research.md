@@ -20,7 +20,9 @@ An opt-in Phase 8 run is a separate `iterative-research-v1` aggregate in
 source of query, attempt, source, evidence, selection, and citation
 provenance. The run aggregate stores a frozen policy/budget snapshot, a
 monotonic event stream, iteration/gap records, and append-only per-dimension
-budget ledger entries. Bounded arrays remain in one Firestore document so a
+budget ledger entries. Each backing session also carries an immutable
+`iterative_run_id`; ordinary Phase 5 claim/save paths reject iterative-owned
+sessions. Bounded arrays remain in one Firestore document so a
 state change and its public event are one transaction; no event query or
 composite index is needed. Requests and evidence remain in the existing
 research session document. Large arrays in both collections receive field
@@ -35,22 +37,30 @@ replayed. The run settles the reserved maximum cost and stops incomplete.
 Committed results are recovered by their stable query/attempt identity and
 are not dispatched again. Cancellation is a terminal compare-and-set; every
 subsequent run or session write checks the same owner, lease, revision, and
-nonterminal state. SSE renders persisted events only. The event GET and
-timeline reads never execute work.
+nonterminal state. Cancellation also terminalizes a pending/running backing
+session. Lease expiry and the absolute run deadline are checked at transition
+and repository commit boundaries; terminal cleanup may settle late work but
+cannot commit a late answer. SSE renders persisted events only. The event GET
+and timeline reads never execute work.
 
-Budget snapshots are immutable and versioned. Query, source, token, provider
-cost, elapsed time, iteration, and domain dimensions have explicit finite
-ceilings. Every dispatch reserves each applicable dimension first, including
-a fixed synthesis token/cost reserve. A timeout or lost provider acknowledgement
+Budget snapshots are immutable and versioned, including search cost, adapter
+timeout/attempt limit and bounded synthesis output tokens. Query, source,
+token, provider cost, elapsed time, iteration, and domain dimensions have
+explicit finite ceilings. Every dispatch reserves each applicable dimension
+first, including synthesis input plus output tokens and synthesis cost. A
+timeout or lost provider acknowledgement
 settles the full provider-call estimate conservatively. For providers that do
 not report billing, `settled` cost is a configured upper-bound estimate, not a
 provider invoice. The feature and progress gates default off; single-pass
 research remains the default and retains its existing endpoint and SSE events.
 
 Optional decision intents contain candidate identities and user constraints,
-not model-supplied facts. Assessment invokes the shared Phase 6 decision path
-against an ephemeral view of the current Phase 5 evidence. Unknown required
-facts, conflicts, stale evidence, and ambiguous identity remain gaps. The
+not model-supplied facts. Conservative, exact-subject typed-claim proposals
+may be extracted from eligible evidence with exact evidence IDs, then must
+pass the shared Phase 6 verifier against an ephemeral view of the Phase 5
+session. Unsupported, negated, conflicting, stale, variant-mismatched and
+out-of-scope facts produce no verified claim. Unknown required facts,
+conflicts, stale evidence, and ambiguous identity remain gaps. The
 planner can emit only a validated query proposal tied to one such gap; it
 cannot alter a constraint or assert a claim. The final answer and persisted
 decision are incomplete when the shared evaluator cannot establish a safe
@@ -63,7 +73,9 @@ result.
 - Firestore transactions update the run and associated Phase 5 session in one
   fenced commit where a result could otherwise race with cancellation.
 - The Phase 5 aggregate caps remain authoritative. Iterative settings cannot
-  exceed three total queries or twelve sources in this version.
+  exceed three total queries or twelve sources in this version. Contract
+  bounds cap candidate/constraint combinations, assessments, immutable gap
+  history, events and decision snapshots to the finite loop.
 - No worker, autonomous follow-up after terminal state, authentication, or
   provider call outside the existing adapter boundary is added.
 - Budget cost accounting is deliberately conservative and estimated when the

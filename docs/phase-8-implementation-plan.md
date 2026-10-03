@@ -228,7 +228,7 @@ Only after all answers are yes should work advance to Phase 9.
 
 ## Implementation status — 2026-10-03
 
-P8.0–P8.7 are implemented locally. The 13 paired synthetic evaluations run
+P8.0–P8.7 are implemented locally. The 18 paired synthetic evaluations run
 both the Phase 5 single-pass service and the Phase 8 orchestrator against the
 same fixed corpus and clocks; they pass with measurable coverage gains for
 stale and missing evidence, while preserving unresolved constraints,

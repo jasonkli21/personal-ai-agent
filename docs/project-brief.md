@@ -73,7 +73,7 @@ Implemented:
   attributable comparison views, and a gated browser workbench.
 - Versioned, owner-scoped bounded research runs, deterministic sufficiency/gap
   assessment, validated follow-up templates, resource ledgers, safe progress,
-  cancellation/recovery, and 13 paired Phase 5/8 synthetic evaluations.
+  cancellation/recovery, and 18 paired Phase 5/8 synthetic evaluations.
 - Decision creation and inspection gates default off; current `local` ownership
   remains a development boundary, not authentication.
 - Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.

@@ -11,7 +11,7 @@ for offline results and open external checks.
 
 | Plan | Implementation and evidence |
 | --- | --- |
-| P8.0 | Thirteen deterministic paired cases in `evaluation/iterative-research-fixtures.json`; each executes the real Phase 5 and Phase 8 services against the same fake sources/clock, with checked baseline snapshots and a result schema. |
+| P8.0 | Eighteen deterministic paired cases in `evaluation/iterative-research-fixtures.json`; each executes the real Phase 5 and Phase 8 services against the same fake sources/clock, with checked baseline snapshots and a result schema. |
 | P8.1 | Accepted [ADR 0016](decisions/0016-bounded-iterative-research.md) and [ADR 0017](decisions/0017-iterative-research-budget.md); typed run, iteration, gap, assessment, proposal, event, and ledger contracts; transition validator; migration/index manifest. |
 | P8.2 | Owner-scoped run/session/idempotency repository; revision and lease fences; atomic Firestore run/session commit; append-only event/evidence history; safe recovery tests. |
 | P8.3–P8.4 | Deterministic sufficiency checks and named gap classes; schema-validated follow-up templates carry only the selected gap ID, user candidate/attribute IDs and frozen domains. The planner cannot send query text, facts, constraints, or adapter calls. |
@@ -39,8 +39,10 @@ remain in the path. Provider SDKs stay inside the existing adapters and
 `llm` package.
 
 Runs are idempotent by owner and request key. The backing Phase 5 session uses
-a derived key namespace so a single-pass request with the same caller key
-cannot be adopted as the iterative session. Run/session writes check owner,
+a derived key namespace and an immutable `iterative_run_id`; Phase 5 claim and
+save paths reject iterative-owned sessions, including a pending session after
+iterative cancellation. A single-pass request with the same caller key cannot
+adopt the iterative session. Run/session writes check owner,
 revision and lease in one Firestore transaction. The session remains the
 authoritative location for queries, attempts, observations, evidence,
 selection, answer and citations. The run stores versioned policy/budget
@@ -60,6 +62,13 @@ without repeating the side effect. A retryable provider failure is a safe
 boundary: the completed failed attempt is retained and the next numbered
 attempt reuses the same query.
 
+Each backing session is durably marked with its iterative run ID. Phase 5
+ordinary execution rejects these sessions at both service and repository save
+boundaries. Cancelling a still-pending run also terminalizes its backing
+session. Expired lease owners cannot renew themselves or commit ordinary late
+writes. Resume cursors are checked against persisted event sequences before a
+claim; `Last-Event-ID` crosses the same-origin proxy unchanged.
+
 | State | Allowed next states | Durable external work |
 | --- | --- | --- |
 | `pending` | `assessing`, `cancelled`, `failed` | None |
@@ -75,11 +84,14 @@ attempt reuses the same query.
 The deterministic assessor emits only `initial_coverage`,
 `required_fact_missing`, `evidence_stale`, `source_conflict`,
 `candidate_coverage`, `identity_ambiguity`, and `citation_support` gaps.
-Gaps have stable IDs, a target/constraint when known, exact evidence IDs,
-required status, safe reason code and current status. Old evidence and conflict
-records remain in the Phase 5 history. A gap is resolved only when a later
-assessment no longer emits it; a gap with no safe follow-up is marked
-unresolvable and remains visible.
+Each assessment gives its gap records immutable assessment provenance and a
+semantic key. Repeated open requirements therefore remain auditable without
+being marked resolved merely because a new assessment produced a new record;
+all records for a requirement are resolved only when the requirement actually
+disappears. A conflict finding carries the exact set of participating evidence
+IDs and is aggregated to one bounded gap per assessment. The UI displays the
+latest status per semantic key while the run retains history. A gap with no
+safe follow-up is marked unresolvable and remains visible.
 
 `FollowupProposal` is a validated template action tied to one selected gap. It
 has no free-form query, fact, constraint, or candidate-claim field. The service
@@ -90,14 +102,20 @@ queries are not dispatched. The query is persisted in the ordinary Phase 5
 session with `parent_query_id` and `gap_id`.
 
 An optional `decision_intent` accepts user-authored candidates, hard
-constraints and preferences; candidate claims are rejected. Each assessment
-passes current eligible evidence through the existing `DecisionService`, which
-performs its normal identity, typed-claim, freshness/conflict and hard
-constraint evaluation. Search snippets never become verified typed claims by
-themselves. A follow-up can improve cited source coverage, while the decision
-still correctly reports `research_needed` until shared Phase 6 validation
-establishes the required claim. Iteration cannot relax constraints or invent
-planner-provided facts.
+constraints and preferences; candidate claims are rejected. The service may
+propose only conservative subject-bound typed claims directly supported by
+fresh, exact-identity evidence (currently explicit unambiguous currency/price
+assertions). Proposals include exact evidence IDs and pass through the
+existing `DecisionService`, which remains the sole identity, claim, freshness,
+conflict and hard-constraint verifier. Negation, multiple values, other
+candidates, wrong identifiers and wrong scope produce no claim proposal.
+Candidate identities are not persisted before there is evidence-backed claim
+support. Paired fixtures prove that a missing required price can become a
+verified Phase 6 claim after follow-up and improve `research_needed` to a safe
+recommendation; stale, conflicting, variant-mismatched and out-of-scope values
+remain unverified. Generic answer sufficiency also requires coverage of all
+meaningful question terms, with explicit conservative aliases for common fact
+types; uncertain coverage remains incomplete.
 
 ## Budget versions and stopping
 
@@ -120,14 +138,23 @@ run. Defaults and validated ceilings are:
 | `ITERATIVE_SEARCH_COST_USD` | USD 0.005 | USD 0.10 | Search-attempt estimate |
 
 The immutable ledger records reservation and settlement for iterations,
-queries, sources, tokens, provider cost, elapsed time and allowed domains.
-Normal settlements record bounded use; cancelled/uncertain attempts settle
-their full reservation conservatively. Search and synthesis costs are
+queries, sources, tokens, provider cost, elapsed time and allowed domains. One
+absolute deadline starts at run creation and caps assessment, adapter calls,
+synthesis and final commit; synthesis receives only time remaining before that
+deadline. Run elapsed use is recorded once as actual wall time, including an
+overrun caused by late work; it is never clamped to the ceiling. Normal
+settlements record bounded use; cancelled/uncertain attempts settle their full
+reservation conservatively. Search and synthesis costs are
 configured estimates because the current provider interfaces do not return
 billing data; they are not invoices. Elapsed time uses both monotonic attempt
 duration and run wall time. The shared token counter records the selected
-context count; uncertain synthesis consumes its full token reserve. Limits are
-validated before dispatch and checked again at settlement.
+context count; each synthesis reserves selected input and bounded output
+tokens before dispatch, can extend its initial reserve within the frozen total
+token ceiling, and consumes the complete reservation if uncertain. The model
+boundary enforces provider output-token limits and a provider-neutral response
+size ceiling. Policy values that affect dispatch (search cost, retry count,
+provider timeout and synthesis output ceiling) are frozen per run. Limits are
+validated before dispatch and again at settlement.
 
 Terminal reasons are `sufficient`, `iteration_budget_exhausted`,
 `query_budget_exhausted`, `source_budget_exhausted`,
@@ -141,7 +168,7 @@ the gaps and stop reason visible.
 
 ## API, UI, storage, and gates
 
-The routes and safe event schema are specified in the [API contract](api-contract.md#phase-8-iterative-research-iterative-research-v1).
+The routes and safe event schema are specified in the [API contract](api-contract.md#phase-8-iterative-research-iterative-research-v1). Resume accepts a `Last-Event-ID` cursor and validates its persisted sequence before claiming a lease.
 The frontend uses same-origin `/api/research/iterative` proxy routes. The
 research mode selector appears only when the frontend's
 `NEXT_PUBLIC_ITERATIVE_RESEARCH_ENABLED`, `ITERATIVE_RESEARCH_ENABLED`, and
@@ -168,14 +195,17 @@ data boundary.
 
 ## Verification and remaining gaps
 
-`make iterative-research-eval` runs 13 paired Phase 5/Phase 8 cases offline.
+`make iterative-research-eval` runs 18 paired Phase 5/Phase 8 cases offline,
+including the full three-query/six-assessment loop with multiple required
+facts and the negative typed-claim fixtures.
 `backend/tests/test_iterative_research*.py` covers state/schema validation,
 storage ownership/idempotency, reservation reconciliation, retry/restart,
 uncertain side effects, cancel races, late-write fencing, reconnect reads,
 route gates and safe SSE payloads. `frontend/src/app/research/research-panel.test.tsx`,
 `frontend/src/lib/iterative-research-api.test.ts`, and the proxy tests cover
 single-pass defaults, iterative partial results, gap/timeline visibility,
-replay sequence/run checks, gates, reconnect and explicit cancellation.
+replay sequence/run checks, bounded rendered response/link validation, gates,
+nonempty-cursor reconnect and explicit cancellation.
 
 Offline checks use deterministic clocks, in-memory repositories, synthetic
 sources and fake LLM/search adapters only. Real Firestore transaction/restart

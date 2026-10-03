@@ -57,6 +57,7 @@ class ResearchSession(ResearchRecord):
     owner_id: str = Field(min_length=1, max_length=200)
     request: ResearchRequest
     request_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    iterative_run_id: UUID | None = None
     mode: Literal["research"] = "research"
     policy_version: Literal["research-v1"] = "research-v1"
     state: Literal["pending", "running", "completed", "insufficient", "failed", "expired"]

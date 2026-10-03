@@ -31,6 +31,9 @@ class IterativeResearchRepository(Protocol):
         owner_id: str,
         run: ResearchRun,
         session: ResearchSession | None = None,
+        *,
+        now=None,
+        allow_expired_lease: bool = False,
     ) -> ResearchRun: ...
     def session(self, owner_id: str, session_id: UUID) -> ResearchSession: ...
 
@@ -53,7 +56,7 @@ class InMemoryIterativeResearchRepository:
                     raise ResearchError("idempotency_conflict", 409)
                 return old
             session = self.session_repository.get(run.owner_id, run.session_id)
-            if session.state != "pending":
+            if session.state != "pending" or session.iterative_run_id != run.id:
                 raise ResearchError("research_busy", 409)
             self.runs[run.id] = run
             self.keys[key] = run.id
@@ -86,6 +89,8 @@ class InMemoryIterativeResearchRepository:
         with self.lock:
             run = self.get(owner_id, run_id)
             session = self.session_repository.get(owner_id, run.session_id)
+            if session.iterative_run_id != run.id:
+                raise ResearchError("research_conflict", 409)
             if run.state.value in {"completed", "insufficient", "failed", "cancelled"}:
                 return run, session
             if run.lease_expires_at is not None and run.lease_expires_at > now:
@@ -130,9 +135,17 @@ class InMemoryIterativeResearchRepository:
             self.session_repository.sessions[session.id] = updated_session
             return candidate, updated_session
 
-    def commit(self, owner_id, run, session=None):
+    def commit(self, owner_id, run, session=None, *, now=None, allow_expired_lease=False):
         with self.lock:
             current = self.get(owner_id, run.id)
+            now = now or run.updated_at
+            if (
+                current.lease_owner is not None
+                and current.lease_expires_at is not None
+                and current.lease_expires_at <= now
+                and not allow_expired_lease
+            ):
+                raise ResearchError("research_conflict", 409)
             try:
                 validate_run_transition(current, run)
             except ValueError as error:
@@ -141,7 +154,11 @@ class InMemoryIterativeResearchRepository:
                 raise ResearchError("research_conflict", 409)
             if session is not None:
                 old_session = self.session_repository.get(owner_id, session.id)
-                if old_session.run_token != current.lease_owner:
+                if (
+                    old_session.iterative_run_id != current.id
+                    or old_session.run_token != current.lease_owner
+                    or old_session.state == "pending" and current.state.value != "pending"
+                ):
                     raise ResearchError("research_conflict", 409)
                 validate_save(old_session, session)
                 self.session_repository.sessions[session.id] = session
@@ -213,7 +230,7 @@ class FirestoreIterativeResearchRepository:
                 ),
                 run.owner_id,
             )
-            if session.state != "pending":
+            if session.state != "pending" or session.iterative_run_id != run.id:
                 raise ResearchError("research_busy", 409)
             transaction.create(self.runs.document(str(run.id)), self._data(run))
             transaction.create(key_ref, {"owner_id": run.owner_id, "run_id": str(run.id)})
@@ -255,6 +272,8 @@ class FirestoreIterativeResearchRepository:
             session = self._decode_session(
                 session_ref.get(transaction=transaction, retry=None, timeout=timeout()), owner_id
             )
+            if session.iterative_run_id != run.id:
+                raise ResearchError("research_conflict", 409)
             if run.state in {RunState.COMPLETED, RunState.INSUFFICIENT, RunState.FAILED, RunState.CANCELLED}:
                 return run, session
             if run.lease_expires_at is not None and run.lease_expires_at > now:
@@ -305,12 +324,20 @@ class FirestoreIterativeResearchRepository:
             )
         )
 
-    def commit(self, owner_id, run, session=None):
+    def commit(self, owner_id, run, session=None, *, now=None, allow_expired_lease=False):
         def operation(transaction, timeout):
             run_ref = self.runs.document(str(run.id))
             current = self._decode(
                 run_ref.get(transaction=transaction, retry=None, timeout=timeout()), owner_id
             )
+            checked_at = now or run.updated_at
+            if (
+                current.lease_owner is not None
+                and current.lease_expires_at is not None
+                and current.lease_expires_at <= checked_at
+                and not allow_expired_lease
+            ):
+                raise ResearchError("research_conflict", 409)
             try:
                 validate_run_transition(current, run)
             except ValueError as error:
@@ -324,7 +351,11 @@ class FirestoreIterativeResearchRepository:
                     session_ref.get(transaction=transaction, retry=None, timeout=timeout()),
                     owner_id,
                 )
-                if old_session.run_token != current.lease_owner:
+                if (
+                    old_session.iterative_run_id != current.id
+                    or old_session.run_token != current.lease_owner
+                    or old_session.state == "pending" and current.state.value != "pending"
+                ):
                     raise ResearchError("research_conflict", 409)
                 validate_save(old_session, session)
             transaction.set(run_ref, self._data(run))

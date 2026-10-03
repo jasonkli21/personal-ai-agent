@@ -19,7 +19,7 @@ from personal_ai.agents.research.iterative_contracts import (
     validate_run_transition,
 )
 from personal_ai.agents.research.iterative_fakes import DeterministicClock
-from personal_ai.decisions.contracts import Candidate, ClaimProposal
+from personal_ai.decisions.contracts import Candidate, ClaimProposal, Constraint
 from personal_ai.entities.research import TextValue
 from personal_ai.settings import Settings
 
@@ -105,6 +105,22 @@ def test_decision_intent_rejects_candidate_claims_from_planner_or_model():
     )
     with pytest.raises(ValidationError, match="candidate facts"):
         DecisionIntent(candidates=(candidate,))
+
+
+def test_decision_intent_bounds_gap_emitting_candidate_constraint_pairs():
+    candidates = tuple(
+        Candidate(entity_type="object", canonical_name=f"Synthetic candidate {index}")
+        for index in range(12)
+    )
+    constraints = tuple(
+        Constraint(
+            id=uuid4(), attribute=f"fact_{index}", operator="exact",
+            value=TextValue(value="supported"),
+        )
+        for index in range(3)
+    )
+    with pytest.raises(ValidationError, match="too many candidate/constraint combinations"):
+        DecisionIntent(candidates=candidates, constraints=constraints)
 
 
 def test_transition_validator_requires_legal_edge_event_and_prevented_budget_overrun():

@@ -12,7 +12,8 @@ using max iterations as a proxy for evidence sufficiency.
 ## Decision
 
 Each iterative run snapshots policy `iterative-research-policy-v1` and budget
-`evidence-quality-budget-v1`. Defaults are at most 3 total iterations, 3
+`evidence-quality-budget-v1`, including search cost, provider timeout, retry
+limit, and bounded synthesis output tokens. Defaults are at most 3 total iterations, 3
 queries, 12 sources, 90 seconds elapsed, 16,000 input/synthesis tokens, and
 USD 0.05 estimated provider cost. The initial synthesis reserve is 4,096
 tokens plus the configured synthesis cost estimate. At most 12 exact hostnames
@@ -22,11 +23,14 @@ within validated ceilings; the snapshot never changes after creation.
 
 Ledger entries cover iterations, queries, sources, tokens, provider cost,
 elapsed seconds, and allowed domains. Reservations are durable before work.
+The run-wide elapsed reservation is settled to actual wall time at terminal;
+late work can truthfully exceed the ceiling while the answer remains withheld.
 Provider work with unknown outcome settles its complete reservation. Elapsed
-time is recorded at each transition and checked again before dispatch. A
+time is fenced by an absolute creation-time deadline at dispatch and commit. A
 candidate source is charged against the source cap before it enters the
 session. Token use is settled from the shared context assembler's counter;
-unavailable or timed-out counts consume the complete remaining token reserve.
+each synthesis reserves selected input and output ceilings before dispatch,
+and unavailable/timed-out synthesis consumes that full reserve.
 
 Stopping uses explicit reasons: `sufficient`, `iteration_budget_exhausted`,
 `query_budget_exhausted`, `source_budget_exhausted`, `token_budget_exhausted`,

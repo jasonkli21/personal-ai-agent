@@ -23,6 +23,7 @@ from personal_ai.agents.research.iterative_repositories import (
 )
 from personal_ai.agents.research.iterative_service import IterativeResearchService
 from personal_ai.agents.research.repositories import InMemoryResearchRepository
+from personal_ai.agents.research.service import ResearchService
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.llm.fake import FakeResearchLLMClient
@@ -136,6 +137,7 @@ async def test_followup_has_parent_gap_domain_fence_and_deduplicates_repeats():
         (
             result("https://example.org/price", "Synthetic Widget price is $40."),
             result("https://unlisted.example.net/leak", "Synthetic Widget is $1."),
+            result("https://other.example.org/leak", "Synthetic Widget is $2."),
         ),
     ], settings_overrides={"decision_enabled": True})
     final, _ = await execute(service, request("Synthetic Widget price?", decision_intent=intent))
@@ -150,7 +152,11 @@ async def test_followup_has_parent_gap_domain_fence_and_deduplicates_repeats():
     assert "Synthetic Widget price?" in session.queries[1].normalized_query
     assert "site:example.org" in session.queries[1].normalized_query
     assert all("unlisted.example.net" not in source.canonical_url for source in session.observations)
+    assert all("other.example.org" not in source.canonical_url for source in session.observations)
     assert any(gap.status == "open" for gap in run.gaps)
+    repeated_open = [gap for gap in run.gaps if gap.status == "open" and gap.semantic_key.endswith(":price:")]
+    assert len(repeated_open) >= 2
+    assert len({gap.assessment_id for gap in repeated_open}) == len(repeated_open)
     assert final.terminal_reason == StopReason.NO_PRODUCTIVE_QUERY
 
 
@@ -453,7 +459,9 @@ async def test_synthesis_failure_settles_uncertainty_and_preserves_no_answer():
     assert final.state == RunState.INSUFFICIENT
     assert final.terminal_reason == StopReason.SYNTHESIS_ERROR
     assert session.answer is None and not session.citations
-    assert final.usage.tokens == final.budget.synthesis_reserve_tokens
+    token_entry = next(entry for entry in final.ledger if entry.idempotency_key == "reserve:synthesis:tokens")
+    assert final.usage.tokens == token_entry.reserved > final.budget.synthesis_reserve_tokens
+    assert token_entry.status == "uncertain"
     assert all(entry.status != "reserved" for entry in final.ledger)
 
 
@@ -474,5 +482,95 @@ async def test_expired_citations_are_withheld_after_synthesis():
     session = await service.session(final.id)
 
     assert final.state == RunState.INSUFFICIENT
-    assert final.terminal_reason == StopReason.EVIDENCE_INSUFFICIENT
+    assert final.terminal_reason == StopReason.ELAPSED_BUDGET_EXHAUSTED
     assert session.answer is None and session.citations == ()
+
+
+@pytest.mark.anyio
+async def test_cancelled_pending_backing_session_cannot_be_started_by_phase5():
+    service, _, _, sessions, _ = build_service()
+    run = await service.create(request())
+    session = await service.session(run.id)
+    ordinary = ResearchService(
+        service.settings, sessions, service.adapter, service.context, service.llm,
+        clock=service.clock,
+    )
+
+    with pytest.raises(ResearchError, match="research_session_owned_by_iterative_run"):
+        await ordinary.prepare_run(session.id)
+
+    cancelled = await service.cancel(run.id)
+    assert cancelled.state == RunState.CANCELLED
+    assert (await service.session(run.id)).state == "insufficient"
+    with pytest.raises(ResearchError, match="research_session_owned_by_iterative_run"):
+        await ordinary.prepare_run(session.id)
+
+
+@pytest.mark.anyio
+async def test_synthesis_finishing_after_absolute_deadline_is_charged_and_withheld():
+    service, _, clock, _, _ = build_service(sources=(result(),))
+
+    class LateLLM:
+        async def stream_bounded(self, messages, *, max_output_tokens, timeout_seconds):
+            from personal_ai.llm.fake import FakeResearchLLMClient
+
+            clock.advance(95)
+            async for delta in FakeResearchLLMClient().stream(messages):
+                yield delta
+
+    service.llm = LateLLM()
+    final, _ = await execute(service, request())
+    session = await service.session(final.id)
+
+    elapsed = next(entry for entry in final.ledger if entry.idempotency_key == "reserve:run:elapsed")
+    assert final.state == RunState.INSUFFICIENT
+    assert final.terminal_reason == StopReason.ELAPSED_BUDGET_EXHAUSTED
+    assert final.usage.elapsed_seconds == Decimal(95)
+    assert elapsed.settled == Decimal(95)
+    assert elapsed.status == "settled"
+    assert session.answer is None and session.citations == ()
+
+
+@pytest.mark.anyio
+async def test_create_recovers_backing_session_after_run_write_failure():
+    service, _, _, sessions, runs = build_service()
+    req = request()
+    original_create = runs.create
+
+    def failed_create(*args, **kwargs):
+        raise RuntimeError("synthetic interrupted run write")
+
+    runs.create = failed_create
+    with pytest.raises(RuntimeError, match="interrupted run write"):
+        await service.create(req)
+    backing = next(iter(sessions.sessions.values()))
+    runs.create = original_create
+    recovered = await service.create(req)
+    assert recovered.id == backing.iterative_run_id
+    assert recovered.session_id == backing.id
+    assert len(sessions.sessions) == 1
+    assert (await service.create(req)).id == recovered.id
+
+
+@pytest.mark.anyio
+async def test_smaller_output_limit_preserves_reservation_and_completes():
+    service, _, _, _, _ = build_service(
+        sources=(result(),), settings_overrides={"max_response_tokens": 1024}
+    )
+    final, _ = await execute(service, request())
+    assert final.state == RunState.COMPLETED
+    entry = next(item for item in final.ledger if item.idempotency_key == "reserve:synthesis:tokens")
+    assert entry.reserved >= final.budget.synthesis_reserve_tokens
+    assert entry.settled <= entry.reserved
+
+
+def test_progress_counts_distinct_persistent_gaps():
+    from types import SimpleNamespace
+
+    service, _, _, _, _ = build_service()
+    run = SimpleNamespace(
+        current_iteration=1, usage=SimpleNamespace(queries=0, sources=0),
+        decision_state=None,
+        gaps=[SimpleNamespace(status="open", semantic_key="same") for _ in range(200)],
+    )
+    assert service._progress_payload(run).gap_count == 1

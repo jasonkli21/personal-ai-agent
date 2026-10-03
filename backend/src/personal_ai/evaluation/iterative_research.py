@@ -144,6 +144,7 @@ async def _run_single_pass(fixture):
         "query_count": len(session.queries),
         "source_count": len(session.observations),
         "accepted_source_count": sum(item.status == "accepted" for item in session.observations),
+        "stale_source_count": sum(item.status == "stale" for item in session.observations),
         "selected_evidence": len(selection.evidence_ids) if selection else 0,
         "tokens": selection.token_count if selection else 0,
         # All calls use deterministic fakes. This is realized provider spend.
@@ -231,7 +232,7 @@ async def _run_iterative(fixture):
         events = [frame async for frame in service.stream(run, token)]
     run = await service.get(run.id)
     session = await service.session(run.id)
-    return run, session, events, adapter
+    return run, session, events, adapter, service.decision_repository
 
 
 def _baseline_matches(fixture, actual):
@@ -252,10 +253,16 @@ def _baseline_matches(fixture, actual):
     )
 
 
-def _result_record(fixture, baseline, run, session, events, adapter):
+def _result_record(fixture, baseline, run, session, events, adapter, decision_repository):
     expected = fixture["expected"]
-    unresolved_gaps = tuple(
-        gap for gap in run.gaps if gap.status in {"open", "unresolvable"}
+    latest_gaps = {}
+    for gap in run.gaps:
+        latest_gaps[gap.semantic_key] = gap
+    unresolved_gaps = tuple(gap for gap in latest_gaps.values() if gap.status in {"open", "unresolvable"})
+    verified_claim_count = sum(
+        claim.claim_status == "verified"
+        for decision_id in run.decision_ids
+        for claim in decision_repository.get("local", decision_id).claims
     )
     followups = tuple(query for query in session.queries if query.rationale_code != "question")
     actual = {
@@ -264,6 +271,7 @@ def _result_record(fixture, baseline, run, session, events, adapter):
         "query_count": run.usage.queries,
         "source_count": run.usage.sources,
         "accepted_source_count": sum(item.status == "accepted" for item in session.observations),
+        "stale_source_count": sum(item.status == "stale" for item in session.observations),
         "selected_evidence_count": len(session.selection.evidence_ids) if session.selection else 0,
         "token_count": run.usage.tokens,
         "provider_cost_usd": str(run.usage.provider_cost_usd),
@@ -271,9 +279,11 @@ def _result_record(fixture, baseline, run, session, events, adapter):
         "unresolved_gap_count": len(unresolved_gaps),
         "gap_classes": sorted({gap.gap_class.value for gap in unresolved_gaps}),
         "iteration_count": run.current_iteration,
+        "assessment_count": len(run.assessments),
         "followup_query_count": len(followups),
         "followup_queries": [query.normalized_query for query in followups],
         "decision_state": run.decision_state,
+        "verified_claim_count": verified_claim_count,
         "event_count": len(run.events),
         "observed_adapter_calls": len(adapter.calls),
         "answer_present": session.answer is not None,
@@ -291,6 +301,8 @@ def _result_record(fixture, baseline, run, session, events, adapter):
     ):
         if key in expected:
             passed = passed and expected[key] == actual[field]
+    if "max_assessments" in expected:
+        passed = passed and actual["assessment_count"] <= expected["max_assessments"]
     if "decision_state" in expected:
         passed = passed and expected["decision_state"] == actual["decision_state"]
     if "gap_classes" in expected:
@@ -311,6 +323,25 @@ def _result_record(fixture, baseline, run, session, events, adapter):
             and actual["decision_state"] == "research_needed"
             and actual["state"] == "insufficient"
         ),
+        "followup_improves_verified_decision": (
+            baseline["decision_state"] == "research_needed"
+            and actual["decision_state"] == "recommended"
+            and actual["verified_claim_count"] > 0
+            and actual["state"] == "completed"
+            and actual["followup_query_count"] > 0
+            and actual["unresolved_gap_count"] == 0
+        ),
+        "unsupported_claim_fails_closed": (
+            actual["state"] == "insufficient"
+            and actual["decision_state"] == "research_needed"
+            and actual["verified_claim_count"] == 0
+        ),
+        "stale_claim_fails_closed": (
+            actual["state"] == "insufficient"
+            and actual["decision_state"] == "research_needed"
+            and actual["verified_claim_count"] == 0
+            and actual["stale_source_count"] > 0
+        ),
         "fresh_evidence_recovers_answer": (
             baseline["state"] == "insufficient"
             and actual["state"] == "completed"
@@ -321,6 +352,14 @@ def _result_record(fixture, baseline, run, session, events, adapter):
             actual["state"] == "insufficient"
             and "source_conflict" in actual["gap_classes"]
             and actual["accepted_source_count"] >= baseline["accepted_source_count"]
+        ),
+        "three_query_gap_history_bounded": (
+            actual["query_count"] == actual["observed_adapter_calls"] == 3
+            and actual["state"] == "insufficient"
+            and actual["stop_reason"] != "provider_error"
+            and actual["decision_state"] == "research_needed"
+            and actual["assessment_count"] <= 6
+            and len(run.gaps) <= 512
         ),
         "ambiguous_identity_fails_closed": (
             actual["state"] == "insufficient"
@@ -381,7 +420,11 @@ def _result_record(fixture, baseline, run, session, events, adapter):
         and actual["source_count"] <= run.budget.max_sources
         and actual["token_count"] <= run.budget.max_tokens
         and run.usage.provider_cost_usd <= run.budget.max_provider_cost_usd
-        and run.usage.elapsed_seconds <= run.budget.max_elapsed_seconds
+        and (
+            run.usage.elapsed_seconds <= run.budget.max_elapsed_seconds
+            or run.state == RunState.INSUFFICIENT
+            and run.terminal_reason.value in {"side_effect_uncertain", "elapsed_budget_exhausted"}
+        )
         and run.usage.allowed_domains <= len(run.budget.allowed_domains)
         and len(run.events) <= 128
         and (run.state != RunState.COMPLETED or not any(g.status == "open" and g.required for g in run.gaps))
@@ -432,8 +475,8 @@ async def evaluate():
     results = []
     for fixture in load_fixtures():
         baseline = await _run_single_pass(fixture)
-        run, session, events, adapter = await _run_iterative(fixture)
-        results.append(_result_record(fixture, baseline, run, session, events, adapter))
+        run, session, events, adapter, decision_repository = await _run_iterative(fixture)
+        results.append(_result_record(fixture, baseline, run, session, events, adapter, decision_repository))
     report = {
         "schema_version": "iterative-research-evaluation-v1",
         "synthetic": True,

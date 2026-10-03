@@ -37,9 +37,10 @@ from personal_ai.agents.research.iterative_contracts import (
     SufficiencyAssessment,
 )
 from personal_ai.context.assembler import ContextAssembler
-from personal_ai.decisions.contracts import DecisionCreateRequest, DecisionResult
+from personal_ai.decisions.contracts import ClaimProposal, DecisionCreateRequest, DecisionResult
 from personal_ai.decisions.repositories import InMemoryDecisionRepository
 from personal_ai.decisions.service import DecisionService
+from personal_ai.entities.research import MoneyValue
 from personal_ai.evidence.contracts import AdapterAttempt, EvidenceSelection, SearchQuery
 from personal_ai.evidence.pipeline import extract_evidence, select_evidence, validate_synthesis
 from personal_ai.search.contracts import SearchResult
@@ -70,16 +71,16 @@ def _host_allowed(url: str, domains: tuple[str, ...]) -> bool:
         host = urlsplit(canonical_url(url)).hostname or ""
     except ValueError:
         return False
-    return any(host == domain or host.endswith("." + domain) for domain in domains)
+    return host in domains
 
 
 def _normalized_query(query: str) -> str:
     return " ".join(query.casefold().split())
 
 
-def _evidence_conflicts(session: ResearchSession, now: datetime) -> tuple[tuple[UUID, UUID], ...]:
+def _evidence_conflicts(session: ResearchSession, now: datetime) -> tuple[UUID, ...]:
     evidence = [item for item in session.evidence if item.expires_at > now]
-    conflicts = []
+    conflicting_ids: set[UUID] = set()
     for index, first in enumerate(evidence):
         first_words = set(re.findall(r"\w+", first.passage.casefold()))
         first_numbers = set(re.findall(r"(?<!\w)[+-]?\d+(?:\.\d+)?", first.passage))
@@ -93,8 +94,11 @@ def _evidence_conflicts(session: ResearchSession, now: datetime) -> tuple[tuple[
             second_numbers = set(re.findall(r"(?<!\w)[+-]?\d+(?:\.\d+)?", second.passage))
             second_negated = bool(re.search(r"\b(no|not|never|without|cannot|can't)\b", second.passage, re.IGNORECASE))
             if first_numbers != second_numbers or first_negated != second_negated:
-                conflicts.append((first.id, second.id))
-    return tuple(conflicts)
+                conflicting_ids.update((first.id, second.id))
+    # Store one immutable conflict finding per assessment with all participating
+    # evidence IDs. This keeps the bounded run record small as the evidence set
+    # grows while preserving the complete provenance for review.
+    return tuple(sorted(conflicting_ids, key=str))
 
 
 class _DecisionSessionView:
@@ -187,6 +191,13 @@ class IterativeResearchService:
             synthesis_reserve_tokens=self.settings.iterative_synthesis_reserve_tokens,
             synthesis_reserve_seconds=self.settings.iterative_synthesis_reserve_seconds,
             synthesis_reserve_cost_usd=self.settings.iterative_synthesis_cost_usd,
+            search_cost_usd=self.settings.iterative_search_cost_usd,
+            provider_timeout_seconds=self.settings.research_provider_timeout_seconds,
+            attempt_limit=self.settings.research_attempt_limit,
+            synthesis_output_tokens=min(
+                self.settings.max_response_tokens,
+                self.settings.iterative_synthesis_reserve_tokens,
+            ),
         )
 
     async def create(self, request: IterativeResearchRequest) -> ResearchRun:
@@ -205,6 +216,7 @@ class IterativeResearchService:
             return existing
 
         now = self.clock()
+        run_id = uuid5(request.idempotency_key, f"phase8-run:{self.owner_id}")
         phase5_request = ResearchRequest(
             question=request.question,
             freshness=request.freshness,
@@ -222,10 +234,10 @@ class IterativeResearchService:
             created_at=now,
             updated_at=now,
             expires_at=now + timedelta(hours=24),
+            iterative_run_id=run_id,
         )
         session = await self._io(self.sessions.create, session)
         budget = self._budget()
-        run_id = uuid4()
         event = RunEvent(
             id=uuid4(),
             run_id=run_id,
@@ -248,8 +260,8 @@ class IterativeResearchService:
             ),
             BudgetLedgerEntry(
                 id=uuid4(), run_id=run_id, dimension="elapsed_seconds",
-                reserved=Decimal(budget.synthesis_reserve_seconds),
-                status="reserved", idempotency_key="reserve:synthesis:elapsed", created_at=now,
+                reserved=Decimal(budget.max_elapsed_seconds),
+                status="reserved", idempotency_key="reserve:run:elapsed", created_at=now,
             ),
         )
         run = ResearchRun(
@@ -268,17 +280,24 @@ class IterativeResearchService:
         )
         return await self._io(self.runs.create, run)
 
-    async def start(self, request: IterativeResearchRequest) -> tuple[ResearchRun, UUID | None]:
+    async def start(self, request: IterativeResearchRequest, after: int = -1) -> tuple[ResearchRun, UUID | None]:
+        if after < -1:
+            raise ResearchError("research_event_cursor_invalid", 422)
+        try:
+            existing = await self._io(self.runs.get_by_key, self.owner_id, request.idempotency_key)
+        except ResourceNotFoundError:
+            existing = None
+        if existing is None and after != -1:
+            raise ResearchError("research_event_cursor_invalid", 422)
+        if existing is not None:
+            self._validate_cursor(existing, after)
         run = await self.create(request)
         if run.state in TERMINAL_STATES:
             return run, None
         now = self.clock()
         token = uuid4()
-        lease = now + timedelta(seconds=min(
-            run.budget.max_elapsed_seconds,
-            max(30, self.settings.research_timeout_seconds + 5),
-        ))
         deadline = now + timedelta(seconds=run.budget.max_elapsed_seconds)
+        lease = min(deadline, now + timedelta(seconds=max(30, run.budget.provider_timeout_seconds + 5)))
         try:
             claimed, _ = await self._io(
                 self.runs.claim, self.owner_id, run.id, token, now, lease, deadline
@@ -303,14 +322,12 @@ class IterativeResearchService:
 
     async def events(self, run_id: UUID, after: int = -1) -> tuple[RunEvent, ...]:
         run = await self.get(run_id)
-        if after < -1:
-            raise ResearchError("research_event_cursor_invalid", 422)
+        self._validate_cursor(run, after)
         return tuple(event for event in run.events if event.sequence > after)
 
     async def event_stream(self, run_id: UUID, after: int = -1):
         run = await self.get(run_id)
-        if after < -1:
-            raise ResearchError("research_event_cursor_invalid", 422)
+        self._validate_cursor(run, after)
         for item in run.events:
             if item.sequence > after:
                 yield self._frame(run.session_id, item)
@@ -331,8 +348,9 @@ class IterativeResearchService:
             session_state="insufficient", uncertain=uncertain,
         )
 
-    async def resume(self, run_id: UUID) -> tuple[ResearchRun, UUID | None]:
+    async def resume(self, run_id: UUID, after: int = -1) -> tuple[ResearchRun, UUID | None]:
         run = await self.get(run_id)
+        self._validate_cursor(run, after)
         if run.state in TERMINAL_STATES:
             return run, None
         now = self.clock()
@@ -369,6 +387,7 @@ class IterativeResearchService:
                     "usage": usage,
                 },
                 now=now,
+                allow_expired_lease=True,
             )
             return run, None
         if self._remaining_elapsed(run) <= 0:
@@ -378,15 +397,17 @@ class IterativeResearchService:
             )
             return run, None
         token = uuid4()
-        lease = now + timedelta(seconds=min(
-            self._remaining_elapsed(run),
-            max(30, self.settings.research_timeout_seconds + 5),
-        ))
         deadline = run.created_at + timedelta(seconds=run.budget.max_elapsed_seconds)
+        lease = min(deadline, now + timedelta(seconds=max(30, run.budget.provider_timeout_seconds + 5)))
         claimed, _ = await self._io(
             self.runs.claim, self.owner_id, run.id, token, now, lease, deadline
         )
         return claimed, token
+
+    @staticmethod
+    def _validate_cursor(run: ResearchRun, after: int) -> None:
+        if after < -1 or after >= len(run.events):
+            raise ResearchError("research_event_cursor_invalid", 422)
 
     async def stream(self, run: ResearchRun, lease_token: UUID | None, after: int = -1):
         if after < -1:
@@ -447,12 +468,22 @@ class IterativeResearchService:
                 current = await self.get(run.id)
                 if current.lease_owner == token and current.state not in TERMINAL_STATES:
                     session = await self._io(self.runs.session, self.owner_id, current.session_id)
+                    unresolved = any(
+                        attempt.status == "started"
+                        and not any(child.parent_attempt_id == attempt.id for child in session.attempts)
+                        for attempt in session.attempts
+                    )
+                    uncertain = current.state in {
+                        RunState.SEARCHING, RunState.EXTRACTING, RunState.SYNTHESIZING,
+                    } and (unresolved or current.state in {RunState.EXTRACTING, RunState.SYNTHESIZING})
+                    elapsed = self._remaining_elapsed(current) <= 0
                     await self._stop(
                         current,
                         session,
-                        StopReason.PROVIDER_ERROR,
+                        StopReason.SIDE_EFFECT_UNCERTAIN if uncertain else StopReason.ELAPSED_BUDGET_EXHAUSTED if elapsed else StopReason.PROVIDER_ERROR,
                         RunState.INSUFFICIENT,
                         session_state="insufficient",
+                        uncertain=uncertain,
                     )
             except Exception:  # noqa: BLE001 - durable state will be reconciled by lease recovery
                 return
@@ -512,6 +543,7 @@ class IterativeResearchService:
                         return
                 session = await self._io(self.runs.session, self.owner_id, run.session_id)
                 assessment, gaps, selection, decision_state, decision_id = await self._assess(run, session)
+                self._assert_lease(run, token)
                 latest_iteration = run.iterations[-1]
                 updated_iteration = latest_iteration.model_copy(update={
                     "assessment_id": assessment.id, "state": "assessing",
@@ -570,7 +602,7 @@ class IterativeResearchService:
                 if remaining_sources <= 0:
                     await self._finish(run, session, selection, StopReason.SOURCE_BUDGET_EXHAUSTED, False)
                     return
-                search_cost = Decimal(0) if self.adapter.name == "fake" else self.settings.iterative_search_cost_usd
+                search_cost = Decimal(0) if self.adapter.name == "fake" else run.budget.search_cost_usd
                 if search_cost + self._reserved_or_used(run, "provider_cost_usd") > run.budget.max_provider_cost_usd:
                     await self._finish(run, session, selection, StopReason.PROVIDER_COST_BUDGET_EXHAUSTED, False)
                     return
@@ -650,6 +682,7 @@ class IterativeResearchService:
         iteration = run.iterations[-1]
         gaps: list[EvidenceGap] = []
         decision_id = None
+        assessment_id = uuid5(run.id, f"assessment:{len(run.assessments)}")
         accepted_sources = {source.id: source for source in session.observations if source.status == "accepted"}
         eligible = tuple(
             item for item in session.evidence
@@ -662,10 +695,10 @@ class IterativeResearchService:
         )
         stale_sources = tuple(source for source in session.observations if source.status == "stale")
         conflicts = _evidence_conflicts(session, now)
-        for first, second in conflicts:
+        if conflicts:
             gaps.append(self._gap(
                 run, iteration, EvidenceGapClass.SOURCE_CONFLICT, None, None,
-                (first, second), True, "competing_source_observations",
+                conflicts, True, "competing_source_observations",
             ))
 
         relevance = self._relevant_evidence(session.request.question, eligible)
@@ -677,11 +710,17 @@ class IterativeResearchService:
         decision_state = None
         if run.decision_intent is not None:
             try:
+                proposed_candidates = self._propose_supported_claims(run, eligible)
+                if not all(candidate.claims for candidate in proposed_candidates):
+                    # Do not ask Phase 6 to persist anonymous candidate entities
+                    # without evidence-backed identity/claims. Such provisional
+                    # records can make a later exact candidate look ambiguous.
+                    raise ValueError("candidate claims are not yet supported")
                 selection = self._decision_selection(session, eligible, now)
                 decision_request = DecisionCreateRequest(
                     idempotency_key=uuid5(run.id, f"assessment:{len(run.assessments)}"),
                     research_session_id=session.id,
-                    candidates=run.decision_intent.candidates,
+                    candidates=proposed_candidates,
                     constraints=run.decision_intent.constraints,
                     preferences=run.decision_intent.preferences,
                 )
@@ -741,12 +780,21 @@ class IterativeResearchService:
                 self._candidate_names.update(candidate_names)
             except Exception:  # noqa: BLE001 - fail closed to explicit insufficiency
                 decision_state = "research_needed"
-                for constraint in run.decision_intent.constraints:
+                self._candidate_names = getattr(self, "_candidate_names", {})
+                for index, candidate in enumerate(run.decision_intent.candidates):
+                    target_id = uuid5(run.id, f"candidate:{index}")
+                    self._candidate_names[target_id] = candidate.canonical_name
                     gaps.append(self._gap(
-                        run, iteration, EvidenceGapClass.REQUIRED_FACT_MISSING,
-                        None, constraint.attribute, (), constraint.required,
-                        "missing_required_claim", constraint_id=constraint.id,
+                        run, iteration, EvidenceGapClass.CANDIDATE_COVERAGE,
+                        target_id, None, (), True, "candidate_not_covered",
                     ))
+                    for constraint in run.decision_intent.constraints:
+                        if constraint.required:
+                            gaps.append(self._gap(
+                                run, iteration, EvidenceGapClass.REQUIRED_FACT_MISSING,
+                                target_id, constraint.attribute, (), True,
+                                "missing_required_claim", constraint_id=constraint.id,
+                            ))
 
         if not gaps and (
             run.decision_intent is None and bool(relevance)
@@ -776,7 +824,7 @@ class IterativeResearchService:
                 ))
 
         assessment = SufficiencyAssessment(
-            id=uuid5(run.id, f"assessment:{len(run.assessments)}"),
+            id=assessment_id,
             run_id=run.id,
             iteration_id=iteration.id,
             sufficient=sufficient,
@@ -801,6 +849,100 @@ class IterativeResearchService:
             created_at=now,
         )
 
+    def _propose_supported_claims(self, run, evidence):
+        """Extract only explicit, unambiguous money literals for user candidates.
+
+        Phase 6 remains the sole verifier: this creates ordinary claim proposals
+        with exact evidence IDs and lets its subject/literal/identity policies
+        decide whether they become verified claims.
+        """
+        intent = run.decision_intent
+        if intent is None:
+            return ()
+        price_requested = any(item.attribute == "price" for item in intent.constraints)
+        if not price_requested:
+            return intent.candidates
+        price_scopes = {item.scope for item in intent.constraints if item.attribute == "price"}
+        # A single proposal cannot establish which of multiple price scopes a
+        # passage refers to. Preserve user claims and fail closed in that case.
+        if len(price_scopes) > 1:
+            return intent.candidates
+        currency_pattern = re.compile(
+            r"\b(USD|EUR|GBP|CAD|AUD)\s*\$?\s*(\d[\d,]*(?:\.\d{1,2})?)"
+            r"|\$?\s*(\d[\d,]*(?:\.\d{1,2})?)\s*\b(USD|EUR|GBP|CAD|AUD)\b",
+            re.IGNORECASE,
+        )
+        negation = re.compile(r"\b(?:not|no|never|without|free|unavailable|discontinued)\b", re.IGNORECASE)
+        result = []
+        for candidate in intent.candidates:
+            subject = re.compile(r"(?<![\w])" + re.escape(candidate.canonical_name) + r"(?![\w])", re.IGNORECASE)
+            values: dict[tuple[str, Decimal], list[UUID]] = {}
+            originals: dict[tuple[str, Decimal], str] = {}
+            for item in evidence:
+                if not subject.search(item.passage):
+                    continue
+                identifier_values = [
+                    value for key, value in candidate.identifiers.items()
+                    if key.casefold() != "url"
+                ]
+                if any(
+                    not re.search(r"(?<![\w])" + re.escape(value) + r"(?![\w])", item.passage, re.IGNORECASE)
+                    for value in identifier_values
+                ):
+                    continue
+                scoped_constraints = [
+                    constraint for constraint in intent.constraints
+                    if constraint.attribute == "price" and constraint.scope
+                ]
+                if scoped_constraints:
+                    passage_words = set(re.findall(r"[a-z0-9]+", item.passage.casefold()))
+                    if not any(
+                        set(re.findall(r"[a-z0-9]+", constraint.scope.casefold())) <= passage_words
+                        for constraint in scoped_constraints
+                    ):
+                        continue
+                # If another candidate is named in the same passage, subject
+                # attribution is ambiguous and no proposal is made from it.
+                other_candidate_named = any(
+                    other is not candidate
+                    and re.search(r"(?<![\w])" + re.escape(other.canonical_name) + r"(?![\w])", item.passage, re.IGNORECASE)
+                    for other in intent.candidates
+                )
+                if other_candidate_named:
+                    continue
+                for match in currency_pattern.finditer(item.passage):
+                    left_currency, left_amount, right_amount, right_currency = match.groups()
+                    currency = (left_currency or right_currency).upper()
+                    amount = Decimal((left_amount or right_amount).replace(",", ""))
+                    between = item.passage[match.start():match.end()]
+                    subject_start = subject.search(item.passage).start()
+                    after_subject = item.passage[subject_start:match.start()]
+                    local_assertion = after_subject[-100:] + between
+                    if (
+                        negation.search(local_assertion)
+                        or not re.search(r"\b(price|cost|costs|priced|retails?)\b", after_subject, re.IGNORECASE)
+                        or any(ord(char) < 32 for char in match.group())
+                    ):
+                        continue
+                    key = (currency, amount)
+                    values.setdefault(key, []).append(item.id)
+                    originals[key] = match.group().strip()
+            # Multiple values or currencies are a conflict. Let the ordinary
+            # Phase 6 evaluation report missing/conflicting evidence instead.
+            proposals = list(candidate.claims)
+            if len(values) == 1:
+                (currency, amount), evidence_ids = next(iter(values.items()))
+                proposals.append(ClaimProposal(
+                    attribute="price",
+                    typed_value=MoneyValue(amount=amount, currency=currency),
+                    original_value=originals[(currency, amount)],
+                    currency=currency,
+                    evidence_ids=tuple(sorted(set(evidence_ids), key=str)),
+                    scope=next(iter(price_scopes), None),
+                ))
+            result.append(candidate.model_copy(update={"claims": tuple(proposals)}))
+        return tuple(result)
+
     async def _select(self, session, deadline):
         selection, messages = await self._io(
             select_evidence, session, self.context, self.clock(), deadline, self.reranker
@@ -808,27 +950,36 @@ class IterativeResearchService:
         return selection, messages
 
     def _relevant_evidence(self, question: str, evidence):
-        words = set(re.findall(r"\w+", question.casefold()))
-        if not words:
+        ignored = {"what", "which", "when", "where", "does", "with", "from", "that", "this", "have", "about", "show", "find", "tell", "give", "for", "the", "and", "are", "is", "of", "to", "in", "on", "a", "an", "current"}
+        words = {word for word in re.findall(r"[a-z0-9]+", question.casefold()) if len(word) > 1 and word not in ignored}
+        if len(words) < 2:
             return ()
+        aliases = {
+            "schedule": {"schedule", "open", "opens", "opening", "hours", "time", "times"},
+            "hours": {"hours", "open", "opens", "opening", "time", "times"},
+            "current": {"current", "today", "latest", "updated", "new"},
+            "price": {"price", "cost", "costs", "priced", "retails", "usd", "eur", "gbp"},
+            "availability": {"available", "availability", "in-stock", "stock"},
+        }
+        groups = [aliases.get(word, {word}) for word in sorted(words)]
         return tuple(
             item for item in evidence
-            if words.intersection(re.findall(r"\w+", item.passage.casefold()))
+            if all(group & set(re.findall(r"[a-z0-9]+", item.passage.casefold())) for group in groups)
         )
 
     def _gap(
         self, run, iteration, gap_class, target_id, attribute, evidence_ids,
         required, reason, *, constraint_id=None,
     ):
-        identity = (
-            f"assessment:{len(run.assessments)}:{iteration.sequence}:"
-            f"{gap_class}:{target_id}:{constraint_id}:{attribute}:"
-            + ",".join(sorted(str(item) for item in evidence_ids))
-        )
+        semantic_key = f"{gap_class}:{target_id}:{constraint_id}:{attribute}:"
+        assessment_id = uuid5(run.id, f"assessment:{len(run.assessments)}")
+        identity = f"{assessment_id}:{semantic_key}"
         return EvidenceGap(
             id=uuid5(run.id, identity),
             run_id=run.id,
+            assessment_id=assessment_id,
             iteration_id=iteration.id,
+            semantic_key=semantic_key,
             gap_class=gap_class,
             target_id=target_id,
             constraint_id=constraint_id,
@@ -840,25 +991,33 @@ class IterativeResearchService:
         )
 
     def _merge_gaps(self, run, fresh):
-        fresh_ids = {item.id for item in fresh}
-        old = [
-            item.model_copy(update={"status": "resolved"})
-            if item.status == "open" and item.id not in fresh_ids
-            else item
-            for item in run.gaps
-        ]
-        old_ids = {item.id for item in old}
-        additions = sorted(
-            (item for item in fresh if item.id not in old_ids),
-            key=lambda item: item.id.hex,
-        )
+        fresh_keys = {item.semantic_key for item in fresh}
+        open_indexes: dict[str, list[int]] = {}
+        for index, item in enumerate(run.gaps):
+            if item.status == "open":
+                open_indexes.setdefault(item.semantic_key, []).append(index)
+        old = list(run.gaps)
+        for semantic_key, indexes in open_indexes.items():
+            if semantic_key not in fresh_keys:
+                for index in indexes:
+                    old[index] = old[index].model_copy(update={"status": "resolved"})
+        seen = set()
+        additions = []
+        for item in fresh:
+            if item.semantic_key in seen:
+                continue
+            seen.add(item.semantic_key)
+            additions.append(item)
         return (*old, *additions)
 
     def _select_gap(self, gaps):
         open_gaps = [item for item in gaps if item.status == "open" and item.required]
         if not open_gaps:
             open_gaps = [item for item in gaps if item.status == "open"]
-        return min(open_gaps, key=lambda item: (GAP_PRIORITY[item.gap_class], str(item.id))) if open_gaps else None
+        return min(
+            open_gaps,
+            key=lambda item: (GAP_PRIORITY[item.gap_class], item.semantic_key),
+        ) if open_gaps else None
 
     def _plan_followup(self, run, session, gap):
         request = IterativeResearchRequest(
@@ -970,7 +1129,7 @@ class IterativeResearchService:
                 "ledger": (*run.ledger, entry),
                 "iterations": (*run.iterations[:-1], iteration),
             },
-            event_payload=self._progress_payload(run, query_count=len(session_candidate.queries), gap_count=len([g for g in run.gaps if g.status == "open"])),
+            event_payload=self._progress_payload(run, query_count=len(session_candidate.queries), gap_count=len({g.semantic_key for g in run.gaps if g.status == "open"})),
             now=now,
         )
 
@@ -1001,7 +1160,7 @@ class IterativeResearchService:
             stopped = await self._stop(run, session, StopReason.SIDE_EFFECT_UNCERTAIN, RunState.INSUFFICIENT, uncertain=True)
             return stopped, session
         attempt_number = 1 + sum(attempt.status == "failed" for attempt in existing_attempts)
-        attempt_number = min(attempt_number, self.settings.research_attempt_limit)
+        attempt_number = min(attempt_number, run.budget.attempt_limit)
         remaining_sources = min(
             int(run.budget.max_sources - run.usage.sources - self._pending(run, "sources")),
             12 - len(session.observations),
@@ -1013,11 +1172,11 @@ class IterativeResearchService:
         if remaining_elapsed <= 0:
             stopped = await self._stop(run, session, StopReason.ELAPSED_BUDGET_EXHAUSTED, RunState.INSUFFICIENT)
             return stopped, session
-        search_cost = Decimal(0) if self.adapter.name == "fake" else self.settings.iterative_search_cost_usd
+        search_cost = Decimal(0) if self.adapter.name == "fake" else run.budget.search_cost_usd
         if search_cost + self._reserved_or_used(run, "provider_cost_usd") > run.budget.max_provider_cost_usd:
             stopped = await self._stop(run, session, StopReason.PROVIDER_COST_BUDGET_EXHAUSTED, RunState.INSUFFICIENT)
             return stopped, session
-        call_elapsed = Decimal(str(min(float(remaining_elapsed), self.settings.research_provider_timeout_seconds)))
+        call_elapsed = Decimal(str(min(float(remaining_elapsed), run.budget.provider_timeout_seconds)))
         if call_elapsed <= 0:
             stopped = await self._stop(run, session, StopReason.ELAPSED_BUDGET_EXHAUSTED, RunState.INSUFFICIENT)
             return stopped, session
@@ -1039,7 +1198,6 @@ class IterativeResearchService:
         for dimension, reserve in (
             ("sources", Decimal(source_reserve)),
             ("provider_cost_usd", search_cost),
-            ("elapsed_seconds", call_elapsed),
             ("allowed_domains", Decimal(domain_reserve)),
         ):
             entries.append(BudgetLedgerEntry(
@@ -1177,13 +1335,12 @@ class IterativeResearchService:
         used = run.usage.model_copy(update={
             "sources": run.usage.sources + int(source_total),
             "provider_cost_usd": run.usage.provider_cost_usd + search_cost,
-            "elapsed_seconds": min(run.budget.max_elapsed_seconds, run.usage.elapsed_seconds + duration),
+            "elapsed_seconds": run.usage.elapsed_seconds,
             "allowed_domains": run.usage.allowed_domains + int(new_domains),
         })
         settled_ledger = list(run.ledger)
         settled_ledger = self._settle(settled_ledger, f"{prefix}:sources", source_total)
         settled_ledger = self._settle(settled_ledger, f"{prefix}:provider_cost_usd", search_cost)
-        settled_ledger = self._settle(settled_ledger, f"{prefix}:elapsed_seconds", duration)
         settled_ledger = self._settle(settled_ledger, f"{prefix}:allowed_domains", new_domains)
         iteration = run.iterations[-1].model_copy(update={"state": "assessing"})
         run = await self._transition(
@@ -1228,7 +1385,7 @@ class IterativeResearchService:
             completed_at=self.clock(),
             error_code=error_code,
         )
-        retryable = bool(getattr(error, "retryable", False)) and attempt_number < self.settings.research_attempt_limit
+        retryable = bool(getattr(error, "retryable", False)) and attempt_number < run.budget.attempt_limit
         failed_query = query.model_copy(update={
             "state": "planned" if retryable else "failed",
             "executed_at": None if retryable else self.clock(),
@@ -1242,14 +1399,13 @@ class IterativeResearchService:
             revision=session.revision + 1,
         )
         used = run.usage.model_copy(update={
-            "provider_cost_usd": run.usage.provider_cost_usd + (Decimal(0) if self.adapter.name == "fake" else self.settings.iterative_search_cost_usd),
-            "elapsed_seconds": min(run.budget.max_elapsed_seconds, run.usage.elapsed_seconds + duration),
+            "provider_cost_usd": run.usage.provider_cost_usd + (Decimal(0) if self.adapter.name == "fake" else run.budget.search_cost_usd),
+            "elapsed_seconds": run.usage.elapsed_seconds,
         })
         ledger = list(run.ledger)
         ledger = self._settle(ledger, f"{prefix}:sources", Decimal(0))
-        cost = Decimal(0) if self.adapter.name == "fake" else self.settings.iterative_search_cost_usd
+        cost = Decimal(0) if self.adapter.name == "fake" else run.budget.search_cost_usd
         ledger = self._settle(ledger, f"{prefix}:provider_cost_usd", cost)
-        ledger = self._settle(ledger, f"{prefix}:elapsed_seconds", duration)
         ledger = self._settle(ledger, f"{prefix}:allowed_domains", Decimal(0))
         if retryable:
             run = await self._transition(
@@ -1303,13 +1459,23 @@ class IterativeResearchService:
         return stopped, final_session
 
     async def _finish(self, run, session, selection_data, stop_reason, sufficient):
+        self._assert_lease(run, run.lease_owner)
         if selection_data is None:
+            remaining = self._remaining_elapsed(run)
+            if remaining <= 0:
+                await self._stop(run, session, StopReason.ELAPSED_BUDGET_EXHAUSTED, RunState.INSUFFICIENT)
+                return
             selection, messages = await self._select(
                 session,
-                deadline=monotonic() + max(1, self._remaining_elapsed(run)),
+                deadline=monotonic() + remaining,
             )
         else:
             selection, messages = selection_data
+        try:
+            self._assert_lease(run, run.lease_owner)
+        except ResearchError:
+            await self._stop(run, session, StopReason.ELAPSED_BUDGET_EXHAUSTED, RunState.INSUFFICIENT)
+            return
         if not selection.evidence_ids or any(reason == "budget" for reason in selection.excluded.values()):
             await self._stop(
                 run, session,
@@ -1318,15 +1484,35 @@ class IterativeResearchService:
                 session_state="insufficient",
             )
             return
-        if selection.token_count > min(run.budget.max_tokens, run.budget.synthesis_reserve_tokens):
+        token_entry = next(
+            (entry for entry in run.ledger if entry.idempotency_key == "reserve:synthesis:tokens"),
+            None,
+        )
+        if token_entry is None or token_entry.status != "reserved":
+            await self._stop(run, session, StopReason.TOKEN_BUDGET_EXHAUSTED, RunState.INSUFFICIENT)
+            return
+        other_reserved_tokens = self._pending(run, "tokens") - token_entry.reserved
+        token_capacity = run.budget.max_tokens - run.usage.tokens - other_reserved_tokens
+        output_tokens = min(
+            run.budget.synthesis_output_tokens,
+            int(token_capacity - selection.token_count),
+        )
+        if selection.token_count <= 0 or output_tokens <= 0:
             await self._stop(
                 run, session, StopReason.TOKEN_BUDGET_EXHAUSTED,
                 RunState.INSUFFICIENT, session_state="insufficient",
             )
             return
+        synthesis_token_reservation = Decimal(selection.token_count + output_tokens)
         if self._remaining_elapsed(run) <= 0:
             await self._stop(run, session, StopReason.ELAPSED_BUDGET_EXHAUSTED, RunState.INSUFFICIENT)
             return
+        ledger = tuple(
+            entry.model_copy(update={"reserved": max(entry.reserved, synthesis_token_reservation)})
+            if entry.idempotency_key == token_entry.idempotency_key
+            else entry
+            for entry in run.ledger
+        )
         iteration = run.iterations[-1].model_copy(update={"state": "synthesizing"}) if run.iterations else None
         run = await self._transition(
             run,
@@ -1334,34 +1520,48 @@ class IterativeResearchService:
             "synthesizing",
             updates={
                 "iterations": (*run.iterations[:-1], iteration) if iteration else run.iterations,
+                "ledger": ledger,
             },
             event_payload=self._progress_payload(
                 run, evidence_count=len(selection.evidence_ids),
             ),
         )
         response = ""
-        start = self.duration_clock()
         try:
-            async with asyncio.timeout(min(
-                self.settings.research_timeout_seconds,
+            synth_timeout = min(
+                run.budget.provider_timeout_seconds,
                 run.budget.synthesis_reserve_seconds,
-            )):
-                async for delta in self.llm.stream(messages):
-                    if not isinstance(delta, str) or len(response) + len(delta) > 20000:
+                self._remaining_elapsed(run),
+            )
+            bounded_stream = getattr(self.llm, "stream_bounded", None)
+            iterator = (
+                bounded_stream(
+                    messages,
+                    max_output_tokens=output_tokens,
+                    timeout_seconds=synth_timeout,
+                )
+                if bounded_stream else self.llm.stream(messages)
+            )
+            async with asyncio.timeout(synth_timeout):
+                async for delta in iterator:
+                    if not isinstance(delta, str) or len(response) + len(delta) > min(20000, output_tokens * 4):
                         raise ResearchError("synthesis_oversized")
                     response += delta
+            self._assert_lease(run, run.lease_owner)
             answer, citations = validate_synthesis(
                 session.model_copy(update={"selection": selection}), response
             )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - retain evidence but withhold unsupported output
+            expired = self._remaining_elapsed(run) <= 0
             await self._stop(
-                run, session, StopReason.SYNTHESIS_ERROR, RunState.INSUFFICIENT,
+                run, session,
+                StopReason.ELAPSED_BUDGET_EXHAUSTED if expired else StopReason.SYNTHESIS_ERROR,
+                RunState.INSUFFICIENT,
                 session_state="insufficient", uncertain=True,
             )
             return
-        duration = Decimal(str(max(0.0, self.duration_clock() - start)))
         if any(citation.expires_at <= self.clock() for citation in citations):
             await self._stop(run, session, StopReason.EVIDENCE_INSUFFICIENT, RunState.INSUFFICIENT)
             return
@@ -1383,14 +1583,15 @@ class IterativeResearchService:
         )
         ledger = list(run.ledger)
         token_key, cost_key = "reserve:synthesis:tokens", "reserve:synthesis:cost"
-        ledger = self._settle(ledger, token_key, Decimal(selection.token_count))
+        ledger = self._settle(ledger, token_key, synthesis_token_reservation)
         synthesis_cost = run.budget.synthesis_reserve_cost_usd
         ledger = self._settle(ledger, cost_key, synthesis_cost)
-        ledger = self._settle(ledger, "reserve:synthesis:elapsed", duration)
+        wall_elapsed = Decimal(str(max(0.0, (now - run.created_at).total_seconds())))
+        ledger = self._settle(ledger, "reserve:run:elapsed", wall_elapsed)
         used = run.usage.model_copy(update={
-            "tokens": run.usage.tokens + selection.token_count,
+            "tokens": run.usage.tokens + int(synthesis_token_reservation),
             "provider_cost_usd": run.usage.provider_cost_usd + synthesis_cost,
-            "elapsed_seconds": min(run.budget.max_elapsed_seconds, run.usage.elapsed_seconds + duration),
+            "elapsed_seconds": wall_elapsed,
         })
         closed = run.iterations[-1].model_copy(update={
             "state": "completed" if sufficient else "incomplete",
@@ -1439,10 +1640,12 @@ class IterativeResearchService:
                 "sources": int(totals["sources"]),
                 "tokens": int(totals["tokens"]),
                 "provider_cost_usd": totals["provider_cost_usd"],
-                "elapsed_seconds": min(Decimal(run.budget.max_elapsed_seconds), totals["elapsed_seconds"]),
+                "elapsed_seconds": totals["elapsed_seconds"],
                 "allowed_domains": int(totals["allowed_domains"]),
             })
-        if session is not None and session.state == "running":
+        if session is not None and session.state in {"pending", "running"}:
+            if session.iterative_run_id != run.id:
+                raise ResearchError("research_conflict", 409)
             session = evolve_session(
                 session,
                 state=session_state,
@@ -1477,13 +1680,17 @@ class IterativeResearchService:
             },
             event_payload=self._progress_payload(run, stop_reason=reason),
             now=now,
+            allow_expired_lease=state in TERMINAL_STATES,
         )
 
     async def _transition(
         self, run, state, event_type, *, session=None, updates=None,
-        event_payload=None, now=None,
+        event_payload=None, now=None, allow_expired_lease=False,
     ):
         now = now or self.clock()
+        deadline = run.created_at + timedelta(seconds=run.budget.max_elapsed_seconds)
+        if state not in TERMINAL_STATES and now >= deadline:
+            raise ResearchError("research_elapsed_budget_exhausted", 409)
         values = run.model_dump()
         values.update(updates or {})
         payload = event_payload or self._progress_payload(run)
@@ -1506,12 +1713,15 @@ class IterativeResearchService:
             values["lease_owner"] = None
             values["lease_expires_at"] = None
         elif run.lease_owner is not None:
-            values["lease_expires_at"] = now + timedelta(seconds=min(
-                max(30, self.settings.research_timeout_seconds + 5),
-                max(1, self._remaining_elapsed(run)),
-            ))
+            values["lease_expires_at"] = min(
+                deadline,
+                now + timedelta(seconds=max(30, run.budget.provider_timeout_seconds + 5)),
+            )
         candidate = ResearchRun.model_validate(values)
-        committed = await self._io(self.runs.commit, self.owner_id, candidate, session)
+        committed = await self._io(
+            self.runs.commit, self.owner_id, candidate, session,
+            now=now, allow_expired_lease=allow_expired_lease,
+        )
         for queue in self._listeners.get(run.id, ()):
             queue.put_nowait(committed.events[-1])
         return committed
@@ -1522,7 +1732,7 @@ class IterativeResearchService:
             "query_count": run.usage.queries,
             "source_count": run.usage.sources,
             "evidence_count": 0,
-            "gap_count": len([item for item in run.gaps if item.status == "open"]),
+            "gap_count": len({item.semantic_key for item in run.gaps if item.status == "open"}),
             "decision_state": run.decision_state,
         }
         values.update(changes)
@@ -1549,8 +1759,11 @@ class IterativeResearchService:
 
     def _remaining_elapsed(self, run):
         wall_used = max(0.0, (self.clock() - run.created_at).total_seconds())
-        ledger_used = float(run.usage.elapsed_seconds + self._pending(run, "elapsed_seconds"))
-        return max(0.0, run.budget.max_elapsed_seconds - max(wall_used, ledger_used))
+        reserved_synthesis = (
+            0 if run.state == RunState.SYNTHESIZING
+            else run.budget.synthesis_reserve_seconds
+        )
+        return max(0.0, run.budget.max_elapsed_seconds - wall_used - reserved_synthesis)
 
     def _settle_pending_for_stop(self, run, *, uncertain):
         new_ledger = []
@@ -1560,6 +1773,12 @@ class IterativeResearchService:
                 new_ledger.append(entry)
                 if entry.settled is not None:
                     totals[entry.dimension] += entry.settled
+                continue
+            if entry.idempotency_key == "reserve:run:elapsed":
+                settled = Decimal(str(max(0.0, (self.clock() - run.created_at).total_seconds())))
+                updated = entry.model_copy(update={"settled": settled, "status": "settled"})
+                new_ledger.append(updated)
+                totals[entry.dimension] += settled
                 continue
             affected = uncertain and (
                 entry.idempotency_key.startswith("attempt:")
@@ -1580,7 +1799,7 @@ class IterativeResearchService:
             "sources": int(totals["sources"]),
             "tokens": int(totals["tokens"]),
             "provider_cost_usd": totals["provider_cost_usd"],
-            "elapsed_seconds": min(Decimal(run.budget.max_elapsed_seconds), totals["elapsed_seconds"]),
+            "elapsed_seconds": totals["elapsed_seconds"],
             "allowed_domains": int(totals["allowed_domains"]),
         })
         return new_ledger, usage
@@ -1602,7 +1821,13 @@ class IterativeResearchService:
         return result
 
     def _assert_lease(self, run, token):
-        if run.state in TERMINAL_STATES or token is None or run.lease_owner != token:
+        now = self.clock()
+        deadline = run.created_at + timedelta(seconds=run.budget.max_elapsed_seconds)
+        if (
+            run.state in TERMINAL_STATES or token is None or run.lease_owner != token
+            or run.lease_expires_at is None or run.lease_expires_at <= now
+            or deadline <= now
+        ):
             raise ResearchError("research_conflict", 409)
 
     async def _io(self, function, *args, **kwargs):

@@ -245,11 +245,11 @@ requires `DECISION_ENABLED`.
 
 | Method and route | Contract |
 | --- | --- |
-| `POST /v1/research/iterative` | `iterative-research-request-v1`: question, freshness, idempotency key, and optional user-authored candidates/constraints/preferences. Starts one durable run and returns a progress stream. Candidate facts/claims are rejected; Phase 6 must verify facts from run evidence. |
+| `POST /v1/research/iterative` | `iterative-research-request-v1`: question, freshness, idempotency key, and optional user-authored candidates/constraints/preferences. Starts one durable run and returns a progress stream. Optional `Last-Event-ID` is validated before creation/claim. Candidate facts/claims are rejected; conservative typed proposals from exact evidence IDs must still pass the Phase 6 verifier. |
 | `GET /v1/research/iterative/runs/{run_id}` | Owner-scoped run status, immutable budget snapshot, safe counts, stop reason, gaps, and saved Phase 5 session detail. Read only. |
-| `GET /v1/research/iterative/runs/{run_id}/events?after=N` | Persisted safe events after the event sequence. Does not claim a lease or start work. |
+| `GET /v1/research/iterative/runs/{run_id}/events?after=N` | Persisted safe events after the event sequence. An optional `Last-Event-ID` overrides `after` and must be a persisted sequence. Does not claim a lease or start work. |
 | `POST /v1/research/iterative/runs/{run_id}/cancel` | Explicitly makes a nonterminal run cancelled. The cancellation fence prevents later run/session writes. |
-| `POST /v1/research/iterative/runs/{run_id}/resume` | Claims an expired lease only when no external side effect is uncertain. An uncertain provider/model attempt is settled conservatively and ends incomplete without redispatch. A live lease returns the persisted event snapshot. |
+| `POST /v1/research/iterative/runs/{run_id}/resume` | Accepts `Last-Event-ID` as the last already-seen sequence (default `-1`), validates it against persisted events before claiming work, then claims an expired lease only when no external side effect is uncertain. An uncertain provider/model attempt is settled conservatively and ends incomplete without redispatch. A live lease returns only persisted events after the cursor. |
 
 Every `research.iterative.*` event is committed with the run transition before
 it is streamed. Payloads include only schema/version, run/session IDs, event

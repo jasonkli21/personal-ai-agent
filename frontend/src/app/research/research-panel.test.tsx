@@ -3,27 +3,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ResearchPanel from "./research-panel";
 
 const fetch = vi.fn();
+const sessionId = "22222222-2222-4222-8222-222222222222";
+const runId = "11111111-1111-4111-8111-111111111111";
 const session = {
-  schema_version:"research-v1", id:"research-session", state:"pending",
-  request:{question:"Synthetic star color?",freshness:"general",idempotency_key:"key"},
+  schema_version:"research-v1", id:sessionId, state:"pending",
+  request:{question:"Synthetic star color?",freshness:"general",idempotency_key:"33333333-3333-4333-8333-333333333333"},
   answer:null,failure_code:null,expires_at:"2099-01-01T00:00:00Z",citations:[],attempts:[],
 };
 const completed = {...session,state:"completed",answer:"The synthetic star is blue. [1]",attempts:[{adapter:"fake"}],citations:[{
-  number:1,url:"https://example.org/star",title:"Synthetic source",observed_at:"2026-10-02T00:00:00Z",expires_at:"2099-01-01T00:00:00Z",
+  number:1,evidence_id:"44444444-4444-4444-8444-444444444444",source_observation_id:"55555555-5555-4555-8555-555555555555",url:"https://example.org/star",title:"Synthetic source",observed_at:"2026-10-02T00:00:00Z",expires_at:"2099-01-01T00:00:00Z",
 }]};
 function json(body: unknown) { return new Response(JSON.stringify(body),{headers:{"Content-Type":"application/json"}}); }
 function stream() { return new Response(`event: research.terminal\ndata: ${JSON.stringify({schema_version:"research-v1",session_id:session.id,state:"completed"})}\n\n`, {headers:{"Content-Type":"text/event-stream"}}); }
 function fill() { fireEvent.change(screen.getByLabelText("Research question"),{target:{value:session.request.question}}); }
 const iterativeSession = {
-  ...session, id:"iterative-session", state:"completed", answer:"Partial answer from supported evidence. [1]",
-  citations:[{number:1,url:"https://example.org/verified",title:"Verified synthetic source",observed_at:"2026-10-02T00:00:00Z",expires_at:"2099-01-01T00:00:00Z"}],
+  ...session, id:"66666666-6666-4666-8666-666666666666", state:"completed", answer:"Partial answer from supported evidence. [1]",
+  citations:[{number:1,evidence_id:"77777777-7777-4777-8777-777777777777",source_observation_id:"88888888-8888-4888-8888-888888888888",url:"https://example.org/verified",title:"Verified synthetic source",observed_at:"2026-10-02T00:00:00Z",expires_at:"2099-01-01T00:00:00Z"}],
 };
 const iterativeRun = {
-  schema_version:"iterative-research-v1", id:"iterative-run", state:"insufficient", terminal_reason:"query_budget_exhausted" as string | null,
+  schema_version:"iterative-research-v1", id:runId, session_id:iterativeSession.id,state:"insufficient", terminal_reason:"query_budget_exhausted" as string | null,
   current_iteration:1, decision_state:"research_needed", decision_ids:[],
   budget:{max_iterations:3,max_queries:2,max_sources:8,max_elapsed_seconds:90,max_tokens:6000,max_provider_cost_usd:"0.05",allowed_domains:["example.org"]},
   usage:{iterations:2,queries:2,sources:1,tokens:640,provider_cost_usd:"0.004",elapsed_seconds:"12",allowed_domains:1},
-  gaps:[{gap_class:"required_fact_missing",required:true,status:"open",reason_code:"no_cited_support"}],
+  gaps:[
+    {semantic_key:"required_fact_missing:price",gap_class:"required_fact_missing",required:true,status:"open",reason_code:"missing_required_claim"},
+    {semantic_key:"required_fact_missing:price",gap_class:"required_fact_missing",required:true,status:"open",reason_code:"missing_required_claim"},
+  ],
   events:[],
 };
 function iterativeEvent(sequence:number,eventType:string,state:string) {
@@ -127,7 +132,7 @@ describe("research page", () => {
     fetch.mockImplementation((url:string,init?:RequestInit) => {
       if(url==="/api/research/iterative") return Promise.resolve(activeStream);
       if(url.endsWith("/cancel")) return Promise.resolve(json(cancelled));
-      if(url.endsWith("/runs/iterative-run")) return Promise.resolve(json(cancelledDetail));
+      if(url.endsWith(`/runs/${runId}`)) return Promise.resolve(json(cancelledDetail));
       throw new Error(`Unexpected request ${url} ${init?.method ?? "GET"}`);
     });
     render(<ResearchPanel iterativeEnabled />); fill();
@@ -136,7 +141,7 @@ describe("research page", () => {
 
     fireEvent.click(await screen.findByRole("button",{name:"Cancel research"}));
     expect(await screen.findByRole("heading",{name:"Research cancelled"})).toBeInTheDocument();
-    expect(fetch.mock.calls[1][0]).toBe("/api/research/iterative/runs/iterative-run/cancel");
+    expect(fetch.mock.calls[1][0]).toBe(`/api/research/iterative/runs/${runId}/cancel`);
     controller.enqueue(new TextEncoder().encode(iterativeEvent(1,"cancelled","cancelled")));
     controller.close();
     await waitFor(()=>expect(fetch).toHaveBeenCalledTimes(3));
