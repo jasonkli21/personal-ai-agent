@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from personal_ai.settings import Settings
 
 
@@ -20,3 +23,29 @@ def test_settings_load_from_example_file() -> None:
     assert settings.max_context_tokens == 32768
     assert not settings.context_inspection_enabled
     assert settings.allowed_web_origins == ["http://localhost:3000"]
+
+
+def test_production_refuses_development_authentication() -> None:
+    with pytest.raises(ValidationError, match="authentication_configuration_invalid"):
+        Settings(
+            ai_provider="gemini",
+            ai_model="gemini-2.5-flash",
+            app_environment="production",
+            allowed_origins=("https://personal.example",),
+        )
+
+
+def test_oidc_production_requires_one_allowlisted_verified_account() -> None:
+    settings = Settings(
+        ai_provider="gemini",
+        ai_model="gemini-2.5-flash",
+        app_environment="production",
+        auth_mode="google_oidc",
+        auth_required=True,
+        auth_audience="client-id.apps.googleusercontent.com",
+        auth_allowed_emails=("owner@gmail.com",),
+        allowed_origins=("https://personal.example",),
+    )
+
+    assert settings.auth_required
+    assert settings.auth_allowed_emails == ("owner@gmail.com",)

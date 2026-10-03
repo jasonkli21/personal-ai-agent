@@ -1,5 +1,6 @@
 import { ApiError } from "./api";
 import type { ResearchSession } from "./research-api";
+import { authenticatedFetch } from "./auth";
 
 export type IterativeRunState =
   | "pending" | "assessing" | "planning" | "searching" | "extracting" | "synthesizing"
@@ -158,7 +159,7 @@ function validRun(value: unknown): value is IterativeRun {
 }
 
 async function response(path: string, init?: RequestInit) {
-  const res = await fetch(`/api/research/iterative${path}`, {
+  const res = await authenticatedFetch(`/api/research/iterative${path}`, {
     ...init,
     cache: "no-store",
     headers: { "Content-Type": "application/json", ...init?.headers },

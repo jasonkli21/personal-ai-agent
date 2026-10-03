@@ -1,10 +1,11 @@
 """Typed application configuration loaded from the environment."""
 
 import math
+import os
 from decimal import Decimal
 from functools import lru_cache
 
-from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, model_validator
+from pydantic import AliasChoices, AnyHttpUrl, Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +32,38 @@ class Settings(BaseSettings):
     ai_api_key: SecretStr = Field(default=SecretStr(""))
     firestore_project_id: str | None = None
     firestore_emulator_host: str | None = None
+    app_environment: str = Field(default="local", pattern=r"^(local|test|staging|production)$")
+    auth_mode: str = Field(default="development", pattern=r"^(development|google_oidc)$")
+    auth_required: bool = False
+    auth_issuer: str = Field(default="https://accounts.google.com", min_length=1, max_length=200)
+    auth_audience: str = Field(default="", max_length=500)
+    auth_allowed_emails: tuple[str, ...] = Field(default=(), max_length=1)
+    auth_hosted_domain: str = Field(default="", max_length=253)
+    auth_recent_token_seconds: int = Field(default=300, ge=60, le=900)
+    worker_push_auth_required: bool = False
+    worker_push_audience: str = Field(default="", max_length=500)
+    worker_push_service_account: str = Field(default="", max_length=254)
+    worker_maintenance_auth_required: bool = False
+    worker_maintenance_audience: str = Field(default="", max_length=500)
+    worker_maintenance_service_account: str = Field(default="", max_length=254)
+    observability_redaction_version: str = Field(
+        default="redaction-v1", min_length=1, max_length=100
+    )
+    api_rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
+    provider_calls_per_day_limit: int = Field(default=100, ge=1, le=100000)
+    input_tokens_per_day_limit: int = Field(default=200000, ge=1, le=100000000)
+    chat_kill_switch_enabled: bool = False
+    research_kill_switch_enabled: bool = False
+    worker_kill_switch_enabled: bool = False
+    external_providers_kill_switch_enabled: bool = False
+    maintenance_enabled: bool = False
+    maintenance_batch_size: int = Field(default=40, ge=1, le=100)
+    backup_enabled: bool = False
+    export_enabled: bool = False
+    deletion_enabled: bool = False
+    deletion_grace_period_days: int = Field(default=7, ge=1, le=90)
+    export_max_records: int = Field(default=5000, ge=1, le=50000)
+    export_max_bytes: int = Field(default=8_388_608, ge=65536, le=33_554_432)
     request_timeout_seconds: float = Field(default=30, gt=0, le=300)
     max_context_tokens: int = Field(default=32_768, gt=0)
     max_response_tokens: int = Field(default=4_096, gt=0)
@@ -103,12 +136,18 @@ class Settings(BaseSettings):
     iterative_max_sources: int = Field(default=12, ge=1, le=12)
     iterative_max_elapsed_seconds: int = Field(default=90, ge=1, le=300)
     iterative_max_tokens: int = Field(default=16_000, ge=512, le=32_768)
-    iterative_max_provider_cost_usd: Decimal = Field(default=Decimal("0.05"), ge=0, le=Decimal("1.00"))
-    iterative_allowed_domains: tuple[str, ...] = Field(default=("example.org",), min_length=1, max_length=12)
+    iterative_max_provider_cost_usd: Decimal = Field(
+        default=Decimal("0.05"), ge=0, le=Decimal("1.00")
+    )
+    iterative_allowed_domains: tuple[str, ...] = Field(
+        default=("example.org",), min_length=1, max_length=12
+    )
     iterative_synthesis_reserve_tokens: int = Field(default=4096, ge=128, le=8192)
     iterative_synthesis_reserve_seconds: int = Field(default=20, ge=1, le=60)
     iterative_search_cost_usd: Decimal = Field(default=Decimal("0.005"), ge=0, le=Decimal("0.10"))
-    iterative_synthesis_cost_usd: Decimal = Field(default=Decimal("0.005"), ge=0, le=Decimal("0.10"))
+    iterative_synthesis_cost_usd: Decimal = Field(
+        default=Decimal("0.005"), ge=0, le=Decimal("0.10")
+    )
 
     travel_enabled: bool = False
     shopping_enabled: bool = False
@@ -132,7 +171,9 @@ class Settings(BaseSettings):
 
     decision_enabled: bool = False
     decision_inspection_enabled: bool = False
-    entity_resolution_policy_version: str = Field(default="resolve-v2", min_length=1, max_length=100)
+    entity_resolution_policy_version: str = Field(
+        default="resolve-v2", min_length=1, max_length=100
+    )
     entity_match_threshold: float = Field(default=0.9, ge=0, le=1)
     decision_constraint_policy_version: str = Field(
         default="constraint-v1", min_length=1, max_length=100
@@ -162,8 +203,11 @@ class Settings(BaseSettings):
         )
         if self.memory_scoring_policy_version != "score-v1":
             raise ValueError("memory_configuration_invalid")
-        if (any(not math.isfinite(weight) for weight in weights) or sum(weights) <= 0
-                or self.memory_job_execution_seconds >= self.memory_job_lease_seconds):
+        if (
+            any(not math.isfinite(weight) for weight in weights)
+            or sum(weights) <= 0
+            or self.memory_job_execution_seconds >= self.memory_job_lease_seconds
+        ):
             raise ValueError("memory_configuration_invalid")
         if (
             self.memory_enabled or "memory_max_context_tokens" in self.model_fields_set
@@ -204,10 +248,14 @@ class Settings(BaseSettings):
             or any(not domain or "." not in domain or ".." in domain for domain in domains)
         ):
             raise ValueError("iterative_research_configuration_invalid")
-        if self.research_enabled and self.research_search_adapter == "brave" and (
+        if (
+            self.research_enabled
+            and self.research_search_adapter == "brave"
+            and (
                 self.research_storage != "firestore"
                 or not self.research_provider_storage_approved
                 or not self.research_api_key.get_secret_value()
+            )
         ):
             raise ValueError("research_configuration_invalid")
         decision_weights = (self.decision_feature_preference_weight,)
@@ -219,7 +267,8 @@ class Settings(BaseSettings):
             or any(not math.isfinite(weight) for weight in decision_weights)
             or self.decision_max_candidates > self.decision_max_comparison_rows
             or self.domain_max_comparison_rows < self.decision_max_candidates
-            or any(domain_gates) and not self.decision_enabled
+            or any(domain_gates)
+            and not self.decision_enabled
         ):
             raise ValueError("decision_configuration_invalid")
         if (
@@ -240,21 +289,71 @@ class Settings(BaseSettings):
                 not self.shopping_provider_policy_approved
                 or not self.shopping_off_user_agent
                 or self.shopping_off_base_url.scheme != "https"
-                or self.shopping_off_base_url.host not in {
+                or self.shopping_off_base_url.host
+                not in {
                     "world.openfoodfacts.net",
                     "world.openfoodfacts.org",
                 }
             )
         ):
             raise ValueError("shopping_configuration_invalid")
+        emails = self.auth_allowed_emails
+        if self.app_environment not in {"local", "test"} and (
+            self.auth_mode != "google_oidc"
+            or not self.auth_required
+            or not self.auth_audience
+            or len(emails) != 1
+        ):
+            raise ValueError("authentication_configuration_invalid")
+        if self.auth_mode == "development" and self.app_environment not in {"local", "test"}:
+            raise ValueError("authentication_configuration_invalid")
+        if self.auth_mode == "google_oidc" and (
+            not self.auth_required
+            or not self.auth_audience
+            or len(emails) != 1
+            or any(
+                not email
+                or email != email.strip().lower()
+                or email.count("@") != 1
+                or any(char.isspace() for char in email)
+                or "\r" in email
+                or "\n" in email
+                for email in emails
+            )
+            or self.auth_issuer not in {"accounts.google.com", "https://accounts.google.com"}
+        ):
+            raise ValueError("authentication_configuration_invalid")
+        if self.auth_hosted_domain and (
+            self.auth_hosted_domain != self.auth_hosted_domain.strip().lower()
+            or "." not in self.auth_hosted_domain
+            or any(not label or len(label) > 63 for label in self.auth_hosted_domain.split("."))
+        ):
+            raise ValueError("authentication_configuration_invalid")
+        if self.auth_mode == "google_oidc" and any(
+            email.rsplit("@", 1)[-1] != "gmail.com"
+            and email.rsplit("@", 1)[-1] != self.auth_hosted_domain
+            for email in emails
+        ):
+            raise ValueError("authentication_configuration_invalid")
+        if len(set(emails)) != len(emails):
+            raise ValueError("authentication_configuration_invalid")
+        if self.app_environment in {"staging", "production"} and not self.allowed_origins:
+            raise ValueError("authentication_configuration_invalid")
         return self
 
-    cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
+    allowed_origins: tuple[AnyHttpUrl, ...] = Field(
+        default=(), validation_alias=AliasChoices("ALLOWED_ORIGINS", "CORS_ORIGINS")
+    )
+
+    @property
+    def cors_origins(self) -> tuple[AnyHttpUrl, ...]:
+        """Backward-compatible name for the explicit browser-origin allowlist."""
+        return self.allowed_origins
 
     @property
     def allowed_web_origins(self) -> list[str]:
         """Return browser origins in the form expected by CORS middleware."""
-        return [str(origin).rstrip("/") for origin in self.cors_origins]
+        return [str(origin).rstrip("/") for origin in self.allowed_origins]
 
 
 @lru_cache
@@ -266,3 +365,13 @@ def get_settings() -> Settings:
         if "context_budget_invalid" in str(error):
             raise ContextBudgetInvalidError("context_budget_invalid") from error
         raise
+
+
+def validate_startup_configuration() -> None:
+    """Fail startup when a deployed process lacks an explicit safe environment."""
+    cloud_run_service = os.environ.get("K_SERVICE")
+    environment = os.environ.get("APP_ENVIRONMENT")
+    if cloud_run_service or environment in {"staging", "production"}:
+        settings = get_settings()
+        if cloud_run_service and settings.app_environment not in {"staging", "production"}:
+            raise ValueError("deployed_environment_must_be_explicit")

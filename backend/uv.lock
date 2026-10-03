@@ -808,6 +808,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anyio" },
     { name = "fastapi" },
+    { name = "google-auth" },
     { name = "google-cloud-firestore" },
     { name = "google-cloud-pubsub" },
     { name = "google-genai" },
@@ -833,6 +834,7 @@ build = [
 requires-dist = [
     { name = "anyio", specifier = ">=4.0,<5.0" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
+    { name = "google-auth", specifier = ">=2.0,<3.0" },
     { name = "google-cloud-firestore", specifier = ">=2.16,<3.0" },
     { name = "google-cloud-pubsub", specifier = ">=2.21,<3.0" },
     { name = "google-genai", specifier = ">=1.0,<2.0" },

@@ -69,6 +69,8 @@ async def test_retry_cap_and_quota_failure():
     assert result.state == "failed" and len(result.attempts) == 4
     assert len(service.adapter.calls) == 2
     assert result.queries[0].state == "failed"
+    service.clock = lambda: NOW + timedelta(days=2)
+    assert (await service.detail(result.id)).state == "expired"
 
 
 @pytest.mark.anyio

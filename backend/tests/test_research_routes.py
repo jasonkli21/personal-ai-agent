@@ -21,6 +21,7 @@ def environment():
     service, request = build_fixture(load_fixtures()[0])
     prior = app.dependency_overrides.copy()
     app.dependency_overrides[research_service] = lambda: service
+    app.dependency_overrides[get_settings] = lambda: service.settings
     try:
         yield service, request, TestClient(app)
     finally:

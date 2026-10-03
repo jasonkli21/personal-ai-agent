@@ -1,5 +1,6 @@
 "use client";
 
+import { authenticatedFetch } from "../../../lib/auth";
 import { FormEvent, useState } from "react";
 
 type Metadata = { id: string; role: string; characters: number; reason?: string };
@@ -32,7 +33,7 @@ export default function ContextInspector({ enabled = false, memoryEnabled = fals
       const search = new URLSearchParams();
       memoryIds.split(",").map(id => id.trim()).filter(Boolean).forEach(id => search.append("memory_ids", id));
       const suffix = search.size ? `?${search.toString()}` : "";
-      const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId.trim())}/context${suffix}`, { cache: "no-store" });
+      const response = await authenticatedFetch(`/api/conversations/${encodeURIComponent(conversationId.trim())}/context${suffix}`, { cache: "no-store" });
       if (!response.ok) throw new Error("Context inspection is unavailable for this conversation.");
       setReport(await response.json() as Report);
     } catch { setError("Context inspection is unavailable for this conversation."); }

@@ -1,4 +1,5 @@
 import { ApiError } from "./api";
+import { authenticatedFetch } from "./auth";
 
 export type DomainId = "travel" | "shopping";
 export type ComparisonState = "recommended" | "eligible_unranked" | "research_needed" | "no_verified_match";
@@ -213,7 +214,7 @@ function isSafeLink(value: string) {
 }
 
 async function response(domain: DomainId, path: string, init?: RequestInit) {
-  const result = await fetch(`/api/domains/${domain}${path}`, {
+  const result = await authenticatedFetch(`/api/domains/${domain}${path}`, {
     ...init,
     cache: "no-store",
     headers: { "Content-Type": "application/json", ...init?.headers },

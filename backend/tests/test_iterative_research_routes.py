@@ -20,6 +20,7 @@ def environment():
     ),))
     previous = app.dependency_overrides.copy()
     app.dependency_overrides[iterative_research_service] = lambda: service
+    app.dependency_overrides[get_settings] = lambda: service.settings
     try:
         yield service, TestClient(app)
     finally:

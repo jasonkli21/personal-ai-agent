@@ -18,6 +18,7 @@ from personal_ai.api.dependencies import (
     get_current_owner_id,
     get_llm_client,
     get_message_repository,
+    get_settings,
 )
 from personal_ai.context import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
@@ -92,6 +93,7 @@ def _install_dependencies(llm: ControlledLLM):
     )
     conversations.create(conversation)
     app.dependency_overrides = {
+        get_settings: lambda: Settings(ai_provider="fake", ai_model="test"),
         get_conversation_repository: lambda: conversations,
         get_message_repository: lambda: messages,
         get_current_owner_id: lambda: "local",

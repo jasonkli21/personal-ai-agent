@@ -1,12 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { backendAuthorizationHeaders } from "../../../lib/conversation-proxy";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:8000";
 
   try {
-    const response = await fetch(`${apiBaseUrl}/health`, { cache: "no-store" });
+    const headers = await backendAuthorizationHeaders(request, apiBaseUrl);
+    const response = await fetch(`${apiBaseUrl}/health`, { cache: "no-store", headers });
     const body = await response.json();
 
     return NextResponse.json({ web: "ok", api: body }, { status: response.status });

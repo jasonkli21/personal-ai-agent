@@ -1,3 +1,5 @@
+import { authenticatedFetch } from "./auth";
+
 export type EvidenceReference = {
   evidence_id: string;
   source_observation_id: string;
@@ -82,7 +84,7 @@ export type DecisionInspection = {
 };
 
 async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, cache: "no-store" });
+  const response = await authenticatedFetch(path, { ...init, cache: "no-store" });
   if (!response.ok) throw new Error("Decision details are unavailable.");
   return response.json() as Promise<T>;
 }

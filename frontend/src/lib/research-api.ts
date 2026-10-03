@@ -1,4 +1,5 @@
 import { ApiError } from "./api";
+import { authenticatedFetch } from "./auth";
 
 export type ResearchState = "pending" | "running" | "completed" | "insufficient" | "failed" | "expired";
 export type ResearchCitation = {
@@ -17,7 +18,7 @@ export type ResearchProgress = {
 };
 
 async function response(path: string, init?: RequestInit) {
-  const res = await fetch(`/api/research${path}`, {
+  const res = await authenticatedFetch(`/api/research${path}`, {
     ...init, cache: "no-store", headers: { "Content-Type": "application/json" },
   });
   if (!res.ok) {

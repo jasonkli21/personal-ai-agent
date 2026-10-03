@@ -80,7 +80,7 @@ class ResearchService:
                 answer=None,
                 citations=(),
             )
-        if session.state in {"completed", "pending", "insufficient"} and session.expires_at <= now:
+        if session.state in {"completed", "pending", "insufficient", "failed"} and session.expires_at <= now:
             return evolve(session, state="expired", answer=None, citations=())
         return session
 

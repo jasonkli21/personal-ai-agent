@@ -1,8 +1,9 @@
 """FastAPI dependencies for the Phase 1 conversation surface."""
 
+import time
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, Request
 
 from personal_ai.context import ContextAssembler
 from personal_ai.context.contracts import ConversationSummaryRepository
@@ -22,9 +23,35 @@ from personal_ai.storage.repositories import ConversationRepository, MessageRepo
 PHASE_1_OWNER_ID = "local"
 
 
-def get_current_owner_id() -> str:
-    """Return the temporary single-user identity used in Phase 1."""
-    return PHASE_1_OWNER_ID
+def get_current_owner_id(request: Request) -> str:
+    """Return only the owner resolved from the application authentication boundary."""
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(status_code=401, detail="authentication_required")
+    return principal.owner_id
+
+
+def get_current_principal(request: Request):
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(status_code=401, detail="authentication_required")
+    return principal
+
+
+def require_recent_auth(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    """Require a recently issued Google credential for account lifecycle actions."""
+    principal = get_current_principal(request)
+    now = int(time.time())
+    if (
+        not principal.authenticated
+        or principal.issued_at > now + 60
+        or now - principal.issued_at > settings.auth_recent_token_seconds
+    ):
+        raise HTTPException(status_code=401, detail="reauthentication_required")
+    return principal
 
 
 def get_conversation_repository(

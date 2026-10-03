@@ -61,5 +61,5 @@ it("forwards the resume cursor header to the backend", async () => {
     }),
     "/runs/run-1/resume",
   );
-  expect(fetch.mock.calls[0][1].headers).toMatchObject({ "Last-Event-ID": "7" });
+  expect(new Headers(fetch.mock.calls[0][1].headers).get("Last-Event-ID")).toBe("7");
 });

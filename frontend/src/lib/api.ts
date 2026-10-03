@@ -1,3 +1,5 @@
+import { authenticatedFetch } from "./auth";
+
 export type Conversation = {
   id: string;
   owner_id: string;
@@ -44,7 +46,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`/api${path}`, {
+    response = await authenticatedFetch(`/api${path}`, {
       ...init,
       headers: { "Content-Type": "application/json", ...init?.headers },
     });
@@ -61,7 +63,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function streamRequest(path: string, init: RequestInit, handlers: StreamHandlers): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(`/api${path}`, {
+    response = await authenticatedFetch(`/api${path}`, {
       ...init,
       headers: { "Content-Type": "application/json", ...init.headers },
     });

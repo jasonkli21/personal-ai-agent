@@ -66,14 +66,16 @@ describe("iterative research progress API", () => {
   });
 
   it("sends a nonempty Last-Event-ID when resuming from a persisted timeline cursor", async () => {
-    const fetch = vi.fn().mockResolvedValue(stream([event(1, runId)]));
+    const fetch = vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
+      expect(input).toBe(`/api/research/iterative/runs/${runId}/resume`);
+      expect(options?.method).toBe("POST");
+      expect(new Headers(options?.headers).get("Last-Event-ID")).toBe("0");
+      return Promise.resolve(stream([event(1, runId)]));
+    });
     vi.stubGlobal("fetch", fetch);
 
     await iterativeResearchApi.resume(runId, 0, vi.fn());
 
-    expect(fetch).toHaveBeenCalledWith(`/api/research/iterative/runs/${runId}/resume`, expect.objectContaining({
-      method: "POST", headers: expect.objectContaining({ "Last-Event-ID": "0" }),
-    }));
   });
 
   it("rejects unexpected rendered progress fields and malformed saved responses", async () => {

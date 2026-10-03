@@ -6,11 +6,23 @@ import base64
 import binascii
 import json
 import logging
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from functools import partial
 from typing import Any
+from uuid import uuid4
 
+import anyio
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from personal_ai.agents.research.repositories import FirestoreResearchRepository
+from personal_ai.auth.directory import FirestorePrincipalDirectory
+from personal_ai.auth.service_tokens import (
+    InvalidServiceToken,
+    ServiceTokenVerificationUnavailable,
+    verify_google_service_token,
+)
 from personal_ai.llm.memory import GeminiMemoryAdapter
 from personal_ai.memory.lifecycle_jobs import (
     MemoryJobNotification,
@@ -20,12 +32,20 @@ from personal_ai.memory.lifecycle_jobs import (
 )
 from personal_ai.memory.lifecycle_repositories import FirestoreMemoryLifecycleRepository
 from personal_ai.memory.repositories import FirestoreMemoryRepository
-from personal_ai.settings import Settings, get_settings
+from personal_ai.settings import Settings, get_settings, validate_startup_configuration
 from personal_ai.storage import FirestoreMessageRepository
 from personal_ai.storage.errors import ResourceNotFoundError, StorageError
 
 logger = logging.getLogger(__name__)
-app = FastAPI(title="Personal AI Memory Worker", version="0.1.0")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    validate_startup_configuration()
+    yield
+
+
+app = FastAPI(title="Personal AI Memory Worker", version="0.1.0", lifespan=lifespan)
 
 
 class _PubSubMessage(BaseModel):
@@ -49,9 +69,7 @@ def _components(settings: Settings):
     )
     lifecycle = FirestoreMemoryLifecycleRepository(memories, messages)
     publisher = PubSubMemoryJobPublisher(settings)
-    republisher = MemoryLifecycleCoordinator(
-        settings, lifecycle, memories, publisher=publisher
-    )
+    republisher = MemoryLifecycleCoordinator(settings, lifecycle, memories, publisher=publisher)
     worker = MemoryLifecycleWorker(
         settings,
         lifecycle,
@@ -71,6 +89,23 @@ async def health() -> dict[str, str]:
 async def receive_memory_task(request: Request) -> Response:
     """Accept authenticated Pub/Sub push envelopes containing opaque job IDs."""
     settings = get_settings()
+    if settings.worker_push_auth_required:
+        authorization = request.headers.get("authorization", "")
+        token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
+        try:
+            verify_google_service_token(
+                token,
+                audience=settings.worker_push_audience,
+                service_account=settings.worker_push_service_account,
+            )
+        except InvalidServiceToken:
+            logger.info("Memory job push rejected reason=invalid_service_identity")
+            return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+        except ServiceTokenVerificationUnavailable as error:
+            logger.info("Memory job push unavailable error_class=%s", type(error).__name__)
+            return Response(status_code=503)
+    if settings.worker_kill_switch_enabled:
+        return Response(status_code=204)
     if not settings.memory_enabled or not settings.memory_lifecycle_worker_enabled:
         return Response(status_code=204)
 
@@ -104,3 +139,66 @@ async def receive_memory_task(request: Request) -> Response:
     if result in ("completed", "disabled"):
         return Response(status_code=204)
     return Response(status_code=503)
+
+
+@app.post("/tasks/maintenance")
+async def run_scheduled_maintenance(request: Request) -> Response:
+    """Run bounded, authenticated maintenance without physically deleting records."""
+    settings = get_settings()
+    if settings.worker_maintenance_auth_required:
+        authorization = request.headers.get("authorization", "")
+        token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
+        try:
+            verify_google_service_token(
+                token,
+                audience=settings.worker_maintenance_audience,
+                service_account=settings.worker_maintenance_service_account,
+            )
+        except InvalidServiceToken:
+            logger.info("Scheduled maintenance rejected reason=invalid_service_identity")
+            return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+        except ServiceTokenVerificationUnavailable as error:
+            logger.info("Scheduled maintenance unavailable error_class=%s", type(error).__name__)
+            return Response(status_code=503)
+    if settings.worker_kill_switch_enabled or not settings.maintenance_enabled:
+        return Response(status_code=204)
+
+    try:
+        directory = FirestorePrincipalDirectory(
+            project_id=settings.firestore_project_id,
+            emulator_host=settings.firestore_emulator_host,
+        )
+        owner_ids = await anyio.to_thread.run_sync(partial(directory.active_owner_ids, limit=2))
+        if not owner_ids:
+            logger.info("Scheduled maintenance completed reason=no_active_owner")
+            return Response(status_code=204)
+        if len(owner_ids) != 1:
+            logger.error("Scheduled maintenance rejected reason=multiple_active_owners")
+            return Response(status_code=503)
+        _, republisher = await anyio.to_thread.run_sync(_components, settings)
+        published = await anyio.to_thread.run_sync(
+            partial(republisher.republish_pending, limit=settings.memory_job_candidate_limit)
+        )
+        research = FirestoreResearchRepository(
+            project_id=settings.firestore_project_id,
+            emulator_host=settings.firestore_emulator_host,
+        )
+        expired = await anyio.to_thread.run_sync(
+            partial(
+                research.expire_due_for_owner,
+                owner_ids[0],
+                now=datetime.now(UTC),
+                correlation_id=str(uuid4()),
+                limit=settings.maintenance_batch_size,
+            )
+        )
+    except Exception as error:  # noqa: BLE001 - scheduler retries transient operational failures
+        logger.info("Scheduled maintenance failed error_class=%s", type(error).__name__)
+        return Response(status_code=503)
+    logger.info(
+        "Scheduled maintenance completed republished=%d expired_sessions=%d", published, expired
+    )
+    return Response(
+        content=json.dumps({"republished_jobs": published, "expired_sessions": expired}),
+        media_type="application/json",
+    )

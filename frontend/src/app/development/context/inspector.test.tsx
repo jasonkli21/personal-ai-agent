@@ -26,7 +26,7 @@ it("shows enabled selection metadata and exclusion reasons", async () => {
   expect(screen.getByText(/older: summary_covered/)).toBeInTheDocument();
   expect(screen.getByText(/Working summary summary-1/)).toBeInTheDocument();
   expect(screen.getByText(/42 provider tokens/)).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conversation-1/context", { cache: "no-store" });
+  expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conversation-1/context", expect.objectContaining({ cache: "no-store" }));
 });
 
 it("shows supplied memory provenance and selected versus excluded records", async () => {
@@ -45,5 +45,5 @@ it("shows supplied memory provenance and selected versus excluded records", asyn
   expect(await screen.findByText(/no semantic query or prior-use claim/)).toBeInTheDocument();
   expect(screen.getByText(/preference memory-1: fit estimate selected/)).toBeInTheDocument();
   expect(screen.getByText(/explicit_correction memory-2: excluded \(budget\)/)).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conversation-1/context?memory_ids=memory-1&memory_ids=memory-2", { cache: "no-store" });
+  expect(fetchMock).toHaveBeenCalledWith("/api/conversations/conversation-1/context?memory_ids=memory-1&memory_ids=memory-2", expect.objectContaining({ cache: "no-store" }));
 });

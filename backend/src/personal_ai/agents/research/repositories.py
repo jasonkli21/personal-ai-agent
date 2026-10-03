@@ -206,3 +206,61 @@ class FirestoreResearchRepository:
             return session
 
         return self._run(lambda: bounded_transaction(self.client, operation))
+
+    def expire_due_for_owner(self, owner_id, *, now, correlation_id, limit=40):
+        """Mark expired sessions ineligible while retaining evidence for export/audit."""
+        from google.cloud import firestore
+
+        query = (
+            self.sessions.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
+            .where(
+                filter=firestore.FieldFilter(
+                    "state", "in", ["pending", "completed", "insufficient", "failed"]
+                )
+            )
+            .where(filter=firestore.FieldFilter("expires_at", "<=", now))
+            .order_by("expires_at")
+            .limit(limit)
+        )
+
+        def operation():
+            snapshots = tuple(query.stream())
+            if not snapshots:
+                return 0
+            batch = self.client.batch()
+            for snapshot in snapshots:
+                values = snapshot.to_dict() or {}
+                if values.get("owner_id") != owner_id or values.get("state") not in {
+                    "pending", "completed", "insufficient", "failed"
+                }:
+                    continue
+                batch.update(
+                    snapshot.reference,
+                    {
+                        "state": "expired",
+                        "answer": None,
+                        "citations": [],
+                        "revision": int(values.get("revision", 0)) + 1,
+                        "updated_at": now,
+                    },
+                    option=firestore.LastUpdateOption(snapshot.update_time),
+                )
+                audit_id = sha256(
+                    f"research-expiry\0{snapshot.id}\0{values.get('expires_at')}".encode()
+                ).hexdigest()
+                audit_ref = self.client.collection("audit_events").document(audit_id)
+                batch.create(audit_ref, {
+                    "id": audit_id,
+                    "actor_subject": "service:maintenance",
+                    "owner_id": owner_id,
+                    "action": "research.evidence.expire",
+                    "target_type": "research_session",
+                    "target_id": snapshot.id,
+                    "result": "expired",
+                    "correlation_id": correlation_id,
+                    "occurred_at": now,
+                })
+            batch.commit()
+            return len(snapshots)
+
+        return self._run(operation)

@@ -23,6 +23,7 @@ describe("conversation streaming proxy", () => {
     }));
     const controller = new AbortController();
     const pending = proxyConversationApi(new NextRequest("http://localhost/api/conversations", { signal: controller.signal }));
+    await vi.waitFor(() => expect(upstreamSignal).toBeDefined());
     controller.abort();
     expect(upstreamSignal?.aborted).toBe(true);
     expect((await pending).status).toBe(503);

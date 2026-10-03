@@ -290,6 +290,8 @@ def test_invalid_operator_budget_returns_safe_configuration_error(environment, m
     from personal_ai.settings import get_settings as configured_settings
 
     client = environment[0]
+    conversation = client.post("/v1/conversations", json={})
+    assert conversation.status_code == 201
     configured_settings.cache_clear()
     monkeypatch.setenv("AI_PROVIDER", "gemini")
     monkeypatch.setenv("AI_MODEL", "offline-fake")
@@ -298,9 +300,7 @@ def test_invalid_operator_budget_returns_safe_configuration_error(environment, m
     monkeypatch.setenv("MAX_RESPONSE_TOKENS", "200")
     app.dependency_overrides[get_settings] = lambda: configured_settings()
     try:
-        response = client.post("/v1/conversations", json={})
-        # This route's repositories are fakes, so use a settings-dependent route.
-        response = client.get(f"/v1/conversations/{response.json()['id']}/context")
+        response = client.get(f"/v1/conversations/{conversation.json()['id']}/context")
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "context_budget_invalid"
         assert "offline-fake" not in response.text

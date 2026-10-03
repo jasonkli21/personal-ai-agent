@@ -1,5 +1,64 @@
 import { NextRequest, NextResponse } from "next/server";
 
+type CachedServiceToken = { value: string; expiresAt: number };
+let cachedServiceToken: CachedServiceToken | null = null;
+
+function tokenExpiry(token: string) {
+  const payloadPart = token.split(".")[1];
+  if (!payloadPart) return 0;
+  try {
+    const normalized = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(Buffer.from(normalized, "base64").toString("utf8")) as { exp?: unknown };
+    return typeof payload.exp === "number" ? payload.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function cloudRunServiceToken(audience: string) {
+  if (process.env.API_IAM_AUTH_ENABLED !== "true") return null;
+  if (cachedServiceToken && cachedServiceToken.expiresAt > Date.now() + 60_000) {
+    return cachedServiceToken.value;
+  }
+
+  const metadataUrl = new URL(
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity",
+  );
+  metadataUrl.searchParams.set("audience", audience);
+  const response = await fetch(metadataUrl, {
+    headers: { "Metadata-Flavor": "Google" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(2500),
+  });
+  if (!response.ok) throw new Error("api_service_identity_unavailable");
+  const value = await response.text();
+  const expiresAt = tokenExpiry(value);
+  if (value.length > 8192 || expiresAt <= Date.now() + 60_000) {
+    throw new Error("api_service_identity_unavailable");
+  }
+  cachedServiceToken = { value, expiresAt };
+  return value;
+}
+
+/** Build non-overlapping end-user and Cloud Run service identity headers. */
+export async function backendAuthorizationHeaders(request: Request, apiBaseUrl: string) {
+  const headers = new Headers();
+  const userAuthorization = request.headers.get("authorization");
+  const userToken = userAuthorization?.startsWith("Bearer ")
+    ? userAuthorization.slice("Bearer ".length).trim()
+    : null;
+  const serviceToken = await cloudRunServiceToken(new URL(apiBaseUrl).origin);
+
+  if (serviceToken) {
+    headers.set("Authorization", `Bearer ${serviceToken}`);
+    if (userToken) headers.set("X-User-ID-Token", userToken);
+  } else if (userToken) {
+    // Local API development validates the user token directly when OIDC is enabled.
+    headers.set("Authorization", `Bearer ${userToken}`);
+  }
+  return headers;
+}
+
 /** Proxy conversation API calls without exposing the backend URL to the browser. */
 export async function proxyApi(request: NextRequest, path: string) {
   const baseUrl = process.env.API_BASE_URL ?? "http://localhost:8000";
@@ -10,26 +69,26 @@ export async function proxyApi(request: NextRequest, path: string) {
   try {
     if (request.signal.aborted) upstreamAbort.abort();
     upstreamAbort.signal.throwIfAborted();
+    const headers = await backendAuthorizationHeaders(request, baseUrl);
+    if (request.method === "POST") headers.set("Content-Type", "application/json");
+    const lastEventId = request.headers.get("Last-Event-ID");
+    if (lastEventId) headers.set("Last-Event-ID", lastEventId);
+
     const response = await fetch(`${baseUrl}${path}`, {
       method: request.method,
       body: request.method === "POST" ? await request.text() : undefined,
-      headers: {
-        ...(request.method === "POST" ? { "Content-Type": "application/json" } : {}),
-        ...(request.headers.get("Last-Event-ID")
-          ? { "Last-Event-ID": request.headers.get("Last-Event-ID")! }
-          : {}),
-      },
+      headers,
       cache: "no-store",
       signal: upstreamAbort.signal,
     });
-    const headers = new Headers();
-    for (const name of ["Content-Type", "Cache-Control", "X-Accel-Buffering", "X-Request-ID"]) {
+    const responseHeaders = new Headers();
+    for (const name of ["Content-Type", "Content-Disposition", "Cache-Control", "X-Accel-Buffering", "X-Request-ID"]) {
       const value = response.headers.get(name);
-      if (value) headers.set(name, value);
+      if (value) responseHeaders.set(name, value);
     }
     if (!response.body) {
       cleanup();
-      return new NextResponse(null, { status: response.status, headers });
+      return new NextResponse(null, { status: response.status, headers: responseHeaders });
     }
     const reader = response.body.getReader();
     let finished = false;
@@ -65,7 +124,7 @@ export async function proxyApi(request: NextRequest, path: string) {
         reader.releaseLock();
       },
     });
-    return new NextResponse(body, { status: response.status, headers });
+    return new NextResponse(body, { status: response.status, headers: responseHeaders });
   } catch {
     cleanup();
     upstreamAbort.abort();
