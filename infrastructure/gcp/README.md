@@ -1,14 +1,14 @@
 # GCP deployment
 
-The runnable initial topology is defined in [the deployment guide](../../docs/gcp-deployment.md). `deploy.sh` creates or reuses the minimum GCP resources, then deploys three Cloud Run services:
+The personal-use deployment topology is defined in [the deployment guide](../../docs/gcp-deployment.md). `deploy.sh` requires an explicit staging/production target and deploys three Cloud Run services:
 
 - `personal-ai-api` — FastAPI API.
 - `personal-ai-worker` — Pub/Sub push target for asynchronous work.
 - `personal-ai-web` — Next.js UI, including `/api/health`, which verifies API connectivity server-side.
 
-Use `deploy.sh PROJECT_ID [REGION] [MODEL_SECRET_NAME] [AI_MODEL]` after installing and authenticating the Google Cloud CLI. The defaults are `us-central1`, `personal-ai-gemini-api-key`, and `gemini-2.5-flash`.
+Use `deploy.sh staging PROJECT_ID REGION MODEL_SECRET_NAME AI_MODEL GOOGLE_OAUTH_CLIENT_ID ALLOWED_OWNER_EMAIL HTTPS_WEB_ORIGIN NUMERIC_SECRET_VERSION` after installing and authenticating the Google Cloud CLI. Production additionally requires `PRODUCTION_DEPLOY_ACK=I_REVIEWED_THE_PRODUCTION_CHANGE` after the staging and release gates pass. The defaults for region, secret name, and model ID are `us-central1`, `personal-ai-gemini-api-key`, and `gemini-2.5-flash`, but pass all values explicitly for a release.
 
-The model-key secret must already exist and have a current version. The script creates or reuses a dedicated API runtime service account, grants it access to that one secret and Firestore, and supplies it as `AI_API_KEY` with Cloud Run's `--set-secrets` mechanism. It never reads or prints the key. It also supplies the project ID and model configuration required by the Phase 1 API.
+The model-key secret and numeric version must already exist. The script rejects a dirty checkout and a `latest` binding, builds from the committed revision, resolves container tags to immutable digests, and records the revision/tag/version in its output. It creates separate API, web, worker, Pub/Sub invoker, and maintenance invoker service accounts. Only the web service identity can invoke the private API; the worker is private and independently validates its configured Google-signed OIDC tokens. Secret values are never read or printed. The maintenance schedule is created paused and its runtime gate stays off. Export/deletion and optional feature gates stay off until their release gates are approved.
 
 ## Firestore repository indexes and local emulator
 
@@ -34,8 +34,16 @@ repositories automatically use the emulator host exposed by the Google client;
 automated tests use `InMemoryConversationRepository` and
 `InMemoryMessageRepository` instead and make no Firestore calls.
 
-The worker and Pub/Sub subscription are retained by the bootstrap topology, but
-Phase 1 chat never publishes a Pub/Sub message. The worker is therefore idle.
+The worker and authenticated Pub/Sub subscription support the gated Phase 4
+memory lifecycle path. A separate Cloud Scheduler identity invokes bounded
+maintenance; the created schedule is paused and maintenance remains disabled
+until a staging rehearsal.
+
+Optional `BACKUP_ENABLED`, `MAINTENANCE_ENABLED`, `EXPORT_ENABLED`, and
+`DELETION_ENABLED` environment switches default to `false`. Backup opt-in adds
+a daily 30-day Firestore schedule only if no schedule exists. Export is
+available from `/account` when enabled. Deletion stops at an audited operator
+review state; this release does not physically erase owner records or backups.
 
 Phase 3 memory gates (`MEMORY_ENABLED`, `MEMORY_EXTRACTION_ENABLED`,
 `MEMORY_INSPECTION_ENABLED`) are explicitly false in bootstrap deployments.

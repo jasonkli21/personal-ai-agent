@@ -6,10 +6,10 @@
 Browser
   |
   v
-Cloud Run: personal-ai-web (Next.js)
-  |  server-side /api proxy for chat, research, and health
+Cloud Run: public personal-ai-web (Next.js; Google sign-in shell)
+  |  server-side /api proxy; web service identity plus end-user ID token
   v
-Cloud Run: personal-ai-api (FastAPI) ----> Firestore (Native mode)
+Cloud Run: private personal-ai-api (FastAPI) ----> Firestore (Native mode)
   |  chat and bounded research run in direct SSE requests
   |  gated post-terminal memory work persists lifecycle jobs
   v
@@ -36,7 +36,7 @@ recovery. Other asynchronous work needs its own concrete requirement.
 | Async worker | FastAPI on Cloud Run + authenticated Pub/Sub push | Gated durable memory-lifecycle jobs |
 | Durable data | Firestore Native mode | Conversations, memories, bounded research sessions, canonical research entities/claims, and decision snapshots |
 | Secrets | Secret Manager | Gemini key now; other provider keys only when deliberately configured |
-| Delivery | Docker + Cloud Run source deployment | Build and deploy each service |
+| Delivery | Cloud Build + Artifact Registry + Cloud Run | Build from a clean committed revision and deploy immutable image digests |
 
 ## Deploy
 
@@ -54,20 +54,51 @@ printf '%s' "$GEMINI_API_KEY" | gcloud secrets create personal-ai-gemini-api-key
 
 Set `GEMINI_API_KEY` only in the current terminal or use your secret-entry workflow; do not paste the key into a command-line argument. If the secret already exists, add a new version with `gcloud secrets versions add personal-ai-gemini-api-key --data-file=-` and pipe the value in the same way.
 
-5. From the repository root, run:
+5. Create a Google OAuth web client. Configure its authorized JavaScript origin
+   to match the exact HTTPS web origin. Choose one exact allowed Google account
+   email; for a non-Gmail Workspace account, the deployment also requires the
+   matching verified hosted-domain claim.
+6. From a clean, reviewed commit in the repository root, run:
 
 ```bash
 chmod +x infrastructure/gcp/deploy.sh
-infrastructure/gcp/deploy.sh YOUR_PROJECT_ID us-central1 personal-ai-gemini-api-key gemini-2.5-flash
+infrastructure/gcp/deploy.sh staging YOUR_STAGING_PROJECT us-central1 \
+  personal-ai-gemini-api-key gemini-2.5-flash \
+  YOUR_GOOGLE_OAUTH_WEB_CLIENT_ID.apps.googleusercontent.com \
+  owner@gmail.com https://personal.example 2
 ```
 
+Arguments are target environment (`staging` or `production`), project, region,
+secret name, model ID, OAuth client ID, exact owner email, exact HTTPS web
+origin, and a numeric Secret Manager version. The script rejects dirty working
+trees and `latest` secret references. Production additionally requires
+`PRODUCTION_DEPLOY_ACK=I_REVIEWED_THE_PRODUCTION_CHANGE`; that guard does not
+replace the staging rehearsal and approval listed in the release checklist.
+
 The script enables required APIs, creates the default Firestore database and
-required composite indexes if absent, creates a Pub/Sub topic and authenticated
-push subscription, creates or reuses a dedicated API runtime service account,
-grants it the named-secret and Firestore permissions, then deploys the API,
-worker, and web service. It injects `AI_API_KEY` using Secret Manager rather
-than an environment file or command-line value. It prints the web URL and
-health-check URL, never the secret.
+indexes, builds backend/frontend images from the reviewed commit, resolves each
+image tag to a digest, and deploys that digest. It creates separate API, web,
+worker, Pub/Sub-invoker, and maintenance-invoker service accounts. The API
+requires Cloud Run IAM and admits only the web runtime identity; the web proxy
+adds its service identity token and forwards the end-user token separately.
+The worker requires the Pub/Sub OIDC token with an exact audience and invoker
+email. Cloud Scheduler uses a different invoker identity. The model key is
+injected from the explicit numeric Secret Manager version, never from an
+environment file or command-line value. The web sign-in shell is public; API
+data routes remain unavailable until both browser identity and service IAM pass.
+
+The script creates the bounded maintenance schedule paused. By default it
+leaves `MAINTENANCE_ENABLED`, `BACKUP_ENABLED`, `EXPORT_ENABLED`, and
+`DELETION_ENABLED` false. Set those exact environment variables to `true` only
+for a reviewed staging rehearsal. `BACKUP_ENABLED=true` creates a daily
+30-day Firestore backup schedule only when none exists; it does not test
+restore or update an existing schedule. The `/account` page displays export
+and deletion controls only when the corresponding runtime flag is on, and
+deletion confirmation currently queues operator review without erasing data.
+No cloud deployment runs as part of repository implementation. Start
+in a separate synthetic staging project, rehearse sign-in, owner isolation,
+provider failure, worker retries, rollback, export, restore, and deletion before
+considering production.
 
 The example retains `gemini-2.5-flash` until an opt-in compatibility check
 validates a newer stable Flash candidate such as
@@ -101,15 +132,13 @@ or retained-artifact feature needs it.
 
 ## Security boundary
 
-The bootstrap makes the web and API endpoints public so the two-service health
-check runs without end-user identity infrastructure. The fixed `local` owner is
-not authentication, and the private worker does not protect public API data.
-The Gemini key is already injected through Secret Manager. Before real private
-chats, emails, bookings, receipts, uploads, or private external domain-app data,
-add verified identity, authorization, appropriate API ingress/session controls,
-and a deliberate provider-data and retention policy. This prerequisite applies
-even if those features arrive before nominal Phase 9. Health data remains outside
-the current implementation scope.
+The public web service exposes a sign-in shell. The API is private to the web
+runtime service account and separately validates the end-user Google ID token;
+development `local` identity is allowed only in local/test configurations.
+Cloud Run IAM and application identity are separate checks. Production remains
+blocked until provider-data review, owner migration, staged IAM and worker
+rehearsal, alerting, backup/restore, export fidelity, deletion propagation, and
+operator approval are recorded in the [Phase 9 checklist](phase-9-release-checklist.md).
 
 
 ## Phase 2 deployment checks
@@ -136,8 +165,9 @@ from `firestore.indexes.json`, including derived/typed vector indexes with match
 dimensions, maintenance, event-sequence, reverse-dependency and pending/retry queries.
 Wait for readiness; the bootstrap provisions only Phase 1–2 indexes. See the
 [Phase 4 guide](phase-4-implementation-guide.md) for explicit notification recovery,
-attempt/lease bounds, opt-in checks and current verification limitations. A private
-worker does not authenticate the public chat's fixed `local` owner.
+attempt/lease bounds, opt-in checks and current verification limitations. The private
+worker independently verifies its Pub/Sub identity token; deployed API requests never
+use the `local` owner.
 
 ## Phase 5 opt-in research deployment
 
@@ -147,7 +177,9 @@ exemptions. Before a deliberate synthetic deployment check, follow the
 [Phase 5 guide](phase-5-implementation-guide.md) for licensed snippet storage,
 Secret Manager wiring, index exemptions, provider-wide quotas and retention.
 Research runs in the API request; the worker receives no research jobs.
-The public fixed-owner bootstrap remains unsuitable for personal data.
+Existing Phase 1–8 records remain under `local` until the
+[reviewed owner migration](phase-9-owner-migration.md) is dry-run and explicitly
+applied; deployment does not migrate data.
 
 ## Phase 6 opt-in decision deployment
 
@@ -160,4 +192,5 @@ matches, decision evaluations, and evidence-to-claim lookup, then wait for
 readiness. Firestore transaction behavior and index readiness have not yet
 been verified against an emulator or deployed project. Decision snapshots
 retain source attribution metadata subject to the source provider's storage,
-retention, and deletion terms. The fixed `local` owner remains unauthenticated.
+retention, and deletion terms. Local/test development continues to use the fixed
+`local` owner; deployed requests do not fall back to it.
