@@ -4,6 +4,8 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+import anyio
+
 from personal_ai.decisions.contracts import DecisionCreateRequest
 from personal_ai.decisions.repositories import DecisionError
 from personal_ai.decisions.service import DecisionService
@@ -32,6 +34,7 @@ from personal_ai.domains.repositories import (
     lookup_reservation_id,
 )
 from personal_ai.entities.research import EntityClaim
+from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import ResourceNotFoundError
 
 
@@ -203,15 +206,21 @@ class DomainService:
             updated_at=now,
         )
         try:
-            reservation = self.repository.reserve_lookup(reservation)
+            reservation = await io_call(self.repository.reserve_lookup, reservation)
         except DomainRepositoryError as error:
             raise DomainContractError(error.code, 409) from error
+        except asyncio.CancelledError:
+            # The reservation thread may have committed before cancellation
+            # reached the caller. Finalize only our own fencing token.
+            with anyio.CancelScope(shield=True):
+                await io_call(self._fail_lookup, reservation, state="uncertain")
+            raise
         if reservation.request_fingerprint != request.fingerprint(self.owner_id, domain_id):
             raise DomainContractError("idempotency_conflict", 409)
         if reservation.state == "completed":
             if reservation.comparison_id is None:
                 raise DomainContractError("domain_lookup_result_missing", 503)
-            return self.detail(domain_id, reservation.comparison_id)
+            return await io_call(self.detail, domain_id, reservation.comparison_id)
         if reservation.state == "failed":
             code = reservation.failure_code or "domain_lookup_failed"
             status = reservation.failure_status or 503
@@ -267,7 +276,8 @@ class DomainService:
                 preferences=request.preferences,
                 supplied_evidence=evidence,
             )
-            return self._create(
+            return await io_call(
+                self._create,
                 domain_id,
                 DomainComparisonCreateRequest(
                     decision=decision,
@@ -276,16 +286,17 @@ class DomainService:
                 lookup_reservation=reservation,
             )
         except DomainProviderError as error:
-            self._fail_lookup(reservation, state="failed", kind="provider", error=error)
+            await io_call(self._fail_lookup, reservation, state="failed", kind="provider", error=error)
             raise
         except (DomainContractError, DecisionError) as error:
-            self._fail_lookup(reservation, state="failed", kind="contract", error=error)
+            await io_call(self._fail_lookup, reservation, state="failed", kind="contract", error=error)
             raise
         except asyncio.CancelledError:
-            self._fail_lookup(reservation, state="uncertain")
+            with anyio.CancelScope(shield=True):
+                await io_call(self._fail_lookup, reservation, state="uncertain")
             raise
         except Exception as error:
-            self._fail_lookup(reservation, state="uncertain")
+            await io_call(self._fail_lookup, reservation, state="uncertain")
             raise DomainContractError("domain_lookup_outcome_unknown", 503) from error
 
     def _fail_lookup(self, reservation, *, state, kind=None, error=None):

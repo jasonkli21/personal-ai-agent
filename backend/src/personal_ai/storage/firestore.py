@@ -16,12 +16,12 @@ from google.auth.credentials import AnonymousCredentials
 from google.cloud import firestore
 
 from personal_ai.entities import Conversation, Message, MessageStatus
+from personal_ai.storage.branches import active_path, descendant_ids, effective_message
 from personal_ai.storage.errors import (
     ConversationConflictError,
     ResourceNotFoundError,
     StorageUnavailableError,
 )
-from personal_ai.storage.fake import _active_path, _descendant_ids, _effective_message
 
 
 class FirestoreConversationRepository:
@@ -156,7 +156,7 @@ class FirestoreMessageRepository:
         history = self._run(lambda: list(self._message_query(
             owner_id=owner_id, conversation_id=conversation_id,
         ).stream()))
-        return _effective_message(message, {
+        return effective_message(message, {
             item.id: item for item in (_message_from_data(s.to_dict()) for s in history)
         })
 
@@ -169,7 +169,7 @@ class FirestoreMessageRepository:
             )
         )
         messages = [_message_from_data(snapshot.to_dict()) for snapshot in snapshots]
-        return _active_path(messages)
+        return active_path(messages)
 
     def update_status(
         self,
@@ -220,7 +220,7 @@ class FirestoreMessageRepository:
                             owner_id=owner_id, conversation_id=conversation_id,
                         ))
                     ]
-                    current = _effective_message(current, {item.id: item for item in stored})
+                    current = effective_message(current, {item.id: item for item in stored})
                     if current.status is not expected_status:
                         return False
                     transaction.update(message_ref, changes)
@@ -264,7 +264,7 @@ class FirestoreMessageRepository:
                 messages = [
                     _message_from_data(item.to_dict()) for item in transaction.get(query)
                 ]
-                active = _active_path(messages)
+                active = active_path(messages)
                 stale = [
                     item
                     for item in active
@@ -337,7 +337,7 @@ class FirestoreMessageRepository:
                 snapshots = list(transaction.get(query))
                 stored = [_message_from_data(snapshot.to_dict()) for snapshot in snapshots]
                 stored_by_id = {item.id: item for item in stored}
-                active = _active_path(stored)
+                active = active_path(stored)
                 if [item.id for item in active] != list(expected_active_ids):
                     raise ConversationConflictError("conversation changed; retry the request")
                 if any(item.status is MessageStatus.STREAMING for item in active):
@@ -392,12 +392,12 @@ class FirestoreMessageRepository:
         )
         messages = [_message_from_data(snapshot.to_dict()) for snapshot in snapshots]
         by_id = {message.id: message for message in messages}
-        identifiers = _descendant_ids(messages, message_id)
+        identifiers = descendant_ids(messages, message_id)
         replaced = [
             by_id[identifier]
             for identifier in identifiers
             if identifier in by_id
-            and _effective_message(by_id[identifier], by_id).status is not MessageStatus.SUPERSEDED
+            and effective_message(by_id[identifier], by_id).status is not MessageStatus.SUPERSEDED
         ]
 
         def operation() -> None:

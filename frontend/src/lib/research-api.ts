@@ -1,5 +1,6 @@
 import { ApiError } from "./api";
 import { authenticatedFetch } from "./auth";
+import { readSseFrames, SseError } from "./sse";
 
 export type ResearchState = "pending" | "running" | "completed" | "insufficient" | "failed" | "expired";
 export type ResearchCitation = {
@@ -46,37 +47,22 @@ export const researchApi = {
     if (!res.body || !res.headers.get("content-type")?.startsWith("text/event-stream")) {
       throw new ApiError("Research progress could not be read.");
     }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "", terminal = false, bytes = 0;
     try {
-      while (!terminal) {
-        const { done, value } = await reader.read();
-        bytes += value?.byteLength ?? 0;
-        buffer += decoder.decode(value, { stream: !done });
-        if (buffer.length > 8192 || bytes > 65536) throw new ApiError("Research progress exceeded its limit.");
-        let match = /\r?\n\r?\n/.exec(buffer);
-        while (match && !terminal) {
-          const frame = buffer.slice(0, match.index);
-          buffer = buffer.slice(match.index + match[0].length);
-          const lines = frame.split(/\r?\n/);
-          const name = lines.find(l => l.startsWith("event:"))?.slice(6).trim();
-          const data = JSON.parse(lines.filter(l => l.startsWith("data:")).map(l => l.slice(5).trim()).join("\n")) as ResearchProgress;
-          const kind = name?.replace(/^research\./, "") ?? "";
-          if (!name?.startsWith("research.") || !events.has(kind) ||
-              data.schema_version !== "research-v1" || data.session_id !== id) throw new ApiError("Invalid research progress.");
-          if (kind === "terminal") {
-            if (!data.state || !states.has(data.state) || ["pending", "running"].includes(data.state)) throw new ApiError("Invalid research completion.");
-            terminal = true;
-          }
-          onProgress(kind, data);
-          match = /\r?\n\r?\n/.exec(buffer);
+      for await (const { event: name, data: dataText } of readSseFrames(res, { frameCharacters: 8192, totalBytes: 65536 })) {
+        const data = JSON.parse(dataText) as ResearchProgress;
+        const kind = name.replace(/^research\./, "");
+        if (!name.startsWith("research.") || !events.has(kind) ||
+            data.schema_version !== "research-v1" || data.session_id !== id) throw new ApiError("Invalid research progress.");
+        if (kind === "terminal" && (!data.state || !states.has(data.state) || ["pending", "running"].includes(data.state))) {
+          throw new ApiError("Invalid research completion.");
         }
-        if (done && !terminal) throw new ApiError("Research was interrupted. Check the saved session.");
+        onProgress(kind, data);
+        if (kind === "terminal") return;
       }
-    } finally {
-      try { await reader.cancel(); } catch { /* Upstream may already be closed. */ }
-      reader.releaseLock();
+      throw new ApiError("Research was interrupted. Check the saved session.");
+    } catch (error) {
+      if (error instanceof SseError && error.kind === "limit") throw new ApiError("Research progress exceeded its limit.");
+      throw error instanceof ApiError ? error : new ApiError("Research progress could not be read.");
     }
   },
 };

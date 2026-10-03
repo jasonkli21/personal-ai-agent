@@ -275,7 +275,7 @@ Code and documents:
 - `frontend/src/lib/api.ts`
 - `frontend/src/lib/conversation-proxy.ts`
 - `frontend/src/app/api/conversations/**/route.ts`
-- `frontend/src/app/page.test.tsx`
+- `frontend/tests/app/page.test.tsx`
 
 Verification: component tests cover the empty state, loaded conversation list,
 selection, creation, and recoverable API errors.
@@ -304,7 +304,7 @@ Code and documents:
 - `frontend/src/lib/api.ts`
 - `frontend/src/app/page.tsx`
 - streaming proxy routes under `frontend/src/app/api/conversations/`
-- `frontend/src/app/page.test.tsx`
+- `frontend/tests/app/page.test.tsx`
 
 Verification: frontend tests cover delta accumulation, completion
 reconciliation, visible stream errors, duplicate-submit prevention, regenerate,

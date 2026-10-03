@@ -592,3 +592,26 @@ def test_gemini_timeout_after_first_delta_finalizes_partial_turn() -> None:
     assert assistant.content == "partial"
     assert assistant.error_code == "llm_timeout"
     assert provider.finalized
+
+
+@pytest.mark.parametrize("provider_fails", [False, True])
+def test_terminal_persistence_runs_outside_the_request_event_loop(monkeypatch, provider_fails):
+    llm = ControlledLLM(fail_after_first=provider_fails)
+    previous, _, messages, conversation = _install_dependencies(llm)
+    original_update = messages.update_status
+    transitions = []
+
+    def update_status(**kwargs):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        transitions.append(kwargs["status"])
+        return original_update(**kwargs)
+
+    monkeypatch.setattr(messages, "update_status", update_status)
+    try:
+        asyncio.run(_invoke_asgi(conversation.id, llm, spec_version="2.4"))
+    finally:
+        app.dependency_overrides = previous
+    expected = MessageStatus.FAILED if provider_fails else MessageStatus.COMPLETED
+    assert transitions == [expected]
+    assert _active_assistant(messages, conversation.id).status is expected

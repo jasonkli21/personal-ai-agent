@@ -109,3 +109,42 @@ def test_firestore_owner_status_model_prefilters_vector_limit_and_safe_failures(
             owner_id="local", embedding=[1, 0, 0], model="fake-v1", dimensions=3, limit=10
         )
     assert "private" not in str(caught.value)
+
+
+def test_firestore_memory_create_rejects_cyclic_source_ancestry_before_commit():
+    memory, conversations, turns = seeded()
+    client = MagicMock()
+    client._firestore_api.begin_transaction.return_value = SimpleNamespace(transaction=b"offline")
+    transaction = client.transaction.return_value
+    transaction.id = b"offline"
+    transaction._write_pbs = []
+    user, assistant = turns[0]
+    records = {
+        ("memories", str(memory.id)): None,
+        ("conversations", str(memory.source_conversation_id)): next(
+            iter(conversations._conversations.values())
+        ).model_dump(mode="json"),
+        ("messages", str(user.id)): {
+            **user.model_dump(mode="json"), "parent_message_id": str(user.id),
+        },
+        ("messages", str(assistant.id)): assistant.model_dump(mode="json"),
+    }
+
+    def collection(name):
+        result = MagicMock()
+
+        def document(identifier):
+            reference = MagicMock()
+            reference.get.side_effect = lambda **_: snapshot(records.get((name, identifier)))
+            return reference
+
+        result.document.side_effect = document
+        return result
+
+    client.collection.side_effect = collection
+    repository = FirestoreMemoryRepository(client)
+    with pytest.raises(ConversationConflictError, match="ancestry invalid"):
+        repository.create(memory)
+    transaction.create.assert_not_called()
+    client._firestore_api.commit.assert_not_called()
+    client._firestore_api.rollback.assert_called_once()

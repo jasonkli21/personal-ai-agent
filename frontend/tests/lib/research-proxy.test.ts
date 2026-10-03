@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { NextRequest } from "next/server";
 import { afterEach, expect, it, vi } from "vitest";
-import { proxyIterativeResearchApi, proxyResearchApi } from "./research-proxy";
+import { proxyIterativeResearchApi, proxyResearchApi } from "../../src/lib/research-proxy";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 it("gates research and inspection before upstream access", async () => {

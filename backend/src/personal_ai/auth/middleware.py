@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import threading
 import time
 from functools import partial
 from uuid import uuid4
@@ -19,11 +21,13 @@ from personal_ai.auth.directory import (
     IdentityDirectoryUnavailable,
     IdentityMappingConflict,
     InMemoryPrincipalDirectory,
+    PrincipalDirectory,
 )
 from personal_ai.auth.safeguards import (
     FirestoreSafeguardStore,
     InMemorySafeguardStore,
     SafeguardDenied,
+    SafeguardStore,
     SafeguardUnavailable,
 )
 from personal_ai.auth.verification import (
@@ -35,6 +39,7 @@ from personal_ai.settings import ContextBudgetInvalidError, Settings, get_settin
 
 logger = logging.getLogger(__name__)
 PUBLIC_PATHS = {"/health", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+_store_initialization_lock = threading.Lock()
 
 
 def _settings_for_request(request: Request) -> Settings:
@@ -62,43 +67,72 @@ def _has_matching_route(request: Request) -> bool:
     return False
 
 
-def _directory(request: Request, settings: Settings):
+def _directory(request: Request, settings: Settings) -> PrincipalDirectory:
     configured = getattr(request.app.state, "principal_directory", None)
     if configured is not None:
         return configured
-    if settings.app_environment in {"local", "test"}:
-        configured = InMemoryPrincipalDirectory()
-    else:
-        try:
-            configured = FirestorePrincipalDirectory(
-                project_id=settings.firestore_project_id,
-                emulator_host=settings.firestore_emulator_host,
-            )
-        except Exception as error:
-            raise IdentityDirectoryUnavailable from error
-    request.app.state.principal_directory = configured
-    return configured
+    with _store_initialization_lock:
+        configured = getattr(request.app.state, "principal_directory", None)
+        if configured is None:
+            if settings.app_environment in {"local", "test"}:
+                configured = InMemoryPrincipalDirectory()
+            else:
+                try:
+                    configured = FirestorePrincipalDirectory(
+                        project_id=settings.firestore_project_id,
+                        emulator_host=settings.firestore_emulator_host,
+                    )
+                except Exception as error:
+                    raise IdentityDirectoryUnavailable from error
+            request.app.state.principal_directory = configured
+        return configured
 
 
-def _safeguards(request: Request, settings: Settings):
+def _safeguards(request: Request, settings: Settings) -> SafeguardStore:
     configured = getattr(request.app.state, "safeguard_store", None)
-    if configured is None:
-        if settings.app_environment in {"local", "test"}:
-            configured = InMemorySafeguardStore()
-        else:
-            try:
-                configured = FirestoreSafeguardStore(
-                    project_id=settings.firestore_project_id,
-                    emulator_host=settings.firestore_emulator_host,
-                )
-            except Exception as error:
-                raise SafeguardUnavailable from error
-        request.app.state.safeguard_store = configured
-    return configured
+    if configured is not None:
+        return configured
+    with _store_initialization_lock:
+        configured = getattr(request.app.state, "safeguard_store", None)
+        if configured is None:
+            if settings.app_environment in {"local", "test"}:
+                configured = InMemorySafeguardStore()
+            else:
+                try:
+                    configured = FirestoreSafeguardStore(
+                        project_id=settings.firestore_project_id,
+                        emulator_host=settings.firestore_emulator_host,
+                    )
+                except Exception as error:
+                    raise SafeguardUnavailable from error
+            request.app.state.safeguard_store = configured
+        return configured
+
+
+def _ensure_active_principal(request, settings, principal, correlation_id) -> None:
+    # Client construction may discover credentials, so it belongs in the same
+    # worker thread as the first Firestore call.
+    _directory(request, settings).ensure_active(principal, correlation_id=correlation_id)
+
+
+def _enforce_safeguards(request, settings, principal) -> None:
+    store = _safeguards(request, settings)
+    store.consume_request(principal.owner_id, settings.api_rate_limit_per_minute)
+    calls, tokens = _provider_reservation(request, settings)
+    if calls or tokens:
+        store.reserve_daily(
+            principal.owner_id, calls, tokens,
+            settings.provider_calls_per_day_limit, settings.input_tokens_per_day_limit,
+        )
 
 
 def _provider_reservation(request: Request, settings: Settings) -> tuple[int, int]:
-    """Return conservative maximum provider usage for an API operation."""
+    """Estimate request usage; this is not accounting for every provider RPC.
+
+    Token counting, summary refresh, embeddings and worker activity can make
+    additional calls. See the operational review before treating these counters
+    as a provider-spend ceiling.
+    """
     if request.method != "POST":
         return (0, 0)
     path = request.url.path
@@ -206,7 +240,7 @@ def _error(
 async def authenticate_request(request: Request) -> Response | None:
     """Validate a request before dispatch; ``None`` lets the ASGI app handle it."""
     correlation_id = request.headers.get("x-request-id", "").strip()
-    if not correlation_id or len(correlation_id) > 100 or any(c.isspace() for c in correlation_id):
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,100}", correlation_id):
         correlation_id = str(uuid4())
     request.state.correlation_id = correlation_id
     if request.url.path in PUBLIC_PATHS and not request.headers.get("origin"):
@@ -326,9 +360,7 @@ async def authenticate_request(request: Request) -> Response | None:
             try:
                 await anyio.to_thread.run_sync(
                     partial(
-                        _directory(request, settings).ensure_active,
-                        principal,
-                        correlation_id=correlation_id,
+                        _ensure_active_principal, request, settings, principal, correlation_id,
                     )
                 )
             except IdentityMappingConflict:
@@ -383,24 +415,9 @@ async def authenticate_request(request: Request) -> Response | None:
         if not enforce_safeguards:
             return None
         try:
-            store = _safeguards(request, settings)
             await anyio.to_thread.run_sync(
-                partial(
-                    store.consume_request, principal.owner_id, settings.api_rate_limit_per_minute
-                )
+                partial(_enforce_safeguards, request, settings, principal)
             )
-            calls, tokens = _provider_reservation(request, settings)
-            if calls or tokens:
-                await anyio.to_thread.run_sync(
-                    partial(
-                        store.reserve_daily,
-                        principal.owner_id,
-                        calls,
-                        tokens,
-                        settings.provider_calls_per_day_limit,
-                        settings.input_tokens_per_day_limit,
-                    )
-                )
         except SafeguardDenied as error:
             logger.info("request_rejected reason=%s", error.code)
             return _safeguard_error(

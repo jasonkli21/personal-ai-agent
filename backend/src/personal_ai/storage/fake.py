@@ -8,6 +8,7 @@ from threading import RLock
 from uuid import UUID
 
 from personal_ai.entities import Conversation, Message, MessageStatus
+from personal_ai.storage.branches import active_path, descendant_ids, effective_message
 from personal_ai.storage.errors import (
     ConversationConflictError,
     ResourceNotFoundError,
@@ -102,7 +103,7 @@ class InMemoryMessageRepository:
     ) -> None:
         """Fail expired active placeholders so a restarted app can accept turns."""
         with self._mutation_lock:
-            active = _active_path(
+            active = active_path(
                 [
                     item
                     for item in self._messages.values()
@@ -152,7 +153,7 @@ class InMemoryMessageRepository:
                 for item in self._messages.values()
                 if item.owner_id == owner_id and item.conversation_id == conversation_id
             ]
-            active = _active_path(stored)
+            active = active_path(stored)
             if [item.id for item in active] != list(expected_active_ids):
                 raise ConversationConflictError("conversation changed; retry the request")
             if any(item.status is MessageStatus.STREAMING for item in active):
@@ -205,7 +206,7 @@ class InMemoryMessageRepository:
                 or message.conversation_id != conversation_id
             ):
                 raise ResourceNotFoundError("message not found")
-            return _effective_message(message, self._messages)
+            return effective_message(message, self._messages)
 
     def list_active(self, *, owner_id: str, conversation_id: UUID, timeout: float | None = None) -> list[Message]:
         with self._mutation_lock:
@@ -214,7 +215,7 @@ class InMemoryMessageRepository:
                 for message in self._messages.values()
                 if message.owner_id == owner_id and message.conversation_id == conversation_id
             ]
-            return _active_path(messages)
+            return active_path(messages)
 
     def update_status(
         self,
@@ -259,14 +260,14 @@ class InMemoryMessageRepository:
         with self._mutation_lock:
             self.get(owner_id=owner_id, conversation_id=conversation_id, message_id=message_id)
             self._validate_conversation(owner_id, conversation_id)
-            descendants = _descendant_ids(list(self._messages.values()), message_id)
+            descendants = descendant_ids(list(self._messages.values()), message_id)
             replaced = []
             for identifier in descendants:
                 message = self._messages[identifier]
                 if (
                     message.owner_id == owner_id
                     and message.conversation_id == conversation_id
-                    and _effective_message(message, self._messages).status is not MessageStatus.SUPERSEDED
+                    and effective_message(message, self._messages).status is not MessageStatus.SUPERSEDED
                 ):
                     updated = message.model_copy(update={"status": MessageStatus.SUPERSEDED})
                     replaced.append(updated)
@@ -291,71 +292,3 @@ class InMemoryMessageRepository:
 # Explicit fake aliases keep test setup readable at composition sites.
 FakeConversationRepository = InMemoryConversationRepository
 FakeMessageRepository = InMemoryMessageRepository
-
-
-def _effective_message(message: Message, by_id: dict[UUID, Message]) -> Message:
-    """Superseding a root durably cuts its whole subtree without rewriting it."""
-    current = message
-    seen = set()
-    while current.id not in seen:
-        seen.add(current.id)
-        if current.status is MessageStatus.SUPERSEDED:
-            return message.model_copy(update={"status": MessageStatus.SUPERSEDED})
-        parent = by_id.get(current.parent_message_id)
-        if parent is None or parent.owner_id != message.owner_id \
-                or parent.conversation_id != message.conversation_id:
-            break
-        current = parent
-    return message
-
-
-def _descendant_ids(messages: list[Message], root_id: UUID) -> set[UUID]:
-    """Return a message and every child in its historical branch."""
-    children: dict[UUID, list[UUID]] = {}
-    for message in messages:
-        if message.parent_message_id is not None:
-            children.setdefault(message.parent_message_id, []).append(message.id)
-    found = {root_id}
-    pending = [root_id]
-    while pending:
-        current = pending.pop()
-        for child in children.get(current, []):
-            if child not in found:
-                found.add(child)
-                pending.append(child)
-    return found
-
-
-def _active_path(messages: list[Message]) -> list[Message]:
-    """Choose the newest viable leaf and return its root-to-leaf path."""
-    by_id = {message.id: message for message in messages}
-    viable: dict[UUID, Message] = {}
-    for message in messages:
-        if message.status is MessageStatus.SUPERSEDED:
-            continue
-        parent_id = message.parent_message_id
-        seen: set[UUID] = set()
-        while parent_id is not None and parent_id not in seen:
-            seen.add(parent_id)
-            parent = by_id.get(parent_id)
-            if parent is None or parent.status is MessageStatus.SUPERSEDED:
-                break
-            parent_id = parent.parent_message_id
-        else:
-            viable[message.id] = message
-    parents = {
-        message.parent_message_id for message in viable.values() if message.parent_message_id
-    }
-    leaves = [message for message in viable.values() if message.id not in parents]
-    if not leaves:
-        return []
-    leaf = max(leaves, key=lambda item: (item.created_at, str(item.id)))
-    path: list[Message] = []
-    while True:
-        path.append(leaf)
-        if leaf.parent_message_id is None:
-            break
-        leaf = viable.get(leaf.parent_message_id)  # type: ignore[assignment]
-        if leaf is None:
-            return []
-    return list(reversed(path))

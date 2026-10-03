@@ -201,8 +201,8 @@ facts and the negative typed-claim fixtures.
 `backend/tests/test_iterative_research*.py` covers state/schema validation,
 storage ownership/idempotency, reservation reconciliation, retry/restart,
 uncertain side effects, cancel races, late-write fencing, reconnect reads,
-route gates and safe SSE payloads. `frontend/src/app/research/research-panel.test.tsx`,
-`frontend/src/lib/iterative-research-api.test.ts`, and the proxy tests cover
+route gates and safe SSE payloads. `frontend/tests/app/research/research-panel.test.tsx`,
+`frontend/tests/lib/iterative-research-api.test.ts`, and the proxy tests cover
 single-pass defaults, iterative partial results, gap/timeline visibility,
 replay sequence/run checks, bounded rendered response/link validation, gates,
 nonempty-cursor reconnect and explicit cancellation.

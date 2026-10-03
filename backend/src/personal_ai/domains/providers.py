@@ -246,10 +246,14 @@ class NominatimPlaceAdapter:
                 osm_id = str(item.get("osm_id", ""))
                 if osm_type not in {"node", "way", "relation"} or not osm_id.isdigit():
                     continue
-                display_name = str(item.get("display_name", "")).strip()
-                name = str(item.get("name") or display_name).strip()
-                category = str(item.get("category", "place")).strip()
-                place_type = str(item.get("type", category)).strip()
+                display_name = item.get("display_name", "")
+                name = item.get("name") or display_name
+                category = item.get("category", "place")
+                place_type = item.get("type", category)
+                if any(not isinstance(value, str) for value in (display_name, name, category, place_type)):
+                    raise TypeError("invalid place text")
+                display_name, name = display_name.strip(), name.strip()
+                category, place_type = category.strip(), place_type.strip()
                 if not display_name or not name or not place_type:
                     continue
                 records.append(
@@ -327,9 +331,9 @@ class OpenFoodFactsAdapter:
                 ):
                     if response.status_code == 429:
                         raise DomainProviderError("shopping_provider_quota")
-                    if response.status_code == 503 or response.status_code >= 500:
+                    if response.status_code >= 500:
                         raise DomainProviderError("shopping_provider_unavailable")
-                    if response.status_code != 200:
+                    if response.status_code not in {200, 404}:
                         raise DomainProviderError("shopping_provider_rejected")
                     if "application/json" not in response.headers.get("content-type", ""):
                         raise DomainProviderError("shopping_provider_invalid_response")
@@ -339,26 +343,48 @@ class OpenFoodFactsAdapter:
                             raise DomainProviderError("shopping_provider_response_oversized")
                         body.extend(chunk)
             payload = json.loads(body)
-            if not isinstance(payload, dict) or payload.get("status") not in {0, 1}:
+            if not isinstance(payload, dict):
                 raise TypeError("invalid product response")
-            if payload.get("status") == 0:
+            # v3 uses named statuses and returns 404 for an unknown barcode.
+            # The older integer v2 status must not mask a broken v3 contract.
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                raise TypeError("invalid product response")
+            if (
+                response.status_code == 404
+                and payload.get("status") == "failure"
+                and result.get("id") == "product_not_found"
+            ):
                 return None
+            if (
+                response.status_code != 200
+                or payload.get("status") not in {"success", "success_with_warnings"}
+                or result.get("id") != "product_found"
+                or payload.get("errors")
+            ):
+                raise TypeError("invalid product response")
             product = payload.get("product")
             if not isinstance(product, dict):
                 raise TypeError("invalid product")
-            product_name = str(product.get("product_name", "")).strip()
-            code = str(product.get("code", barcode)).strip()
+            product_name = product.get("product_name", "")
+            code = product.get("code")
+            if not isinstance(product_name, str) or not isinstance(code, str):
+                raise TypeError("invalid product identity")
+            product_name, code = product_name.strip(), code.strip()
             if not product_name or code != barcode:
                 return None
             categories = product.get("categories_tags", ())
-            if not isinstance(categories, list):
-                categories = []
+            if not isinstance(categories, (list, tuple)) or any(not isinstance(item, str) for item in categories):
+                raise TypeError("invalid product categories")
+            brand, quantity = product.get("brands"), product.get("quantity")
+            if any(value is not None and not isinstance(value, str) for value in (brand, quantity)):
+                raise TypeError("invalid product text")
             return ShoppingProductRecord(
                 barcode=barcode,
                 name=product_name[:300],
-                brand=(str(product.get("brands", "")).split(",")[0].strip() or None),
-                quantity=(str(product.get("quantity", "")).strip() or None),
-                categories=tuple(str(item)[:100] for item in categories[:12] if str(item).strip()),
+                brand=((brand or "").split(",")[0].strip() or None),
+                quantity=((quantity or "").strip() or None),
+                categories=tuple(item[:100] for item in categories[:12] if item.strip()),
                 url=f"https://world.openfoodfacts.org/product/{barcode}",
             )
         except DomainProviderError:

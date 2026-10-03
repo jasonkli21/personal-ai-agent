@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import ResearchPanel from "./research-panel";
+import ResearchPanel from "../../../src/app/research/research-panel";
 
 const fetch = vi.fn();
 const sessionId = "22222222-2222-4222-8222-222222222222";
@@ -145,5 +145,37 @@ describe("research page", () => {
     controller.enqueue(new TextEncoder().encode(iterativeEvent(1,"cancelled","cancelled")));
     controller.close();
     await waitFor(()=>expect(fetch).toHaveBeenCalledTimes(3));
+  });
+
+  it("blocks submission until the saved run and its timeline have loaded", async () => {
+    let finish!: (response: Response) => void;
+    fetch.mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }));
+    fetch.mockResolvedValueOnce(iterativeStream());
+    render(<ResearchPanel initialRunId={runId} iterativeEnabled />);
+    expect(screen.getByLabelText("Research question")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start bounded research" })).toBeDisabled();
+    finish(json(iterativeDetail()));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start bounded research" })).toBeEnabled());
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("serializes timeline reconnection with start and resume actions", async () => {
+    const active = { ...iterativeRun, state: "searching", terminal_reason: null };
+    let finish!: (response: Response) => void;
+    fetch.mockResolvedValueOnce(json(iterativeDetail(active)))
+      .mockResolvedValueOnce(iterativeStream())
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }))
+      .mockResolvedValueOnce(iterativeStream())
+      .mockResolvedValueOnce(json(iterativeDetail(active)));
+    render(<ResearchPanel initialRunId={runId} iterativeEnabled />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Resume saved run" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect timeline" }));
+    expect(screen.getByRole("button", { name: "Start bounded research" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Resume saved run" })).toBeDisabled();
+    fireEvent.submit(screen.getByLabelText("Research question").closest("form")!);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    finish(json(iterativeDetail(active)));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Resume saved run" })).toBeEnabled());
+    expect(fetch).toHaveBeenCalledTimes(5);
   });
 });

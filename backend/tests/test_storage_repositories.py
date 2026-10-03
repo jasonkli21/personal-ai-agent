@@ -269,3 +269,39 @@ def test_turn_preparation_rejects_an_active_stream_and_status_update_is_conditio
     assert repository.get(
         owner_id=OWNER, conversation_id=conversation_id, message_id=streaming.id
     ).status is MessageStatus.STREAMING
+
+
+def test_active_path_excludes_cycles_missing_parents_and_foreign_ancestry() -> None:
+    from personal_ai.storage.branches import active_path
+
+    conversation_id = UUID(int=300)
+    root = message(301, conversation_id, offset=1)
+    answer = message(302, conversation_id, parent_message_id=root.id, offset=2)
+    cycle = message(303, conversation_id, parent_message_id=UUID(int=304), offset=3)
+    cycle_parent = message(304, conversation_id, parent_message_id=cycle.id, offset=4)
+    cycle_child = message(305, conversation_id, parent_message_id=cycle.id, offset=5)
+    orphan = message(306, conversation_id, parent_message_id=UUID(int=999), offset=6)
+    foreign = message(307, conversation_id, owner_id=OTHER_OWNER, offset=7)
+    foreign_child = message(308, conversation_id, parent_message_id=foreign.id, offset=8)
+
+    assert active_path([
+        root, answer, cycle, cycle_parent, cycle_child, orphan, foreign_child,
+    ]) == [root, answer]
+    assert active_path([root, answer, foreign, foreign_child]) == [foreign]
+    assert active_path([cycle, cycle_parent, cycle_child]) == []
+
+
+def test_active_path_handles_long_unordered_history_without_recursive_traversal() -> None:
+    from personal_ai.storage.branches import active_path
+
+    conversation_id = UUID(int=400)
+    history = [
+        message(
+            1000 + i,
+            conversation_id,
+            parent_message_id=UUID(int=999 + i) if i else None,
+            offset=i,
+        )
+        for i in range(6000)
+    ]
+    assert active_path(list(reversed(history))) == history

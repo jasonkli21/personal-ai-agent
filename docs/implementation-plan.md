@@ -155,7 +155,10 @@ Firestore emulator/index and deployed verification remain open.
 Authentication and private-data controls must move earlier if any earlier
 phase or external application begins using real emails, bookings, receipts,
 uploads, or other private records. The phase number is not a waiver of that
-prerequisite. The current public `local` owner is unauthenticated.
+prerequisite. Local/test `local` ownership is unauthenticated; deployed code
+requires Google OIDC and private API IAM. Phase 9 is partially implemented, with
+open acceptance criteria in its [task plan](phase-9-implementation-plan.md) and
+[evidence](phase-9-implementation-evidence.md).
 
 1. Add authentication appropriate for personal use.
 2. Add secrets management, observability, rate limits, and cost safeguards.

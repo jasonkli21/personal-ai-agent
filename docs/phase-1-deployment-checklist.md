@@ -1,6 +1,7 @@
 # Phase 1 deployment checklist
 
-Use this checklist for every credentialed Phase 1 deployment. Record only URLs,
+Use this baseline chat checklist with the current authenticated deployment
+and the [Phase 9 release checklist](phase-9-release-checklist.md). Record only URLs,
 timestamps, commit IDs, and pass/fail results; never record model keys, chat
 content, or other personal data.
 
@@ -10,14 +11,15 @@ content, or other personal data.
 - [ ] The deployer is authenticated to the intended project and region.
 - [ ] A Secret Manager secret containing the Gemini API key exists (default:
   `personal-ai-gemini-api-key`) and has an enabled version.
-- [ ] `AI_MODEL` is available to that key. Choose it as the fourth deploy-script
-  argument rather than editing source.
-- [ ] The public, unauthenticated bootstrap is acceptable only for non-sensitive
-  test data. Do not enter personal data.
+- [ ] `AI_MODEL` is available to that key. Choose it as the fifth deploy-script argument rather than editing source.
+- [ ] Configure a Google OAuth web client, exact allowed account, HTTPS web
+  origin and numeric secret version. Use a separate synthetic staging project.
+- [ ] Confirm production acceptance remains blocked until the Phase 9 release
+  checks have evidence; do not enter personal data during rehearsal.
 
 ## Deploy
 
-- [ ] Run `infrastructure/gcp/deploy.sh PROJECT_ID REGION SECRET_NAME AI_MODEL`.
+- [ ] Run `infrastructure/gcp/deploy.sh staging PROJECT_ID REGION SECRET_NAME AI_MODEL OAUTH_CLIENT_ID OWNER_EMAIL HTTPS_WEB_ORIGIN NUMERIC_SECRET_VERSION`.
 - [ ] Save the printed web URL and verify the script did not print a secret.
 - [ ] Confirm `personal-ai-api`, `personal-ai-web`, and `personal-ai-worker` are
   deployed. The worker may remain idle; Phase 1 chat must publish no Pub/Sub
@@ -29,7 +31,10 @@ content, or other personal data.
 
 - [ ] Open `WEB_URL/api/health`; it returns HTTP 200 with `web: "ok"` and API
   status `ok`.
-- [ ] Open `WEB_URL` and confirm the chat shell loads.
+- [ ] Open `WEB_URL`, verify the sign-in shell, and sign in with the allowlisted
+  synthetic account. Confirm unauthenticated API access is rejected.
+- [ ] Verify the API admits the web runtime identity and the worker admits only
+  its configured invokers; inspect inherited IAM as well as service bindings.
 - [ ] Create a conversation using non-sensitive test text.
 - [ ] Send one short message and confirm streamed text finishes successfully.
 - [ ] Refresh the browser, reopen the conversation, and confirm the final user

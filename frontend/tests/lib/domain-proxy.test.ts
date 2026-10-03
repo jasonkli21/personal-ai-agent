@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { NextRequest } from "next/server";
 import { afterEach, expect, it, vi } from "vitest";
-import { proxyDomainApi } from "./domain-proxy";
+import { proxyDomainApi } from "../../src/lib/domain-proxy";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 

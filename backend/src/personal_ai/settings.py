@@ -14,7 +14,7 @@ class ContextBudgetInvalidError(Exception):
 
 
 class Settings(BaseSettings):
-    """Configuration shared by the Phase 1 application boundaries.
+    """Configuration shared by API, worker, and provider boundaries.
 
     Values deliberately come only from the environment (or a local untracked
     ``.env`` file). Provider credentials are represented as ``SecretStr`` so
@@ -307,6 +307,8 @@ class Settings(BaseSettings):
             raise ValueError("authentication_configuration_invalid")
         if self.auth_mode == "development" and self.app_environment not in {"local", "test"}:
             raise ValueError("authentication_configuration_invalid")
+        if self.auth_mode == "development" and self.auth_required:
+            raise ValueError("authentication_configuration_invalid")
         if self.auth_mode == "google_oidc" and (
             not self.auth_required
             or not self.auth_audience
@@ -339,6 +341,21 @@ class Settings(BaseSettings):
             raise ValueError("authentication_configuration_invalid")
         if self.app_environment in {"staging", "production"} and not self.allowed_origins:
             raise ValueError("authentication_configuration_invalid")
+        for origin in self.allowed_origins:
+            if (
+                origin.username is not None
+                or origin.password is not None
+                or origin.path not in {None, "/"}
+                or origin.query is not None
+                or origin.fragment is not None
+                or "*" in (origin.host or "")
+                or self.app_environment in {"staging", "production"}
+                and origin.scheme != "https"
+            ):
+                raise ValueError("authentication_configuration_invalid")
+        if self.app_environment in {"staging", "production"} and self.firestore_emulator_host:
+            # An inherited local emulator variable selects anonymous credentials.
+            raise ValueError("deployed_firestore_emulator_forbidden")
         return self
 
     allowed_origins: tuple[AnyHttpUrl, ...] = Field(

@@ -67,3 +67,44 @@ def test_create_replay_claim_fencing_and_safe_storage_errors():
     client._firestore_api.commit.side_effect = ServiceUnavailable("private provider text")
     with pytest.raises(StorageUnavailableError):
         repo.save(evolve(claimed, revision=claimed.revision + 1, state="failed"))
+
+
+def test_expiry_query_uses_the_persisted_utc_timestamp_type_and_bounded_rpcs():
+    repo, _, _, client, _ = environment()
+    value = session()
+    collection = repo.sessions
+    query = MagicMock()
+    collection.where.return_value = query
+    query.where.return_value = query
+    query.order_by.return_value = query
+    query.limit.return_value = query
+    snapshot = SimpleNamespace(
+        id=str(value.id), exists=True, reference=MagicMock(), update_time=NOW,
+        to_dict=lambda: repo._data(value),
+    )
+    query.stream.return_value = (snapshot,)
+    due = value.expires_at + timedelta(microseconds=1)
+
+    assert repo.expire_due_for_owner("local", now=due, correlation_id="synthetic") == 1
+    expiry_filter = next(
+        call.kwargs["filter"] for call in query.where.call_args_list
+        if call.kwargs["filter"].field_path == "expires_at"
+    )
+    assert isinstance(repo._data(value)["expires_at"], str)
+    assert expiry_filter.value == (value.expires_at + timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
+    assert expiry_filter.op_string == "<"
+    update = client.batch.return_value.update.call_args.args[1]
+    assert update["state"] == "expired" and update["answer"] is None
+    assert update["updated_at"] == due.isoformat().replace("+00:00", "Z")
+    query.stream.assert_called_once_with(retry=None, timeout=5)
+    client.batch.return_value.commit.assert_called_once_with(retry=None, timeout=5)
+
+    # The query includes future instants in this same second only so that
+    # variable-precision stored timestamps cannot hide already expired ones.
+    query.stream.return_value = (SimpleNamespace(
+        id=str(value.id), exists=True, reference=MagicMock(), update_time=NOW,
+        to_dict=lambda: repo._data(evolve(value, expires_at=due + timedelta(microseconds=1))),
+    ),)
+    client.batch.return_value.commit.reset_mock()
+    assert repo.expire_due_for_owner("local", now=due, correlation_id="synthetic") == 0
+    client.batch.return_value.commit.assert_not_called()

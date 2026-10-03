@@ -48,3 +48,22 @@ was unavailable, so image builds were not run.
 Phase 9 therefore remains incomplete. Keep production access and gated account
 operations off until the open rows in the [release checklist](phase-9-release-checklist.md)
 have dated evidence and operator approval.
+
+## Post-implementation review (2026-10-03)
+
+The [repository review](repository-review-2026-10-03.md) records fixes and
+remaining findings against `4ff354b6f881fa87550fd442b5b5240c365f86e5` plus its
+uncommitted cleanup changes. The final backend suite passed 501 tests with
+12 opt-in checks skipped; the frontend passed 95 tests across 19 files. All
+seven evaluations, lint/typechecks, package/frontend builds, offline lockfile
+validation, deployment syntax/fake-CLI checks and documentation consistency
+checks passed. The final frontend pass used Node 22.23.3; an earlier Node 24
+pass also included a loopback production startup smoke. Python 3.12, Docker,
+real providers, emulator and cloud behavior remain unverified.
+
+The review found the original generic owner rewrite unsafe for strict schemas,
+nested ownership and owner-derived keys. Apply now supports chat-only legacy
+data and refuses unsupported collections before writes. Full Phase 3–8
+migration remains open. Provider budgets are request estimates rather than
+complete provider accounting. Deletion, restore, operational release and
+external acceptance gaps above remain open.

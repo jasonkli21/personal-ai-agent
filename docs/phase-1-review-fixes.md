@@ -13,9 +13,9 @@ no context budgeting, summaries, memory, or other Phase 2 behavior was added.
 | Failed replacement hides old branch | Transactional preparation validates the active snapshot and commits supersession plus new records together | Storage failure-injection tests verify rollback and preservation of the previous active path |
 | Empty model response poisons history | Empty/whitespace-only output fails safely instead of becoming completed context | Conversation route tests verify failure and later usable turns |
 | Lazy Firestore errors escape mapping | Query construction and iteration occur inside the typed storage error boundary | Adapter tests inject query construction and lazy iteration failures |
-| Premature SSE EOF accepted | Parser requires a valid terminal event and cancels/releases its reader on completion or failure; UI retains partial text with retry | `frontend/src/lib/api.test.ts` and `frontend/src/app/page.test.tsx` |
+| Premature SSE EOF accepted | Parser requires a valid terminal event and cancels/releases its reader on completion or failure; UI retains partial text with retry | `frontend/tests/lib/api.test.ts` and `frontend/tests/app/page.test.tsx` |
 | Overlapping turns use inconsistent context | Fresh active streams and stale snapshots reject mutations with HTTP 409; preparation is serialized at the Firestore transaction boundary | Concurrent-snapshot and overlap tests |
-| Browser abort not explicitly forwarded | UI unmount aborts its request; incoming request abort and downstream body cancellation abort/cancel the proxy's upstream fetch/reader | `frontend/src/lib/conversation-proxy.test.ts` and UI unmount test |
+| Browser abort not explicitly forwarded | UI unmount aborts its request; incoming request abort and downstream body cancellation abort/cancel the proxy's upstream fetch/reader | `frontend/tests/lib/conversation-proxy.test.ts` and UI unmount test |
 
 Regenerate/edit-and-retry build model context only from the retained prefix and
 replacement prompt. History caps apply to that context rather than the discarded

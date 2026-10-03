@@ -20,8 +20,6 @@ from personal_ai.settings import Settings, get_settings
 from personal_ai.storage import FirestoreConversationRepository, FirestoreMessageRepository
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
 
-PHASE_1_OWNER_ID = "local"
-
 
 def get_current_owner_id(request: Request) -> str:
     """Return only the owner resolved from the application authentication boundary."""

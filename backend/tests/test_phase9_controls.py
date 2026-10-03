@@ -322,3 +322,28 @@ def test_worker_checks_expected_service_identity_before_its_feature_gate(monkeyp
             "pubsub@example.iam.gserviceaccount.com",
         )
     ]
+
+
+def test_disabled_account_actions_do_not_initialize_firestore(authenticated_account_client, monkeypatch):
+    client, _ = authenticated_account_client
+    configured = settings(
+        auth_mode="google_oidc", auth_required=True, auth_audience="synthetic-client",
+        auth_allowed_emails=("owner@gmail.com",),
+    )
+    app.dependency_overrides[get_settings] = lambda: configured
+
+    def unexpected_repository(**_kwargs):
+        pytest.fail("disabled account action initialized Firestore")
+
+    monkeypatch.setattr("personal_ai.api.account.FirestoreAccountDataRepository", unexpected_repository)
+    headers = {"Authorization": "Bearer synthetic-id-token"}
+    assert client.post("/v1/account/export", headers=headers, json={"idempotency_key": str(uuid4())}).status_code == 404
+    assert client.get(f"/v1/account/deletion/{uuid4()}", headers=headers).status_code == 404
+
+
+def test_untrusted_request_id_cannot_insert_log_control_characters():
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"X-Request-ID": "unsafe\x1b[31m"})
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] != "unsafe\x1b[31m"
+    assert len(response.headers["x-request-id"]) == 36

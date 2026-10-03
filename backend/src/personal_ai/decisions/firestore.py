@@ -64,17 +64,25 @@ class FirestoreDecisionRepository:
     def list_aliases(self, owner_id, entity_ids):
         def operation():
             aliases = []
-            for entity_id in entity_ids:
+            deadline = time.monotonic() + 5
+            for offset in range(0, len(entity_ids), 30):
+                group = [str(item) for item in entity_ids[offset:offset + 30]]
                 for scope_owner in (owner_id, "*"):
                     query = (
                         self.aliases.where(filter=firestore.FieldFilter("owner_id", "==", scope_owner))
-                        .where(filter=firestore.FieldFilter("entity_id", "==", str(entity_id)))
-                        .limit(100)
+                        .where(filter=firestore.FieldFilter("entity_id", "in", group))
+                        .limit(100 * len(group) + 1)
                     )
-                    aliases.extend(
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("decision alias query deadline exceeded")
+                    values = tuple(
                         EntityAlias.model_validate(item.to_dict())
-                        for item in query.stream(retry=None, timeout=5)
+                        for item in query.stream(retry=None, timeout=remaining)
                     )
+                    if len(values) > 100 * len(group):
+                        raise DecisionError("decision_alias_resolution_limit", 409)
+                    aliases.extend(values)
             return tuple(sorted(aliases, key=lambda item: str(item.id)))
 
         return self._run(operation)
@@ -238,6 +246,11 @@ class FirestoreDecisionRepository:
 
             entity_ids = tuple(entity.id for entity in entities)
             aliases = self.list_aliases(owner_id, entity_ids)
+            if decision.alias_ids is not None:
+                recorded_alias_ids = set(decision.alias_ids)
+                aliases = tuple(alias for alias in aliases if alias.id in recorded_alias_ids)
+                if {alias.id for alias in aliases} != recorded_alias_ids:
+                    raise StorageUnavailableError("decision alias unavailable")
             match_query = self.matches.where(
                 filter=firestore.FieldFilter("owner_id", "==", owner_id)
             ).where(filter=firestore.FieldFilter("decision_id", "==", str(decision_id))).limit(24)

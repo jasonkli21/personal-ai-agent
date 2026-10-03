@@ -30,5 +30,6 @@ read-only catalog records; owner-specific claims and snapshots remain scoped.
 
 The current fixed `local` records are not visible to the authenticated owner
 until the dry-run-first [migration](phase-9-owner-migration.md) is reviewed and
-applied. That tool requires an active owner mapping and a repeated target ID,
-and it only changes top-level `owner_id` fields in the enumerated collections.
+applied. That tool requires an active owner mapping and a repeated target ID. Apply
+supports chat-only databases and refuses any later-phase legacy records before
+writes; full aggregate/derived-key migration remains unimplemented.

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import ContextInspector from "./inspector";
+import ContextInspector from "../../../../src/app/development/context/inspector";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 

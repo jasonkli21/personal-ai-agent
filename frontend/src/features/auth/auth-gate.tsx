@@ -58,20 +58,24 @@ export function AuthGate({
 
   const initializeGoogleSignIn = useCallback(() => {
     const googleId = window.google?.accounts?.id;
-    if (!googleId || !buttonRef.current || !clientId || initializedClient.current === clientId) return;
-    initializedClient.current = clientId;
-    googleId.initialize({
-      client_id: clientId,
-      auto_select: false,
-      cancel_on_tap_outside: false,
-      callback: ({ credential }) => {
-        if (!credential || !setGoogleIdToken(credential)) {
-          setSignInError("Google sign-in returned an invalid or expired credential. Try again.");
-          return;
-        }
-        setSignInError(null);
-      },
-    });
+    if (!googleId || !buttonRef.current || !clientId) return;
+    if (initializedClient.current !== clientId) {
+      initializedClient.current = clientId;
+      googleId.initialize({
+        client_id: clientId,
+        auto_select: false,
+        cancel_on_tap_outside: false,
+        callback: ({ credential }) => {
+          if (!credential || !setGoogleIdToken(credential)) {
+            setSignInError("Google sign-in returned an invalid or expired credential. Try again.");
+            return;
+          }
+          setSignInError(null);
+        },
+      });
+    }
+    // Signing out, expiry, and 401 responses mount a new button container.
+    // GIS initialization is reusable; its rendered button belongs to the old DOM.
     googleId.renderButton(buttonRef.current, {
       type: "standard",
       theme: "outline",
@@ -82,8 +86,8 @@ export function AuthGate({
   }, [clientId]);
 
   useEffect(() => {
-    if (scriptLoaded) initializeGoogleSignIn();
-  }, [initializeGoogleSignIn, scriptLoaded]);
+    if (scriptLoaded && !token) initializeGoogleSignIn();
+  }, [initializeGoogleSignIn, scriptLoaded, token]);
 
   if (!enabled) return children;
   if (token) {
@@ -114,7 +118,7 @@ export function AuthGate({
             strategy="afterInteractive"
             nonce={nonce ?? undefined}
             referrerPolicy="origin"
-            onLoad={() => setScriptLoaded(true)}
+            onReady={() => setScriptLoaded(true)}
             onError={() => setSignInError("Google sign-in could not be loaded. Check your connection and try again.")}
           />
         </>

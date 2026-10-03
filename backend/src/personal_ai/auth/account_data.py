@@ -55,12 +55,18 @@ def _portable(value):
 
 class FirestoreAccountDataRepository:
     def __init__(self, *, project_id: str | None, emulator_host: str | None) -> None:
+        from google.cloud import firestore
+
         from personal_ai.storage.firestore import _firestore_client
 
         self.client = _firestore_client(project_id, emulator_host)
-        self.firestore = __import__("google.cloud.firestore", fromlist=["firestore"])
+        self.firestore = firestore
         self.requests = self.client.collection("account_lifecycle_requests")
         self.audit_events = self.client.collection("audit_events")
+
+    def close(self) -> None:
+        """Release the per-request Firestore transport after an account action."""
+        self.client.close()
 
     def export_owner(self, owner_id: str, *, max_records: int, max_bytes: int) -> dict:
         generated_at = datetime.now(UTC)
@@ -121,7 +127,7 @@ class FirestoreAccountDataRepository:
             target_type="owner_data_export",
             idempotency_key=idempotency_key,
             correlation_id=correlation_id,
-            result="delivered",
+            result="generated",
         )
 
     def create_deletion(self, *, owner_id: str, idempotency_key: UUID, correlation_id: str) -> dict:

@@ -17,8 +17,7 @@
     "jsx": "preserve",
     "incremental": true,
     "types": [
-      "@testing-library/jest-dom",
-      "vitest/globals"
+      "node"
     ],
     "plugins": [
       {
@@ -29,8 +28,8 @@
   },
   "include": [
     "next-env.d.ts",
-    "**/*.ts",
-    "**/*.tsx",
+    "src/**/*.ts",
+    "src/**/*.tsx",
     ".next/types/**/*.ts"
   ],
   "exclude": [

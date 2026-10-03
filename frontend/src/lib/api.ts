@@ -1,4 +1,5 @@
 import { authenticatedFetch } from "./auth";
+import { readSseFrames, SseError } from "./sse";
 
 export type Conversation = {
   id: string;
@@ -76,14 +77,8 @@ async function streamRequest(path: string, init: RequestInit, handlers: StreamHa
   }
   if (!response.body) throw new ApiError("The response stream could not be read. Please try again.");
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
   let terminal = false;
-  const consume = (frame: string) => {
-    const lines = frame.split(/\r?\n/);
-    const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
-    const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
+  const consume = (event: string, data: string) => {
     if (!event || !data) return;
     try {
       switch (event) {
@@ -120,34 +115,28 @@ async function streamRequest(path: string, init: RequestInit, handlers: StreamHa
   };
 
   try {
-    while (!terminal) {
-      const { done, value } = await reader.read();
-      buffer += decoder.decode(value, { stream: !done });
-      let boundary = buffer.search(/\r?\n\r?\n/);
-      while (boundary >= 0 && !terminal) {
-        consume(buffer.slice(0, boundary));
-        buffer = buffer.slice(boundary + (buffer[boundary] === "\r" ? 4 : 2));
-        boundary = buffer.search(/\r?\n\r?\n/);
-      }
-      if (done && !terminal) throw new ApiError("The response was interrupted. Please retry.");
+    for await (const frame of readSseFrames(response, { frameCharacters: 131072, totalBytes: 4 * 1024 * 1024 })) {
+      consume(frame.event, frame.data);
+      if (terminal) return;
     }
+    throw new ApiError("The response was interrupted. Please retry.");
   } catch (error) {
+    if (error instanceof SseError && error.kind === "incomplete") {
+      throw new ApiError("The response was interrupted. Please retry.");
+    }
     throw error instanceof ApiError ? error : new ApiError("The response stream could not be read. Please try again.");
-  } finally {
-    try { await reader.cancel(); } catch { /* The connection may already be closed. */ }
-    reader.releaseLock();
   }
 }
 
 export const conversationsApi = {
-  create(title?: string) {
-    return request<Conversation>("/conversations", { method: "POST", body: JSON.stringify(title ? { title } : {}) });
+  create(title?: string, signal?: AbortSignal) {
+    return request<Conversation>("/conversations", { method: "POST", body: JSON.stringify(title ? { title } : {}), signal });
   },
-  async list() {
-    return (await request<{ conversations: Conversation[] }>("/conversations")).conversations;
+  async list(signal?: AbortSignal) {
+    return (await request<{ conversations: Conversation[] }>("/conversations", { signal })).conversations;
   },
-  get(conversationId: string) {
-    return request<ConversationDetail>(`/conversations/${encodeURIComponent(conversationId)}`);
+  get(conversationId: string, signal?: AbortSignal) {
+    return request<ConversationDetail>(`/conversations/${encodeURIComponent(conversationId)}`, { signal });
   },
   send(conversationId: string, content: string, handlers: StreamHandlers, signal?: AbortSignal) {
     return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages`, { method: "POST", body: JSON.stringify({ content }), signal }, handlers);

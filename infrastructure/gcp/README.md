@@ -35,7 +35,8 @@ automated tests use `InMemoryConversationRepository` and
 `InMemoryMessageRepository` instead and make no Firestore calls.
 
 The worker and authenticated Pub/Sub subscription support the gated Phase 4
-memory lifecycle path. A separate Cloud Scheduler identity invokes bounded
+memory lifecycle path. API and worker runtimes both receive topic-scoped
+publisher access; the worker maintenance path republishes pending jobs. A separate Cloud Scheduler identity invokes bounded
 maintenance; the created schedule is paused and maintenance remains disabled
 until a staging rehearsal.
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from time import monotonic
@@ -23,6 +23,7 @@ from personal_ai.context.deadline import remaining
 from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
 from personal_ai.llm import ChatMessage, LLMClient, LLMError, LLMInvalidResponseError
 from personal_ai.storage import ConversationConflictError
+from personal_ai.storage.async_io import io_call
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,9 @@ class _PreparedTurn:
 class _ManagedStream:
     """Async iterator that finalizes a prepared turn when abandoned before start."""
 
-    def __init__(self, iterator: AsyncIterator[str], on_abandon: Callable[[], object]) -> None:
+    def __init__(
+        self, iterator: AsyncIterator[str], on_abandon: Callable[[], Awaitable[None]]
+    ) -> None:
         self._iterator = iterator.__aiter__()
         self._on_abandon = on_abandon
         self._on_terminal_sent: Callable[[], object] | None = None
@@ -74,7 +77,7 @@ class _ManagedStream:
             if close is not None:
                 await close()
         else:
-            self._on_abandon()
+            await self._on_abandon()
 
     def set_terminal_callback(self, callback: Callable[[], object]) -> None:
         self._on_terminal_sent = callback
@@ -323,8 +326,8 @@ class ChatTurnService:
         self._post_completion_tasks.add(task)
         task.add_done_callback(self._post_completion_tasks.discard)
 
-    def _abandon_before_start(self, turn: _PreparedTurn) -> None:
-        self._fail(turn.assistant, "client_cancelled", "")
+    async def _abandon_before_start(self, turn: _PreparedTurn) -> None:
+        await self._fail(turn.assistant, "client_cancelled", "")
         logger.info("Chat stream abandoned before start request_id=%s", turn.request_id)
 
     def _recover_stale_turn(self, conversation_id: UUID) -> None:
@@ -384,7 +387,8 @@ class ChatTurnService:
             content = "".join(parts)
             if not content.strip():
                 raise LLMInvalidResponseError("language model response was empty")
-            completed = self._messages.update_status(
+            completed = await io_call(
+                self._messages.update_status,
                 owner_id=self._owner_id,
                 conversation_id=turn.assistant.conversation_id,
                 message_id=turn.assistant.id,
@@ -405,14 +409,14 @@ class ChatTurnService:
             )
         except asyncio.CancelledError:
             if not terminal:
-                self._fail(turn.assistant, "client_cancelled", "".join(parts))
+                await self._fail(turn.assistant, "client_cancelled", "".join(parts))
             logger.info(
                 "Chat stream cancelled request_id=%s error_class=CancelledError", turn.request_id
             )
             raise
         except GeneratorExit:
             if not terminal:
-                self._fail(turn.assistant, "client_cancelled", "".join(parts))
+                await self._fail(turn.assistant, "client_cancelled", "".join(parts))
                 logger.info("Chat stream closed request_id=%s", turn.request_id)
             raise
         except LLMError as error:
@@ -421,19 +425,19 @@ class ChatTurnService:
                 turn.request_id,
                 type(error).__name__,
             )
-            event = self._error_event(turn.assistant, error.code, "".join(parts))
+            event = await self._error_event(turn.assistant, error.code, "".join(parts))
             terminal = True
             yield event
         except Exception:  # noqa: BLE001
             logger.error(
                 "Chat stream failed request_id=%s error_class=UnexpectedError", turn.request_id
             )
-            event = self._error_event(turn.assistant, "llm_unavailable", "".join(parts))
+            event = await self._error_event(turn.assistant, "llm_unavailable", "".join(parts))
             terminal = True
             yield event
 
-    def _error_event(self, assistant: Message, code: str, content: str) -> str:
-        failed = self._fail(assistant, code, content)
+    async def _error_event(self, assistant: Message, code: str, content: str) -> str:
+        failed = await self._fail(assistant, code, content)
         if failed is None:
             return self._stale_turn_event(assistant)
         return _sse(
@@ -445,17 +449,21 @@ class ChatTurnService:
             ).model_dump_json(),
         )
 
-    def _fail(self, assistant: Message, code: str, content: str) -> Message | None:
-        return self._messages.update_status(
-            owner_id=self._owner_id,
-            conversation_id=assistant.conversation_id,
-            message_id=assistant.id,
-            status=MessageStatus.FAILED,
-            content=content,
-            error_code=code,
-            expected_status=MessageStatus.STREAMING,
-            updated_at=datetime.now(UTC),
-        )
+    async def _fail(self, assistant: Message, code: str, content: str) -> Message | None:
+        # Persist the terminal state even inside an ASGI disconnect scope. Join
+        # the write before returning so a late thread cannot race a retry.
+        with anyio.CancelScope(shield=True):
+            return await io_call(
+                self._messages.update_status,
+                owner_id=self._owner_id,
+                conversation_id=assistant.conversation_id,
+                message_id=assistant.id,
+                status=MessageStatus.FAILED,
+                content=content,
+                error_code=code,
+                expected_status=MessageStatus.STREAMING,
+                updated_at=datetime.now(UTC),
+            )
 
     @staticmethod
     def _stale_turn_event(assistant: Message) -> str:

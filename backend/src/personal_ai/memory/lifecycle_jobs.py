@@ -42,15 +42,33 @@ class PubSubMemoryJobPublisher:
 
     def __init__(self, settings, client=None):
         self.settings = settings
-        self.client = client or pubsub_v1.PublisherClient()
+        self.client = client
 
     def publish(self, job: MemoryJob, *, timeout: float = 10):
         project = self.settings.firestore_project_id
         if not project:
             raise ValueError("memory_lifecycle_project_missing")
-        topic = self.client.topic_path(project, self.settings.memory_lifecycle_topic)
-        payload = MemoryJobNotification(job_id=job.id).model_dump_json().encode()
-        self.client.publish(topic, payload).result(timeout=timeout)
+        # A worker delivery often has nothing to publish. Construct an owned
+        # publisher only for actual notification work and always release it.
+        client = self.client or pubsub_v1.PublisherClient()
+        try:
+            topic = client.topic_path(project, self.settings.memory_lifecycle_topic)
+            payload = MemoryJobNotification(job_id=job.id).model_dump_json().encode()
+            client.publish(topic, payload, retry=None, timeout=timeout).result(timeout=timeout)
+        finally:
+            if self.client is None:
+                try:
+                    client.stop()
+                except Exception as error:  # noqa: BLE001 - preserve the publication result
+                    logger.info("Memory publisher cleanup failed error_class=%s", type(error).__name__)
+                finally:
+                    try:
+                        client.transport.close()
+                    except Exception as error:  # noqa: BLE001 - preserve the publication result
+                        logger.info(
+                            "Memory publisher transport cleanup failed error_class=%s",
+                            type(error).__name__,
+                        )
 
 
 class MemoryLifecycleCoordinator:
@@ -62,6 +80,14 @@ class MemoryLifecycleCoordinator:
         self.publisher = publisher
 
     def after_completed(self, completed, selected_memory_ids=()):
+        from personal_ai.memory.lifecycle_repositories import lifecycle_deadline
+
+        # Discovery/accounting can perform several bounded RPCs per candidate.
+        # Their combined work also needs a ceiling, beyond individual RPC limits.
+        with lifecycle_deadline(self.settings.memory_job_execution_seconds):
+            self._after_completed(completed, selected_memory_ids)
+
+    def _after_completed(self, completed, selected_memory_ids):
         extraction_result = None
         if self.extraction is not None:
             try:

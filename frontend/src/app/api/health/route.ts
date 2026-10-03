@@ -8,7 +8,11 @@ export async function GET(request: NextRequest) {
 
   try {
     const headers = await backendAuthorizationHeaders(request, apiBaseUrl);
-    const response = await fetch(`${apiBaseUrl}/health`, { cache: "no-store", headers });
+    const response = await fetch(`${apiBaseUrl}/health`, {
+      cache: "no-store",
+      headers,
+      signal: AbortSignal.any([request.signal, AbortSignal.timeout(5000)]),
+    });
     const body = await response.json();
 
     return NextResponse.json({ web: "ok", api: body }, { status: response.status });

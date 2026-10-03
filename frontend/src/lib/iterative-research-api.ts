@@ -1,6 +1,7 @@
 import { ApiError } from "./api";
 import type { ResearchSession } from "./research-api";
 import { authenticatedFetch } from "./auth";
+import { readSseFrames, SseError } from "./sse";
 
 export type IterativeRunState =
   | "pending" | "assessing" | "planning" | "searching" | "extracting" | "synthesizing"
@@ -179,57 +180,40 @@ async function readProgress(
   if (!res.body || !res.headers.get("content-type")?.startsWith("text/event-stream")) {
     throw new ApiError("Research progress could not be read.");
   }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "", bytes = 0, terminal = false, runId = options.expectedRunId;
+  let terminal = false;
+  let runId = options.expectedRunId;
   let lastSequence = options.after;
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      bytes += value?.byteLength ?? 0;
-      buffer += decoder.decode(value, { stream: !done });
-      if (buffer.length > 8192 || bytes > 65536) throw new ApiError("Research progress exceeded its limit.");
-      let match = /\r?\n\r?\n/.exec(buffer);
-      while (match) {
-        const frame = buffer.slice(0, match.index);
-        buffer = buffer.slice(match.index + match[0].length);
-        const lines = frame.split(/\r?\n/);
-        const eventName = lines.find(line => line.startsWith("event:"))?.slice(6).trim() ?? "";
-        const eventId = lines.find(line => line.startsWith("id:"))?.slice(3).trim();
-        const dataText = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
-        if (!eventName.startsWith("research.iterative.") || !dataText || !eventId) {
-          throw new ApiError("Invalid iterative research progress.");
-        }
-        const eventType = eventName.slice("research.iterative.".length);
-        let parsed: unknown;
-        try { parsed = JSON.parse(dataText); } catch { throw new ApiError("Invalid iterative research progress."); }
-        if (!validProgress(parsed)) throw new ApiError("Invalid iterative research progress.");
-        const data = parsed;
-        if (!eventTypes.has(eventType) ||
-            Number(eventId) !== data.sequence || data.sequence !== lastSequence + 1 ||
-            runId && data.run_id !== runId || data.event_type !== eventType) {
-          throw new ApiError("Invalid iterative research progress.");
-        }
-        if (runId === undefined) runId = data.run_id;
-        if (data.state && terminalStates.has(data.state)) terminal = true;
-        lastSequence = data.sequence;
-        onProgress(data);
-        match = /\r?\n\r?\n/.exec(buffer);
+    for await (const { event: eventName, id: eventId, data: dataText } of readSseFrames(res, { frameCharacters: 8192, totalBytes: 65536 })) {
+      if (!eventName.startsWith("research.iterative.") || !dataText || !eventId) {
+        throw new ApiError("Invalid iterative research progress.");
       }
-      if (done) {
-        if (buffer.trim() !== "") throw new ApiError("Incomplete iterative research progress frame.");
-        if (options.terminalRequired && !terminal) {
-          throw new ApiError("Research was interrupted. Reconnect to the saved run.");
-        }
-        return { runId, lastSequence };
+      const eventType = eventName.slice("research.iterative.".length);
+      let parsed: unknown;
+      try { parsed = JSON.parse(dataText); } catch { throw new ApiError("Invalid iterative research progress."); }
+      if (!validProgress(parsed)) throw new ApiError("Invalid iterative research progress.");
+      const data = parsed;
+      if (!eventTypes.has(eventType) ||
+          Number(eventId) !== data.sequence || data.sequence !== lastSequence + 1 ||
+          runId && data.run_id !== runId || data.event_type !== eventType) {
+        throw new ApiError("Invalid iterative research progress.");
       }
+      if (runId === undefined) runId = data.run_id;
+      if (data.state && terminalStates.has(data.state)) terminal = true;
+      lastSequence = data.sequence;
+      onProgress(data);
       if (terminal && options.terminalRequired) return { runId, lastSequence };
     }
+    if (options.terminalRequired && !terminal) {
+      throw new ApiError("Research was interrupted. Reconnect to the saved run.");
+    }
+    return { runId, lastSequence };
   } catch (error) {
+    if (error instanceof SseError) {
+      if (error.kind === "limit") throw new ApiError("Research progress exceeded its limit.");
+      if (error.kind === "incomplete") throw new ApiError("Incomplete iterative research progress frame.");
+    }
     throw error instanceof ApiError ? error : new ApiError("Research progress could not be read.");
-  } finally {
-    try { await reader.cancel(); } catch { /* The upstream may already be closed. */ }
-    reader.releaseLock();
   }
 }
 

@@ -4,15 +4,14 @@
 
 - Read `docs/project-brief.md`, `docs/architecture.md`, and
   `docs/phase-1-implementation-guide.md`, then the plan relevant to the task.
-- Phase 1 chat, Phase 2 context-management, and Phase 3 simple-memory code are implemented locally.
-  Read `docs/phase-2-implementation-guide.md` for context contracts and current
-  verification gaps. Provider/emulator/deployment closeout remains pending;
-  Phase 3/4/5 gates remain disabled by default; Phase 4 and Phase 5 are implemented locally.
-  Read `docs/phase-5-implementation-guide.md` for research contracts and external gaps.
-  Read `docs/phase-3-implementation-guide.md` and
-  `docs/phase-4-implementation-guide.md` for memory/lifecycle contracts and gaps.
-  Follow explicit user instructions when advancing
-  scope; do not add later-phase features incidentally.
+- Phases 1–8 are implemented locally with experimental gates disabled by default.
+  Read the relevant phase guides/plans for context, memory, research, decisions,
+  domains and iterative-research contracts. Phase 9 authentication and operational
+  safeguards are partially implemented; read `docs/phase-9-implementation-plan.md`
+  and `docs/phase-9-implementation-evidence.md`. Physical deletion, full legacy
+  owner migration, provider accounting and operational release gates remain open.
+  Provider/emulator/deployment closeout is unverified. Follow explicit user
+  instructions when advancing scope; do not add product features incidentally.
 - Inspect `git status` before editing and preserve existing user changes.
 
 ## Boundaries
@@ -25,8 +24,9 @@
   Summaries are lossy, branch-scoped working context, not long-term memory.
 - Preserve parent/supersedes links and superseded message records. Regenerate
   and edit/retry must use only the active branch as model context.
-- The fixed `local` owner is not authenticated identity. Do not claim the
-  public bootstrap protects personal data.
+- The fixed `local` owner is a local/test development identity. Deployed requests
+  require verified Google user/service tokens and private API IAM; local code
+  and fake tests do not establish production security or private-data readiness.
 - Keep durable user memory separate from time-sensitive external evidence;
   enforce hard constraints in code. Future domain modules reuse shared layers.
 - Avoid large orchestration frameworks unless the task explicitly calls for

@@ -100,6 +100,25 @@ def make_service(repository=None, *, clock=lambda: NOW, ranker=None, **setting_o
     )
 
 
+def test_identifiers_from_another_subject_do_not_merge_canonical_entities():
+    repository = InMemoryDecisionRepository()
+    service = make_service(repository)
+    first_source = evidence("Other Widget catalog OTHER-1 costs $40. Its color is blue.")
+    first = service.create(DecisionCreateRequest(
+        idempotency_key=uuid4(),
+        candidates=(candidate("Other Widget", "OTHER-1", "40", "blue", first_source),),
+        supplied_evidence=(first_source,),
+    ))
+    next_source = evidence("New Widget costs $40. Its color is blue. Other Widget catalog OTHER-1 costs $80.")
+    result = service.create(DecisionCreateRequest(
+        idempotency_key=uuid4(),
+        candidates=(candidate("New Widget", "OTHER-1", "40", "blue", next_source),),
+        supplied_evidence=(next_source,),
+    ))
+    assert result.entities[0].id != first.entities[0].id
+    assert result.entities[0].identifiers == {}
+
+
 def test_direct_evidence_decision_filters_before_preference_ranking_and_inspects():
     repository = InMemoryDecisionRepository()
     service = make_service(repository, decision_inspection_enabled=True)

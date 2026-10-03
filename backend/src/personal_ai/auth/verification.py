@@ -9,10 +9,10 @@ from collections import OrderedDict
 from typing import Any
 
 from google.auth.exceptions import TransportError
-from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 
 from personal_ai.auth.contracts import AuthenticatedPrincipal
+from personal_ai.auth.google_transport import signing_key_request
 from personal_ai.settings import Settings
 
 MAX_TOKEN_LENGTH = 8192
@@ -30,20 +30,6 @@ class IdentityProviderUnavailable(RuntimeError):
     """Google's verification keys could not be checked within the request bound."""
 
 
-class _BoundedGoogleAuthRequest(GoogleAuthRequest):
-    """Cap certificate fetches so an identity check cannot hang a request."""
-
-    def __call__(self, url, method="GET", body=None, headers=None, timeout=3, **kwargs):
-        return super().__call__(
-            url,
-            method=method,
-            body=body,
-            headers=headers,
-            timeout=min(timeout or 3, 3),
-            **kwargs,
-        )
-
-
 def _verified_claims(token: str, audience: str) -> dict[str, Any]:
     token_fingerprint = hashlib.sha256(f"{audience}\0{token}".encode()).hexdigest()
     now = int(time.time())
@@ -55,11 +41,8 @@ def _verified_claims(token: str, audience: str) -> dict[str, Any]:
         _verified_tokens.pop(token_fingerprint, None)
 
     try:
-        claims = id_token.verify_oauth2_token(
-            token,
-            _BoundedGoogleAuthRequest(),
-            audience=audience,
-        )
+        with signing_key_request() as request:
+            claims = id_token.verify_oauth2_token(token, request, audience=audience)
     except TransportError as error:
         raise IdentityProviderUnavailable from error
     except (ValueError, TypeError, KeyError) as error:

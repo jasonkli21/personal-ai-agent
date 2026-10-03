@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { researchApi } from "./research-api";
+import { researchApi } from "../../src/lib/research-api";
 
 const id = "session-1";
 const terminal = `event: research.terminal\ndata: ${JSON.stringify({schema_version:"research-v1",session_id:id,state:"completed"})}\n\n`;

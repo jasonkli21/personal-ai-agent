@@ -14,7 +14,7 @@ Secret Manager secrets.
   API. Also disable/revoke the Google account/client when immediate revocation
   is needed; already-issued ID tokens can remain valid until token expiry.
 - If the web-to-API boundary fails, verify the Web runtime service account has
-  only `roles/run.invoker` on the API service and that the API is not public.
+  `roles/run.invoker` on the API service and that the API is not public.
   Do not grant project-wide `roles/run.invoker` to `allUsers`.
 - Keep Pub/Sub and maintenance invokers separate. Pause the maintenance job
   with `gcloud scheduler jobs pause personal-ai-maintenance --location REGION`
@@ -25,10 +25,11 @@ Secret Manager secrets.
 - Set `EXTERNAL_PROVIDERS_KILL_SWITCH_ENABLED=true` to stop configured external
   model/search/domain provider operations. Set `CHAT_KILL_SWITCH_ENABLED` or
   `RESEARCH_KILL_SWITCH_ENABLED` to stop those capabilities independently.
-- The API reserves a conservative maximum per provider-backed API operation
+- The API reserves a request-level estimate per provider-backed API operation
   against a per-owner UTC-day Firestore budget before the operation. A denied
-  reservation returns 429 with a retry time. Reservations count as used even
-  when a later provider call fails; `settled` is zero because usage metering is
+  reservation returns 429 with a retry time. These estimates do not cover every context-counting, summary, extraction,
+  embedding or worker call and do not guarantee an account spend ceiling.
+  Reservations count as used even when a later provider call fails; `settled` is zero because usage metering is
   not yet reconciled from provider responses.
 - Request rate limits and usage counters are in Firestore so Cloud Run
   instances share the same limit. If Firestore counters are unavailable,
@@ -52,6 +53,7 @@ Secret Manager secrets.
 
 ## Worker and maintenance
 
+- API and worker runtime identities both need topic-scoped `roles/pubsub.publisher`: the worker maintenance path republishes pending notifications.
 - Pub/Sub uses a dedicated invoker service account and a Google-signed token
   with the worker service URL as audience. Invalid payloads are acknowledged
   without logging payload bytes; transient storage/provider failures return

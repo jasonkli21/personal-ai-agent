@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
@@ -28,6 +27,7 @@ from personal_ai.memory.lifecycle import (
 from personal_ai.memory.repositories import FirestoreMemoryRepository
 from personal_ai.memory.services import source_messages
 from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
+from personal_ai.storage.transactions import bounded_transaction
 
 _OPERATION_DEADLINE = ContextVar("memory_lifecycle_deadline", default=None)
 
@@ -646,46 +646,13 @@ class FirestoreMemoryLifecycleRepository:
         self.relations = self.client.collection("derived_memory_sources")
 
     def _transaction(self, function):
-        """Use bounded begin/read/commit RPCs with no hidden SDK retries."""
+        """Share the storage transaction lifecycle and the enclosing RPC deadline."""
         with lifecycle_deadline(5):
-            transaction = self.client.transaction(max_attempts=1)
-            api = self.client._firestore_api
-            response = api.begin_transaction(
-                request={"database": self.client._database_string},
-                metadata=self.client._rpc_metadata,
-                retry=None,
-                timeout=rpc_timeout(),
+            return bounded_transaction(
+                self.client,
+                lambda transaction, _: function(_BoundedTransaction(transaction)),
+                seconds=rpc_timeout(),
             )
-            transaction._id = response.transaction
-            try:
-                result = function(_BoundedTransaction(transaction))
-                api.commit(
-                    request={
-                        "database": self.client._database_string,
-                        "transaction": transaction.id,
-                        "writes": transaction._write_pbs,
-                    },
-                    metadata=self.client._rpc_metadata,
-                    retry=None,
-                    timeout=rpc_timeout(),
-                )
-                return result
-            except BaseException:
-                try:
-                    api.rollback(
-                        request={
-                            "database": self.client._database_string,
-                            "transaction": transaction.id,
-                        },
-                        metadata=self.client._rpc_metadata,
-                        retry=None,
-                        timeout=1,
-                    )
-                except Exception:  # noqa: BLE001 - preserve the original error
-                    logging.getLogger(__name__).info("Lifecycle rollback failed")
-                raise
-            finally:
-                transaction._clean_up()
 
     @staticmethod
     def _state_ref_id(owner_id: str, memory_id: UUID) -> str:
@@ -693,10 +660,12 @@ class FirestoreMemoryLifecycleRepository:
 
     def _get_record(self, *, owner_id: str, memory_id: UUID, timeout: float = 5):
         try:
-            return self.memories.get(owner_id=owner_id, memory_id=memory_id, timeout=timeout)
+            return self.memories.get(
+                owner_id=owner_id, memory_id=memory_id, timeout=min(timeout, rpc_timeout())
+            )
         except ResourceNotFoundError:
             return self.memories.get_derived(
-                owner_id=owner_id, memory_id=memory_id, timeout=timeout
+                owner_id=owner_id, memory_id=memory_id, timeout=min(timeout, rpc_timeout())
             )
 
     def _read_state(self, owner_id: str, memory_id: UUID, *, transaction=None):
@@ -1227,14 +1196,14 @@ class FirestoreMemoryLifecycleRepository:
         return self.memories._run(lambda: self._transaction(mutate))
 
     def discover_related(self, *, owner_id: str, memory_id: UUID, limit: int = 4):
-        anchor = self.memories.get(owner_id=owner_id, memory_id=memory_id)
+        anchor = self.memories.get(owner_id=owner_id, memory_id=memory_id, timeout=rpc_timeout())
         result = self.memories.search(
             owner_id=owner_id,
             embedding=anchor.embedding,
             model=anchor.embedding_model,
             dimensions=anchor.embedding_dimensions,
             limit=limit,
-            timeout=5,
+            timeout=rpc_timeout(),
             memory_type=anchor.memory_type,
         )
         selected = []
@@ -1267,7 +1236,9 @@ class FirestoreMemoryLifecycleRepository:
             for snapshot in snapshots:
                 memory = self.memories._record(snapshot)
                 state = self.get_state(owner_id=owner_id, memory_id=memory.id)
-                if state.retrieval_status == "active" and source_messages(memory, self.messages):
+                if state.retrieval_status == "active" and source_messages(
+                    memory, self.messages, timeout=rpc_timeout()
+                ):
                     found[memory.id] = memory
         ordered = sorted(
             found.values(), key=lambda item: (-item.effective_at.timestamp(), str(item.id))

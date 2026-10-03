@@ -7,7 +7,10 @@ from google.cloud.firestore_v1.vector import Vector
 
 from personal_ai.evaluation.memory_lifecycle import NOW, build_fixture, load_fixtures
 from personal_ai.memory.lifecycle_policy import make_event
-from personal_ai.memory.lifecycle_repositories import FirestoreMemoryLifecycleRepository
+from personal_ai.memory.lifecycle_repositories import (
+    FirestoreMemoryLifecycleRepository,
+    lifecycle_deadline,
+)
 from personal_ai.memory.repositories import FirestoreMemoryRepository
 
 
@@ -131,3 +134,15 @@ def test_consolidation_commits_all_sources_events_reverse_links_and_operation_to
     )
     transaction.create.assert_not_called()
     transaction.set.assert_not_called()
+
+
+def test_lifecycle_record_and_state_reads_share_the_short_optional_deadline():
+    env, lifecycle, _records, refs, _client, _transaction = environment()
+    memory = env["records"]["a"]
+    with lifecycle_deadline(0.25):
+        state = lifecycle.get_state(owner_id="local", memory_id=memory.id)
+    assert state.state_version == 0
+    for key in (
+        ("memories", str(memory.id)), ("memory_lifecycle_states", str(memory.id)),
+    ):
+        assert 0 < refs[key].get.call_args.kwargs["timeout"] <= 0.25

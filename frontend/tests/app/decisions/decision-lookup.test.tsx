@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import DecisionLookup from "./decision-lookup";
+import DecisionLookup from "../../../src/app/decisions/decision-lookup";
 
 const fetch = vi.fn();
 const ref = {

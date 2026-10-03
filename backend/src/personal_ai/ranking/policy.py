@@ -197,6 +197,35 @@ def claim_assertion_supported(
     return False
 
 
+def identifier_assertion_supported(subject: str, key: str, value: str, passage: str) -> bool:
+    """Bind an identity literal to its subject instead of borrowing nearby IDs."""
+    if not value.strip() or len(value) > 500:
+        return False
+    aliases = {
+        "osm": ("openstreetmap_identifier", "osm"),
+        "offer_id": ("offer_identifier", "offer_id"),
+        "upc": ("upc", "barcode", "product_variant"),
+        "ean": ("ean", "barcode", "product_variant"),
+        "catalog": ("catalog", "catalog_id"),
+    }.get(key.casefold(), (key,))
+    if any(
+        claim_assertion_supported(subject, attribute, value, TextValue(value=value), passage)
+        for attribute in aliases
+    ):
+        return True
+    if key.casefold() != "catalog":
+        return False
+    # Existing sources may put the catalog ID in the explicit subject heading:
+    # "Widget catalog SKU-1 costs ...". Require that immediate association.
+    subject_pattern = r"\s+".join(re.escape(part) for part in subject.split())
+    identifier_pattern = re.escape(value.strip())
+    heading = rf"^\s*(?:the\s+)?{subject_pattern}\s+catalog\s+{identifier_pattern}\s+"
+    return any(
+        re.match(heading, sentence, re.IGNORECASE)
+        for sentence in re.split(r"(?<=[.!?;])\s+", passage)
+    )
+
+
 _NUMBER_PATTERN = r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 
 
@@ -433,11 +462,10 @@ def resolve_candidate(
             evidence_ids=tuple(ref.evidence_id for ref in evidence_refs), created_at=now,
         ), new_entity_id
 
-    alias_by_entity = {
-        alias.entity_id: alias.normalized_alias
-        for alias in aliases
-        if alias.owner_id in {owner_id, "*"}
-    }
+    aliases_by_entity: dict[UUID, list[str]] = {}
+    for alias in aliases:
+        if alias.owner_id in {owner_id, "*"}:
+            aliases_by_entity.setdefault(alias.entity_id, []).append(alias.normalized_alias)
     proposed_name = normalize_name(proposal.canonical_name)
     eligible_proposed = tuple(
         claim for claim in proposed_claims
@@ -451,8 +479,9 @@ def resolve_candidate(
         if entity.id in conflicting_identifier_entities:
             continue
         name_candidates = [normalize_name(entity.canonical_name)]
-        if entity.id in alias_by_entity:
-            name_candidates.append(normalize_name(alias_by_entity[entity.id]))
+        name_candidates.extend(
+            normalize_name(alias) for alias in aliases_by_entity.get(entity.id, ())
+        )
         similarity = max(
             (SequenceMatcher(None, proposed_name, name).ratio() for name in name_candidates),
             default=0.0,
@@ -789,7 +818,7 @@ def evaluate_candidates(
                 passed, reason = _matches(claim.typed_value, constraint)
                 if passed is None:
                     outcome = "unknown"
-                    if constraint.required:
+                    if constraint.required or constraint.missing_policy == "fail_closed":
                         exclusions.append(f"required_{constraint.attribute}_{reason}")
                         unknown_required = True
                 elif passed:

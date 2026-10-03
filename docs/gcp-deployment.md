@@ -159,11 +159,12 @@ store. These external checks have not been run in the recorded local session.
 
 The worker uses `personal_ai.worker:app`, with `/tasks/memory` separate from the
 public API. Bootstrap sets all lifecycle gates false, updates existing authenticated
-push subscriptions and grants distinct worker runtime, API publisher and push invoker
-permissions. Before enabling a synthetic experiment, provision all Phase 4 indexes
+push subscriptions and grants distinct runtime and invoker permissions. Both API and worker runtimes
+can publish to the lifecycle topic, because worker maintenance republishes
+pending notifications. Before enabling a synthetic experiment, provision all Phase 4 indexes
 from `firestore.indexes.json`, including derived/typed vector indexes with matching
 dimensions, maintenance, event-sequence, reverse-dependency and pending/retry queries.
-Wait for readiness; the bootstrap provisions only Phase 1–2 indexes. See the
+Wait for readiness; the bootstrap provisions baseline chat/summary and Phase 9 research-expiry indexes. See the
 [Phase 4 guide](phase-4-implementation-guide.md) for explicit notification recovery,
 attempt/lease bounds, opt-in checks and current verification limitations. The private
 worker independently verifies its Pub/Sub identity token; deployed API requests never

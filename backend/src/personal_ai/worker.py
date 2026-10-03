@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import anyio
 from fastapi import FastAPI, Request, Response
@@ -34,6 +34,7 @@ from personal_ai.memory.lifecycle_repositories import FirestoreMemoryLifecycleRe
 from personal_ai.memory.repositories import FirestoreMemoryRepository
 from personal_ai.settings import Settings, get_settings, validate_startup_configuration
 from personal_ai.storage import FirestoreMessageRepository
+from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import ResourceNotFoundError, StorageError
 
 logger = logging.getLogger(__name__)
@@ -64,8 +65,7 @@ def _components(settings: Settings):
         emulator_host=settings.firestore_emulator_host,
     )
     messages = FirestoreMessageRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
+        client=memories.client,
     )
     lifecycle = FirestoreMemoryLifecycleRepository(memories, messages)
     publisher = PubSubMemoryJobPublisher(settings)
@@ -78,6 +78,11 @@ def _components(settings: Settings):
         GeminiMemoryAdapter(settings),
     )
     return worker, republisher
+
+
+def _process_memory_job(settings: Settings, job_id: UUID) -> str:
+    worker, _ = _components(settings)
+    return worker.process(job_id)
 
 
 @app.get("/health")
@@ -93,7 +98,8 @@ async def receive_memory_task(request: Request) -> Response:
         authorization = request.headers.get("authorization", "")
         token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
         try:
-            verify_google_service_token(
+            await io_call(
+                verify_google_service_token,
                 token,
                 audience=settings.worker_push_audience,
                 service_account=settings.worker_push_service_account,
@@ -125,8 +131,9 @@ async def receive_memory_task(request: Request) -> Response:
         return Response(status_code=204)
 
     try:
-        worker, _ = _components(settings)
-        result = worker.process(notification.job_id)
+        # Firestore, embeddings and service-token verification are synchronous;
+        # keep them off the request loop so one slow job cannot stall health/push.
+        result = await io_call(_process_memory_job, settings, notification.job_id)
     except ResourceNotFoundError:
         return Response(status_code=204)
     except StorageError as error:
@@ -149,7 +156,8 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         authorization = request.headers.get("authorization", "")
         token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
         try:
-            verify_google_service_token(
+            await io_call(
+                verify_google_service_token,
                 token,
                 audience=settings.worker_maintenance_audience,
                 service_account=settings.worker_maintenance_service_account,

@@ -1,6 +1,6 @@
 """Atomic bounded aggregates with owner-scoped creation and fenced execution."""
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from threading import RLock
 from typing import Protocol
@@ -211,6 +211,15 @@ class FirestoreResearchRepository:
         """Mark expired sessions ineligible while retaining evidence for export/audit."""
         from google.cloud import firestore
 
+        # Aggregate timestamps are UTC ISO strings. A native Firestore timestamp
+        # cannot match them. Query through the next whole second, then compare
+        # decoded instants: ISO strings with optional fractions do not sort
+        # chronologically within the same second ("...00Z" > "...00.1Z").
+        now = now.astimezone(UTC)
+        bound = (now + timedelta(seconds=1)).replace(microsecond=0)
+        query_bound = bound.isoformat().replace("+00:00", "Z")
+        serialized_now = now.isoformat().replace("+00:00", "Z")
+
         query = (
             self.sessions.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
             .where(
@@ -218,21 +227,25 @@ class FirestoreResearchRepository:
                     "state", "in", ["pending", "completed", "insufficient", "failed"]
                 )
             )
-            .where(filter=firestore.FieldFilter("expires_at", "<=", now))
+            .where(filter=firestore.FieldFilter("expires_at", "<", query_bound))
             .order_by("expires_at")
             .limit(limit)
         )
 
         def operation():
-            snapshots = tuple(query.stream())
+            snapshots = tuple(query.stream(retry=None, timeout=5))
             if not snapshots:
                 return 0
             batch = self.client.batch()
+            expired = 0
             for snapshot in snapshots:
                 values = snapshot.to_dict() or {}
                 if values.get("owner_id") != owner_id or values.get("state") not in {
                     "pending", "completed", "insufficient", "failed"
                 }:
+                    continue
+                session = self._decode(snapshot, owner_id)
+                if session.expires_at > now:
                     continue
                 batch.update(
                     snapshot.reference,
@@ -241,7 +254,7 @@ class FirestoreResearchRepository:
                         "answer": None,
                         "citations": [],
                         "revision": int(values.get("revision", 0)) + 1,
-                        "updated_at": now,
+                        "updated_at": serialized_now,
                     },
                     option=firestore.LastUpdateOption(snapshot.update_time),
                 )
@@ -260,7 +273,9 @@ class FirestoreResearchRepository:
                     "correlation_id": correlation_id,
                     "occurred_at": now,
                 })
-            batch.commit()
-            return len(snapshots)
+                expired += 1
+            if expired:
+                batch.commit(retry=None, timeout=5)
+            return expired
 
         return self._run(operation)

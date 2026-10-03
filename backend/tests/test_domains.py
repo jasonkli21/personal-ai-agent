@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from threading import Event, get_ident
 from time import monotonic
 from types import SimpleNamespace
 from uuid import uuid4
@@ -408,7 +409,8 @@ def test_open_food_facts_adapter_requests_only_product_fields_and_uses_staging_a
     def respond(request):
         observed.append(request)
         return httpx.Response(200, headers={"content-type": "application/json"}, json={
-            "status": 1,
+            "status": "success",
+            "result": {"id": "product_found"},
             "product": {
                 "code": "000000000001", "product_name": "Synthetic oat drink",
                 "brands": "Example Pantry", "quantity": "1 L", "categories_tags": ["en:drinks"],
@@ -429,6 +431,7 @@ def test_open_food_facts_adapter_requests_only_product_fields_and_uses_staging_a
     adapter = OpenFoodFactsAdapter(settings, transport=httpx.MockTransport(respond), rate_limiter=limiter)
     product = asyncio.run(adapter.lookup_barcode("000000000001"))
     assert product and product.name == "Synthetic oat drink"
+    assert observed[0].url.path == "/api/v3.6/product/000000000001.json"
     assert observed[0].url.params["fields"] == "code,product_name,brands,quantity,categories_tags"
     assert observed[0].headers["authorization"].startswith("Basic ")
     assert limiter.intervals == [4]
@@ -437,6 +440,110 @@ def test_open_food_facts_adapter_requests_only_product_fields_and_uses_staging_a
     )
     assert "Open Food Facts" in sources[0].attribution
     assert evidence[0].title == "Synthetic oat drink"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "payload", "expected_error"),
+    [
+        (404, {"status": "failure", "result": {"id": "product_not_found"}}, None),
+        (404, {"status": "failure", "result": {"id": "invalid_code"}}, "shopping_provider_invalid_response"),
+        (200, {"status": 1, "product": {}}, "shopping_provider_invalid_response"),
+        (200, {"status": "failure", "result": {"id": "product_not_found"}}, "shopping_provider_invalid_response"),
+        (200, {"status": "success_with_errors", "result": {"id": "product_found"}, "product": {}}, "shopping_provider_invalid_response"),
+    ],
+)
+def test_open_food_facts_v3_not_found_and_invalid_response_contract(status_code, payload, expected_error):
+    settings = Settings(
+        _env_file=None, ai_provider="gemini", ai_model="synthetic",
+        shopping_provider_policy_approved=True,
+        shopping_off_user_agent="PersonalAISystem/0.1",
+    )
+    adapter = OpenFoodFactsAdapter(
+        settings,
+        transport=httpx.MockTransport(lambda _: httpx.Response(status_code, json=payload)),
+        rate_limiter=_NoWait(),
+    )
+    if expected_error is None:
+        assert asyncio.run(adapter.lookup_barcode("000000000001")) is None
+    else:
+        with pytest.raises(DomainProviderError, match=expected_error):
+            asyncio.run(adapter.lookup_barcode("000000000001"))
+
+
+@pytest.mark.parametrize("product", [
+    {"product_name": None, "code": "000000000001"},
+    {"product_name": "Synthetic", "brands": {}, "code": "000000000001"},
+    {"product_name": "Synthetic", "categories_tags": [None], "code": "000000000001"},
+    {"product_name": "Synthetic"},
+])
+def test_open_food_facts_rejects_malformed_identity_without_stringifying_nulls(product):
+    settings = Settings(
+        _env_file=None, ai_provider="gemini", ai_model="synthetic",
+        shopping_provider_policy_approved=True, shopping_off_user_agent="PersonalAISystem/0.1",
+    )
+    adapter = OpenFoodFactsAdapter(
+        settings,
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={
+            "status": "success", "result": {"id": "product_found"}, "product": product,
+        })),
+        rate_limiter=_NoWait(),
+    )
+    with pytest.raises(DomainProviderError, match="shopping_provider_invalid_response"):
+        asyncio.run(adapter.lookup_barcode("000000000001"))
+
+
+def test_lookup_does_not_block_the_event_loop_with_synchronous_storage():
+    async def scenario():
+        service = _service(domains=("travel",), adapters={"travel": FakeTravelPlaceAdapter(())})
+        main_thread = get_ident()
+        threads = []
+        original_reserve = service.repository.reserve_lookup
+        original_create = service._create
+
+        def reserve(reservation):
+            threads.append(get_ident())
+            return original_reserve(reservation)
+
+        def create(*args, **kwargs):
+            threads.append(get_ident())
+            return original_create(*args, **kwargs)
+
+        service.repository.reserve_lookup = reserve
+        service._create = create
+        result = await service.lookup("travel", DomainLookupRequest(idempotency_key=uuid4(), query="Park"))
+        assert not result.comparison.rows
+        assert len(threads) == 2 and all(thread != main_thread for thread in threads)
+
+    asyncio.run(scenario())
+
+
+def test_cancellation_waits_for_reservation_and_records_uncertain_without_provider_call():
+    async def scenario():
+        adapter = FakeTravelPlaceAdapter(())
+        service = _service(domains=("travel",), adapters={"travel": adapter})
+        entered, release = Event(), Event()
+        reserve = service.repository.reserve_lookup
+
+        def delayed_reserve(reservation):
+            entered.set()
+            assert release.wait(2)
+            return reserve(reservation)
+
+        service.repository.reserve_lookup = delayed_reserve
+        task = asyncio.create_task(service.lookup(
+            "travel", DomainLookupRequest(idempotency_key=uuid4(), query="Park"),
+        ))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            task.cancel()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not adapter.calls
+        assert next(iter(service.repository.lookups.values())).state == "uncertain"
+
+    asyncio.run(scenario())
 
 
 def test_rate_limiter_rejects_future_slots_without_extending_the_queue():

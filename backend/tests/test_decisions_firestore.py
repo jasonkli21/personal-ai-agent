@@ -10,7 +10,7 @@ import pytest
 from personal_ai.decisions.contracts import DecisionCreateRequest
 from personal_ai.decisions.firestore import FirestoreDecisionRepository
 from personal_ai.decisions.repositories import DecisionError, InMemoryDecisionRepository
-from personal_ai.entities.research import MoneyValue, TextValue
+from personal_ai.entities.research import EntityAlias, MoneyValue, TextValue
 from personal_ai.storage.errors import ResourceNotFoundError
 from tests.test_decisions import evidence, make_service
 
@@ -158,6 +158,20 @@ def test_firestore_decision_rejects_idempotency_conflict_before_writing():
     transaction.create.assert_not_called()
 
 
+def test_firestore_historical_decision_does_not_gain_aliases_from_later_evidence():
+    repository, client, _ = repository_environment()
+    result = decision_result()
+    repository.create(result)
+    assert result.decision.alias_ids == ()
+    later_alias = EntityAlias(
+        id=uuid4(), entity_id=result.entities[0].id, owner_id="local",
+        normalized_alias="later alias", source_evidence_ids=(uuid4(),),
+        created_at=result.decision.created_at,
+    )
+    client.records[("entity_aliases", str(later_alias.id))] = later_alias.model_dump(mode="json")
+    assert repository.get("local", result.decision.id) == result
+
+
 def test_firestore_claim_attribute_filter_finds_relevant_record_past_unrelated_prefix():
     repository, client, _ = repository_environment()
     result = decision_result()
@@ -184,3 +198,30 @@ def test_firestore_claim_attribute_filter_finds_relevant_record_past_unrelated_p
     }
     fake.claims[relevant.id] = relevant
     assert fake.list_claims("local", (entity_id,), ("price",), limit=5) == (relevant,)
+
+
+def test_firestore_alias_reads_batch_entity_ids_and_preserve_all_owner_scoped_aliases(monkeypatch):
+    repository, client, _ = repository_environment()
+    result = decision_result()
+    entity_ids = tuple(uuid4() for _ in range(31))
+    expected = []
+    for index, entity_id in enumerate(entity_ids):
+        for owner in ("local", "*", "other"):
+            alias = EntityAlias(
+                id=uuid4(), entity_id=entity_id, owner_id=owner,
+                normalized_alias=f"alias {index}", created_at=result.decision.created_at,
+            )
+            client.records[("entity_aliases", str(alias.id))] = alias.model_dump(mode="json")
+            if owner != "other":
+                expected.append(alias)
+    calls = []
+    stream = Query.stream
+
+    def counted_stream(self, **kwargs):
+        calls.append(kwargs)
+        return stream(self, **kwargs)
+
+    monkeypatch.setattr(Query, "stream", counted_stream)
+    assert repository.list_aliases("local", entity_ids) == tuple(sorted(expected, key=lambda alias: str(alias.id)))
+    assert len(calls) == 4  # Two ownership scopes, two bounded groups of IDs.
+    assert all(call["retry"] is None and 0 < call["timeout"] <= 5 for call in calls)

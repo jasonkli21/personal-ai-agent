@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from functools import partial
 from time import monotonic
 from uuid import uuid4
 
@@ -15,17 +14,7 @@ from personal_ai.evidence.contracts import AdapterAttempt, SearchQuery
 from personal_ai.evidence.pipeline import extract_evidence, select_evidence, validate_synthesis
 from personal_ai.search.contracts import SearchResult
 from personal_ai.search.policy import DeterministicPlanner, SnippetExtractor, planned_queries
-
-
-async def io_call(function, *args, **kwargs):
-    # Shield thread work to completion before stream cleanup performs the next write.
-    task = asyncio.create_task(anyio.to_thread.run_sync(partial(function, *args, **kwargs)))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        with anyio.CancelScope(shield=True):
-            await task
-        raise
+from personal_ai.storage.async_io import io_call
 
 
 def event(name, **data):

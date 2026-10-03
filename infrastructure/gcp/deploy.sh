@@ -44,7 +44,7 @@ if [[ ! "$ALLOWED_OWNER_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]]; then
   echo "Allowed owner email must be a single plain email address." >&2
   exit 2
 fi
-ALLOWED_OWNER_EMAIL=${ALLOWED_OWNER_EMAIL,,}
+ALLOWED_OWNER_EMAIL=$(printf '%s' "$ALLOWED_OWNER_EMAIL" | tr '[:upper:]' '[:lower:]')
 OWNER_DOMAIN=${ALLOWED_OWNER_EMAIL##*@}
 AUTH_HOSTED_DOMAIN=""
 if [[ "$OWNER_DOMAIN" != "gmail.com" ]]; then AUTH_HOSTED_DOMAIN="$OWNER_DOMAIN"; fi
@@ -164,12 +164,13 @@ gcloud pubsub topics describe "$TOPIC" >/dev/null 2>&1 || gcloud pubsub topics c
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
 gcloud pubsub topics add-iam-policy-binding "$TOPIC" \
   --member="serviceAccount:$API_RUNTIME_EMAIL" --role='roles/pubsub.publisher' >/dev/null
+gcloud pubsub topics add-iam-policy-binding "$TOPIC" \
+  --member="serviceAccount:$WORKER_RUNTIME_EMAIL" --role='roles/pubsub.publisher' >/dev/null
 
 cat >"$API_ENV_FILE" <<EOF
 APP_ENVIRONMENT: $TARGET_ENV
 AI_PROVIDER: gemini
 AI_MODEL: $AI_MODEL
-DATABASE_BACKEND: firestore
 FIRESTORE_PROJECT_ID: $PROJECT_ID
 AUTH_MODE: google_oidc
 AUTH_REQUIRED: "true"
@@ -212,7 +213,6 @@ cat >"$WORKER_ENV_FILE" <<EOF
 APP_ENVIRONMENT: $TARGET_ENV
 AI_PROVIDER: gemini
 AI_MODEL: $AI_MODEL
-DATABASE_BACKEND: firestore
 FIRESTORE_PROJECT_ID: $PROJECT_ID
 AUTH_MODE: google_oidc
 AUTH_REQUIRED: "true"

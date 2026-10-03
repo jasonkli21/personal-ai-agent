@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { NextRequest } from "next/server";
 import { afterEach, expect, it, vi } from "vitest";
-import { GET } from "./route";
+import { GET } from "../../../../../../src/app/api/conversations/[conversationId]/context/route";
 const proxy = vi.hoisted(() => vi.fn());
-vi.mock("../../../../../lib/conversation-proxy", () => ({ proxyConversationApi: proxy }));
+vi.mock("../../../../../../src/lib/conversation-proxy", () => ({ proxyConversationApi: proxy }));
 afterEach(() => { vi.unstubAllEnvs(); proxy.mockReset(); });
 it("returns 404 by default without contacting the backend", async () => {
   vi.stubEnv("CONTEXT_INSPECTION_ENABLED", "false");

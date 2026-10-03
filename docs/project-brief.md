@@ -28,6 +28,11 @@ See the Phase 8 [implementation plan](phase-8-implementation-plan.md),
 [guide](phase-8-implementation-guide.md), and
 [release evidence](releases/phase-8-iterative-research.md) for state, budgets,
 recovery, evaluation, and remaining verification gaps.
+Phase 9 authentication and operational safeguards are implemented locally in
+part; its acceptance criteria remain incomplete. See the
+[Phase 9 plan](phase-9-implementation-plan.md),
+[evidence](phase-9-implementation-evidence.md), and
+[repository review](repository-review-2026-10-03.md).
 Existing earlier-phase external gaps remain open.
 
 Implemented:
@@ -74,18 +79,24 @@ Implemented:
 - Versioned, owner-scoped bounded research runs, deterministic sufficiency/gap
   assessment, validated follow-up templates, resource ledgers, safe progress,
   cancellation/recovery, and 18 paired Phase 5/8 synthetic evaluations.
-- Decision creation and inspection gates default off; current `local` ownership
-  remains a development boundary, not authentication.
+- Decision creation and inspection gates default off. Local/test `local`
+  ownership remains a development boundary; deployed requests require verified
+  Google identity and private API invocation.
+- Partial Phase 9 Google OIDC, owner mappings, safe request telemetry, durable
+  request counters, request-level usage estimates, service-token verification,
+  bounded account export and deletion-request audit records.
 - Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.
 - Dockerfiles and a GCP bootstrap/deployment script.
 - Architecture, deployment, research-agent, and implementation-plan documents.
 
 Not implemented:
 
-- Authentication or authorization.
 - User-facing memory management, broad inferred consolidation or contradiction adjudication.
 - General scheduled maintenance; Phase 4 provides explicit bounded jobs and recovery.
-- Phase 9 operational automation and authentication/authorization.
+- Physical owner-data deletion and deletion-aware restore.
+- Full legacy owner migration, provider usage accounting, and operational
+  release promotion gates. Phase 9 has local authentication, request limits,
+  scheduled-maintenance plumbing and account workflows, but remains incomplete.
 
 Research/search/evidence implement the bounded Phase 5 pipeline; Phase 6 adds
 shared evidence-backed decision support and Phase 7 adds thin travel/shopping
@@ -107,7 +118,7 @@ current context-management behavior and evidence.
 - Do not host a frontier model on free-tier compute. Use hosted LLM and embedding APIs behind the `llm` abstraction.
 - Do not begin with memory, search, travel, or shopping features. Build and verify the basic chat system first.
 - Do not introduce LangChain, LlamaIndex, or a large agent/orchestration framework initially. The point is to understand and implement the core abstractions directly.
-- Do not treat the current public Cloud Run bootstrap as safe for real personal data. Authentication, authorization, and a deliberate provider-data policy are required before storing sensitive chats.
+- Do not treat the local implementation as ready for real personal data. The private API deployment and Google OIDC boundary still require staged verification, provider-data review, and operational release checks.
 - Do not commit API keys, provider credentials, or user data. Add real credentials through Secret Manager when an adapter actually needs them.
 - Do not let a model decide deterministic requirements such as whether a price meets a budget. Application code enforces hard constraints.
 
@@ -166,8 +177,8 @@ See its [guide](phase-3-implementation-guide.md) and
 implemented locally after explicit user authorization; their external
 verification gaps remain open. Phases 7 and 8 are implemented locally; their
 provider, emulator, and deployment checks remain open. Follow their guides and
-release records. Do not add Phase 9 operations or authentication work without
-explicit direction.
+release records. Phase 9 is partially implemented locally. Preserve its remaining acceptance
+gaps; do not expand into new operational/product behavior without explicit direction.
 
 Do not add long-term memory in Phase 1. Phase 2 handles context-window management; Phase 3 introduces simple memory only after basic chat is stable.
 
@@ -190,7 +201,7 @@ Resolve these in short architecture decision records before implementation depen
 - Embedding-model changes or migrations after Phase 3. ADR 0009 selects configured
   Gemini embeddings initially. Chat already uses the Google
   Gen AI SDK with runtime model selection; see [ADR 0001](decisions/0001-llm-provider-boundary.md).
-- Authentication approach for personal use and the point at which it becomes mandatory.
+- Acceptance of the implemented Google OIDC boundary in staging/production; see [ADR 0018](decisions/0018-personal-oidc-authentication.md).
 - Future Firestore schema migrations, backups, export, and deletion behavior.
   Phase 1 collections, owner scoping, and indexes are implemented; see the
   [API contract](api-contract.md) and [ADR 0002](decisions/0002-firestore-native-persistence.md).
@@ -205,6 +216,6 @@ Resolve these in short architecture decision records before implementation depen
    [architecture](architecture.md), [implementation guide](phase-1-implementation-guide.md),
    and the plan for the active task. Read [GCP deployment](gcp-deployment.md)
    when working on infrastructure.
-2. Use the Phase 5–8 guides and release records for delivered behavior and remaining verification gaps. Do not add Phase 9 behavior without explicit authorization.
+2. Use the Phase 5–8 guides and release records for delivered behavior and remaining verification gaps. Consult the Phase 9 plan/evidence for partial operational implementation; do not infer production readiness.
 3. Preserve the architectural invariants above.
 4. Once a phase is authorized, implement its smallest testable vertical slice, update tests and docs, and do not expand into a later phase without a user decision.

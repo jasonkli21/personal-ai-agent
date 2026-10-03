@@ -9,25 +9,32 @@ A personal AI system and research playground: chat, long-term memory, and eviden
 - **Durable application data:** Cloud Firestore in Native mode.
 - **Asynchronous work:** Pub/Sub push delivery to the private worker for gated, durable Phase 4 memory-lifecycle jobs. Chat and bounded Phase 5 research use direct requests and SSE.
 - **Secrets:** Secret Manager; no provider key is committed to source control.
-- **Build and delivery:** Dockerfiles plus `gcloud run deploy --source`.
+- **Build and delivery:** Locked Docker builds through Cloud Build, Artifact Registry, and immutable Cloud Run image digests.
 
 The GCP layout and deployment path are documented in [GCP deployment](docs/gcp-deployment.md).
 
 ## Repository layout
 
 ```text
-frontend/                    Next.js interface for chat, research and decisions
+frontend/
+  src/                       Next.js interface, server proxies and UI features
+  tests/                     Vitest component, client and proxy tests
 backend/                     FastAPI application and domain packages
   src/personal_ai/
-    agents/                  Conversation and research orchestration
+    services/                Conversation and chat-turn orchestration
+    agents/                  Single-pass and iterative research orchestration
+    auth/                    Verified identity, owner mapping and account safeguards
+    context/                 Shared token-budgeted model input assembly
+    storage/                 Chat repositories and shared persistence primitives
     memory/                  Preference, episodic, and semantic memory
     search/                  Search pipeline and provider adapters
     evidence/                Fresh, attributable source observations
     entities/                Chat records and canonical research candidates/claims
     decisions/               Evidence-backed decision contracts and persistence
     ranking/                 Deterministic constraints and explainable ranking
-    domains/                 Phase 7 travel/shopping placeholders
+    domains/                 Thin travel/shopping comparisons and bounded providers
     evaluation/              Reproducible system and agent evaluation
+  tests/                     Backend contract, route, service and adapter tests
 infrastructure/              Local and cloud deployment configuration
 experiments/                 Isolated memory, search, and ranking experiments
 docs/                        Architecture, data-model, and decision notes
@@ -35,10 +42,17 @@ docs/                        Architecture, data-model, and decision notes
 
 ## Getting started
 
-Phase 1 is a single-user chat vertical slice: create and reopen conversations,
-stream Gemini responses, and persist the active message history in Firestore.
-The temporary owner is always `local`; there is no authentication. Do not use
-the public bootstrap deployment for sensitive personal data.
+Phases 1–8 are implemented locally. Phase 9 adds Google OIDC authentication,
+owner-scoped access, private API/worker deployment, request limits, account
+export, and an audited deletion-request workflow. Phase 9 remains incomplete:
+physical deletion, full legacy-data migration, provider usage accounting,
+operational release gates, and cloud/provider verification are still open.
+See the [repository review](docs/repository-review-2026-10-03.md) and
+[Phase 9 evidence](docs/phase-9-implementation-evidence.md).
+
+Local/test development explicitly uses the unauthenticated `local` owner.
+Staging/production require a verified Google identity and exact allowlist.
+Production readiness is not established by the local implementation.
 
 ### Prerequisites
 
@@ -110,6 +124,8 @@ Run these commands from the repository root. They do not need cloud credentials 
 | `make memory-eval` | Synthetic Phase 3 memory evaluation |
 | `make research-eval` | Synthetic Phase 5 source-grounded research evaluation |
 | `make decision-eval` | Synthetic Phase 6 decision evaluation |
+| `make domain-eval` | Synthetic Phase 7 travel/shopping evaluation |
+| `make iterative-research-eval` | Paired Phase 5/8 research evaluation |
 | `make memory-lifecycle-eval` | Synthetic Phase 4 lifecycle/variant evaluation |
 | `make backend-build` | Backend source distribution and wheel |
 | `make frontend-build` | Next.js production build |
@@ -172,13 +188,14 @@ in both local environment files, restart the servers, and open
 the deployment script keeps the view disabled. Provider quality verification is
 opt-in as described in the implementation guide.
 
-## Deploy and verify Phase 1
+## Deploy and verify
 
 Follow the [GCP deployment guide](docs/gcp-deployment.md) and complete the
 [Phase 1 deployment checklist](docs/phase-1-deployment-checklist.md). The
-deployer reads the model key only from Secret Manager. The current bootstrap
-leaves both web and API services public and has no authentication; it is not
-appropriate for sensitive personal data.
+deployer reads the model key only from Secret Manager. The web sign-in shell is public; the API and worker require Cloud Run IAM
+and independently verified user/service identities. Keep real personal data out
+until the [Phase 9 release checklist](docs/phase-9-release-checklist.md) has
+dated acceptance evidence.
 
 ## Principles
 
@@ -202,8 +219,8 @@ contradiction resolution, editing, consolidation or forgetting; gated Phase 4
 lifecycle behavior is described below.
 
 Review provider-data suitability before setting `MEMORY_ENABLED=true` and
-`MEMORY_EXTRACTION_ENABLED=true`; the current `local` owner and public bootstrap
-are not authentication. Provision the matching Firestore vector index before
+`MEMORY_EXTRACTION_ENABLED=true`; the local/test `local` owner is not authentication, and production readiness
+requires the Phase 9 release checks. Provision the matching Firestore vector index before
 enabling retrieval. Run `make memory-eval` for fourteen offline synthetic cases.
 The development context inspector can estimate fit for explicitly supplied memory
 IDs when `MEMORY_INSPECTION_ENABLED=true` is set in both local environment files;
@@ -266,7 +283,7 @@ Phase 6 paths. A decision intent still requires the shared deterministic
 decision service to verify evidence; search snippets cannot become claims by
 themselves. Reconnect reads stored events and does not restart work.
 
-Run `make iterative-research-eval` for thirteen paired Phase 5/8 synthetic
+Run `make iterative-research-eval` for eighteen paired Phase 5/8 synthetic
 cases. To expose the bounded mode locally, enable `RESEARCH_ENABLED`,
 `ITERATIVE_RESEARCH_ENABLED`, and `ITERATIVE_PROGRESS_ENABLED` in the backend
 and set the matching server settings plus `NEXT_PUBLIC_ITERATIVE_RESEARCH_ENABLED`

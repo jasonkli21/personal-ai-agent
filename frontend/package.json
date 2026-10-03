@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --incremental false && tsc --project tsconfig.test.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {

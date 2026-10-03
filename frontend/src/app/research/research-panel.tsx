@@ -40,14 +40,6 @@ export default function ResearchPanel({ initialSessionId, initialRunId, iterativ
   const request = useRef<{ question: string; freshness: string; key: string; mode: "single" | "iterative" } | null>(null);
   const active = useRef(false);
 
-  useEffect(() => {
-    if (!initialSessionId) return;
-    const abort = new AbortController();
-    researchApi.get(initialSessionId, abort.signal).then(value => {
-      setSession(value); setQuestion(value.request.question); setFreshness(value.request.freshness);
-    }).catch(() => { if (!abort.signal.aborted) setError("The saved research session could not be loaded."); });
-    return () => abort.abort();
-  }, [initialSessionId]);
   const applyIterativeDetail = useCallback((detail: IterativeResearchDetail) => {
     setIterativeRun(detail.run);
     setSession(detail.session);
@@ -64,17 +56,50 @@ export default function ResearchPanel({ initialSessionId, initialRunId, iterativ
   }, []);
 
   useEffect(() => {
-    if (!initialRunId) return;
+    if (!initialRunId && !initialSessionId) return;
     const abort = new AbortController();
-    setIterativeMode(true);
-    setIterativeRunId(initialRunId);
-    iterativeResearchApi.get(initialRunId, abort.signal).then(async detail => {
-      applyIterativeDetail(detail);
-      const replay = await iterativeResearchApi.events(initialRunId, -1, onIterativeProgress, abort.signal);
-      if (replay.runId) setIterativeRunId(replay.runId);
-    }).catch(() => { if (!abort.signal.aborted) setError("The saved iterative research run could not be loaded."); });
-    return () => abort.abort();
-  }, [initialRunId, applyIterativeDetail, onIterativeProgress]);
+    controller.current = abort;
+    active.current = true;
+    setBusy(true);
+    setError("");
+    setTimeline([]);
+    async function loadSaved() {
+      try {
+        // A run already identifies its session. Loading both URL parameters
+        // concurrently could overwrite the run's result with unrelated data.
+        if (initialRunId) {
+          setIterativeMode(true);
+          setIterativeRunId(initialRunId);
+          const detail = await iterativeResearchApi.get(initialRunId, abort.signal);
+          if (abort.signal.aborted) return;
+          applyIterativeDetail(detail);
+          await iterativeResearchApi.events(initialRunId, -1, onIterativeProgress, abort.signal);
+        } else if (initialSessionId) {
+          const saved = await researchApi.get(initialSessionId, abort.signal);
+          if (abort.signal.aborted) return;
+          setSession(saved);
+          setQuestion(saved.request.question);
+          setFreshness(saved.request.freshness);
+        }
+      } catch {
+        if (!abort.signal.aborted) setError("The saved research could not be loaded.");
+      } finally {
+        if (controller.current === abort) {
+          controller.current = null;
+          active.current = false;
+          setBusy(false);
+        }
+      }
+    }
+    void loadSaved();
+    return () => {
+      abort.abort();
+      if (controller.current === abort) {
+        controller.current = null;
+        active.current = false;
+      }
+    };
+  }, [initialRunId, initialSessionId, applyIterativeDetail, onIterativeProgress]);
   useEffect(() => () => controller.current?.abort(), []);
 
   async function refresh() {
@@ -149,6 +174,7 @@ export default function ResearchPanel({ initialSessionId, initialRunId, iterativ
 
   async function refreshIterative() {
     if (!iterativeRunId || active.current) return;
+    active.current = true;
     setReconnecting(true); setError("");
     const abort = new AbortController(); controller.current = abort;
     try {
@@ -160,7 +186,7 @@ export default function ResearchPanel({ initialSessionId, initialRunId, iterativ
     } catch {
       if (!abort.signal.aborted) setError("Persisted research progress could not be refreshed.");
     } finally {
-      setReconnecting(false); controller.current = null;
+      active.current = false; setReconnecting(false); controller.current = null;
     }
   }
 
@@ -214,27 +240,27 @@ export default function ResearchPanel({ initialSessionId, initialRunId, iterativ
     <p>Explore source excerpts with citations. Observations may be incomplete or disagree.</p>
     <form className={styles.form} onSubmit={event => { event.preventDefault(); void submit(); }}>
       <label htmlFor="research-question">Research question</label>
-      <textarea id="research-question" maxLength={500} value={question} disabled={busy} onChange={e => setQuestion(e.target.value)} required rows={4} />
+      <textarea id="research-question" maxLength={500} value={question} disabled={busy || reconnecting} onChange={e => setQuestion(e.target.value)} required rows={4} />
       <label htmlFor="research-freshness">Freshness</label>
-      <select id="research-freshness" value={freshness} disabled={busy} onChange={e => setFreshness(e.target.value as "general" | "current")}>
+      <select id="research-freshness" value={freshness} disabled={busy || reconnecting} onChange={e => setFreshness(e.target.value as "general" | "current")}>
         <option value="general">General — expires within 24 hours</option>
         <option value="current">Current — expires within 1 hour</option>
       </select>
       {iterativeEnabled && <>
         <label htmlFor="research-mode">Research mode</label>
-        <select id="research-mode" value={iterativeMode ? "iterative" : "single"} disabled={busy} onChange={e => setIterativeMode(e.target.value === "iterative")}>
+        <select id="research-mode" value={iterativeMode ? "iterative" : "single"} disabled={busy || reconnecting} onChange={e => setIterativeMode(e.target.value === "iterative")}>
           <option value="single">Single pass</option>
           <option value="iterative">Bounded follow-up research</option>
         </select>
       </>}
       <div className={styles.actions}>
-        <button disabled={busy || !question.trim()} type="submit">{error ? "Retry request" : iterativeMode ? "Start bounded research" : "Research"}</button>
+        <button disabled={busy || reconnecting || !question.trim()} type="submit">{error ? "Retry request" : iterativeMode ? "Start bounded research" : "Research"}</button>
         {busy && !iterativeMode && <button type="button" onClick={() => controller.current?.abort()}>Stop</button>}
         {iterativeMode && iterativeRunId && (!iterativeRun || !terminalRunStates.has(iterativeRun.state)) && <button type="button" onClick={() => void cancelIterative()}>Cancel research</button>}
         {session && !iterativeMode && <button disabled={busy} type="button" onClick={() => void refresh()}>Refresh saved session</button>}
         {iterativeMode && iterativeRunId && <>
           <button disabled={busy || reconnecting} type="button" onClick={() => void refreshIterative()}>{reconnecting ? "Reconnecting…" : "Reconnect timeline"}</button>
-          {iterativeRun && !terminalRunStates.has(iterativeRun.state) && <button disabled={busy} type="button" onClick={() => void resumeIterative()}>Resume saved run</button>}
+          {iterativeRun && !terminalRunStates.has(iterativeRun.state) && <button disabled={busy || reconnecting} type="button" onClick={() => void resumeIterative()}>Resume saved run</button>}
         </>}
         {error && !busy && <button type="button" onClick={() => { request.current = null; setSession(null); setIterativeRun(null); setIterativeRunId(null); setTimeline([]); setError(""); setProgress(""); }}>Start a new request</button>}
       </div>

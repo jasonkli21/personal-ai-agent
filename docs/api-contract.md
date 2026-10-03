@@ -1,8 +1,10 @@
-# API contract (Phases 1–8)
+# API contract (Phases 1–9 local implementation)
 
-This document defines the implemented HTTP boundary. All `/v1` routes operate
-for the current logical owner,
-`local`; they are not authenticated.
+This document defines the implemented HTTP boundary. All `/v1` routes require an application principal. Staging/production verify
+Google OIDC and resolve an opaque owner from issuer and stable subject; client
+payloads cannot select an owner. Local/test development explicitly uses the
+unauthenticated `local` principal. Cloud Run service IAM is an additional
+web-to-API boundary. See the [authorization matrix](phase-9-authorization-matrix.md).
 
 ## Conventions
 
@@ -11,7 +13,7 @@ for the current logical owner,
 - Timestamps are UTC ISO 8601 values.
 - Requests reject unknown fields. Responses never include provider keys,
   internal exception traces, or unbounded provider output.
-- Conversation lists are newest first. A conversation detail response contains
+- Conversation lists return the newest 50 records; the current API has no cursor pagination. A conversation detail response contains
   only its active message branch; superseded records remain auditable in
   persistence.
 
@@ -129,8 +131,8 @@ work returns 204; active leases and retryable processing return 503. See the
 ## Phase 5 standalone research (`research-v1`)
 
 All routes require `RESEARCH_ENABLED`; disabled routes return safe 404 before
-constructing storage/provider clients. The temporary `local` owner is not
-identity or authentication. Browser requests go through Next.js `/api/research`.
+constructing storage/provider clients. The local/test `local` owner is not
+identity or authentication; deployed requests follow the principal boundary above. Browser requests go through Next.js `/api/research`.
 
 | Route | Contract |
 | --- | --- |
@@ -173,7 +175,7 @@ missing dates remain unknown. See [Phase 5 plan](phase-5-implementation-plan.md)
 Decision routes require `DECISION_ENABLED`; inspection additionally requires
 `DECISION_INSPECTION_ENABLED`. Browser calls pass through the Next.js
 `/api/decisions` proxy. Both backend gates and frontend gates default off.
-The temporary `local` owner is not identity or authentication.
+Local/test `local` ownership is not authentication; deployed requests follow the principal boundary above.
 
 | Route | Contract |
 | --- | --- |
@@ -203,8 +205,8 @@ development inspector is separately gated and read-only. See the
 Every domain route requires both `DECISION_ENABLED` and its domain-specific
 backend gate (`TRAVEL_ENABLED` or `SHOPPING_ENABLED`). The Next.js proxy
 enforces the same server-side gates; direct browser-to-API calls are not used.
-`GET /v1/domains` lists only enabled modules. The fixed `local` owner remains
-unauthenticated.
+`GET /v1/domains` lists only enabled modules. The local/test `local` owner remains
+unauthenticated; deployed requests require the principal boundary above.
 
 | Route | Contract |
 | --- | --- |
@@ -271,3 +273,26 @@ re-evaluates through the shared entity, claim, constraint, and ranking service.
 Any unresolved required gap yields an incomplete/insufficient result with all
 open gap classes visible. Firestore storage and index changes are described in
 the [Phase 8 guide](phase-8-implementation-guide.md) and [ADRs](decisions/0016-bounded-iterative-research.md).
+
+## Phase 9 identity and account controls
+
+User identity is supplied as a Google `Authorization: Bearer` token or as the
+separate `X-User-ID-Token` header forwarded by the web proxy alongside its
+Cloud Run identity. Missing/invalid user identity returns a safe 401; disabled
+identity mappings return 403. Verification/storage outages fail closed with
+503. Responses carry a bounded request ID and no-store security headers.
+Exact allowed browser origins are checked; deployment origins must use HTTPS.
+Request limits return 429 with `Retry-After`, and emergency switches return 503.
+Usage counters estimate requests and do not establish a provider-spend ceiling.
+
+| Route | Contract |
+| --- | --- |
+| `POST /v1/account/export` | Requires `EXPORT_ENABLED` and a recent Google token; UUID idempotency key; returns bounded owner-only `personal-ai-export-v1` JSON download with an audit event. Limit overflow returns 413. |
+| `POST /v1/account/deletion` | Requires `DELETION_ENABLED` and recent Google token; UUID key creates/replays an audited `pending_confirmation` request. |
+| `GET /v1/account/deletion/{UUID}` | Requires deletion gate and owner identity; foreign/missing requests return 404. |
+| `POST /v1/account/deletion/{UUID}/{confirm\|cancel}` | Recent Google token; audited idempotent state transition; conflicts return 409. Confirmation ends at `confirmed_pending_operator`, with no physical deletion. |
+
+The private worker also exposes `/tasks/maintenance`; it verifies the separate
+Scheduler token, requires one active owner mapping, and processes a bounded
+expiry/republish batch. It does not physically delete data. Account and
+maintenance gates stay off by default.

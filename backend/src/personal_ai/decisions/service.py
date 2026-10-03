@@ -30,6 +30,7 @@ from personal_ai.ranking.policy import (
     CLAIM_VERIFICATION_POLICY_VERSION,
     claim_assertion_supported,
     evaluate_candidates,
+    identifier_assertion_supported,
     literal_supported,
     normalize_name,
     rank_with_domain_features,
@@ -307,7 +308,9 @@ class DecisionService:
                     if any(ref.url == normalized_value for ref in candidate_refs):
                         supported_identifiers[key] = normalized_value
                 elif any(
-                    literal_supported(value, passages[evidence_id])
+                    identifier_assertion_supported(
+                        candidate.canonical_name, key, value, passages[evidence_id]
+                    )
                     for evidence_id in {ref.evidence_id for ref in candidate_refs}
                     if evidence_id in passages
                 ):
@@ -586,6 +589,7 @@ class DecisionService:
             constraint_set=request.constraints,
             preferences=request.preferences,
             candidate_ids=tuple(entity.id for entity in unique_entities),
+            alias_ids=tuple(alias.id for alias in unique_aliases),
             evidence_snapshot_id=evidence_snapshot.id,
             policy_versions=PolicyVersions(
                 claim_verification=CLAIM_VERIFICATION_POLICY_VERSION,

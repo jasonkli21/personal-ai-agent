@@ -15,4 +15,4 @@ RUN uv sync --locked --only-group build --no-install-project
 COPY src ./src
 RUN uv sync --locked --no-dev --group build --no-editable --no-build-isolation
 
-CMD ["sh", "-c", "uvicorn personal_ai.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "exec uvicorn personal_ai.main:app --host 0.0.0.0 --port ${PORT}"]

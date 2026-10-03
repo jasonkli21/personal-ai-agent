@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { NextRequest } from "next/server";
 import { afterEach, expect, it, vi } from "vitest";
-import { proxyDecisionApi } from "./decision-proxy";
+import { proxyDecisionApi } from "../../src/lib/decision-proxy";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 

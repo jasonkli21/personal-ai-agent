@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { iterativeResearchApi, type IterativeProgress } from "./iterative-research-api";
+import { iterativeResearchApi, type IterativeProgress } from "../../src/lib/iterative-research-api";
 
 afterEach(() => vi.unstubAllGlobals());
 

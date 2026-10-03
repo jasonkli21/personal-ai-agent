@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { conversationsApi, type Message, type StreamHandlers } from "./api";
+import { conversationsApi, type Message, type StreamHandlers } from "../../src/lib/api";
 
 const assistant: Message = {
   id: "assistant", conversation_id: "conversation", owner_id: "local",

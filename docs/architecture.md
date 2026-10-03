@@ -3,7 +3,8 @@
 ## System shape
 
 ```text
-Browser -> Cloud Run: Next.js web -> /api proxy -> Cloud Run: FastAPI API
+Browser -> public Next.js sign-in/UI -> /api proxy -> private FastAPI API
+           in-memory Google ID token    service IAM + user-token verification
                                                 |-- chat SSE -> shared context -> LLM
                                                 |               |-> optional memory
                                                 |-- research SSE -> search -> evidence
@@ -24,7 +25,11 @@ The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the 
 
 ## Core boundaries
 
-- `agents` coordinates conversation and research flows without owning provider-specific logic.
+- `services` owns conversation and durable chat-turn behavior.
+- `agents/research` coordinates single-pass and iterative research without owning provider-specific logic.
+- `auth` verifies Google user/service identity, resolves owner mappings, and owns
+  request safeguards and account-data controls. API routes take their owner only
+  from the verified principal; local/test development uses the explicit `local` seam.
 - `context` selects token-budgeted active conversation turns and
   compatible working summaries for a model call. Phase 3 added optional labelled
   personal memory within the same total budget; Phase 5 standalone research counts whole evidence blocks through this same assembler.
@@ -144,3 +149,26 @@ Single-pass remains the default and all Phase 8 gates are off. No background
 worker, open-ended autonomy, or Phase 9 operation is introduced. See the
 [Phase 8 guide](phase-8-implementation-guide.md), [ADRs](decisions/0016-bounded-iterative-research.md),
 and [release evidence](releases/phase-8-iterative-research.md).
+
+## Partial Phase 9 operational boundary
+
+Google OIDC verifies the browser principal, and Cloud Run IAM separately
+verifies web-to-API invocation. The private worker verifies independently
+configured Pub/Sub and Scheduler identities. Local/test development bypass is
+rejected in staging/production. Browser identity stays in memory and passes
+only through same-origin proxies.
+
+Durable Firestore request limits and request-level usage estimates precede
+provider-backed API operations. These estimates do not account for every
+counting/embedding/worker RPC or settle actual usage. A bounded scheduled
+handler marks expired research sessions ineligible and republishes durable
+memory jobs; its schedule remains paused by default. Account export is bounded
+and owner-scoped. Confirmed deletion stops at operator review and performs no
+physical deletion. Full legacy-owner migration remains unsupported for records
+with embedded ownership or derived owner keys.
+
+See the [Phase 9 plan](phase-9-implementation-plan.md),
+[authorization matrix](phase-9-authorization-matrix.md),
+[operations runbook](phase-9-operations-runbook.md), and
+[repository review](repository-review-2026-10-03.md). These local code paths do
+not establish cloud IAM, recovery, provider-policy, or production readiness.

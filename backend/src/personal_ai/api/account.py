@@ -1,5 +1,6 @@
 """Owner-scoped account export and deletion-request controls."""
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -16,6 +17,7 @@ from personal_ai.auth.account_data import (
     ExportTooLarge,
     FirestoreAccountDataRepository,
 )
+from personal_ai.auth.contracts import AuthenticatedPrincipal
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.errors import ResourceNotFoundError
 
@@ -27,18 +29,37 @@ class _IdempotentRequest(BaseModel):
     idempotency_key: UUID
 
 
-def account_repository(settings: Annotated[Settings, Depends(get_settings)]):
-    return FirestoreAccountDataRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
+def account_repository(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Iterator[FirestoreAccountDataRepository]:
+    enabled = (
+        settings.export_enabled
+        if request.url.path == "/v1/account/export"
+        else settings.deletion_enabled
     )
+    # Dependency resolution precedes the handler's gate. Avoid credential or
+    # datastore discovery for disabled account operations.
+    if not enabled:
+        raise ResourceNotFoundError("account action not found")
+    try:
+        repository = FirestoreAccountDataRepository(
+            project_id=settings.firestore_project_id,
+            emulator_host=settings.firestore_emulator_host,
+        )
+    except Exception as error:
+        raise AccountDataUnavailable from error
+    try:
+        yield repository
+    finally:
+        repository.close()
 
 
 @router.post("/export")
 def export_account(
     payload: _IdempotentRequest,
     request: Request,
-    principal: Annotated[object, Depends(require_recent_auth)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_recent_auth)],
     settings: Annotated[Settings, Depends(get_settings)],
     repository: Annotated[FirestoreAccountDataRepository, Depends(account_repository)],
 ):
@@ -57,8 +78,6 @@ def export_account(
         )
     except ExportTooLarge as error:
         raise HTTPException(status_code=413, detail="export_limit_exceeded") from error
-    except AccountDataUnavailable as error:
-        raise AccountDataUnavailable from error
     filename_date = datetime.now(UTC).date().isoformat()
     return JSONResponse(
         content=exported,
@@ -73,7 +92,7 @@ def export_account(
 def create_deletion_request(
     payload: _IdempotentRequest,
     request: Request,
-    principal: Annotated[object, Depends(require_recent_auth)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_recent_auth)],
     settings: Annotated[Settings, Depends(get_settings)],
     repository: Annotated[FirestoreAccountDataRepository, Depends(account_repository)],
 ):
@@ -87,8 +106,6 @@ def create_deletion_request(
         )
     except AccountRequestConflict as error:
         raise HTTPException(status_code=409, detail="lifecycle_request_conflict") from error
-    except AccountDataUnavailable as error:
-        raise AccountDataUnavailable from error
     return result
 
 
@@ -105,8 +122,6 @@ def get_deletion_request(
         return repository.get_deletion(owner_id=owner_id, request_id=request_id)
     except AccountRequestNotFound as error:
         raise ResourceNotFoundError("account deletion not found") from error
-    except AccountDataUnavailable as error:
-        raise AccountDataUnavailable from error
 
 
 @router.post("/deletion/{request_id}/{action}")
@@ -114,7 +129,7 @@ def update_deletion_request(
     request_id: UUID,
     action: Literal["confirm", "cancel"],
     request: Request,
-    principal: Annotated[object, Depends(require_recent_auth)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_recent_auth)],
     settings: Annotated[Settings, Depends(get_settings)],
     repository: Annotated[FirestoreAccountDataRepository, Depends(account_repository)],
 ):
@@ -131,5 +146,3 @@ def update_deletion_request(
         raise ResourceNotFoundError("account deletion not found") from error
     except AccountRequestConflict as error:
         raise HTTPException(status_code=409, detail="lifecycle_request_conflict") from error
-    except AccountDataUnavailable as error:
-        raise AccountDataUnavailable from error

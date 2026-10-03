@@ -18,7 +18,7 @@
 .lookup p, .example p { margin: .15rem 0; }
 .savedForm { max-width: 980px; margin: 0 auto 1rem; grid-template-columns: 1fr minmax(12rem, 1fr) auto; align-items: end; }
 .result { margin: 2rem auto; }
-.resultHeading { display: flex; justify-content: space-between; align-items: start; gap: 1rem; margin: 1rem 0; }
+.resultHeading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin: 1rem 0; }
 .resultHeading p { margin: .45rem 0; }
 .state { display: inline-block; padding: .45rem .7rem; border-radius: 999px; background: #e4f1e9; font-weight: 700; }
 .state[data-state="research_needed"], .state[data-state="eligible_unranked"] { background: #fff0ce; }

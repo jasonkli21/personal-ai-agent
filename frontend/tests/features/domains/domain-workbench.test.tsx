@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DomainComparisonResult, DomainFixture } from "../../lib/domain-api";
-import DomainWorkbench from "./domain-workbench";
+import type { DomainComparisonResult, DomainFixture } from "../../../src/lib/domain-api";
+import DomainWorkbench from "../../../src/features/domains/domain-workbench";
 
 const fetchMock = vi.fn();
 const fixture: DomainFixture = {

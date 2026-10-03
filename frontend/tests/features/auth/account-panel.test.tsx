@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { AccountPanel } from "./account-panel";
+import { AccountPanel } from "../../../src/features/auth/account-panel";
 
 describe("account controls", () => {
   it("shows when export and deletion are disabled by the deployment", () => {

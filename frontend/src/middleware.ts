@@ -8,9 +8,12 @@ function createNonce() {
 }
 
 function contentSecurityPolicy(nonce: string) {
+  // Next.js development bundles use eval for source maps. Production scripts
+  // retain the nonce policy and never permit eval.
+  const developmentEval = process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : "";
   return [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' https://accounts.google.com https://apis.google.com`,
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${developmentEval} https://accounts.google.com https://apis.google.com`,
     "style-src 'self' 'unsafe-inline' https://accounts.google.com",
     "img-src 'self' data: https://*.googleusercontent.com",
     "connect-src 'self' https://accounts.google.com https://www.googleapis.com",

@@ -7,7 +7,7 @@ import {
   configureAuth,
   getAuthTokenSnapshot,
   setGoogleIdToken,
-} from "./auth";
+} from "../../src/lib/auth";
 
 function tokenWithExpiry(exp: number) {
   const encode = (value: object) =>
@@ -24,6 +24,7 @@ describe("memory-only Google authentication", () => {
   });
 
   afterEach(() => {
+    clearGoogleIdToken();
     configureAuth("development");
     vi.unstubAllGlobals();
   });
@@ -62,5 +63,26 @@ describe("memory-only Google authentication", () => {
     expect(getAuthTokenSnapshot()).toBeNull();
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
+  });
+
+  it("rejects external destinations before sending a bearer credential", async () => {
+    setGoogleIdToken(tokenWithExpiry(Date.now() / 1000 + 3600));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(authenticatedFetch("https://example.org/source")).rejects.toThrow("application origin");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a new credential when an older request returns 401", async () => {
+    const oldToken = tokenWithExpiry(Date.now() / 1000 + 3600);
+    const newToken = tokenWithExpiry(Date.now() / 1000 + 7200);
+    setGoogleIdToken(oldToken);
+    let finish!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => { finish = resolve; })));
+    const pending = authenticatedFetch("/api/conversations");
+    setGoogleIdToken(newToken);
+    finish(new Response(null, { status: 401 }));
+    await pending;
+    expect(getAuthTokenSnapshot()).toBe(newToken);
   });
 });

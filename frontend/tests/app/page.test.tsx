@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import Home from "./page";
+import Home from "../../src/app/page";
 
 const fetchMock = vi.fn();
 const conversation = { id: "conversation-1", owner_id: "local", title: "Project ideas", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" };
@@ -183,6 +183,38 @@ describe("Home", () => {
     expect(screen.getByText("Hello")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit and retry" })).toBeEnabled();
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+  });
+
+  it("blocks old-conversation actions while opening another conversation and clears its editor", async () => {
+    const other = { ...conversation, id: "conversation-2", title: "Other conversation" };
+    let finishOpening!: (response: Response) => void;
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversations: [conversation, other] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [userMessage] }));
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(resolve => { finishOpening = resolve; }));
+    render(<Home />);
+    fireEvent.click(await screen.findByRole("button", { name: "Project ideas" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit and retry" }));
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "Draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Other conversation" }));
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Retry edited message" })).toBeDisabled();
+    fireEvent.submit(screen.getByLabelText("Message").closest("form")!);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    finishOpening(jsonResponse({ conversation: other, messages: [] }));
+    await screen.findByRole("heading", { name: "Other conversation" });
+    expect(screen.queryByLabelText("Edit message")).not.toBeInTheDocument();
+  });
+
+  it("does not submit Enter while an input-method composition is active", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversations: [conversation] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversation, messages: [] }));
+    render(<Home />);
+    fireEvent.click(await screen.findByRole("button", { name: "Project ideas" }));
+    const composer = await screen.findByLabelText("Message");
+    fireEvent.change(composer, { target: { value: "Composing" } });
+    fireEvent.keyDown(composer, { key: "Enter", isComposing: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(composer).toHaveValue("Composing");
   });
 
 });

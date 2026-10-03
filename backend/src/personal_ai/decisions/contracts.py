@@ -273,6 +273,9 @@ class DecisionSnapshot(DecisionRecord):
     constraint_set: tuple[Constraint, ...] = Field(max_length=30)
     preferences: tuple[Preference, ...] = Field(max_length=20)
     candidate_ids: tuple[UUID, ...] = Field(max_length=24)
+    # Older snapshots did not record alias membership. New snapshots freeze it
+    # so later identity evidence cannot change a historical decision response.
+    alias_ids: tuple[UUID, ...] | None = Field(default=None, max_length=192)
     evidence_snapshot_id: UUID
     policy_versions: PolicyVersions
     recommendation: Recommendation
@@ -293,6 +296,8 @@ class DecisionSnapshot(DecisionRecord):
             raise ValueError("snapshot recommendation does not match decision state")
         if len(set(self.candidate_ids)) != len(self.candidate_ids):
             raise ValueError("duplicate candidate entity")
+        if self.alias_ids is not None and len(set(self.alias_ids)) != len(self.alias_ids):
+            raise ValueError("duplicate decision alias")
         return self
 
 
@@ -403,6 +408,8 @@ class DecisionResult(DecisionRecord):
             for alias in self.aliases
         ):
             raise ValueError("alias provenance is not owner-scoped")
+        if self.decision.alias_ids is not None and {alias.id for alias in self.aliases} != set(self.decision.alias_ids):
+            raise ValueError("aliases do not match the decision snapshot")
         if any(
             evaluation.entity_id not in entity_ids
             or any(claim_id not in claims_by_id for claim_id in evaluation.claim_ids)

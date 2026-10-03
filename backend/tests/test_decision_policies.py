@@ -175,6 +175,29 @@ def test_alias_and_fresh_independent_claim_can_resolve_but_stale_claim_cannot():
     assert abstained.outcome == "review" and selected != stored.id
 
 
+def test_resolution_considers_all_attributed_aliases_in_any_order():
+    ref = evidence()
+    stored = entity("Unrelated canonical label")
+    stored_claim = claim("model", TextValue(value="ZX-1"), ref, entity_id=stored.id)
+    proposed_claim = claim("model", TextValue(value="ZX-1"), ref)
+    aliases = tuple(
+        EntityAlias(
+            id=uuid4(), entity_id=stored.id, owner_id="local", normalized_alias=name,
+            created_at=NOW,
+        )
+        for name in ("widget", "another unrelated alias")
+    )
+    for ordering in (aliases, tuple(reversed(aliases))):
+        matched, selected = resolve_candidate(
+            decision_id=uuid4(), subject_id=uuid4(), owner_id="local",
+            proposal=CandidateProposal(entity_type="object", canonical_name="Widget"),
+            proposed_claims=(proposed_claim,), evidence_refs=(ref,), entities=(stored,),
+            aliases=ordering, claims_by_entity={stored.id: (stored_claim,)},
+            new_entity_id=uuid4(), now=NOW, threshold=0.9, match_id=uuid4(),
+        )
+        assert matched.outcome == "matched" and selected == stored.id
+
+
 def test_resolution_does_not_use_shared_price_or_color_as_identity_evidence():
     ref = evidence()
     stored = entity("Blue Widget")
@@ -283,6 +306,22 @@ def test_attribute_freshness_conflict_and_missing_fail_closed():
         constraints=(required,), preferences=(), now=NOW, preference_weight=1,
     )
     assert results[0].attribute_statuses[0].status == "missing" and state == "research_needed"
+
+
+@pytest.mark.parametrize("missing_policy,eligible", [("fail_closed", False), ("allow_unknown", True)])
+def test_optional_incomparable_values_obey_their_explicit_missing_policy(missing_policy, eligible):
+    candidate = entity()
+    source = claim("price", MoneyValue(amount=Decimal(10), currency="EUR"), evidence(), entity_id=candidate.id)
+    constraint = Constraint(
+        id=uuid4(), attribute="price", operator="maximum", required=False,
+        value=MoneyValue(amount=Decimal(20), currency="USD"), missing_policy=missing_policy,
+    )
+    evaluations, _, _ = evaluate_candidates(
+        decision_id=uuid4(), entities=(candidate,), claims_by_entity={candidate.id: (source,)},
+        constraints=(constraint,), preferences=(), now=NOW, preference_weight=1,
+    )
+    assert evaluations[0].constraint_outcomes[0].outcome == "unknown"
+    assert evaluations[0].eligibility is eligible
 
 
 def test_historical_claim_verification_does_not_satisfy_current_required_constraint():

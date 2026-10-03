@@ -5,6 +5,12 @@ from time import monotonic
 
 
 def bounded_transaction(client, operation, seconds=5):
+    """Run one atomic operation without SDK retries extending its deadline.
+
+    The callback receives the SDK transaction and a remaining-time callable for
+    its reads. Keep the locked SDK's private begin/commit plumbing in this one
+    boundary until it offers a public transaction API with per-RPC deadlines.
+    """
     deadline = monotonic() + seconds
 
     def timeout():
@@ -44,7 +50,7 @@ def bounded_transaction(client, operation, seconds=5):
                 timeout=1,
             )
         except Exception:  # noqa: BLE001 - retain the original failure
-            logging.getLogger(__name__).info("Research transaction rollback failed")
+            logging.getLogger(__name__).info("Storage transaction rollback failed")
         raise
     finally:
         transaction._clean_up()

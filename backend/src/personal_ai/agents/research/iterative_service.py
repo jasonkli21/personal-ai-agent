@@ -11,8 +11,6 @@ from time import monotonic
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4, uuid5
 
-import anyio
-
 from personal_ai.agents.research.contracts import (
     ResearchError,
     ResearchRequest,
@@ -46,6 +44,7 @@ from personal_ai.evidence.pipeline import extract_evidence, select_evidence, val
 from personal_ai.search.contracts import SearchResult
 from personal_ai.search.policy import SnippetExtractor, canonical_url
 from personal_ai.settings import Settings
+from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import ResourceNotFoundError
 
 TERMINAL_STATES = {RunState.COMPLETED, RunState.INSUFFICIENT, RunState.FAILED, RunState.CANCELLED}
@@ -1831,10 +1830,4 @@ class IterativeResearchService:
             raise ResearchError("research_conflict", 409)
 
     async def _io(self, function, *args, **kwargs):
-        task = asyncio.create_task(anyio.to_thread.run_sync(lambda: function(*args, **kwargs)))
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            with anyio.CancelScope(shield=True):
-                await task
-            raise
+        return await io_call(function, *args, **kwargs)

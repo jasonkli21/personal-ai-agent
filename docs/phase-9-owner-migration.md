@@ -9,7 +9,7 @@ new active `identity_mappings` record.
    verify that its restore point is usable before proceeding.
 2. Read the active `owner_id` from the identity mapping for the intended Google
    account. It is an opaque `usr_` identifier, not an email address.
-3. Run the default dry-run and review only the collection counts:
+3. Run the default inventory and review only the collection counts:
 
    ```sh
    cd backend
@@ -18,8 +18,10 @@ new active `identity_mappings` record.
      --owner-id usr_REPLACE_WITH_32_LOWERCASE_HEX_CHARACTERS
    ```
 
-4. Review the counts and apply in the intended environment by repeating the
-   exact owner ID:
+4. Apply is supported only for a database whose legacy records are limited to
+   conversations, messages, and working summaries. Any later-phase legacy data
+   causes apply to stop before writes. For a chat-only database, review the
+   counts and repeat the exact owner ID:
 
    ```sh
    uv run python scripts/migrate_local_owner.py \
@@ -29,23 +31,30 @@ new active `identity_mappings` record.
      --confirm-owner-id usr_REPLACE_WITH_32_LOWERCASE_HEX_CHARACTERS
    ```
 
-The command never prints document IDs or content. It updates only records whose
-top-level `owner_id` is exactly `local`, in batches of at most 200 with a
-Firestore last-update precondition. Re-running after an interrupted migration
-is safe: records already moved no longer match the query. Pause writes because
-an application write racing the migration intentionally causes the
-precondition to fail. The operator must restore from the backup if a verified
-post-migration owner-count review identifies a bad mapping; do not run a
-reverse owner rewrite against live data without a reviewed recovery plan.
+The command never prints document IDs or content. It inventories all enumerated
+owner collections, then refuses apply if any unsupported collection still has
+`local` records. Supported chat-only apply changes just `owner_id` in batches
+of at most 200, using Firestore last-update preconditions and a separate audit
+event committed with each batch. Strict application schemas remain unchanged.
+Re-running after interruption skips records already moved. Pause writes because
+a racing application write intentionally fails the precondition. Migration is
+not atomic across the database; restore a tested backup if post-migration checks
+identify an incorrect mapping.
 
-Collections covered: conversations, messages, conversation summaries,
-research sessions and request keys, iterative research runs and keys, memories
-and derived/lifecycle records, decision snapshots/evidence/claims/matches,
-owner-specific canonical entity aliases, and domain registrations/claims/
-observations/comparisons/lookup idempotency records, and audit events. Shared
-`*` catalog rows, identity mappings, rate counters, and daily budget summaries
-are not reassigned.
+Full Phase 3–8 migration is **not implemented**. It must rewrite embedded owner
+fields, remap owner-derived memory/source identities and lifecycle projections,
+rebuild idempotency keys, preserve all references, and validate records through
+the actual repository readers. A top-level owner rewrite cannot do this safely.
+Do not remove records merely to get past the apply guard.
 
-The tool itself was verified offline for syntax and safety review only. No
-Firestore project, emulator, backup, or migration was accessed during Phase 9
-implementation.
+Inventory covers conversations, messages, summaries, research sessions/keys,
+iterative runs/keys, original and derived memory/lifecycle records, canonical
+entities/aliases/claims, decisions/evidence/evaluations, domain records/keys, and
+audit events. Shared `*` records, identity mappings, rate counters and daily
+budget summaries are not reassigned.
+
+Offline tests verify chat schema preservation, audit separation, idempotent
+replay and refusal before writes for unsupported aggregates. No Firestore
+project, emulator, backup or real migration was accessed. See the
+[repository review](repository-review-2026-10-03.md) for the original defects
+and remaining migration acceptance work.

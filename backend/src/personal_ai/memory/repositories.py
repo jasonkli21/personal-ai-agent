@@ -1,6 +1,5 @@
 """Owner-scoped memory stores; production search is bounded indexed KNN only."""
 
-import logging
 from threading import RLock
 from time import monotonic
 from uuid import UUID
@@ -18,6 +17,7 @@ from personal_ai.storage.errors import (
     StorageUnavailableError,
 )
 from personal_ai.storage.firestore import FirestoreConversationRepository, _firestore_client
+from personal_ai.storage.transactions import bounded_transaction
 
 
 def validate(memory):
@@ -191,14 +191,22 @@ class FirestoreMemoryRepository:
                 or assistant.parent_message_id not in memory.source_message_ids
             ):
                 raise ConversationConflictError("memory source incomplete")
-            sources, visited = [], set()
+            sources, ancestors = [], {}
             for source_id in memory.source_message_ids:
                 current = source_id
                 first = True
+                path = set()
                 while current is not None:
-                    if current in visited:
+                    if current in path:
+                        raise ConversationConflictError("memory source ancestry invalid")
+                    path.add(current)
+                    if current in ancestors:
+                        if first:
+                            source = ancestors[current]
+                            if source.role.value != "user" or source.status.value != "completed":
+                                raise ConversationConflictError("memory source incomplete")
+                            sources.append(source)
                         break
-                    visited.add(current)
                     snapshot = (
                         self.client.collection("messages")
                         .document(str(current))
@@ -208,7 +216,8 @@ class FirestoreMemoryRepository:
                         raise ConversationConflictError("memory source unavailable")
                     message = Message.model_validate(snapshot.to_dict())
                     if (
-                        message.owner_id != memory.owner_id
+                        message.id != current
+                        or message.owner_id != memory.owner_id
                         or message.conversation_id != memory.source_conversation_id
                         or message.status.value == "superseded"
                     ):
@@ -218,6 +227,7 @@ class FirestoreMemoryRepository:
                             raise ConversationConflictError("memory source incomplete")
                         sources.append(message)
                         first = False
+                    ancestors[current] = message
                     current = message.parent_message_id
             if fingerprint(sources) != memory.source_fingerprint:
                 raise ConversationConflictError("memory source changed")
@@ -225,47 +235,9 @@ class FirestoreMemoryRepository:
             return memory, True
 
         def operation():
-            # SDK transactional decorator uses unbounded default RPC retries for
-            # begin/commit. Keep those SDK details here and give every RPC the
-            # remaining operation deadline, without transaction retries.
-            transaction = self.client.transaction(max_attempts=1)
-            api = self.client._firestore_api
-            response = api.begin_transaction(
-                request={"database": self.client._database_string},
-                metadata=self.client._rpc_metadata,
-                retry=None,
-                timeout=remaining(),
+            return bounded_transaction(
+                self.client, lambda transaction, _: write(transaction), seconds=remaining()
             )
-            transaction._id = response.transaction
-            try:
-                result = write(transaction)
-                api.commit(
-                    request={
-                        "database": self.client._database_string,
-                        "transaction": transaction.id,
-                        "writes": transaction._write_pbs,
-                    },
-                    metadata=self.client._rpc_metadata,
-                    retry=None,
-                    timeout=remaining(),
-                )
-                return result
-            except BaseException:
-                try:
-                    api.rollback(
-                        request={
-                            "database": self.client._database_string,
-                            "transaction": transaction.id,
-                        },
-                        metadata=self.client._rpc_metadata,
-                        retry=None,
-                        timeout=1,
-                    )
-                except Exception:  # noqa: BLE001 - preserve original failure
-                    logging.getLogger(__name__).info("Memory transaction rollback failed")
-                raise
-            finally:
-                transaction._clean_up()
 
         return self._run(operation)
 
