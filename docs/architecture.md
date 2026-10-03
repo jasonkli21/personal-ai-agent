@@ -127,3 +127,20 @@ provider supplies current stays/offers in this implementation. See the
 [Phase 7 guide](phase-7-implementation-guide.md),
 [provider ADRs](decisions/0013-nominatim-travel-place-source.md), and
 [release evidence](releases/phase-7-travel-shopping.md).
+
+## Delivered Phase 8 iterative-research boundary
+
+`agents/research` persists a versioned run over the existing Phase 5
+owner-scoped research session. Its finite-state transitions, safe progress
+events, budget ledger, cancellation fence, and recovery lease are written
+through repository contracts; Firestore run/session commits are transactional.
+The deterministic assessor emits named gaps, and a schema-validated template
+planner can only request bounded follow-up work tied to one gap and its frozen
+allowed-domain set. Query execution, extraction, evidence selection, context
+assembly and citation validation stay on their Phase 5 paths. Optional
+candidate/constraint intents are re-evaluated by the shared Phase 6 decision
+service; search output does not create verified claims or relax requirements.
+Single-pass remains the default and all Phase 8 gates are off. No background
+worker, open-ended autonomy, or Phase 9 operation is introduced. See the
+[Phase 8 guide](phase-8-implementation-guide.md), [ADRs](decisions/0016-bounded-iterative-research.md),
+and [release evidence](releases/phase-8-iterative-research.md).

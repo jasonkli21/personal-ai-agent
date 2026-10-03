@@ -225,3 +225,28 @@ Before declaring Phase 8 done, verify all task acceptance criteria and answer:
 5. Does iteration preserve Phase 5 provenance and Phase 6 constraint-first decisions?
 
 Only after all answers are yes should work advance to Phase 9.
+
+## Implementation status — 2026-10-03
+
+P8.0–P8.7 are implemented locally. The 13 paired synthetic evaluations run
+both the Phase 5 single-pass service and the Phase 8 orchestrator against the
+same fixed corpus and clocks; they pass with measurable coverage gains for
+stale and missing evidence, while preserving unresolved constraints,
+conflicts, ambiguity, source allowlists, budget limits, and cancellation
+fences. Sufficient first-pass evidence adds no query. Iterative runs remain
+disabled by default.
+
+The completion review found that every follow-up is linked to a named
+permitted gap; every terminal path has an explicit stop reason; query, source,
+token, cost, elapsed, iteration, and domain usage is fenced by a versioned
+snapshot and reconciled ledger; persisted events contain only safe counts and
+state; and Phase 6 re-evaluates any requested candidates through its shared
+deterministic service. See the [Phase 8 guide](phase-8-implementation-guide.md)
+and [release evidence](releases/phase-8-iterative-research.md) for code,
+verification, and external verification limits.
+
+The offline checks do not verify deployed Firestore transactions or index
+readiness, real provider quotas/attribution/billing, browser disconnect
+behavior in a deployed environment, public authentication, or retention and
+deletion operations. Those remain operational follow-up; they do not change
+the Phase 8 feature-gate defaults.

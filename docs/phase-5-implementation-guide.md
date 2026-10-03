@@ -3,8 +3,9 @@
 Phase 5 is implemented locally under [the reviewed plan](phase-5-implementation-plan.md)
 and [ADR 0011](decisions/0011-bounded-source-grounded-research.md). It remains opt-in.
 External provider/emulator/deployment checks are pending, as are the earlier-phase
-external checks. No Phase 6 entities/ranking, domain agents, iterative loop,
-authentication or research-to-memory promotion was introduced.
+external checks. Phase 5 itself adds no Phase 6 entities/ranking, domain agents,
+authentication or research-to-memory promotion. Phase 8 later adds a separately
+gated iterative loop over these contracts; see the [Phase 8 guide](phase-8-implementation-guide.md).
 
 ## Delivered map
 

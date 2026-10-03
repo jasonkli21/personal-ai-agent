@@ -2,8 +2,8 @@
 
 This plan builds a usable personal chat system first, then progressively turns it into a memory and research-agent platform. Each phase should be evaluated before the next one adds complexity.
 
-Phases 1–7 are implemented locally. Phases 6 and 7 were explicitly authorized
-on 2026-10-02. Decision and domain gates remain disabled by default. External
+Phases 1–8 are implemented locally. Phases 6–8 were explicitly authorized.
+Decision, domain, and iterative gates remain disabled by default. External
 provider, emulator, and deployed verification gaps are recorded separately from
 implementation status in the phase guides and release records.
 
@@ -134,6 +134,12 @@ and specialized UI while consuming the shared research and decision contracts.
 **Outcome:** two practical domain agents validate that the shared platform is reusable.
 
 ## Phase 8 — Add iterative research behavior
+
+Implemented locally under explicit authorization. See the [Phase 8 task
+plan](phase-8-implementation-plan.md), [guide](phase-8-implementation-guide.md),
+[accepted state/budget ADRs](decisions/0016-bounded-iterative-research.md),
+and [release evidence](releases/phase-8-iterative-research.md). Real provider,
+Firestore emulator/index and deployed verification remain open.
 
 1. Make the research agent assess whether evidence is sufficient.
 2. Identify missing facts, conflicts, stale evidence, or weak entity matches.

@@ -1,4 +1,4 @@
-# API contract (Phases 1–7)
+# API contract (Phases 1–8)
 
 This document defines the implemented HTTP boundary. All `/v1` routes operate
 for the current logical owner,
@@ -234,3 +234,40 @@ not provide merchant offers, stock, shipping, or delivery. Both adapters and
 their policy-approval gates default off; adapter policy links and setup are in
 the [Phase 7 guide](phase-7-implementation-guide.md) and
 [ADRs](decisions/0013-nominatim-travel-place-source.md).
+
+## Phase 8 iterative research (`iterative-research-v1`)
+
+Iterative research requires `RESEARCH_ENABLED`, `ITERATIVE_RESEARCH_ENABLED`,
+and `ITERATIVE_PROGRESS_ENABLED`. All three gates default off. The ordinary
+single-pass `POST /v1/research/{UUID}/run` remains the default path and its
+`research-v1` SSE contract is unchanged. A decision intent additionally
+requires `DECISION_ENABLED`.
+
+| Method and route | Contract |
+| --- | --- |
+| `POST /v1/research/iterative` | `iterative-research-request-v1`: question, freshness, idempotency key, and optional user-authored candidates/constraints/preferences. Starts one durable run and returns a progress stream. Candidate facts/claims are rejected; Phase 6 must verify facts from run evidence. |
+| `GET /v1/research/iterative/runs/{run_id}` | Owner-scoped run status, immutable budget snapshot, safe counts, stop reason, gaps, and saved Phase 5 session detail. Read only. |
+| `GET /v1/research/iterative/runs/{run_id}/events?after=N` | Persisted safe events after the event sequence. Does not claim a lease or start work. |
+| `POST /v1/research/iterative/runs/{run_id}/cancel` | Explicitly makes a nonterminal run cancelled. The cancellation fence prevents later run/session writes. |
+| `POST /v1/research/iterative/runs/{run_id}/resume` | Claims an expired lease only when no external side effect is uncertain. An uncertain provider/model attempt is settled conservatively and ends incomplete without redispatch. A live lease returns the persisted event snapshot. |
+
+Every `research.iterative.*` event is committed with the run transition before
+it is streamed. Payloads include only schema/version, run/session IDs, event
+sequence, iteration and aggregate query/source/evidence/gap/citation counts,
+state, and terminal reason. They exclude question/query text, evidence text,
+prompts, provider output/traces, and model reasoning. A client reconnect uses
+the read-only events/status routes; it never resumes execution. Resume is a
+separate explicit action available only for a safely recoverable expired lease.
+
+The run stores policy and budget versions, idempotency, owner/session links,
+current iteration, lease, gaps, assessments, iterations, event sequence,
+budget ledger, and terminal reason. Query/source/evidence/citation provenance
+stays in the Phase 5 owner-scoped session. Budget use includes iteration,
+query, source, token, estimated provider cost, elapsed-time, and unique allowed
+domain counts. Configured hostnames are allowlisted before evidence extraction.
+Unknown side-effect outcomes are charged at their full reservation and are not
+retried. Explicit constraints remain immutable; a Phase 6 decision intent
+re-evaluates through the shared entity, claim, constraint, and ranking service.
+Any unresolved required gap yields an incomplete/insufficient result with all
+open gap classes visible. Firestore storage and index changes are described in
+the [Phase 8 guide](phase-8-implementation-guide.md) and [ADRs](decisions/0016-bounded-iterative-research.md).

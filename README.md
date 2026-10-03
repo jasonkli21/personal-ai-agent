@@ -255,3 +255,25 @@ requires `DECISION_INSPECTION_ENABLED=true` in both applications. Real
 Firestore transaction/index readiness remains unverified, and the fixed
 `local` owner is not authentication. See the [Phase 6 guide](docs/phase-6-implementation-guide.md)
 and [release evidence](docs/releases/phase-6-decision-support.md).
+
+## Bounded iterative research
+
+Phase 8 is implemented locally and remains off by default. It adds explicit
+finite-state research runs, named evidence gaps, deterministic gap-linked
+follow-up templates, versioned resource budgets, safe persisted progress,
+cancellation, and conservative lease recovery over the existing Phase 5 and
+Phase 6 paths. A decision intent still requires the shared deterministic
+decision service to verify evidence; search snippets cannot become claims by
+themselves. Reconnect reads stored events and does not restart work.
+
+Run `make iterative-research-eval` for thirteen paired Phase 5/8 synthetic
+cases. To expose the bounded mode locally, enable `RESEARCH_ENABLED`,
+`ITERATIVE_RESEARCH_ENABLED`, and `ITERATIVE_PROGRESS_ENABLED` in the backend
+and set the matching server settings plus `NEXT_PUBLIC_ITERATIVE_RESEARCH_ENABLED`
+for the frontend. These settings default off, and the research page remains in
+single-pass mode unless the user selects bounded follow-ups. See the
+[Phase 8 implementation guide](docs/phase-8-implementation-guide.md),
+[task plan](docs/phase-8-implementation-plan.md), and [release evidence](docs/releases/phase-8-iterative-research.md)
+for budgets, recovery, data handling, offline checks, and external gaps. Real
+Firestore, search-provider, Gemini, deployment, authentication, and retention
+behavior remain unverified or out of scope.

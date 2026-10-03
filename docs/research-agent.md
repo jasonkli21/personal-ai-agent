@@ -31,8 +31,13 @@ validated candidate proposals and evidence
   -> persisted decision snapshot and cited result view
 ```
 
-Phase 8 may later iterate: inspect missing or unreliable evidence, create a
-focused follow-up query, and stop within a bounded budget.
+Phase 8 now adds a separate opt-in bounded loop: assess a named evidence gap,
+create a schema-validated focused follow-up, preserve the Phase 5 provenance,
+re-evaluate explicit decisions through the shared Phase 6 service, and stop
+under an immutable budget. It does not run in the background or change the
+single-pass default. See the [Phase 8 guide](phase-8-implementation-guide.md),
+[plan](phase-8-implementation-plan.md), and
+[release evidence](releases/phase-8-iterative-research.md).
 
 ## Shared platform contracts
 
