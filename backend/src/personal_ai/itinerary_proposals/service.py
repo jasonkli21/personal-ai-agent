@@ -206,7 +206,10 @@ class ItineraryProposalService:
             return _safe_view(record, now)
 
         try:
-            async with asyncio.timeout_at(work_deadline):
+            # Storage/context helpers use the shared monotonic deadline. asyncio.timeout
+            # accepts a duration and converts it using the active loop's clock, which
+            # can have a different epoch (notably under uvloop).
+            async with asyncio.timeout(_remaining(work_deadline)):
                 now = self.clock().astimezone(UTC)
                 evidence = await self._resolve_evidence(request, now, work_deadline)
                 if evidence.expired:
@@ -521,7 +524,8 @@ class ItineraryProposalService:
                 timeout_seconds=_remaining(deadline),
             )
         try:
-            async with asyncio.timeout_at(deadline):
+            # `deadline` is in time.monotonic()'s domain, not necessarily loop.time()'s.
+            async with asyncio.timeout(_remaining(deadline)):
                 async for delta in stream:
                     if not isinstance(delta, str):
                         raise _InvalidProposalOutput("non_text_output")

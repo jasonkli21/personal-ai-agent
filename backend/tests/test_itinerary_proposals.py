@@ -842,6 +842,26 @@ def test_disabled_route_does_not_construct_proposal_storage():
         app.dependency_overrides = previous
 
 
+@pytest.mark.parametrize("loop_kind", ["asyncio", "uvloop"])
+def test_generation_deadline_uses_remaining_duration_for_active_loop(loop_kind):
+    if loop_kind == "uvloop":
+        uvloop = pytest.importorskip("uvloop")
+        loop = uvloop.new_event_loop()
+    else:
+        loop = asyncio.new_event_loop()
+    try:
+        offset = loop.time() - time.monotonic()
+        if loop_kind == "uvloop":
+            # This environment's uvloop uses a materially different clock epoch.
+            assert abs(offset) > 1_000_000
+        service = build_service()
+        result = loop.run_until_complete(service.create(fixture_request()))
+        assert result.state == "proposed"
+        assert len(service.llm.requests) == 1
+    finally:
+        loop.close()
+
+
 def test_fake_backed_http_endpoint_returns_and_reopens_typed_result():
     previous = app.dependency_overrides.copy()
     configured = settings(
