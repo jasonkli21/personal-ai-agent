@@ -122,6 +122,10 @@ booking state, or contain notes, links, or free-text values. Positions are
 checked against the evolving ordered itinerary. The travel service remains the
 source of truth for its complete deterministic preview.
 
+For `set_item_times`, an omitted endpoint leaves that endpoint unchanged and an
+explicit `null` clears it. The upstream serializer preserves this distinction
+in model output, HTTP responses, Firestore records, and replayed results.
+
 ## Evidence and response
 
 If `research_session_ids` are supplied, the service resolves each record
@@ -138,11 +142,24 @@ The generated JSON contains exactly `schema_version`, `trip_handle`, `status`,
 `failure_code`, `operations`, and `operation_support`. `operation_support` maps operation
 indexes to zero or more evidence handles. When research evidence was supplied,
 every proposed operation must cite at least one supplied, fresh evidence
-handle; otherwise the service returns `uncited` with no operations. With no
-external evidence supplied, a proposal may be based only on the user's
-instruction and the typed trip context. A result needing information absent
-from that context must be `insufficient`, with no operations. There is no
-free-form model explanation in this first contract.
+handle; otherwise the service returns `uncited` with no operations. A supplied
+research session that is missing, stale, invalid, or has no selected evidence
+ends as `insufficient` or `expired`; the service never falls back to
+context-only generation after an evidence lookup failure. With no research
+session IDs supplied, a proposal may be based only on the user's instruction
+and typed trip context. It cannot claim current external facts such as opening
+hours or availability. A result needing information absent from that context
+must be `insufficient`, with no operations. There is no free-form model
+explanation in this first contract.
+
+The public `support_mode` is derived by the service from the request:
+`context_only` when no research-session IDs were supplied, or
+`research_evidence` when one or more were supplied. The mode remains explicit
+on every result, including failed and insufficient outcomes, so consumers can
+apply different acceptance policy without guessing from an empty citation
+list. `research_evidence` proposals cite every operation; `context_only`
+proposals have no citations or operation-support entries. `policy_version` is
+`itinerary-proposal-policy-v2` for this distinction.
 
 The public response envelope is:
 
@@ -151,7 +168,8 @@ The public response envelope is:
   "schema_version": "itinerary-proposal-v1",
   "proposal_id": "00000000-0000-4000-8000-000000000002",
   "state": "proposed",
-  "policy_version": "itinerary-proposal-policy-v1",
+  "policy_version": "itinerary-proposal-policy-v2",
+  "support_mode": "context_only",
   "trip_handle": "h_abcdefgh",
   "operations": [
     {"kind":"add_item","day_handle":"h_day00001","candidate_handle":"h_cand00001","item_type":"activity","position":1,"start_time":null,"end_time":null}
@@ -196,10 +214,27 @@ and its configured input-token ceiling. That reservation remains an estimate,
 not complete provider billing reconciliation.
 
 The request and response bytes, instruction/context sizes, operation count,
-evidence/session count, output tokens, and whole request time are bounded.
-Generation has a maximum 45-second deadline to fit within the travel client's
-under-50-second whole-call bound. Output is accumulated only to the configured
-byte cap and is strict JSON with duplicate-key and unknown-field rejection.
+evidence/session count, output tokens, and proposal execution time are bounded.
+One monotonic deadline starts before the durable `running` claim and covers that
+claim, evidence reads, synchronous context projection/token counting, provider
+streaming, stream cleanup, and terminal persistence. Bounded Firestore calls
+receive only the remaining budget; time reserved for stream cleanup and the
+terminal write is taken from that same deadline. If provider work times out or
+is cancelled, the key remains fenced as running or records
+`generation_outcome_unknown`; it is never dispatched again on replay. Context
+counting runs in a worker thread, receives its remaining RPC timeout, and is
+drained before cancellation can proceed, so it cannot dispatch a provider call
+or terminal write after the request has ended.
+
+Generation has a maximum 45-second execution deadline to leave time inside the
+travel client's under-50-second call budget. This deadline begins after the
+request body has been received and validated; body transmission, JSON parsing,
+and reverse-proxy ingress have independent limits and are not included. Output
+is accumulated only to the configured byte cap and is strict JSON with
+duplicate-key and unknown-field rejection. Provider/Firestore SDK deadlines
+bound individual synchronous RPCs; thread shielding prevents late work from
+racing a replay but cannot make arbitrary non-cooperative synchronous code
+hard-cancellable.
 Default telemetry contains request IDs, counts, duration, and safe error
 classes only; prompt, context, evidence passage, and provider output are not
 logged.

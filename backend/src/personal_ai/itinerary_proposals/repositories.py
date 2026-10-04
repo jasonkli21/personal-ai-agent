@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from threading import RLock
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from google.api_core.exceptions import GoogleAPICallError, RetryError
@@ -35,6 +35,7 @@ class ProposalRecord(BaseModel):
     request_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     state: str
     trip_handle: str
+    support_mode: Literal["context_only", "research_evidence"]
     created_at: datetime
     execution_deadline: datetime
     proposal_expires_at: datetime
@@ -51,10 +52,16 @@ class ItineraryProposalRepository(Protocol):
         request_fingerprint: str,
         now: datetime,
         execution_deadline: datetime,
+        timeout_seconds: float = 5,
+        deadline: float | None = None,
     ) -> tuple[ProposalRecord, bool]: ...
 
     def complete(
-        self, record: ProposalRecord, result: ItineraryProposalResult
+        self,
+        record: ProposalRecord,
+        result: ItineraryProposalResult,
+        timeout_seconds: float = 5,
+        deadline: float | None = None,
     ) -> ProposalRecord: ...
 
     def get(self, owner_id: str, proposal_id: UUID) -> ProposalRecord: ...
@@ -67,6 +74,7 @@ def _new_record(owner_id, request, request_fingerprint, now, execution_deadline)
         request_fingerprint=request_fingerprint,
         state="running",
         trip_handle=request.context.trip_handle,
+        support_mode=("research_evidence" if request.research_session_ids else "context_only"),
         created_at=now,
         execution_deadline=execution_deadline,
         proposal_expires_at=now + MAX_RESULT_LIFETIME,
@@ -98,7 +106,10 @@ class InMemoryItineraryProposalRepository:
         request_fingerprint: str,
         now: datetime,
         execution_deadline: datetime,
+        timeout_seconds: float = 5,
+        deadline: float | None = None,
     ) -> tuple[ProposalRecord, bool]:
+        del timeout_seconds, deadline
         proposal_id = proposal_id_for(owner_id, request.idempotency_key)
         with self._lock:
             old = self._records.get(proposal_id)
@@ -110,7 +121,14 @@ class InMemoryItineraryProposalRepository:
             self._records[proposal_id] = record
             return record, True
 
-    def complete(self, record: ProposalRecord, result: ItineraryProposalResult) -> ProposalRecord:
+    def complete(
+        self,
+        record: ProposalRecord,
+        result: ItineraryProposalResult,
+        timeout_seconds: float = 5,
+        deadline: float | None = None,
+    ) -> ProposalRecord:
+        del timeout_seconds, deadline
         with self._lock:
             old = self._records.get(record.proposal_id)
             if old is None or old.owner_id != record.owner_id:
@@ -171,6 +189,8 @@ class FirestoreItineraryProposalRepository:
         request_fingerprint: str,
         now: datetime,
         execution_deadline: datetime,
+        timeout_seconds: float = 5,
+        deadline: float | None = None,
     ) -> tuple[ProposalRecord, bool]:
         record = _new_record(owner_id, request, request_fingerprint, now, execution_deadline)
 
@@ -185,9 +205,19 @@ class FirestoreItineraryProposalRepository:
             transaction.set(ref, self._data(record))
             return record, True
 
-        return self._storage_call(lambda: bounded_transaction(self.client, operation))
+        return self._storage_call(
+            lambda: bounded_transaction(
+                self.client, operation, seconds=timeout_seconds, deadline=deadline
+            )
+        )
 
-    def complete(self, record: ProposalRecord, result: ItineraryProposalResult) -> ProposalRecord:
+    def complete(
+        self,
+        record: ProposalRecord,
+        result: ItineraryProposalResult,
+        timeout_seconds: float = 5,
+        deadline: float | None = None,
+    ) -> ProposalRecord:
         def operation(transaction, timeout):
             ref = self.proposals.document(str(record.proposal_id))
             snapshot = ref.get(transaction=transaction, retry=None, timeout=timeout())
@@ -205,7 +235,11 @@ class FirestoreItineraryProposalRepository:
             transaction.set(ref, self._data(completed))
             return completed
 
-        return self._storage_call(lambda: bounded_transaction(self.client, operation))
+        return self._storage_call(
+            lambda: bounded_transaction(
+                self.client, operation, seconds=timeout_seconds, deadline=deadline
+            )
+        )
 
     def get(self, owner_id: str, proposal_id: UUID) -> ProposalRecord:
         return self._storage_call(

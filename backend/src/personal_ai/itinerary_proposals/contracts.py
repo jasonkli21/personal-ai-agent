@@ -13,15 +13,17 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     StrictBool,
     StringConstraints,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
 SCHEMA_VERSION = "itinerary-proposal-v1"
 CONTEXT_SCHEMA_VERSION = "travel-itinerary-context-v1"
-POLICY_VERSION = "itinerary-proposal-policy-v1"
+POLICY_VERSION = "itinerary-proposal-policy-v2"
 
 OpaqueHandle = Annotated[
     str,
@@ -211,6 +213,15 @@ class ProposalSetItemTimes(StrictModel):
             raise ValueError("set_item_times requires at least one time field")
         return self
 
+    @model_serializer(mode="wrap")
+    def preserve_partial_time_fields(self, handler: SerializerFunctionWrapHandler) -> dict:
+        """Keep omitted endpoints omitted through HTTP and durable JSON."""
+        serialized = handler(self)
+        for field_name in ("start_time", "end_time"):
+            if field_name not in self.model_fields_set:
+                serialized.pop(field_name, None)
+        return serialized
+
 
 class ProposalRemoveItem(StrictModel):
     kind: Literal["remove_item"]
@@ -294,7 +305,8 @@ class ItineraryProposalResult(StrictModel):
     schema_version: Literal["itinerary-proposal-v1"] = SCHEMA_VERSION
     proposal_id: UUID
     state: Literal["running", "proposed", "insufficient", "uncited", "expired", "failed"]
-    policy_version: Literal["itinerary-proposal-policy-v1"] = POLICY_VERSION
+    policy_version: Literal["itinerary-proposal-policy-v2"] = POLICY_VERSION
+    support_mode: Literal["context_only", "research_evidence"]
     trip_handle: OpaqueHandle
     operations: tuple[ProposalOperation, ...] = Field(max_length=25)
     operation_support: tuple[OperationEvidenceSupport, ...] = Field(max_length=25)
@@ -324,6 +336,10 @@ class ItineraryProposalResult(StrictModel):
             self.operations or self.operation_support or self.citations
         ):
             raise ValueError("non-proposal result cannot expose operations or citations")
+        if self.state == "proposed" and self.support_mode == "research_evidence" and not self.citations:
+            raise ValueError("evidence-supported proposals require citations")
+        if self.support_mode == "context_only" and (self.operation_support or self.citations):
+            raise ValueError("context-only proposals cannot claim external evidence")
         citation_handles = {item.evidence_handle for item in self.citations}
         if len(citation_handles) != len(self.citations):
             raise ValueError("duplicate proposal citation")

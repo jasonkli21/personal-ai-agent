@@ -4,14 +4,16 @@ import logging
 from time import monotonic
 
 
-def bounded_transaction(client, operation, seconds=5):
+def bounded_transaction(client, operation, seconds=5, *, deadline=None):
     """Run one atomic operation without SDK retries extending its deadline.
 
     The callback receives the SDK transaction and a remaining-time callable for
-    its reads. Keep the locked SDK's private begin/commit plumbing in this one
+    its reads. Supply an absolute monotonic ``deadline`` when the caller has a
+    shared operation budget; otherwise ``seconds`` starts when this function
+    runs. Keep the locked SDK's private begin/commit plumbing in this one
     boundary until it offers a public transaction API with per-RPC deadlines.
     """
-    deadline = monotonic() + seconds
+    deadline = monotonic() + seconds if deadline is None else deadline
 
     def timeout():
         remaining = deadline - monotonic()

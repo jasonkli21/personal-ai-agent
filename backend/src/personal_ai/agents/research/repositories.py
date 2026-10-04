@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from threading import RLock
+from time import monotonic
 from typing import Protocol
 from uuid import UUID
 
@@ -83,7 +84,13 @@ def validate_save(current, candidate):
 
 class ResearchRepository(Protocol):
     def create(self, session: ResearchSession) -> ResearchSession: ...
-    def get(self, owner_id: str, session_id: UUID) -> ResearchSession: ...
+    def get(
+        self,
+        owner_id: str,
+        session_id: UUID,
+        timeout_seconds: float | None = None,
+        deadline: float | None = None,
+    ) -> ResearchSession: ...
     def claim(
         self, owner_id: str, session_id: UUID, token: UUID, now: datetime, deadline: datetime
     ) -> ResearchSession: ...
@@ -108,7 +115,8 @@ class InMemoryResearchRepository:
             self.keys[key] = session.id
             return session
 
-    def get(self, owner_id, session_id):
+    def get(self, owner_id, session_id, timeout_seconds=None, deadline=None):
+        del timeout_seconds, deadline
         with self.lock:
             session = self.sessions.get(session_id)
             if session is None or session.owner_id != owner_id:
@@ -155,10 +163,21 @@ class FirestoreResearchRepository:
         data["run_token"] = str(session.run_token) if session.run_token else None
         return data
 
-    def get(self, owner_id, session_id):
+    def get(self, owner_id, session_id, timeout_seconds=None, deadline=None):
+        def rpc_timeout():
+            if deadline is None:
+                return timeout_seconds or 5
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("research read deadline")
+            return min(remaining, timeout_seconds) if timeout_seconds else remaining
+
         return self._run(
             lambda: self._decode(
-                self.sessions.document(str(session_id)).get(retry=None, timeout=5), owner_id
+                self.sessions.document(str(session_id)).get(
+                    retry=None, timeout=rpc_timeout()
+                ),
+                owner_id,
             )
         )
 

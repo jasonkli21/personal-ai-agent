@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,8 +17,10 @@ from pydantic import ValidationError
 from starlette.requests import Request
 
 from personal_ai.api.dependencies import get_settings
+from personal_ai.api.itinerary_proposals import proposal_service as proposal_service_dependency
 from personal_ai.auth.account_data import EXPORT_COLLECTIONS
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.contracts import TokenCount
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.evaluation.itinerary_proposals import evaluate as evaluate_itinerary_proposals
 from personal_ai.evaluation.research import build_fixture, load_fixtures
@@ -128,6 +131,8 @@ async def test_exact_consumer_fixture_replays_immutable_result_and_rejects_chang
     replay = await service.create(request)
 
     assert first.state == "proposed"
+    assert first.support_mode == "context_only"
+    assert first.policy_version == "itinerary-proposal-policy-v2"
     assert first.proposal_id == proposal_id_for("local", request.idempotency_key)
     assert [item.model_dump(mode="json") for item in first.operations] == fixture_payload()[
         "model_output"
@@ -148,6 +153,7 @@ def test_firestore_owner_scoped_transaction_replay_and_bounded_result_storage():
         request_fingerprint=fingerprint,
         now=NOW,
         execution_deadline=NOW + timedelta(seconds=35),
+        deadline=time.monotonic() + 2,
     )
     assert created and first.state == "running"
     stored = records[("itinerary_proposals", str(first.proposal_id))]
@@ -175,6 +181,7 @@ def test_firestore_owner_scoped_transaction_replay_and_bounded_result_storage():
     terminal = ItineraryProposalResult(
         proposal_id=first.proposal_id,
         state="insufficient",
+        support_mode="context_only",
         trip_handle=request.context.trip_handle,
         operations=(),
         operation_support=(),
@@ -183,7 +190,7 @@ def test_firestore_owner_scoped_transaction_replay_and_bounded_result_storage():
         created_at=first.created_at,
         expires_at=first.proposal_expires_at,
     )
-    completed = repo.complete(first, terminal)
+    completed = repo.complete(first, terminal, deadline=time.monotonic() + 0.75)
     assert completed.result == terminal
     assert repo.get("local", first.proposal_id) == completed
     with pytest.raises(ResourceNotFoundError):
@@ -192,6 +199,8 @@ def test_firestore_owner_scoped_transaction_replay_and_bounded_result_storage():
     for method in (client._firestore_api.begin_transaction, client._firestore_api.commit):
         assert method.call_args.kwargs["retry"] is None
         assert 0 < method.call_args.kwargs["timeout"] <= 5
+    assert client._firestore_api.begin_transaction.call_args_list[0].kwargs["timeout"] <= 2
+    assert client._firestore_api.commit.call_args.kwargs["timeout"] <= 0.75
     assert (
         refs[("itinerary_proposals", str(first.proposal_id))].get.call_args.kwargs["retry"] is None
     )
@@ -350,6 +359,7 @@ async def test_shared_context_keeps_ids_urls_and_private_fields_out_of_model_inp
     result = await service.create(request)
 
     assert result.state == "proposed"
+    assert result.support_mode == "research_evidence"
     assert result.citations
     assert result.citations[0].url.startswith("https://example.org/")
     assert result.operation_support[0].evidence_handles == (result.citations[0].evidence_handle,)
@@ -371,7 +381,8 @@ async def test_research_session_expiry_caps_proposal_evidence_lifetime():
     short_session = completed.model_copy(update={"expires_at": proposal_now + timedelta(minutes=5)})
 
     class ShortLivedResearchRepository:
-        def get(self, owner_id, session_id):
+        def get(self, owner_id, session_id, timeout_seconds=None, deadline=None):
+            del timeout_seconds, deadline
             assert owner_id == short_session.owner_id
             assert session_id == short_session.id
             return short_session
@@ -411,7 +422,8 @@ async def test_cross_owner_research_observation_is_rejected_before_generation():
     )
 
     class ForeignObservationRepository:
-        def get(self, owner_id, session_id):
+        def get(self, owner_id, session_id, timeout_seconds=None, deadline=None):
+            del timeout_seconds, deadline
             assert owner_id == "local"
             assert session_id == completed.id
             return foreign
@@ -433,6 +445,7 @@ async def test_cross_owner_research_observation_is_rejected_before_generation():
 
     result = await service.create(request)
     assert result.state == "insufficient"
+    assert result.support_mode == "research_evidence"
     assert result.failure_code == "insufficient_evidence"
     assert not llm.requests
 
@@ -487,11 +500,11 @@ async def test_timeout_and_oversized_output_are_terminal_for_the_same_key():
     class SlowLLM(FakeItineraryProposalLLMClient):
         async def stream(self, messages):
             self.requests.append(tuple(messages))
-            await asyncio.sleep(0.03)
+            await asyncio.sleep(0.3)
             yield "{}"
 
     llm = SlowLLM()
-    service = build_service(llm=llm, itinerary_proposal_timeout_seconds=0.01)
+    service = build_service(llm=llm, itinerary_proposal_timeout_seconds=0.1)
     request = fixture_request()
     timed_out = await service.create(request)
     replay = await service.create(request)
@@ -506,6 +519,207 @@ async def test_timeout_and_oversized_output_are_terminal_for_the_same_key():
     failed = await oversized.create(fixture_request())
     assert failed.state == "failed"
     assert failed.failure_code == "invalid_model_output"
+
+
+@pytest.mark.anyio
+async def test_one_deadline_covers_slow_claim_count_and_stream_with_terminal_reserve():
+    class SlowClaimRepository(InMemoryItineraryProposalRepository):
+        def begin(self, **kwargs):
+            self.claim_deadline = kwargs["deadline"]
+            time.sleep(0.03)
+            return super().begin(**kwargs)
+
+    class SlowStreamLLM:
+        def __init__(self):
+            self.requests = []
+            self.stream_timeout = None
+            self.closed = False
+
+        async def stream_bounded(
+            self, messages, *, max_output_tokens, timeout_seconds
+        ):
+            del max_output_tokens
+            self.requests.append(tuple(messages))
+            self.stream_timeout = timeout_seconds
+            try:
+                await asyncio.sleep(timeout_seconds + 0.2)
+                yield "{}"
+            finally:
+                self.closed = True
+
+    repository = SlowClaimRepository()
+    llm = SlowStreamLLM()
+    service = build_service(
+        llm=llm,
+        repository=repository,
+        itinerary_proposal_timeout_seconds=0.2,
+    )
+    started = time.monotonic()
+    result = await service.create(fixture_request())
+    elapsed = time.monotonic() - started
+
+    assert result.failure_code == "generation_outcome_unknown"
+    assert llm.closed
+    assert started < repository.claim_deadline < started + 0.18
+    assert llm.stream_timeout < service.settings.itinerary_proposal_timeout_seconds - 0.05
+    assert elapsed < 0.28
+    replay = await service.create(fixture_request())
+    assert replay == result
+    assert len(llm.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_synchronous_token_counting_runs_off_event_loop():
+    class SlowCounter:
+        def __init__(self):
+            self.timeouts = []
+
+        def count(self, messages):
+            return self.count_with_timeout(messages, 1)
+
+        def count_with_timeout(self, messages, timeout_seconds):
+            self.timeouts.append(timeout_seconds)
+            time.sleep(min(0.02, timeout_seconds / 4))
+            return TokenCount(max(1, sum(len(message.content) for message in messages)), "test")
+
+    service = build_service()
+    counter = SlowCounter()
+    service.context = ContextAssembler(service.settings, counter)
+    finished = asyncio.Event()
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while not finished.is_set():
+            ticks += 1
+            await asyncio.sleep(0.001)
+
+    ticker = asyncio.create_task(heartbeat())
+    result = await service.create(fixture_request())
+    finished.set()
+    await ticker
+
+    assert result.state == "proposed"
+    assert ticks >= 5
+    assert counter.timeouts
+    assert all(0 < timeout < service.settings.itinerary_proposal_timeout_seconds for timeout in counter.timeouts)
+
+
+@pytest.mark.anyio
+async def test_timed_out_token_count_never_dispatches_and_fences_replay():
+    class SlowCounter:
+        def count(self, messages):
+            return self.count_with_timeout(messages, 1)
+
+        def count_with_timeout(self, messages, timeout_seconds):
+            time.sleep(timeout_seconds + 0.002)
+            return TokenCount(max(1, sum(len(message.content) for message in messages)), "test")
+
+    llm = FakeItineraryProposalLLMClient()
+    service = build_service(llm=llm, itinerary_proposal_timeout_seconds=0.1)
+    service.context = ContextAssembler(service.settings, SlowCounter())
+    request = fixture_request()
+
+    result = await service.create(request)
+    replay = await service.create(request)
+
+    assert result.failure_code == "generation_outcome_unknown"
+    assert replay == result
+    assert llm.requests == []
+
+
+@pytest.mark.anyio
+async def test_slow_terminal_write_returns_unknown_and_never_redispatches():
+    class SlowTerminalRepository(InMemoryItineraryProposalRepository):
+        def __init__(self):
+            super().__init__()
+            self.terminal_deadlines = []
+
+        def complete(self, record, result, timeout_seconds=5, deadline=None):
+            self.terminal_deadlines.append(deadline)
+            if result.failure_code != "generation_outcome_unknown":
+                time.sleep(max(0, deadline - time.monotonic()) + 0.02)
+                raise StorageUnavailableError("proposal storage unavailable")
+            return super().complete(record, result, timeout_seconds, deadline)
+
+    repository = SlowTerminalRepository()
+    llm = FakeItineraryProposalLLMClient()
+    service = build_service(
+        llm=llm,
+        repository=repository,
+        clock=lambda: datetime.now(UTC),
+        itinerary_proposal_timeout_seconds=0.12,
+    )
+    request = fixture_request()
+
+    result = await service.create(request)
+    replay = await service.create(request)
+
+    assert result.failure_code == "generation_outcome_unknown"
+    assert replay.failure_code == "generation_outcome_unknown"
+    assert repository.terminal_deadlines[0] < time.monotonic()
+    assert len(llm.requests) == 1
+
+
+@pytest.mark.parametrize("bad_delta", [None, "x" * 2048])
+@pytest.mark.anyio
+async def test_provider_stream_closes_on_non_text_and_oversized_output(bad_delta):
+    class ClosingLLM:
+        def __init__(self):
+            self.closed = False
+
+        async def stream_bounded(
+            self, messages, *, max_output_tokens, timeout_seconds
+        ):
+            del messages, max_output_tokens, timeout_seconds
+            try:
+                yield bad_delta
+            finally:
+                self.closed = True
+
+    llm = ClosingLLM()
+    service = build_service(llm=llm, itinerary_proposal_max_response_bytes=1024)
+
+    result = await service.create(fixture_request())
+
+    assert result.failure_code == "invalid_model_output"
+    assert llm.closed
+
+
+@pytest.mark.anyio
+async def test_cancellation_closes_stream_and_keeps_running_fence():
+    started = asyncio.Event()
+
+    class CancellableLLM:
+        def __init__(self):
+            self.requests = 0
+            self.closed = False
+
+        async def stream_bounded(
+            self, messages, *, max_output_tokens, timeout_seconds
+        ):
+            del messages, max_output_tokens, timeout_seconds
+            self.requests += 1
+            try:
+                started.set()
+                await asyncio.Event().wait()
+                yield "{}"
+            finally:
+                self.closed = True
+
+    llm = CancellableLLM()
+    service = build_service(llm=llm)
+    request = fixture_request()
+    task = asyncio.create_task(service.create(request))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert llm.closed
+    with pytest.raises(ProposalError, match="proposal_busy"):
+        await service.create(request)
+    assert llm.requests == 1
 
 
 @pytest.mark.anyio
@@ -533,6 +747,7 @@ async def test_external_evidence_requires_citations_for_every_operation():
 
     result = await service.create(request)
     assert result.state == "uncited"
+    assert result.support_mode == "research_evidence"
     assert result.failure_code == "uncited_evidence"
     assert result.operations == ()
 
@@ -561,6 +776,7 @@ async def test_expired_research_evidence_stops_before_model_call():
 
     result = await service.create(request)
     assert result.state == "expired"
+    assert result.support_mode == "research_evidence"
     assert result.failure_code == "evidence_expired"
     assert not llm.requests
 
@@ -637,6 +853,74 @@ def test_fake_backed_http_endpoint_returns_and_reopens_typed_result():
         assert by_key.json() == result
         assert result["state"] == "proposed"
         assert result["operations"][0]["candidate_handle"] == "h_cand00001"
+    finally:
+        app.dependency_overrides = previous
+
+
+@pytest.mark.parametrize(
+    "time_fields",
+    [
+        {"start_time": "10:15"},
+        {"end_time": "11:45"},
+        {"start_time": None},
+        {"end_time": None},
+    ],
+)
+def test_partial_time_field_presence_survives_http_firestore_and_replay(time_fields):
+    operation = {
+        "kind": "set_item_times",
+        "item_handle": "h_item0001",
+        **time_fields,
+    }
+    model_output = fixture_payload()["model_output"]
+    model_output["operations"] = [operation]
+    model_output["operation_support"] = []
+    llm = FakeItineraryProposalLLMClient((json.dumps(model_output),))
+    repository, records, _, _, _ = firestore_proposal_repository()
+    configured = settings(itinerary_proposals_enabled=True, itinerary_proposal_storage="firestore")
+    service = ItineraryProposalService(
+        configured,
+        repository,
+        ContextAssembler(configured, EstimatedTokenCounter()),
+        llm,
+        owner_id="local",
+        clock=lambda: NOW,
+    )
+    previous = app.dependency_overrides.copy()
+    app.dependency_overrides[get_settings] = lambda: configured
+    app.dependency_overrides[proposal_service_dependency] = lambda: service
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/travel/itinerary-proposals",
+                json=fixture_payload()["request"],
+            )
+            assert response.status_code == 201
+            wire = response.json()
+            proposal_id = wire["proposal_id"]
+            detail = client.get(f"/v1/travel/itinerary-proposals/{proposal_id}")
+            by_key = client.get(
+                "/v1/travel/itinerary-proposals/by-key/"
+                + fixture_payload()["request"]["idempotency_key"]
+            )
+
+        expected_operation = {"kind": "set_item_times", "item_handle": "h_item0001", **time_fields}
+        assert wire["schema_version"] == "itinerary-proposal-v1"
+        assert wire["policy_version"] == "itinerary-proposal-policy-v2"
+        assert wire["support_mode"] == "context_only"
+        assert wire["operations"] == [expected_operation]
+        durable = records[("itinerary_proposals", proposal_id)]["result"]
+        assert durable["operations"] == [expected_operation]
+        assert detail.status_code == by_key.status_code == 200
+        assert detail.json() == by_key.json() == wire
+
+        replayed = ItineraryProposalResult.model_validate_json(json.dumps(durable))
+        assert replayed.operations[0].model_fields_set == {
+            "kind",
+            "item_handle",
+            *time_fields.keys(),
+        }
+        assert replayed.model_dump(mode="json")["operations"] == [expected_operation]
     finally:
         app.dependency_overrides = previous
 
