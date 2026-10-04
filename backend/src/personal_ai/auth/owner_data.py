@@ -6,6 +6,7 @@ OWNER_DATA_COLLECTIONS = (
     "conversation_summaries",
     "research_sessions",
     "research_request_keys",
+    "itinerary_proposals",
     "iterative_research_runs",
     "iterative_research_request_keys",
     "memories",

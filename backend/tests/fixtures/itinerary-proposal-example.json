@@ -1,0 +1,57 @@
+{
+  "request": {
+    "schema_version": "itinerary-proposal-v1",
+    "idempotency_key": "00000000-0000-4000-8000-000000000001",
+    "instruction": "Add the museum visit to the first day.",
+    "research_session_ids": [],
+    "context": {
+      "schema_version": "travel-itinerary-context-v1",
+      "trip_handle": "h_trip00001",
+      "title": "Synthetic Lisbon trip",
+      "start_date": "2026-10-10",
+      "end_date": "2026-10-10",
+      "timezone": "Europe/Lisbon",
+      "days": [
+        {
+          "handle": "h_day00001",
+          "day_index": 1,
+          "date": "2026-10-10",
+          "items": [
+            {
+              "handle": "h_item0001",
+              "label": "Breakfast",
+              "item_type": "food",
+              "status": "planned",
+              "start_time": "09:00",
+              "end_time": "10:00",
+              "protected": false,
+              "removable": false
+            }
+          ]
+        }
+      ],
+      "candidates": [
+        {"handle": "h_cand00001", "label": "Synthetic museum"}
+      ],
+      "removable_item_handles": []
+    }
+  },
+  "model_output": {
+    "schema_version": "itinerary-proposal-v1",
+    "trip_handle": "h_trip00001",
+    "status": "proposed",
+    "failure_code": null,
+    "operations": [
+      {
+        "kind": "add_item",
+        "day_handle": "h_day00001",
+        "candidate_handle": "h_cand00001",
+        "item_type": "activity",
+        "position": 1,
+        "start_time": null,
+        "end_time": null
+      }
+    ],
+    "operation_support": []
+  }
+}

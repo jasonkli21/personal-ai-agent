@@ -183,6 +183,15 @@ class Settings(BaseSettings):
     decision_max_candidates: int = Field(default=12, ge=1, le=24)
     decision_max_comparison_rows: int = Field(default=12, ge=1, le=24)
 
+    itinerary_proposals_enabled: bool = False
+    itinerary_proposal_generator: str = Field(default="fake", pattern=r"^(fake|gemini)$")
+    itinerary_proposal_provider_enabled: bool = False
+    itinerary_proposal_storage: str = Field(default="firestore", pattern=r"^(firestore|memory)$")
+    itinerary_proposal_timeout_seconds: float = Field(default=35, gt=0, le=45)
+    itinerary_proposal_max_input_tokens: int = Field(default=4096, ge=512, le=32768)
+    itinerary_proposal_max_output_tokens: int = Field(default=2048, ge=128, le=4096)
+    itinerary_proposal_max_response_bytes: int = Field(default=32768, ge=1024, le=131072)
+
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
         available = (
@@ -232,6 +241,37 @@ class Settings(BaseSettings):
             raise ValueError("memory_configuration_invalid")
         if self.research_enabled and self.research_max_evidence_context_tokens > available:
             raise ValueError("research_configuration_invalid")
+        if self.itinerary_proposals_enabled and (
+            self.itinerary_proposal_max_input_tokens > available
+            or self.itinerary_proposal_max_output_tokens > self.max_response_tokens
+        ):
+            raise ValueError("itinerary_proposal_configuration_invalid")
+        if self.itinerary_proposal_provider_enabled and not self.itinerary_proposals_enabled:
+            raise ValueError("itinerary_proposal_configuration_invalid")
+        if self.itinerary_proposal_generator == "gemini" and (
+            not self.itinerary_proposals_enabled
+            or not self.itinerary_proposal_provider_enabled
+            or self.ai_provider.lower() != "gemini"
+            or not self.ai_api_key.get_secret_value()
+            or self.itinerary_proposal_storage != "firestore"
+        ):
+            raise ValueError("itinerary_proposal_configuration_invalid")
+        if (
+            self.itinerary_proposals_enabled
+            and self.app_environment not in {"local", "test"}
+            and (
+                self.itinerary_proposal_generator != "gemini"
+                or self.itinerary_proposal_storage != "firestore"
+                or not self.itinerary_proposal_provider_enabled
+            )
+        ):
+            raise ValueError("itinerary_proposal_configuration_invalid")
+        if (
+            self.itinerary_proposals_enabled
+            and self.itinerary_proposal_storage == "memory"
+            and self.app_environment not in {"local", "test"}
+        ):
+            raise ValueError("itinerary_proposal_configuration_invalid")
         if self.iterative_research_enabled and not self.research_enabled:
             raise ValueError("iterative_research_configuration_invalid")
         if (

@@ -470,6 +470,11 @@
       "collectionGroup": "candidate_evaluations",
       "fieldPath": "feature_values",
       "indexes": []
+    },
+    {
+      "collectionGroup": "itinerary_proposals",
+      "fieldPath": "result",
+      "indexes": []
     }
   ]
 }

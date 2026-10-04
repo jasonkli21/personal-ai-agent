@@ -23,14 +23,15 @@ identifiers.
 
 `GET /v1/travel/itinerary-proposals/{proposal_id}` retrieves the saved result
 or its safe execution state for the authenticated owner. A missing or
-cross-owner ID has the same 404 response. The deterministic proposal ID is
-derived from owner plus idempotency key, allowing the caller to reconcile a
-lost POST response without generating again.
+cross-owner ID has the same 404 response. `GET
+/v1/travel/itinerary-proposals/by-key/{idempotency_key}` resolves a result for
+the authenticated owner after a lost POST response, so the caller does not
+need to know or derive the owner-scoped proposal ID.
 
 Requests with the same owner, key, and normalized content replay the same
 result. Reusing a key with different content returns 409. A concurrent replay
 while a request is running returns 409 with a stable `proposal_busy` code; the
-caller can GET the ID. A request whose provider outcome becomes uncertain is
+caller can GET by idempotency key. A request whose provider outcome becomes uncertain is
 terminal for that key and is never retried implicitly.
 
 ## Request schema
@@ -88,7 +89,7 @@ field. Unknown fields are rejected.
 
 The input allows no more than 366 inclusive days, 5,000 total existing items,
 500 saved candidates, 25 removable-item handles, three research sessions, and
-the configured request-byte limit. Handles have bounded `h_` syntax, are
+a 262,144-byte request cap. Handles have bounded `h_` syntax, are
 unique across all context kinds, and are checked against their declared kind.
 Day dates must be contiguous and match the trip range; timezone and local-time
 syntax are validated. The travel service remains responsible for its
@@ -133,7 +134,7 @@ and source IDs are never trusted. Citations in the returned envelope are
 reconstructed from the verified research/evidence records.
 
 The generated JSON contains exactly `schema_version`, `trip_handle`, `status`,
-`operations`, and `operation_support`. `operation_support` maps operation
+`failure_code`, `operations`, and `operation_support`. `operation_support` maps operation
 indexes to zero or more evidence handles. When research evidence was supplied,
 every proposed operation must cite at least one supplied, fresh evidence
 handle; otherwise the service returns `uncited` with no operations. With no
@@ -151,7 +152,9 @@ The public response envelope is:
   "state": "proposed",
   "policy_version": "itinerary-proposal-policy-v1",
   "trip_handle": "h_abcdefgh",
-  "operations": [],
+  "operations": [
+    {"kind":"add_item","day_handle":"h_day00001","candidate_handle":"h_cand00001","item_type":"activity","position":1,"start_time":null,"end_time":null}
+  ],
   "operation_support": [],
   "citations": [],
   "failure_code": null,
@@ -167,10 +170,12 @@ bounded title, observation time, and expiry; they contain no research-session,
 evidence, or source-observation UUID. The model never sees those URLs or UUIDs.
 If a provided session is unavailable, not completed, stale, or has no selected
 evidence, generation stops with explicit `insufficient` or `expired` status.
-If evidence expires while the model call is in flight, no proposal is returned.
+Each citation expires at the earlier of its selected evidence and research
+session expiry. If evidence expires while the model call is in flight, no
+proposal is returned.
 
-The result expiry is the earliest verified evidence expiry used in model
-context, capped at 24 hours after creation. Without external evidence it is at
+The result expiry is the earliest verified evidence or session expiry used in
+model context, capped at 24 hours after creation. Without external evidence it is at
 most 24 hours after creation. A replay never extends expiry. The idempotency
 record is retained for at most 48 hours so the owner can reconcile an
 uncertain response; Firestore TTL may remove it after this bound. The durable

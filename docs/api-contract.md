@@ -30,6 +30,25 @@ web-to-API boundary. See the [authorization matrix](phase-9-authorization-matrix
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/regenerate` | — | SSE stream replacing a completed assistant message |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/edit-and-retry` | `{"content": "..."}` | SSE stream after replacing a user message |
 
+### Proposed upstream itinerary proposal (pending independent review)
+
+This branch contains a separately versioned proposal capability for review;
+the route below is **not yet an accepted inter-repository contract**. Travel
+consumers must not depend on it until the coordinator accepts and pins a
+reviewed upstream revision. Its normative proposed schema, limits, examples,
+gates, and lifecycle are in [itinerary-proposal-contract.md](itinerary-proposal-contract.md).
+
+| Method | Proposed route | Request body | Response |
+| --- | --- | --- | --- |
+| `POST` | `/v1/travel/itinerary-proposals` | `itinerary-proposal-v1` with a bounded typed trip projection and separate instruction | Immutable owner-scoped result; local fake mode is credential-free |
+| `GET` | `/v1/travel/itinerary-proposals/{proposal_id}` | — | The same immutable result for reconciliation |
+| `GET` | `/v1/travel/itinerary-proposals/by-key/{idempotency_key}` | — | Owner-scoped lookup for lost-POST reconciliation |
+
+The feature gate defaults off. It returns only typed operations over
+request-scoped opaque handles; it neither reads nor changes travel database
+state. The consumer must revalidate against current SQL state and retain
+preview/apply authority.
+
 `Conversation` fields are `id`, `owner_id`, `title`, `created_at`, and
 `updated_at`. `Message` fields are `id`, `conversation_id`, `owner_id`,
 `role` (`user` or `assistant`), `content`, `status` (`streaming`,

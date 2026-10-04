@@ -11,6 +11,7 @@ from personal_ai.api.account import router as account_router
 from personal_ai.api.decisions import router as decisions_router
 from personal_ai.api.domains import router as domains_router
 from personal_ai.api.iterative_research import router as iterative_research_router
+from personal_ai.api.itinerary_proposals import router as itinerary_proposals_router
 from personal_ai.api.research import router as research_router
 from personal_ai.api.routes import router as conversations_router
 from personal_ai.auth.account_data import AccountDataUnavailable
@@ -19,6 +20,7 @@ from personal_ai.context import ContextError
 from personal_ai.decisions.repositories import DecisionError
 from personal_ai.domains.contracts import DomainContractError
 from personal_ai.domains.providers import DomainProviderError
+from personal_ai.itinerary_proposals.contracts import ProposalError
 from personal_ai.llm.errors import LLMError
 from personal_ai.services import InvalidRetryTargetError
 from personal_ai.settings import ContextBudgetInvalidError, validate_startup_configuration
@@ -36,6 +38,7 @@ app.add_middleware(AuthenticationMiddleware)
 app.include_router(conversations_router)
 app.include_router(research_router)
 app.include_router(iterative_research_router)
+app.include_router(itinerary_proposals_router)
 app.include_router(decisions_router)
 app.include_router(domains_router)
 app.include_router(account_router)
@@ -134,6 +137,15 @@ async def research_error(_: Request, error: ResearchError) -> JSONResponse:
         error.status,
         error.code,
         "Research could not proceed. Check the session or start a new request.",
+    )
+
+
+@app.exception_handler(ProposalError)
+async def itinerary_proposal_error(_: Request, error: ProposalError) -> JSONResponse:
+    return _error_response(
+        error.status,
+        error.code,
+        "The itinerary proposal could not be completed. Check its status or submit a new request.",
     )
 
 

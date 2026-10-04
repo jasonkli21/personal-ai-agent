@@ -40,6 +40,7 @@ from personal_ai.settings import ContextBudgetInvalidError, Settings, get_settin
 logger = logging.getLogger(__name__)
 PUBLIC_PATHS = {"/health", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _store_initialization_lock = threading.Lock()
+MAX_ITINERARY_PROPOSAL_REQUEST_BYTES = 262_144
 
 
 def _settings_for_request(request: Request) -> Settings:
@@ -161,6 +162,10 @@ def _provider_reservation(request: Request, settings: Settings) -> tuple[int, in
             path.startswith("/v1/domains/shopping/")
             and settings.shopping_products_adapter != "fake"
         )
+    elif path == "/v1/travel/itinerary-proposals":
+        calls = 1
+        tokens = settings.itinerary_proposal_max_input_tokens
+        uses_external = settings.itinerary_proposal_generator == "gemini"
     else:
         return (0, 0)
     return (calls, tokens) if uses_external else (0, 0)
@@ -459,6 +464,58 @@ class AuthenticationMiddleware:
         response = await authenticate_request(request)
         correlation_id = getattr(request.state, "correlation_id", str(uuid4()))
         status_code = 500
+        app_receive = receive
+
+        if (
+            response is None
+            and scope.get("method") == "POST"
+            and scope.get("path") == "/v1/travel/itinerary-proposals"
+        ):
+            content_length = request.headers.get("content-length")
+            too_large = False
+            if content_length is not None:
+                try:
+                    too_large = int(content_length) > MAX_ITINERARY_PROPOSAL_REQUEST_BYTES
+                except ValueError:
+                    too_large = True
+            chunks: list[bytes] = []
+            received = 0
+            disconnected = False
+            while not too_large:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    disconnected = True
+                    break
+                chunk = message.get("body", b"")
+                received += len(chunk)
+                if received > MAX_ITINERARY_PROPOSAL_REQUEST_BYTES:
+                    too_large = True
+                    break
+                chunks.append(chunk)
+                if not message.get("more_body", False):
+                    break
+            if too_large:
+                response = _error(
+                    413,
+                    "proposal_request_too_large",
+                    "The proposal request exceeds its size limit.",
+                    request=request,
+                    correlation_id=correlation_id,
+                )
+            else:
+                payload = b"".join(chunks)
+                first = True
+
+                async def replay_limited_body():
+                    nonlocal first
+                    if first:
+                        first = False
+                        return {"type": "http.request", "body": payload, "more_body": False}
+                    if disconnected:
+                        return {"type": "http.disconnect"}
+                    return await receive()
+
+                app_receive = replay_limited_body
 
         async def harden_send(message) -> None:
             nonlocal status_code
@@ -481,7 +538,7 @@ class AuthenticationMiddleware:
 
         try:
             if response is None:
-                await self.app(scope, receive, harden_send)
+                await self.app(scope, app_receive, harden_send)
             else:
                 await response(scope, receive, harden_send)
         finally:
