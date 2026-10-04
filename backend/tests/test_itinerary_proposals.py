@@ -19,6 +19,7 @@ from personal_ai.api.dependencies import get_settings
 from personal_ai.auth.account_data import EXPORT_COLLECTIONS
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
+from personal_ai.evaluation.itinerary_proposals import evaluate as evaluate_itinerary_proposals
 from personal_ai.evaluation.research import build_fixture, load_fixtures
 from personal_ai.itinerary_proposals.contracts import (
     ItineraryProposalRequest,
@@ -662,3 +663,11 @@ def test_model_contract_rejects_wrong_wire_version_and_extra_fields():
     payload["extra"] = "not allowed"
     with pytest.raises(ValidationError):
         ModelProposal.model_validate_json(json.dumps(payload))
+
+
+@pytest.mark.anyio
+async def test_standalone_itinerary_proposal_evaluation_is_all_synthetic_and_passes():
+    report = await evaluate_itinerary_proposals()
+    assert report["passed"] is True
+    assert report["external_providers_called"] is False
+    assert len(report["results"]) == 6

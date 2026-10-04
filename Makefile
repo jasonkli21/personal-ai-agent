@@ -1,4 +1,4 @@
-.PHONY: research-eval decision-eval domain-eval iterative-research-eval memory-lifecycle-eval memory-eval context-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend
+.PHONY: research-eval decision-eval domain-eval iterative-research-eval itinerary-proposal-eval memory-lifecycle-eval memory-eval context-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend
 .DEFAULT_GOAL := backend-test
 
 backend-build:
@@ -62,3 +62,6 @@ domain-eval:
 
 iterative-research-eval:
 	cd backend && python -m personal_ai.evaluation.iterative_research
+
+itinerary-proposal-eval:
+	cd backend && python -m personal_ai.evaluation.itinerary_proposals
