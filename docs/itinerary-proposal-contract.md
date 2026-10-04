@@ -128,10 +128,11 @@ If `research_session_ids` are supplied, the service resolves each record
 through the existing owner-scoped `research-v1` repository. It accepts only
 completed, unexpired sessions and selected evidence whose source observations
 are accepted, attributable, observed no later than the request, and not expired.
-It assigns temporary `e_` handles and supplies only those handles and bounded
-passage text to the model. Model-generated URLs, timestamps, evidence claims,
-and source IDs are never trusted. Citations in the returned envelope are
-reconstructed from the verified research/evidence records.
+It assigns temporary `e_` handles and supplies those handles, bounded passage
+text, and verified observation/expiry timestamps to the model. Source URLs and
+source IDs stay out of model context. Model-generated URLs, timestamps,
+evidence claims, and source IDs are never trusted. Citations in the returned
+envelope are reconstructed from the verified research/evidence records.
 
 The generated JSON contains exactly `schema_version`, `trip_handle`, `status`,
 `failure_code`, `operations`, and `operation_support`. `operation_support` maps operation
