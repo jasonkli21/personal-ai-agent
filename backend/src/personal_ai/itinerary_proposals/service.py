@@ -312,7 +312,7 @@ class ItineraryProposalService:
                 now=self.clock().astimezone(UTC),
                 failure_code="generation_outcome_unknown",
             )
-        return _safe_view(completed, completed_at)
+        return _safe_view(completed, self.clock().astimezone(UTC))
 
     async def detail(self, proposal_id) -> ItineraryProposalResult:
         record = await io_call(self.repository.get, self.owner_id, proposal_id)

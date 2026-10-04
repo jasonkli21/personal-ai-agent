@@ -1,6 +1,6 @@
-# Travel itinerary proposal capability (proposed)
+# Travel itinerary proposal capability
 
-**Status:** proposed for independent review; not yet an accepted inter-repository contract  
+**Status:** accepted for local integration after independent coordinator review
 **Schema:** `itinerary-proposal-v1`  
 **Date:** 2026-10-03
 
@@ -49,7 +49,7 @@ The top-level object is strict (`extra=forbid`):
     "trip_handle": "h_abcdefgh",
     "title": "Lisbon",
     "start_date": "2026-10-10",
-    "end_date": "2026-10-12",
+    "end_date": "2026-10-10",
     "timezone": "Europe/Lisbon",
     "days": [
       {
@@ -270,6 +270,8 @@ against `expires_at` at every read even before TTL removes the aggregate.
    HTTP endpoint check, relevant upstream offline evaluations, release
    evidence, and a minimal travel-coordinator checkpoint.
 
-The independent coordinator review decides whether this proposal becomes an
-accepted upstream contract and pins a revision. Provider quality, emulator,
-cloud, and deployment behavior remain unverified until separately exercised.
+Independent coordinator review through `d56907a` accepted this contract for
+local integration, with `itinerary-proposal-policy-v2` and explicit support
+modes. The acceptance commit follows that verified revision. Provider quality,
+emulator, cloud, and deployment behavior remain unverified until separately
+exercised.

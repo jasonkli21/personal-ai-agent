@@ -50,3 +50,20 @@ provenance and expiry, owner-scoped replay and terminal fencing, HTTP/auth
 safeguards, account-export/retention integration, and provider/context seams.
 Use fresh Luna Extra High for substantive fixes. Preserve pre-existing
 frontend/tsconfig.tsbuildinfo and avoid unrelated upstream changes/deployment.
+
+## Coordinator acceptance
+
+Re-reviewed remediation `b2b9d4a` and evidence `d56907a`. Field-preserving
+serialization fixes partial time operations through HTTP and persisted replay;
+bounded worker counting and absolute RPC/stream deadlines resolve the async
+boundary finding. Explicit policy-v2 support modes and aligned travel ADR
+0010 distinguish context-only edits from cited research and forbid evidence
+failure fallback. A small final correction evaluates expiry after terminal
+persistence, with a regression for expiry during that write.
+
+Coordinator independently ran full offline pytest (537 passed, 12 existing
+manual/provider skips), Ruff and the six-case proposal evaluator on the
+reviewed revision. The final correction is checked by the proposal regression
+suite. Contract accepted for local integration only; live provider quality,
+emulator durability, cloud and deployment remain unverified. Travel must pin
+the acceptance commit before enabling its separate proposal integration gate.

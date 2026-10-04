@@ -1,6 +1,6 @@
 # ADR 0019 — Bounded itinerary proposal capability
 
-**Status:** proposed; pending independent coordinator review  
+**Status:** accepted for local integration after independent coordinator review
 **Date:** 2026-10-03  
 **Scope:** upstream prerequisite for travel Phase 5 generation
 
@@ -77,7 +77,8 @@ and revalidation. The upstream capability cannot read or mutate authoritative
 travel records, and its output is never auto-applied. A timeout, malformed
 response, stale source, or failed evidence check produces no travel mutation.
 
-This decision remains **proposed** until the independent coordinator reviews
-the implemented route, DTOs, policy, fixtures, persistence, and release evidence
-and explicitly records the accepted revision. No external provider, emulator,
-cloud, or deployment acceptance is implied.
+Independent coordinator review through `d56907a` verified the route, DTOs,
+policy-v2 support modes, fixtures, persistence and remediation evidence. The
+contract is accepted for local integration; the acceptance commit follows that
+verified revision. No external provider, emulator, cloud, or deployment
+acceptance is implied.

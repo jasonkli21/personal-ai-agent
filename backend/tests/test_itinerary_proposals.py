@@ -45,6 +45,22 @@ NOW = datetime(2026, 10, 3, 12, tzinfo=UTC)
 FIXTURE = Path(__file__).parent / "fixtures" / "itinerary-proposal-example.json"
 
 
+@pytest.mark.anyio
+async def test_expiry_during_terminal_write_is_checked_before_return():
+    clock = [NOW]
+
+    class ExpiringWriteRepository(InMemoryItineraryProposalRepository):
+        def complete(self, record, result, timeout_seconds=5, deadline=None):
+            completed = super().complete(record, result, timeout_seconds, deadline)
+            clock[0] = result.expires_at + timedelta(seconds=1)
+            return completed
+
+    service = build_service(repository=ExpiringWriteRepository(), clock=lambda: clock[0])
+    result = await service.create(fixture_request())
+    assert result.state == "expired"
+    assert result.operations == ()
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
