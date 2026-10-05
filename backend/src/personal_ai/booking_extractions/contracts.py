@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from typing import Annotated, Literal
 from uuid import UUID
@@ -22,6 +22,7 @@ from pydantic import (
 SCHEMA_VERSION = "booking-document-extraction-v1"
 MAX_INPUT_CHARS = 200_000
 MAX_CANDIDATES = 10
+MAX_RESULT_RETENTION = timedelta(days=7)
 
 
 class StrictModel(BaseModel):
@@ -148,7 +149,18 @@ class BookingCandidate(StrictModel):
     source_start: int = Field(ge=0, le=MAX_INPUT_CHARS)
     source_end: int = Field(gt=0, le=MAX_INPUT_CHARS)
     source_excerpt: str = Field(max_length=240)
-    uncertain_fields: tuple[str, ...] = Field(max_length=7)
+    uncertain_fields: tuple[
+        Literal[
+            "reservation_type",
+            "provider_name",
+            "confirmation_code",
+            "starts_at",
+            "ends_at",
+            "starts_at_timezone",
+            "ends_at_timezone",
+        ],
+        ...,
+    ] = Field(max_length=7)
 
 
 class BookingExtractionResult(StrictModel):
@@ -180,8 +192,26 @@ class BookingExtractionResult(StrictModel):
 
     @model_validator(mode="after")
     def terminal_result(self) -> BookingExtractionResult:
-        if self.state in {"failed", "deleted"} and self.candidates:
-            raise ValueError("failed and deleted results cannot expose candidates")
+        if (
+            self.expires_at <= self.created_at
+            or self.expires_at > self.created_at + MAX_RESULT_RETENTION
+        ):
+            raise ValueError("extraction expiry must be after creation and within retention")
+        if self.state != "completed" and self.candidates:
+            raise ValueError("non-completed results cannot expose candidates")
+        if self.state == "failed" and self.failure_code is None:
+            raise ValueError("failed results require a safe failure code")
+        if self.state != "failed" and self.failure_code is not None:
+            raise ValueError("only failed results may contain a failure code")
+        identities = [candidate.candidate_id for candidate in self.candidates]
+        spans = [(candidate.source_start, candidate.source_end) for candidate in self.candidates]
+        if len(set(identities)) != len(identities) or len(set(spans)) != len(spans):
+            raise ValueError("candidate identities and evidence spans must be unique")
+        if any(
+            candidate.source_end <= candidate.source_start or not candidate.source_excerpt.strip()
+            for candidate in self.candidates
+        ):
+            raise ValueError("completed candidates require non-empty bounded evidence")
         return self
 
 

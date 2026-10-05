@@ -1,7 +1,7 @@
 # ADR 0020 — Bounded booking document extraction
 
-- **Status:** implementation candidate; whole-Phase 6 review pending
-- **Date:** 2026-10-04
+- **Status:** local implementation candidate; coordinator whole-Phase 6 verification pending
+- **Date:** 2026-10-05
 - **Scope:** upstream extraction prerequisite for the personal travel app
 
 ## Context
@@ -32,11 +32,15 @@ no more than ten candidates; output includes explicit uncertainty, source
 offsets, and a server-reconstructed literal excerpt. Keep dates and timezone
 wording verbatim for the travel owner to resolve.
 
-The capability and provider gates both default off. Local fake generation
-requires an explicit synthetic-fixture marker. Provider quality/data-use review,
-deployed identity and Firestore TTL remain unverified. This is a candidate for
-travel integration, not independent acceptance; the coordinator reviews the
-whole Phase 6 before pinning it as accepted.
+The capability and provider gates both default off. Local fake generation is
+limited to local/test environments and requires an explicit synthetic-fixture
+marker. Real Gemini inference requires Google OIDC even in a local application
+environment. One monotonic deadline covers body receipt, durable claim, model
+execution, and terminal persistence. Results enforce unique evidence spans,
+literal field support, explicit uncertainty, valid bounded expiry, and an empty
+candidate list for non-completed states. Provider quality/data-use review,
+deployed identity and Firestore TTL remain unverified. This is a local
+integration candidate; coordinator verification remains pending.
 
 ## Consequences
 

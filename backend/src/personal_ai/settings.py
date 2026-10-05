@@ -266,6 +266,7 @@ class Settings(BaseSettings):
         if self.booking_extraction_generator == "gemini" and (
             not self.booking_extractions_enabled
             or not self.booking_extraction_provider_enabled
+            or self.auth_mode != "google_oidc"
             or self.ai_provider.lower() != "gemini"
             or not self.ai_api_key.get_secret_value()
             or self.booking_extraction_storage != "firestore"

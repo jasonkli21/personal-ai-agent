@@ -53,6 +53,13 @@ def _reject_duplicate_pairs(pairs):
     return result
 
 
+def _remaining(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError("booking extraction deadline exceeded")
+    return remaining
+
+
 def _model_output(raw: str, source_text: str) -> tuple[BookingCandidate, ...]:
     try:
         value = json.loads(raw, object_pairs_hook=_reject_duplicate_pairs)
@@ -60,37 +67,86 @@ def _model_output(raw: str, source_text: str) -> tuple[BookingCandidate, ...]:
     except (ValueError, TypeError, ValidationError, json.JSONDecodeError) as error:
         raise ValueError("invalid_model_output") from error
     candidates = []
-    seen = set()
-    for index, item in enumerate(parsed.candidates):
+    seen_spans: set[tuple[int, int]] = set()
+    seen_ids: set[str] = set()
+    for item in parsed.candidates:
         if item.source_end > len(source_text):
             raise ValueError("invalid_model_output")
         excerpt = source_text[item.source_start : item.source_end]
         if not excerpt.strip() or len(excerpt) > 240:
             raise ValueError("invalid_model_output")
-        candidate_fingerprint = sha256(
-            f"{index}:{item.source_start}:{item.source_end}:{excerpt}".encode()
-        ).hexdigest()[:20]
-        if candidate_fingerprint in seen:
+        span = (item.source_start, item.source_end)
+        if span in seen_spans:
             raise ValueError("invalid_model_output")
-        seen.add(candidate_fingerprint)
+        seen_spans.add(span)
+        candidate_fingerprint = sha256(
+            f"{item.source_start}:{item.source_end}:{excerpt}".encode()
+        ).hexdigest()[:20]
+        candidate_id = f"c_{candidate_fingerprint}"
+        if candidate_id in seen_ids:
+            raise ValueError("invalid_model_output")
+        seen_ids.add(candidate_id)
+        unsupported_start_zone = bool(
+            item.starts_at_timezone and item.starts_at_timezone.casefold() not in excerpt.casefold()
+        )
+        unsupported_end_zone = bool(
+            item.ends_at_timezone and item.ends_at_timezone.casefold() not in excerpt.casefold()
+        )
+        start_zone = None if unsupported_start_zone else item.starts_at_timezone
+        end_zone = None if unsupported_end_zone else item.ends_at_timezone
+        start_evidence = bool(item.starts_at_text and item.starts_at_text in excerpt)
+        end_evidence = bool(item.ends_at_text and item.ends_at_text in excerpt)
+        starts_date = item.starts_at_date if start_evidence else None
+        starts_time = item.starts_at_time if start_evidence else None
+        ends_date = item.ends_at_date if end_evidence else None
+        ends_time = item.ends_at_time if end_evidence else None
+        if not start_evidence:
+            start_zone = None
+        if not end_evidence:
+            end_zone = None
+        uncertain = set(item.uncertain_fields)
+        if item.reservation_type is None:
+            uncertain.add("reservation_type")
+        if not item.provider_name:
+            uncertain.add("provider_name")
+        if not item.confirmation_code:
+            uncertain.add("confirmation_code")
+        if starts_date is None or starts_time is None:
+            uncertain.add("starts_at")
+        if starts_date is not None and start_zone is None:
+            uncertain.add("starts_at_timezone")
+        if ends_date is None or ends_time is None:
+            uncertain.add("ends_at")
+        if ends_date is not None and end_zone is None:
+            uncertain.add("ends_at_timezone")
+        provider_name = item.provider_name
+        if provider_name and provider_name.casefold() not in excerpt.casefold():
+            provider_name = None
+        confirmation_code = item.confirmation_code
+        if confirmation_code and confirmation_code.casefold() not in excerpt.casefold():
+            confirmation_code = None
+        if provider_name is None:
+            uncertain.add("provider_name")
+        if confirmation_code is None:
+            uncertain.add("confirmation_code")
         candidates.append(
             BookingCandidate(
-                candidate_id=f"c_{candidate_fingerprint}",
+                candidate_id=candidate_id,
                 reservation_type=item.reservation_type,
-                provider_name=item.provider_name,
-                confirmation_code=item.confirmation_code,
-                starts_at_text=item.starts_at_text,
-                starts_at_date=item.starts_at_date,
-                starts_at_time=item.starts_at_time,
-                starts_at_timezone=item.starts_at_timezone,
-                ends_at_text=item.ends_at_text,
-                ends_at_date=item.ends_at_date,
-                ends_at_time=item.ends_at_time,
-                ends_at_timezone=item.ends_at_timezone,
+                provider_name=provider_name,
+                confirmation_code=confirmation_code,
+                starts_at_text=item.starts_at_text if start_evidence else None,
+                starts_at_date=starts_date,
+                starts_at_time=starts_time,
+                starts_at_timezone=start_zone,
+                ends_at_text=item.ends_at_text if end_evidence else None,
+                ends_at_date=ends_date,
+                ends_at_time=ends_time,
+                ends_at_timezone=end_zone,
                 source_start=item.source_start,
                 source_end=item.source_end,
                 source_excerpt=excerpt,
-                uncertain_fields=item.uncertain_fields,
+                uncertain_fields=tuple(sorted(uncertain)),
             )
         )
     return tuple(candidates)
@@ -111,28 +167,34 @@ class BookingExtractionService:
         self.owner_id = owner_id
         self.clock = clock or (lambda: datetime.now(UTC))
 
-    async def create(self, request: BookingExtractionRequest) -> BookingExtractionResult:
+    async def create(
+        self, request: BookingExtractionRequest, *, deadline: float | None = None
+    ) -> BookingExtractionResult:
         if self.settings.booking_extraction_generator == "fake" and not request.synthetic_fixture:
             raise ValueError("synthetic_fixture_required")
         started = monotonic()
-        deadline = started + min(
+        operation_deadline = started + min(
             MAX_EXECUTION_SECONDS, self.settings.booking_extraction_timeout_seconds
         )
-        now = self.clock().astimezone(UTC)
-        record, created = await asyncio.to_thread(
-            self.repository.begin,
-            owner_id=self.owner_id,
-            key=request.idempotency_key,
-            fingerprint=request.fingerprint(),
-            source_sha256=request.source_sha256,
-            now=now,
-            execution_deadline=now + timedelta(seconds=max(0, deadline - started)),
-        )
-        if not created:
-            return self._view(record)
+        if deadline is not None:
+            operation_deadline = min(operation_deadline, deadline)
 
+        record = None
         try:
-            async with asyncio.timeout(max(0.01, deadline - monotonic())):
+            async with asyncio.timeout(_remaining(operation_deadline)):
+                now = self.clock().astimezone(UTC)
+                record, created = await asyncio.to_thread(
+                    self.repository.begin,
+                    owner_id=self.owner_id,
+                    key=request.idempotency_key,
+                    fingerprint=request.fingerprint(),
+                    source_sha256=request.source_sha256,
+                    now=now,
+                    execution_deadline=now
+                    + timedelta(seconds=max(0, operation_deadline - started)),
+                )
+                if not created:
+                    return self._view(record)
                 pending = Message(
                     id=request.idempotency_key,
                     conversation_id=request.idempotency_key,
@@ -152,7 +214,7 @@ class BookingExtractionService:
                     pending,
                     ((request.source_sha256, data_line),),
                     SYSTEM_INSTRUCTION,
-                    deadline=deadline,
+                    deadline=operation_deadline,
                 )
                 if counted.tokens > self.settings.booking_extraction_max_input_tokens:
                     raise ValueError("context_too_large")
@@ -160,7 +222,7 @@ class BookingExtractionService:
                 stream = self.llm.stream_bounded(
                     messages,
                     max_output_tokens=self.settings.booking_extraction_max_output_tokens,
-                    timeout_seconds=max(0.01, deadline - monotonic()),
+                    timeout_seconds=max(0.01, _remaining(operation_deadline)),
                 )
                 async for delta in stream:
                     output += delta
@@ -179,23 +241,34 @@ class BookingExtractionService:
         except asyncio.CancelledError:
             raise
         except TimeoutError:
+            if record is None:
+                raise
             result = self._failed(record, "generation_outcome_unknown")
         except LLMTimeoutError:
+            if record is None:
+                raise
             result = self._failed(record, "generation_outcome_unknown")
         except ValueError as error:
+            if record is None:
+                raise
             code = (
                 str(error)
                 if str(error) in {"invalid_model_output", "context_too_large"}
                 else "invalid_model_output"
             )
             result = self._failed(record, code)
-        except Exception:  # noqa: BLE001 - provider internals and source data stay private
+        except Exception:
+            if record is None:
+                raise
             result = self._failed(record, "provider_unavailable")
 
-        if monotonic() >= deadline:
+        assert record is not None
+        if monotonic() >= operation_deadline:
             result = self._failed(record, "generation_outcome_unknown")
         try:
-            return self._view(await asyncio.to_thread(self.repository.complete, record, result))
+            async with asyncio.timeout(_remaining(operation_deadline)):
+                saved = await asyncio.to_thread(self.repository.complete, record, result)
+                return self._view(saved)
         except (StorageUnavailableError, TimeoutError, ExtractionError):
             # A lost terminal write remains fenced; GET by key is the only recovery.
             return self._failed(record, "generation_outcome_unknown")

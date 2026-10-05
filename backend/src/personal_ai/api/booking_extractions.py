@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from personal_ai.api.dependencies import get_current_owner_id
 from personal_ai.booking_extractions.contracts import (
@@ -71,12 +71,22 @@ def extraction_service(
 
 @router.post("", response_model=BookingExtractionResult, status_code=201)
 async def create_booking_extraction(
-    request: BookingExtractionRequest,
+    payload: BookingExtractionRequest,
+    http_request: Request,
     service: Annotated[BookingExtractionService, Depends(extraction_service)],
 ) -> BookingExtractionResult:
-    if service.settings.booking_extraction_generator == "fake" and not request.synthetic_fixture:
+    if service.settings.booking_extraction_generator == "fake" and (
+        service.settings.app_environment not in {"local", "test"} or not payload.synthetic_fixture
+    ):
         raise ResourceNotFoundError("booking extraction not found")
-    return await service.create(request)
+    deadline = getattr(http_request.state, "booking_extraction_deadline", None)
+    try:
+        return await service.create(payload, deadline=deadline)
+    except TimeoutError:
+        raise HTTPException(
+            status_code=408,
+            detail={"code": "booking_extraction_deadline_exceeded"},
+        ) from None
 
 
 @router.get("/by-key/{idempotency_key}", response_model=BookingExtractionResult)

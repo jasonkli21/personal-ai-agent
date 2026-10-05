@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -487,6 +488,8 @@ class AuthenticationMiddleware:
                 "/v1/travel/booking-extractions",
             }
         ):
+            is_extraction_request = scope.get("path") == "/v1/travel/booking-extractions"
+            settings = _settings_for_request(request)
             body_limit = (
                 MAX_BOOKING_EXTRACTION_REQUEST_BYTES
                 if scope.get("path") == "/v1/travel/booking-extractions"
@@ -502,8 +505,25 @@ class AuthenticationMiddleware:
             chunks: list[bytes] = []
             received = 0
             disconnected = False
+            body_timed_out = False
+            operation_timeout = (
+                settings.booking_extraction_timeout_seconds
+                if is_extraction_request
+                else settings.itinerary_proposal_timeout_seconds
+            )
+            deadline = time.monotonic() + operation_timeout
+            if is_extraction_request:
+                request.state.booking_extraction_deadline = deadline
             while not too_large:
-                message = await receive()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    body_timed_out = True
+                    break
+                try:
+                    message = await asyncio.wait_for(receive(), timeout=remaining)
+                except TimeoutError:
+                    body_timed_out = True
+                    break
                 if message["type"] == "http.disconnect":
                     disconnected = True
                     break
@@ -525,6 +545,14 @@ class AuthenticationMiddleware:
                     413,
                     code,
                     message,
+                    request=request,
+                    correlation_id=correlation_id,
+                )
+            elif body_timed_out:
+                response = _error(
+                    408,
+                    "booking_extraction_deadline_exceeded",
+                    "The extraction request exceeded its total time limit.",
                     request=request,
                     correlation_id=correlation_id,
                 )

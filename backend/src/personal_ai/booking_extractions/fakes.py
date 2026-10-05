@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator, Sequence
 
 
@@ -32,26 +33,45 @@ class FakeBookingExtractionLLMClient:
             yield self.output
             return
         start = document.find("Booking")
-        end = min(len(document), start + 48) if start >= 0 else 0
+        end = min(len(document), start + 240) if start >= 0 else 0
+        schedule = (
+            re.search(
+                r"(?P<date>\d{4}-\d{2}-\d{2}) at (?P<time>(?:[01]\d|2[0-3]):[0-5]\d) (?P<zone>[+-](?:0\d|1[0-4]):[0-5]\d)",
+                document[start:end],
+            )
+            if start >= 0
+            else None
+        )
+        excerpt = document[start:end]
+        has_lodging_evidence = bool(re.search(r"\b(hotel|lodging)\b", excerpt, re.IGNORECASE))
+        uncertainty = []
+        if not has_lodging_evidence:
+            uncertainty.append("reservation_type")
+        if "synthetic hotel" not in excerpt.casefold():
+            uncertainty.append("provider_name")
+        uncertainty.append("confirmation_code")
+        if not schedule:
+            uncertainty.extend(("starts_at", "starts_at_timezone"))
+        uncertainty.extend(("ends_at", "ends_at_timezone"))
         result = {
             "schema_version": "booking-document-extraction-v1",
             "candidates": (
                 [
                     {
-                        "reservation_type": "lodging",
+                        "reservation_type": "lodging" if has_lodging_evidence else None,
                         "provider_name": "Synthetic Hotel",
                         "confirmation_code": None,
-                        "starts_at_text": None,
-                        "starts_at_date": None,
-                        "starts_at_time": None,
-                        "starts_at_timezone": None,
+                        "starts_at_text": schedule.group(0) if schedule else None,
+                        "starts_at_date": schedule.group("date") if schedule else None,
+                        "starts_at_time": schedule.group("time") if schedule else None,
+                        "starts_at_timezone": schedule.group("zone") if schedule else None,
                         "ends_at_text": None,
                         "ends_at_date": None,
                         "ends_at_time": None,
                         "ends_at_timezone": None,
                         "source_start": start,
                         "source_end": end,
-                        "uncertain_fields": ["confirmation_code", "starts_at", "ends_at"],
+                        "uncertain_fields": uncertainty,
                     }
                 ]
                 if start >= 0

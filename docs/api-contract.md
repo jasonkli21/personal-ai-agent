@@ -206,9 +206,14 @@ candidate details; `DELETE /by-key/{UUID}` accepts the expected
 `source_sha256` and can install a deletion tombstone before a late POST. Both
 retain only a short-lived idempotency tombstone. Raw
 document text is ephemeral and never stored in Firestore. Fake generation
-requires `synthetic_fixture: true`. The candidate is not yet accepted for
-cross-repository private-data use; model/provider data-use review, live
-identity/IAM, Firestore TTL and whole-Phase 6 coordinator review remain open.
+requires `synthetic_fixture: true` and is restricted to local/test
+environments; real Gemini inference requires Google OIDC even in a local app
+environment. One elapsed deadline bounds body receipt, claim, inference, and
+terminal storage. Result DTOs enforce bounded expiry, unique evidence spans,
+literal field evidence, explicit uncertainty, and empty candidates for
+non-completed states. The candidate is not yet accepted for cross-repository
+private-data use; model/provider data-use review, live identity/IAM, Firestore
+TTL and coordinator whole-phase verification remain open.
 
 ## Phase 6 decision support (`decision-v1`)
 

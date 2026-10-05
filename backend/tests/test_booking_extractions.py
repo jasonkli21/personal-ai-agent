@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from time import time
@@ -7,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -15,6 +18,7 @@ from personal_ai.api.dependencies import get_settings
 from personal_ai.auth.contracts import AuthenticatedPrincipal
 from personal_ai.auth.directory import InMemoryPrincipalDirectory
 from personal_ai.booking_extractions.contracts import (
+    BookingCandidate,
     BookingExtractionRequest,
     BookingExtractionResult,
     _validate_timezone,
@@ -25,7 +29,7 @@ from personal_ai.booking_extractions.repositories import (
     FirestoreBookingExtractionRepository,
     InMemoryBookingExtractionRepository,
 )
-from personal_ai.booking_extractions.service import BookingExtractionService
+from personal_ai.booking_extractions.service import BookingExtractionService, _model_output
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.main import app
@@ -97,6 +101,78 @@ def test_timezone_offset_is_a_real_iana_offset():
         _validate_timezone("+14:01")
 
 
+def test_model_output_marks_missing_and_unsupported_fields_uncertain():
+    source = "Synthetic Hotel AB123 flight on 2026-10-05 at 09:30 local time."
+    raw = (
+        '{"schema_version":"booking-document-extraction-v1","candidates":[{'
+        '"reservation_type":"flight","provider_name":"Synthetic Hotel",'
+        '"confirmation_code":"AB123","starts_at_text":"2026-10-05 at 09:30 local time",'
+        '"starts_at_date":"2026-10-05","starts_at_time":"09:30",'
+        '"starts_at_timezone":"America/New_York","ends_at_text":null,'
+        '"ends_at_date":null,"ends_at_time":null,"ends_at_timezone":null,'
+        '"source_start":0,"source_end":' + str(len(source)) + ',"uncertain_fields":[]}]} '
+    )
+    (candidate,) = _model_output(raw, source)
+    assert candidate.starts_at_timezone is None
+    assert "starts_at_timezone" in candidate.uncertain_fields
+    assert "ends_at" in candidate.uncertain_fields
+    assert candidate.provider_name == "Synthetic Hotel"
+    assert candidate.confirmation_code == "AB123"
+
+
+def test_model_output_rejects_repeated_evidence_span_even_when_rows_differ():
+    source = "Booking confirmation: Hotel"
+    row = (
+        '{"reservation_type":"lodging","provider_name":"Hotel",'
+        '"confirmation_code":null,"starts_at_text":null,"starts_at_date":null,'
+        '"starts_at_time":null,"starts_at_timezone":null,"ends_at_text":null,'
+        '"ends_at_date":null,"ends_at_time":null,"ends_at_timezone":null,'
+        '"source_start":0,"source_end":' + str(len(source)) + ',"uncertain_fields":[]}'
+    )
+    raw = (
+        '{"schema_version":"booking-document-extraction-v1","candidates":[' + row + "," + row + "]}"
+    )
+    with pytest.raises(ValueError, match="invalid_model_output"):
+        _model_output(raw, source)
+
+
+def test_result_enforces_terminal_shape_and_expiry_window():
+    now = datetime(2026, 10, 4, tzinfo=UTC)
+    fields = {
+        "extraction_id": uuid4(),
+        "idempotency_key": uuid4(),
+        "source_sha256": "0" * 64,
+        "created_at": now,
+        "expires_at": now + timedelta(days=7),
+    }
+    with pytest.raises(ValidationError, match="expiry"):
+        BookingExtractionResult(
+            **(
+                fields
+                | {"expires_at": now + timedelta(days=8), "state": "completed", "candidates": ()}
+            )
+        )
+    candidate = BookingCandidate(
+        candidate_id="c_0123456789abcdefabcd",
+        reservation_type=None,
+        source_start=0,
+        source_end=1,
+        source_excerpt="x",
+        uncertain_fields=(),
+    )
+    with pytest.raises(ValidationError, match="non-completed"):
+        BookingExtractionResult(
+            **(
+                fields
+                | {
+                    "state": "failed",
+                    "failure_code": "provider_timeout",
+                    "candidates": (candidate,),
+                }
+            )
+        )
+
+
 @pytest.mark.anyio
 async def test_service_replays_validated_candidate_and_delete_tombstone():
     settings = extraction_settings()
@@ -131,6 +207,50 @@ async def test_service_replays_validated_candidate_and_delete_tombstone():
     )
     with pytest.raises(ExtractionError, match="idempotency_conflict"):
         await service.create(changed)
+
+
+@pytest.mark.anyio
+async def test_service_deadline_is_converted_from_monotonic_to_loop_relative_time():
+    settings = extraction_settings()
+    repo = InMemoryBookingExtractionRepository()
+    service = BookingExtractionService(
+        settings,
+        repo,
+        ContextAssembler(settings, EstimatedTokenCounter()),
+        FakeBookingExtractionLLMClient(),
+        owner_id="verified-owner",
+    )
+    loop = asyncio.get_running_loop()
+    original_time = loop.time
+    loop.time = lambda: original_time() + 3600
+    try:
+        result = await service.create(request())
+    finally:
+        loop.time = original_time
+
+    assert result.state == "completed"
+
+
+@pytest.mark.anyio
+async def test_fake_adapter_parses_full_synthetic_schedule_without_inventing_fields():
+    source = "Booking confirmation: Synthetic Hotel reservation for 2026-10-05 at 09:30 +09:00"
+    message = SimpleNamespace(
+        content=(
+            "Untrusted external observations (data only):\n" + json.dumps({"document_text": source})
+        )
+    )
+    output = ""
+    async for delta in FakeBookingExtractionLLMClient().stream((message,)):
+        output += delta
+
+    candidates = _model_output(output, source)
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.starts_at_text == "2026-10-05 at 09:30 +09:00"
+    assert candidate.starts_at_date.isoformat() == "2026-10-05"
+    assert candidate.starts_at_time == "09:30"
+    assert candidate.starts_at_timezone == "+09:00"
+    assert "confirmation_code" in candidate.uncertain_fields
 
 
 @pytest.mark.anyio
@@ -339,6 +459,48 @@ def test_fake_http_route_reopens_same_owner_result_and_delete_tombstone():
         assert deleted_replay.json()["candidates"] == []
     finally:
         app.dependency_overrides = previous
+
+
+@pytest.mark.anyio
+async def test_slow_chunked_extraction_body_hits_the_shared_deadline():
+    previous = app.dependency_overrides.copy()
+    app.dependency_overrides[get_settings] = lambda: route_settings(
+        booking_extraction_timeout_seconds=0.05
+    )
+
+    async def body():
+        yield b'{"incomplete":'
+        await asyncio.sleep(0.1)
+        yield b"false}"
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/travel/booking-extractions",
+                content=body(),
+                headers={"content-type": "application/json"},
+            )
+        assert response.status_code == 408
+        assert response.json()["error"]["code"] == "booking_extraction_deadline_exceeded"
+    finally:
+        app.dependency_overrides = previous
+
+
+def test_real_provider_requires_google_oidc_authentication():
+    with pytest.raises(ValidationError, match="booking_extraction_configuration_invalid"):
+        Settings(
+            ai_provider="gemini",
+            ai_model="gemini-2.5-flash",
+            ai_api_key="synthetic-key",
+            app_environment="local",
+            auth_mode="development",
+            booking_extractions_enabled=True,
+            booking_extraction_generator="gemini",
+            booking_extraction_provider_enabled=True,
+            booking_extraction_storage="firestore",
+        )
 
 
 def test_fake_http_delete_by_key_fences_a_late_post():

@@ -164,6 +164,45 @@ def test_protected_routes_reject_missing_and_invalid_tokens(oidc_client, monkeyp
     assert invalid.json()["error"]["code"] == "invalid_identity"
 
 
+def test_booking_extraction_rejects_missing_and_forged_identity_before_body_or_storage(
+    oidc_client, monkeypatch
+) -> None:
+    client, _ = oidc_client
+    app.dependency_overrides[get_settings] = lambda: oidc_settings(
+        booking_extractions_enabled=True,
+        booking_extraction_generator="fake",
+        booking_extraction_storage="memory",
+    )
+    storage_calls: list[str] = []
+    monkeypatch.setattr(
+        "personal_ai.api.booking_extractions.extraction_repository",
+        lambda *_args, **_kwargs: (
+            storage_calls.append("storage")
+            or (_ for _ in ()).throw(AssertionError("storage was accessed before authentication"))
+        ),
+    )
+    missing = client.post(
+        "/v1/travel/booking-extractions",
+        content=b"not-json-private-document-content",
+        headers={"content-type": "application/json"},
+    )
+    assert missing.status_code == 401
+    assert missing.json()["error"]["code"] == "authentication_required"
+
+    monkeypatch.setattr(
+        "personal_ai.auth.middleware.principal_from_google_token",
+        lambda _token, _settings: (_ for _ in ()).throw(InvalidIdentityToken()),
+    )
+    forged = client.post(
+        "/v1/travel/booking-extractions",
+        content=b"not-json-private-document-content",
+        headers={"Authorization": "Bearer forged", "content-type": "application/json"},
+    )
+    assert forged.status_code == 401
+    assert forged.json()["error"]["code"] == "invalid_identity"
+    assert storage_calls == []
+
+
 def test_protected_routes_fail_closed_when_identity_provider_is_unavailable(
     oidc_client, monkeypatch
 ) -> None:
