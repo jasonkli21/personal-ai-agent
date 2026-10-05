@@ -1,6 +1,6 @@
 # Booking document extraction contract
 
-**Status:** local implementation candidate; coordinator whole-phase verification pending
+**Status:** accepted for the reviewed local travel Phase 6 integration; external private-input gates remain closed
 **Schema:** `booking-document-extraction-v1`  
 **Date:** 2026-10-05
 
@@ -74,3 +74,15 @@ authentication, Firestore TTL policy, and whole-Phase 6 coordinator
 verification. No live provider, Google IAM, cloud project, or real private
 document was used for this candidate. Verification currently covers the full
 backend suite and synthetic API flows; it does not establish hosted readiness.
+
+## Local coordinator acceptance — 2026-10-05
+
+The travel coordinator independently reviewed the whole Phase 6 integration and
+accepted code revision `ebd00a8e2fb2d8b59a5fb5fa3aa44268e5e79b63` after remediation.
+The final upstream suite passed 561 tests with 12 opt-in skips. The travel
+coordinator suite passed 231 migrated PostgreSQL tests with zero skips and 42
+frontend tests. Synthetic plaintext/PDF mounted evidence and its final-clock-
+amend caveat are recorded in the travel Phase 6 release. This acceptance is
+for local code and contract behavior; live Google/IAM/provider data-use,
+Firestore retention/deletion and deployment gates remain unverified and off.
+No Phase 7 travel work was performed.
