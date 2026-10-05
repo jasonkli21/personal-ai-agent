@@ -1,0 +1,194 @@
+[
+  {
+    "phase": "0",
+    "title": "Reconcile with current repository and roadmap",
+    "file": "plans/phase-0-implementation-plan.md",
+    "bytes": 5593
+  },
+  {
+    "phase": "1",
+    "title": "Application and workspace identity",
+    "file": "plans/phase-1-implementation-plan.md",
+    "bytes": 16345
+  },
+  {
+    "phase": "2",
+    "title": "Application registry and manifest model",
+    "file": "plans/phase-2-implementation-plan.md",
+    "bytes": 16848
+  },
+  {
+    "phase": "3",
+    "title": "Context source and provider abstraction",
+    "file": "plans/phase-3-implementation-plan.md",
+    "bytes": 20867
+  },
+  {
+    "phase": "4",
+    "title": "Context builder refactor",
+    "file": "plans/phase-4-implementation-plan.md",
+    "bytes": 19060
+  },
+  {
+    "phase": "5",
+    "title": "Deterministic context planner",
+    "file": "plans/phase-5-implementation-plan.md",
+    "bytes": 17165
+  },
+  {
+    "phase": "6",
+    "title": "Provenance and context inspection",
+    "file": "plans/phase-6-implementation-plan.md",
+    "bytes": 16401
+  },
+  {
+    "phase": "7",
+    "title": "Permissions and sensitivity policy",
+    "file": "plans/phase-7-implementation-plan.md",
+    "bytes": 19628
+  },
+  {
+    "phase": "8",
+    "title": "Provider-neutral inference and embedding contracts",
+    "file": "plans/phase-8-implementation-plan.md",
+    "bytes": 18125
+  },
+  {
+    "phase": "9",
+    "title": "Concrete provider adapters: Gemini, Groq, Cloudflare",
+    "file": "plans/phase-9-implementation-plan.md",
+    "bytes": 26644
+  },
+  {
+    "phase": "10",
+    "title": "Provider/model registry and strict-free eligibility",
+    "file": "plans/phase-10-implementation-plan.md",
+    "bytes": 21429
+  },
+  {
+    "phase": "11",
+    "title": "Provider usage accounting and quota ledger",
+    "file": "plans/phase-11-implementation-plan.md",
+    "bytes": 19315
+  },
+  {
+    "phase": "12",
+    "title": "Cloud Storage artifact tier and retention",
+    "file": "plans/phase-12-implementation-plan.md",
+    "bytes": 27244
+  },
+  {
+    "phase": "13",
+    "title": "Deterministic task-aware routing",
+    "file": "plans/phase-13-implementation-plan.md",
+    "bytes": 19694
+  },
+  {
+    "phase": "14",
+    "title": "Cross-provider task evaluation matrix",
+    "file": "plans/phase-14-implementation-plan.md",
+    "bytes": 19018
+  },
+  {
+    "phase": "15",
+    "title": "Quota-aware routing",
+    "file": "plans/phase-15-implementation-plan.md",
+    "bytes": 19379
+  },
+  {
+    "phase": "16",
+    "title": "Bounded cascades and deterministic validation",
+    "file": "plans/phase-16-implementation-plan.md",
+    "bytes": 18609
+  },
+  {
+    "phase": "17.1",
+    "title": "ChatGPT authentication and local bridge",
+    "file": "plans/phase-17-1-implementation-plan.md",
+    "bytes": 45567
+  },
+  {
+    "phase": "17.2",
+    "title": "ChatGPT provider/runtime integration, policy, and usage handling",
+    "file": "plans/phase-17-2-implementation-plan.md",
+    "bytes": 38222
+  },
+  {
+    "phase": "17.3",
+    "title": "Shared AI sidecar UI",
+    "file": "plans/phase-17-3-implementation-plan.md",
+    "bytes": 40086
+  },
+  {
+    "phase": "17.4",
+    "title": "ChatGPT domain integration contract",
+    "file": "plans/phase-17-4-implementation-plan.md",
+    "bytes": 28536
+  },
+  {
+    "phase": "18",
+    "title": "Travel integration",
+    "file": "plans/phase-18-implementation-plan.md",
+    "bytes": 26106
+  },
+  {
+    "phase": "19",
+    "title": "Shopping integration",
+    "file": "plans/phase-19-implementation-plan.md",
+    "bytes": 25301
+  },
+  {
+    "phase": "20",
+    "title": "Finance integration",
+    "file": "plans/phase-20-implementation-plan.md",
+    "bytes": 29461
+  },
+  {
+    "phase": "21",
+    "title": "Health integration",
+    "file": "plans/phase-21-implementation-plan.md",
+    "bytes": 29312
+  },
+  {
+    "phase": "22",
+    "title": "Cross-app context federation",
+    "file": "plans/phase-22-implementation-plan.md",
+    "bytes": 20840
+  },
+  {
+    "phase": "23",
+    "title": "Mutation proposal framework",
+    "file": "plans/phase-23-implementation-plan.md",
+    "bytes": 23572
+  },
+  {
+    "phase": "24",
+    "title": "Smarter context planning",
+    "file": "plans/phase-24-implementation-plan.md",
+    "bytes": 18452
+  },
+  {
+    "phase": "25",
+    "title": "Search and evidence retrieval optimization",
+    "file": "plans/phase-25-implementation-plan.md",
+    "bytes": 18029
+  },
+  {
+    "phase": "26",
+    "title": "Memory retrieval optimization",
+    "file": "plans/phase-26-implementation-plan.md",
+    "bytes": 16687
+  },
+  {
+    "phase": "27",
+    "title": "Adaptive routing experiments",
+    "file": "plans/phase-27-implementation-plan.md",
+    "bytes": 15910
+  },
+  {
+    "phase": "28",
+    "title": "Integrated evaluation and hardening",
+    "file": "plans/phase-28-implementation-plan.md",
+    "bytes": 25988
+  }
+]
