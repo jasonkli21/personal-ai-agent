@@ -5,7 +5,7 @@ Date: 2026-10-05
 
 ## 1. Current repository architecture
 
-The current `personal-ai-agent` repository is approximately:
+The current `personal-ai-system` repository has the following local implementation topology. Deployed behavior remains externally unverified:
 
 ```text
 Browser
@@ -35,8 +35,7 @@ Chat services          Research / Decisions          Domain modules
               v                                v
        Gemini API                       search/domain providers
        generation                       Brave / Nominatim /
-       structured memory                Open Food Facts / fakes
-       extraction
+       generation/summary               Open Food Facts / fakes
               |
               +--> Gemini API embeddings
                    gemini-embedding-001
@@ -71,7 +70,7 @@ Security/operations:
   Cloud Scheduler / maintenance paths
 ```
 
-Cloud Storage is not currently used by normal request paths.
+Cloud Storage is not currently used by normal request paths. Memory extraction is a separately bounded direct Gemini structured call in `llm/memory.py`; it does not yet use `context/assembler.py`. Phase 8 closes this gap. Current token counting is Gemini-specific, and current inspection is an estimated reconstruction rather than proof of a historical dispatch. No application/workspace scope, general context planner/provider registry, neutral usage result, or multi-provider router exists yet.
 
 ---
 
@@ -222,7 +221,6 @@ Conceptual:
 
 ```json
 {
-  "user_id": "...",
   "application_id": "health",
   "workspace_id": "...",
   "conversation_id": "...",
@@ -235,11 +233,11 @@ Conceptual:
 
 Semantics:
 
-- `user_id`: authenticated principal.
-- `application_id`: origin app.
-- `workspace_id`: optional domain scope.
+- `owner_id`: derived internally from `AuthenticatedPrincipal`, never authorized from request JSON. No client-supplied user/owner ID grants access.
+- `application_id`: canonical registered origin app; registration and server authorization validate it.
+- `workspace_id`: optional domain scope, with explicit null semantics and server/domain membership checks; it is not the ChatGPT account workspace.
 - `conversation_id`: AI conversation scope.
-- `request_id`: trace/idempotency scope.
+- `request_id`: validated correlation ID (forward through the Next.js proxy); it is not an idempotency key. Side-effecting/replayable requests have a separately validated `idempotency_key` bound to owner/application/workspace, operation and fingerprint.
 - `capabilities`: bounded client-declared capabilities.
 - `client_context`: bounded non-authoritative UI/session context.
 
@@ -282,6 +280,8 @@ Maps app to:
 - optional budget hints.
 
 ---
+
+`DomainModule` in `domains/contracts.py` is an existing comparison module, not an application manifest. Add a small `ApplicationDefinition` registry adjacent to the existing domain contracts/registration patterns in Phase 2; compose comparison capabilities where appropriate. Do not expand comparison modules into authoritative application stores. `domain_id` on a comparison module is not an origin `application_id`: existing Personal AI comparison screens remain standalone features unless an authenticated external app integration explicitly supplies a registered origin.
 
 ## 6. Context providers
 
@@ -328,7 +328,7 @@ Source class affects trust, policy, freshness, priority, and inference sensitivi
 
 ### 7.1 Sidecar context-package source
 
-Add a normalized `SIDECAR_CONTEXT_PACKAGE`/equivalent boundary above provider execution, composed from existing source classes. It is not a new source of truth.
+`ContextPackage` is a transport/inspection representation composed from existing source classes, not an additional source class or trust level. Build it through the shared planner, providers, policy and assembler.
 
 The package should preserve:
 
@@ -461,6 +461,14 @@ Separate actual operations:
 Do not force every provider into an oversized universal interface.
 
 ---
+
+### 12.1 Preparation, disclosure and completion
+
+Extend `llm/client.py`, `context/contracts.py`, `llm/context.py`, `llm/memory.py` and the existing fakes, rather than installing a parallel inference framework. Neutral records carry terminal status, actual provider/model, safe error category, usage with confidence/source, and counter/serializer versions. Separate generation, counting and embedding capabilities; unsupported operations fail explicitly.
+
+Authorize retrieval and every external disclosure, including token counting, embedding, planning and summaries. Before dispatch, shortlist eligible endpoints using trusted sensitivity/capability requirements, then fit the final serialized prompt for the selected endpoint through the shared assembler. Local planning estimates remain labelled estimates. Never send a Groq, Cloudflare or ChatGPT prompt to Gemini just to count it when Gemini is ineligible. Phase 8 specifies each approved counter's guarantees; a conservative local counter requires explicit documented bounds and cannot claim provider-authoritative accuracy. Gemini retains ADR 0006 behavior.
+
+Recount/rebuild within the same authorized sources when changing endpoints or context limits. Failed mandatory fit rejects rather than truncates. Automatic fallback can occur before visible output; after the first visible delta, terminate that attempt explicitly instead of concatenating outputs from different models. Cascades buffer and validate bounded internal attempts. Existing unknown-outcome fences prevent automatic re-dispatch after an uncertain side effect.
 
 ## 13. Provider gateway
 
@@ -609,6 +617,8 @@ Account-specific model slugs are discovered through the authenticated bridge and
 
 
 ---
+
+The example numeric quality profiles are illustrative, not measured scores. Phase 13 starts with versioned fixed task priorities and explicit unmeasured baseline status; Phase 14 supplies measured quality profiles before scarcity/cascade/adaptive policies use quality floors. If a required measured floor has no qualifying evidence, reject that candidate.
 
 ## 15. Quota/resource ledger
 
@@ -812,6 +822,8 @@ Initial artifact uses:
 
 ---
 
+Artifact operations cannot form one atomic Firestore/GCS transaction. Phase 12 uses scoped reference lifecycle states (`pending`, `ready`, `missing`, `deleting`, `deleted`), hashes and GCS generations, idempotent writes/deletes and bounded orphan reconciliation. A required export becomes available only after its reference is ready. Expiry denies access immediately; physical cleanup is separately tracked, including object versions/soft-deleted bytes. Authorization is based on metadata scope, never possession of a URI. See [storage failure semantics](04-storage-and-artifact-strategy.md#12-failure-semantics).
+
 ## 22. Search and retrieval
 
 ```text
@@ -1014,27 +1026,6 @@ Do not persist an assistant turn as successful until terminal completion semanti
 
 ## 29. Migration approach
 
-1. reconcile with current code;
-2. preserve current context/memory/research APIs;
-3. add app identity/registry/providers/builder/planner/policy;
-4. broaden inference seams;
-5. add Gemini/Groq/Cloudflare adapters;
-6. add strict-free registry;
-7. add accounting;
-8. add GCS artifact tier;
-9. add deterministic routing;
-10. evaluate;
-11. add quota-aware routing/cascades;
-12. integrate real domain apps;
-13. optimize retrieval/memory;
-14. add/verify strict-$0 cloud-resource guardrails and image/artifact retention;
-15. experiment with adaptive routing.
+Use the [roadmap](05-phased-implementation-plan.md) and its [verified dependency/coverage map](09-phase-0-reconciliation.md). The recommended sequence is 0 → 1–7 context foundations → 8–12 provider/accounting/artifact foundations → 13–16 deterministic routing/evaluation/quota/cascades → 17.1–17.4 explicit ChatGPT bridge/sidecar → 18–21 domains → 22–23 federation/proposals → 24–27 measured optimization → 28 integrated hardening.
 
-
-16. add the additive ChatGPT-plan local bridge/auth path after neutral inference seams exist;
-17. add ChatGPT account/model/status metadata without admitting it to automatic strict-free routing;
-18. add the reusable AI sidecar before domain UI integrations depend on it;
-19. integrate bounded ChatGPT sidecar context into Travel/Shopping/Finance/Health alongside their existing Personal AI context integrations;
-20. harden bridge security, plan-limit recovery, provider attribution, and no-token-in-cloud guarantees during integrated hardening.
-
-No full rewrite.
+This is a recommended execution order, not a claim that every numbered predecessor is a technical prerequisite. Domain backend/read contracts depend on the shared substrate, while their additive sidecar tasks depend on 17.4. Permission and free-resource gates apply before each live enablement; Phase 28 verifies the integrated guarantees and closes outstanding existing Phase 9 release obligations. No full rewrite or substantive Phase 1 implementation occurs in Phase 0.

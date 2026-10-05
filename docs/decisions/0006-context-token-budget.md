@@ -42,3 +42,7 @@ The Phase 1 message-count gate is removed. Impossible mandatory content returns
 persisted user remains editable. Invalid operator budgets return
 `context_budget_invalid`. Provider counting adds latency and requests; this phase
 does not introduce billing analytics or automatic provider fallback.
+
+## Next-scope extension boundary — 2026-10-05
+
+This accepted decision still governs current Gemini preparation. The [reconciled inference design](../personal-ai-next-scope-chatgpt-integrated-v2/03-free-tier-inference-and-routing.md) assigns provider-aware counting/serialization and the direct memory-extraction preparation gap to next-scope Phase 8. Counting is an external disclosure subject to provider eligibility. Non-Gemini counters must document their own guarantees and any conservative bounds before enablement; estimates must not claim Gemini/provider-authoritative equivalence. No runtime behavior or accepted counting guarantee changes in Phase 0.

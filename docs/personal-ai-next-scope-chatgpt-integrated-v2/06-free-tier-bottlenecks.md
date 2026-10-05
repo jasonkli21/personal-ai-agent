@@ -74,7 +74,7 @@ A missing local bridge or unavailable ChatGPT plan must not prevent Gemini/Groq/
 
 Research can consume several searches per visible user request.
 
-Brave Search currently costs $5 per 1,000 Search requests and supplies $5 in recurring monthly credits, equivalent to about 1,000 Search requests/month. Brave does not call this a standalone free API plan, and signup requires a card check; its documentation says the prepaid amount can be set to $0.
+Brave Search currently costs $5 per 1,000 Search requests and supplies $5 in recurring monthly credits, equivalent to about 1,000 Search requests/month. Brave does not call this a standalone free API plan, and signup requires a card check; [official account guidance](https://api-dashboard.search.brave.com/documentation/resources/help-feedback) says the prepaid amount can be set to $0. For strict-free admission verify prepaid mode, no paid balance/auto-reload and a bounded usage limit; existing postpaid accounts can charge beyond included credits. Persistent storage/AI-use rights still need separate approval.
 
 At three searches per research request:
 
@@ -125,7 +125,7 @@ Mitigate with a loopback/local-IPC bridge or verified native/user-controlled run
 
 A recurring free tier is not automatically a hard $0 ceiling.
 
-Google Cloud alerts-only budgets do not cap spending. Google now has spend-cap budgets in Preview for selected services, including Cloud Run and Gemini API, but spend caps are service/project scoped, have enforcement latency, and do not cover every persistent/storage service.
+Google Cloud alerts-only budgets do not cap spending. [Google spend-cap budgets](https://docs.cloud.google.com/billing/docs/how-to/budgets-spend-caps) are in Preview for selected services, including Cloud Run and Gemini API. They are service/project scoped, use gross estimated costs rather than net recurring free allowances, have enforcement latency, and do not stop every persistent/storage charge. They supplement application guardrails and do not prove literal $0 operation.
 
 Mitigate with spend caps where the current service is eligible, alerts at conservative thresholds, application kill switches, explicit free-tier usage guards, disabling optional work first, deployment/release checks that re-verify current quotas, and never treating an alerts-only budget as a hard cap.
 
@@ -282,8 +282,7 @@ ResourceLedger
   +-- GCS bytes / operations
   +-- Cloud Run compute / network
   +-- Artifact Registry bytes
-
-
+```
 
 Separate explicit-user entitlement state (not scarcity-scored with the above):
 
@@ -293,15 +292,14 @@ ChatGPTPlanStatus
   +-- account-visible models
   +-- usage available / limit reached / unavailable / unknown
 ```
-```
 
 Do not build one universal scheduler immediately.
 
 Recommended progression:
 
-1. model quota ledger,
-2. Firestore/GCS storage observability,
-3. search quota budget,
+1. all-operation model/search quota admission and accounting (Phase 11),
+2. Firestore/GCS storage observability and retention (Phase 12),
+3. measured search demand optimization using the existing ledger (Phase 25),
 4. cloud infrastructure release/kill-switch guardrails,
 5. expand only when measurement proves value.
 
@@ -357,7 +355,8 @@ required export cannot be stored
 approaching a configured free ceiling
  -> disable optional work
  -> trigger alert / kill switch
- -> preserve required data paths
+ -> protect retained required data
+ -> stop new unadmitted work before a free ceiling is exceeded
 ```
 
 Never silently enable paid inference, paid-only Cloudflare models, paid GCP managed features, prepaid Brave usage, or privacy-ineligible providers.
@@ -389,6 +388,18 @@ ChatGPT-plan operational references should also be re-verified during release re
 
 
 ---
+
+## 6.1 Repository and account verification gaps
+
+`infrastructure/gcp/deploy.sh` currently enables Firestore TTL on `rate_limit_windows` and `usage_budgets` unconditionally. The [Firestore pricing contract](https://firebase.google.com/docs/firestore/pricing) excludes TTL deletes from free usage. This conflicts with the intended strict-$0 target; neither the existing deployment nor Phase 0 establishes that target. Phase 9's first provider/deployment preflight must identify this incompatibility, Phase 11 supplies bounded ledger retention/cleanup, Phase 12 gates new storage resources, and Phase 28 verifies the corrected deployment with the existing Phase 9 closeout. An operator TTL flag is not sufficient if strict-free mode is active.
+
+Groq's rate windows apply to the configured organization/account, not independently per Personal AI owner. Different rate headers may refer to different windows (request/day versus token/minute); Phase 11 preserves unit, scope and reset semantics rather than aggregating them. [Official rate limits](https://console.groq.com/docs/rate-limits) were reviewed on 2026-10-05; actual configured account limits remain unverified.
+
+The Cloudflare daily allowance and paid overflow rules were checked in the [official pricing page](https://developers.cloudflare.com/workers-ai/platform/pricing/). Gemini free-tier data-use restrictions were checked in [official pricing](https://ai.google.dev/gemini-api/docs/pricing); low price never grants permission to send sensitive data. Configured model access, embedding compatibility and real usage remain opt-in verification.
+
+[Brave pricing](https://brave.com/search/api/) currently advertises recurring monthly free credits, rather than proving this account's hard no-overflow configuration or storage/AI-use rights. Phase 11 requires independent quota admission; existing Brave rights gates remain closed until verified. [Google Cloud free allowances](https://docs.cloud.google.com/free/docs/free-cloud-features) are region/billing-scope dependent. Count other applications and unobserved usage conservatively; budget alerts, instance limits and local reservations are not a provider or GCP billing hard cap. Review object versions/soft-delete, [Artifact Registry image accumulation](https://cloud.google.com/artifact-registry/pricing), index bytes and cleanup operations as well as retained content.
+
+ChatGPT's verified public compatibility snapshot and unverified distribution, browser transport and plan-only billing gates are in [the integration design](08-chatgpt-plan-and-ai-sidecar.md#31-verified-compatibility-snapshot-and-enablement-gates). No logged-in dashboard or deployed cloud evidence was obtained in Phase 0.
 
 ## 7. Practical conclusion
 

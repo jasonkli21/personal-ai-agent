@@ -127,8 +127,7 @@ Measure Firestore stored/index bytes, vector counts, and daily operations before
 considering another canonical record store. Memory retrieval currently uses
 Firestore vector KNN and would need a separate vector-index migration; another
 document store alone cannot replace it. No current request path stores blobs or
-full publisher pages, so Cloud Storage remains deferred until a concrete upload
-or retained-artifact feature needs it.
+full publisher pages. The reconciled next-scope Phase 12 now plans a concrete retained-artifact/export tier; GCS remains absent from the current implementation and must preserve private scope, retention and cost admission.
 
 ## Security boundary
 
@@ -195,3 +194,7 @@ been verified against an emulator or deployed project. Decision snapshots
 retain source attribution metadata subject to the source provider's storage,
 retention, and deletion terms. Local/test development continues to use the fixed
 `local` owner; deployed requests do not fall back to it.
+
+## Strict-free reconciliation gap — 2026-10-05
+
+The current bootstrap unconditionally enables Firestore TTL for `rate_limit_windows` and `usage_budgets`. TTL deletes are not part of the Firestore free allowance; existing instance/usage bounds and billing alerts therefore do not prove strict-$0 operation. This review changes no deployment code. Next-scope provider preflight (Phase 9), bounded ledger retention (11), artifact provisioning (12) and integrated release closeout (28) must resolve and verify this conflict before claiming strict-free cloud readiness. See the [Phase 0 review](personal-ai-next-scope-chatgpt-integrated-v2/09-phase-0-reconciliation.md).

@@ -1,6 +1,6 @@
 # Phase 28 implementation plan — Integrated evaluation and hardening
 
-This is the detailed execution plan for integrated next-scope **Phase 28 — Integrated evaluation and hardening**. It elaborates the normative scope in [../source/05-phased-implementation-plan.md](../source/05-phased-implementation-plan.md) using the structure and verification style of the repository’s existing phase implementation plans. It is an execution backlog, not permission to broaden product scope. Phase 0/current-repository evidence wins over hypothetical file/module assumptions.
+Reconciled on 2026-10-05 against `ad1dea5912af81eda0c9c5d6a41180ce186a07a5`. This is **next-scope** numbering, distinct from existing repository Phases 1–9. Read the [source roadmap](../../05-phased-implementation-plan.md), [comprehensive Phase 0 review](../../09-phase-0-reconciliation.md) and [shared execution contract](../execution-contract.md) first. This plan preserves product scope and defines future implementation; it does not claim delivery.
 
 ## Scope boundary
 
@@ -28,321 +28,81 @@ This is the detailed execution plan for integrated next-scope **Phase 28 — Int
 - major architecture rewrites
 - claims of regulatory compliance
 
-## Repository baseline and candidate code areas
+## Current state and reuse
 
-The current repository already separates backend API/auth/context/domain/evaluation/evidence/LLM/memory/ranking/search concerns, plus frontend and infrastructure. Candidate areas for this phase are intentionally advisory until Phase 0/current-code inspection confirms the exact seam:
+Established fake evaluations and partial existing Phase 9 release safeguards are reusable. Integrated matrix, physical account deletion, full owner migration and operational/provider/cloud closeout remain incomplete.
 
-- `backend/`
-- `frontend/`
-- `infrastructure/`
-- `experiments/`
-- `docs/`
-- `Firestore/GCS/provider opt-in verification paths`
+Verified existing backend seams (paths exist at the reviewed revision):
 
-Do not create a new parallel subsystem when an existing contract can be extended cleanly. Do not rename/reorganize unrelated code merely to make the phase look cleaner.
+- `backend/src/personal_ai/evaluation/context.py`
+- `backend/src/personal_ai/evaluation/memory.py`
+- `backend/src/personal_ai/evaluation/memory_lifecycle.py`
+- `backend/src/personal_ai/evaluation/research.py`
+- `backend/src/personal_ai/evaluation/decision.py`
+- `backend/src/personal_ai/evaluation/domain.py`
+- `backend/src/personal_ai/evaluation/iterative_research.py`
+- `backend/src/personal_ai/evaluation/itinerary_proposals.py`
+- `backend/src/personal_ai/auth/account_data.py`
+- `backend/src/personal_ai/auth/owner_data.py`
+- `backend/src/personal_ai/auth/safeguards.py`
 
-## Phase 0 repository reconciliation
+Frontend integration, where needed, extends `frontend/src/lib/api.ts`, `frontend/src/lib/conversation-proxy.ts`, `frontend/src/lib/sse.ts`, `frontend/src/features/chat/chat-state.ts` and adjacent feature/UI components. Infrastructure extends `infrastructure/gcp/deploy.sh`, `firestore.indexes.json`, `Makefile` and `.github/workflows/quality.yml` only when required. Named target types in this plan are **future contracts**; choose their exact file/class placement beside these seams during implementation. Do not create fictitious files or parallel services merely to match a diagram.
 
-Integrate the existing `.github/workflows/quality.yml`, evaluation suites, `docs/phase-9-release-checklist.md`, and `infrastructure/gcp/deploy.sh` with all new phase checks. Existing Phase 9 physical deletion, full migration, provider accounting and cloud release gates are not complete. Prove strict-free infrastructure/provider limits, Firestore/GCS retention and artifact access, domain authority, and the separate ChatGPT credential/sidecar failure matrix before any production claim. See the [dated Phase 0 code and dependency map](../phase-0-reconciliation-2026-10-05.md).
+## Prerequisites and work ordering
 
-**Existing regression evaluations:** `make context-eval`, `make memory-eval`, `make memory-lifecycle-eval`, `make research-eval`, `make decision-eval`, `make domain-eval`, `make iterative-research-eval`, `make itinerary-proposal-eval`. Run those touched by this phase in addition to its backend/frontend test, lint, and type checks; add phase-specific fixtures for new behavior.
+Required phases: 12, 17.4, 22, 23, 24, 25, 26, 27. Each must deliver the contracts this plan consumes; a similarly named existing phase is not a substitute. Recommended numerical order is recorded in the roadmap. Within this plan, work packages run in order; each consumes prior packages' delivered contracts, then closes verification below.
 
-## Delivery conventions and invariants
+## Phase-specific invariants
 
-- Begin by reading `AGENTS.md`, `docs/project-brief.md`, `docs/architecture.md`, the current authoritative roadmap, and this phase plan.
-- Inspect `git status` before editing; preserve unrelated user changes and existing accepted decisions unless this phase explicitly supersedes them.
-- Keep routes/UI thin and keep provider/storage SDK details behind existing service/repository boundaries.
-- Use deterministic fakes for automated tests; credentialed provider, emulator, and cloud checks are opt-in and must be reported separately.
-- Preserve owner/application/workspace isolation and safe error semantics across every new path.
-- Do not add later-phase features merely because they would make the current phase easier.
-- Update docs when contracts/behavior change and record tested revision, commands, outcomes, and remaining external verification gaps.
-- Finish repository changes with relevant tests/lint/type-check/build checks plus `git diff --check`; documentation-only changes still require link/content review and `git diff --check`.
-- This phase validates the built system; it is not permission to add missing product features.
 - Cloud/provider/emulator checks remain opt-in and must be reported separately from offline deterministic results.
 - Strict-$0 guardrails cover supporting GCP infrastructure as well as model inference.
 - Security/privacy failures block release rather than being papered over with a feature flag.
 
-## Dependency map
+## Work packages
 
-**Prerequisites:** Phase 27 plus all prior domain/integration phases
+### P28.0 — Integrated negative and quality matrix
 
-```text
-P28.0 Integrated -> P28.1 Isolation/context/provenance/authority
-P28.1 Isolation/context/provenance/authority -> P28.2 Provider/routing/quota/cascade
-P28.2 Provider/routing/quota/cascade -> P28.3 Storage/artifact/retention/resource-growth
-P28.3 Storage/artifact/retention/resource-growth -> P28.4 Mutation/export/deletion
-P28.4 Mutation/export/deletion -> P28.5 ChatGPT
-P28.5 ChatGPT -> P28.6 Deployment/rollback/kill-switch/provider-removal
-P28.6 Deployment/rollback/kill-switch/provider-removal -> P28.7 Final
-```
+**Depends on:** required phases above.
 
-The map is sequencing guidance, not a requirement to commit once per work package. Prefer a few coherent commits that preserve reviewable boundaries.
+Exercise all app/workspace isolation, relevance/omission, provenance/authority confusion, mutation confirmation/idempotency, sensitivity-preserving routing/fallback/cascades, strict-free exhaustion and Gemini/Groq/Cloudflare changes/removal. Include Firestore/GCS growth, retention, authorization, required/optional artifact failure and export/deletion propagation. Establish held-out quality/resource thresholds and independent offline versus external evidence. Add itinerary-proposal evaluation to CI if still absent; the Make target currently exists but CI does not run it.
 
-## Required verification matrix
+**Acceptance:** Integrated fixtures cover every required domain/provider/storage/permission/mutation/resource boundary and include the itinerary-eval CI gap.
 
-- Offline unit/contract tests cover success plus malformed/denied/unavailable/error paths for each new contract.
-- Integration tests prove the phase composes with the existing owner/application/workspace and context boundaries.
-- Regression tests prove the phase-disabled/default path preserves prior behavior.
-- No automated test requires live provider credentials, a real GCP project, or personal data unless explicitly marked opt-in.
-- Safe tracing/evidence records IDs, counts, versions, states, and reason codes without raw secrets or unnecessary private content.
-- Documentation/release evidence states exactly which external provider/emulator/cloud checks were run, skipped, or remain open.
-- Provider/model compatibility and quota/eligibility assertions are tested with fakes/config fixtures; real-provider behavior is an opt-in compatibility check.
-- Negative authorization/sensitivity tests prove protected data is not retrieved or transmitted after denial.
-- Storage failure/orphan/retention/authorization behavior is exercised without relying on public buckets or production data.
-- ChatGPT-mode tests prove credentials never enter managed cloud persistence or browser storage and provider switching remains explicit.
+### P28.1 — Close existing operational obligations
 
-## Required implementation artifacts
+**Depends on:** P28.0.
 
-- Code/configuration changes required by the work packages below, limited to Phase 28 scope.
-- Deterministic fixtures/fakes and tests for every new public/internal contract and failure class.
-- Updated architecture/API/operations documentation only where the implemented behavior changes those contracts.
-- A phase implementation guide/release-evidence update after implementation, including tested revision, commands, results, and remaining verification gaps.
-- Any ADR required to resolve a durable architectural decision that is not already accepted; routine implementation details do not need separate ADRs.
+Extend `backend/scripts/migrate_local_owner.py` using its current chat-only safety refusals, plus `auth/account_data.py` and `auth/owner_data.py`. Use existing Phase 9 plan/evidence/release checklist as the owner of legacy owner migration and account physical-deletion/recovery work, updating its evidence rather than marking duplicate phases complete. Implement missing lifecycle propagation across messages/summaries/vector memories/derived/jobs/evidence/decisions/proposals/account metadata and Phase 12 artifacts as required by that contract; preserve explicitly justified bounded replay/audit tombstones and explain them. Verify provider accounting coverage from 11 and strict-$0 deployment after removing unconditional paid TTL/other forbidden features. Review IAM/service tokens, secrets, telemetry, backup/restore and resource admission before release.
 
----
+**Acceptance:** Existing Phase 9 migration/deletion/accounting/recovery obligations have truthful completion evidence or remain explicit release blockers.
 
-## Phase 28 work packages
+### P28.2 — ChatGPT/domain safety and release
 
-### P28.0 — Evaluate app/workspace isolation, context relevance/omission, provenance, authority…
+**Depends on:** P28.1.
 
-**Dependencies:** Phase 27 plus all prior domain/integration phases  
+Test credential absence, exact bridge callers, auth/account changes, missing models/scopes/eligibility/usage, interrupted completion, explicit-only lane, no silent billing/provider switch, context minimization/revocation and Copy/Insert/Apply boundaries across domains. Check distribution approval, plan-only billing and transport on supported clients before promoting their gates. Required release checks cannot be waived by turning a flag off and calling them passed; affected capability remains unavailable and verification gaps explicit. No new domain/provider product scope.
 
-**Goal:** implement this scoped Phase 28 commitment without pulling later-phase behavior forward.
+**Acceptance:** ChatGPT and domain clients cannot be promoted with failed eligibility, billing, caller, privacy or mutation checks.
 
-**Work:**
+## Requirement coverage
 
-- Evaluate app/workspace isolation, context relevance/omission, provenance, authority confusion, mutation safety, strict-free enforcement, provider failure handling, quota exhaustion, cascade correctness, sensitive routing, Firestore/GCS growth and retention, artifact authorization, deletion/export propagation, and provider removal/change.
-- Reconcile the existing implementation relevant to **Evaluate app/workspace isolation, context relevance/omission, provenance, authority confusion, mutation safety, strict-free enforcement, provider failure handling, quota exhaustion, cascade correctness, sensitive routing, Firestore/GCS growth and retention, artifact authorization, deletion/export propagation, and provider removal/change.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Thread the new data/behavior through API → service → repository/provider/context boundaries with one clear ownership path.
-- Preserve existing default behavior when the new capability is absent or disabled.
-- Add integration tests for success, explicit failure, cancellation/retry where relevant, and isolation boundaries.
-- Normalize request/response/error/usage metadata into Personal AI types and keep vendor/client objects inside the adapter boundary.
-- Implement a deterministic fake with the same contract for unit/integration tests.
-- Define opt-in real-provider compatibility checks that skip cleanly without credentials/network.
-- Implement hard allow/deny evaluation before protected data retrieval or model invocation, as appropriate.
-- Return structured denial/rejection reasons suitable for safe tracing and tests.
-- Build an explicit negative matrix covering cross-owner/app/workspace/provider cases.
-- Keep persistence behind repository/store protocols and provide an in-memory fake for automated tests.
-- Define idempotency/concurrency/failure semantics for partial writes or retries.
-- Document required indexes/object layout/retention behavior without exposing storage details to higher layers.
-- Record safe IDs, policy/profile versions, counts, decisions, and reason codes needed to reconstruct behavior.
-- Apply allowlist/redaction before persistence or display; raw private content remains absent by default.
-- Add read-only inspection/tests proving no write/provider side effects.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
-- Make route/candidate decisions deterministic and inspectable from explicit inputs for this phase.
-- Preserve hard strict-free/privacy/capability/context-limit constraints before optimization logic.
-- Record selected/rejected candidates and reason codes in safe trace metadata.
-- Keep the domain application authoritative; Personal AI reads/reasons/proposes through typed contracts only.
-- Carry application/workspace/entity references and sensitivity/provenance without copying authoritative records into core storage.
-- Add domain isolation tests and at least one end-to-end synthetic scenario using the shared core contracts.
+The commitments above remain normative. This mapping assigns every commitment to the concrete packages; verification covers all packages and acceptance criteria.
 
-**Requirements:**
+| Requirement | Work packages |
+| --- | --- |
+| R28.1: Evaluate app/workspace isolation, context relevance/omission, provenance, authority confusion, mutation safety, strict-free enforcement, provider failure handling, quota exhaustion, cascade correctness, sensitive routing, Firestore/GCS growth and retention, artifact authorization, deletion/export propagation, and provider removal/change. | P28.0 |
+| R28.2: Add ChatGPT hardening for credential absence, bridge caller security, revoked/expired auth, account switching, model disappearance, consent/ineligibility/usage limits, interrupted streams, explicit-only routing, explicit provider switching, domain context minimization, provider attribution, and Copy/Insert/Apply boundaries. | P28.2 |
 
-- This phase validates the built system; it is not permission to add missing product features.
-- Cloud/provider/emulator checks remain opt-in and must be reported separately from offline deterministic results.
-- Strict-$0 guardrails cover supporting GCP infrastructure as well as model inference.
-- No hidden side channel may bypass existing authorization/context/provider boundaries.
-- Existing public API/SSE behavior changes only when this phase explicitly requires it.
-- Secrets and authorization headers are never logged or persisted in test artifacts.
-- Provider failures map to stable application error categories.
-- Deny by default when required policy facts are missing or unverified.
-- Policy is enforced in code; prompt instructions are not authorization.
-- Storage failures must have explicit user-visible versus best-effort semantics.
-- No collection/bucket scan may become a normal request-path dependency unless explicitly designed.
-- Observability is not a second source of truth and must respect the underlying data sensitivity.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
-- Optimization logic cannot widen a hard eligibility boundary.
-- Core orchestration must not query the domain database directly.
+## Targeted verification and closeout
 
-**Acceptance criteria:**
+Run all established backend/frontend checks and eight evaluation targets, integrated fake storage/routing/bridge suites, negative scope/mutation/deletion tests and deploy syntax if changed. Add and document any new phase-specific runner before listing it as executable.
 
-- Existing regression tests remain green with the new path disabled/defaulted.
-- The enabled path is attributable in traces/evidence without exposing sensitive payloads.
-- Fake-based tests exercise all required operations and failure classes.
-- External checks, when run, are recorded separately from offline completion.
-- Negative tests prove protected data/provider paths are never invoked after denial.
-- Persistence tests cover create/read/update or append semantics, isolation, missing records, and injected failure.
-- A developer can reconstruct the decision path from safe metadata for named fixtures.
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
-- Named fixtures reproduce route decisions and rejection reasons.
-- Domain state remains authoritative after the scenario; Personal AI stores only AI-owned conversation/memory/metadata as designed.
+Run `make backend-test` and `make backend-lint` for backend changes. Run `make frontend-test`, `make frontend-lint` and `make frontend-typecheck` when frontend/proxy/UI contracts change. Activate the backend venv and use the README's pinned Node/pnpm/uv setup; bare shell `python` is not assumed to exist. Run builds only for dependency/build changes, and `bash -n infrastructure/gcp/deploy.sh` for deployment script edits. Finish with `git diff --check`.
 
-**Out of scope:**
+Affected existing evaluation targets: `make context-eval`, `make memory-eval`, `make memory-lifecycle-eval`, `make research-eval`, `make decision-eval`, `make domain-eval`, `make iterative-research-eval`, `make itinerary-proposal-eval`.
 
-- new domain features
-- new provider families
-- major architecture rewrites
-- claims of regulatory compliance
+New routing/storage/bridge evaluation runners are **future artifacts**: add an actual documented command during the implementing phase before claiming it ran. Use deterministic fakes and synthetic fixtures; missing credentials cannot block or weaken offline tests.
 
-### P28.1 — ChatGPT hardening for credential absence, bridge caller security, revoked/expired…
+**External checks:** Firestore Emulator, live provider/auth, deployed Google IAM/private API/worker, GCS deletion/IAM, strict-$0 account controls, restore and mounted browser/native/domain acceptance are opt-in release gates with separately recorded revision/config/result. Skipped is unverified.
 
-**Dependencies:** P28.0 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 28 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Add ChatGPT hardening for credential absence, bridge caller security, revoked/expired auth, account switching, model disappearance, consent/ineligibility/usage limits, interrupted streams, explicit-only routing, explicit provider switching, domain context minimization, provider attribution, and Copy/Insert/Apply boundaries.
-- Reconcile the existing implementation relevant to **Add ChatGPT hardening for credential absence, bridge caller security, revoked/expired auth, account switching, model disappearance, consent/ineligibility/usage limits, interrupted streams, explicit-only routing, explicit provider switching, domain context minimization, provider attribution, and Copy/Insert/Apply boundaries.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Define typed/provider-neutral records or protocols with explicit versioning/validation where persistence or cross-process exchange is involved.
-- Specify required/optional fields, stable enums/reason codes, serialization behavior, and invalid-input semantics.
-- Add deterministic contract/schema tests for valid, missing, malformed, and forward-compatibility cases.
-- Normalize request/response/error/usage metadata into Personal AI types and keep vendor/client objects inside the adapter boundary.
-- Implement a deterministic fake with the same contract for unit/integration tests.
-- Define opt-in real-provider compatibility checks that skip cleanly without credentials/network.
-- Implement hard allow/deny evaluation before protected data retrieval or model invocation, as appropriate.
-- Return structured denial/rejection reasons suitable for safe tracing and tests.
-- Build an explicit negative matrix covering cross-owner/app/workspace/provider cases.
-- Record safe IDs, policy/profile versions, counts, decisions, and reason codes needed to reconstruct behavior.
-- Apply allowlist/redaction before persistence or display; raw private content remains absent by default.
-- Add read-only inspection/tests proving no write/provider side effects.
-- Create/reuse named synthetic fixtures with explicit expected selections, exclusions, errors, and invariants.
-- Run deterministic offline comparisons first; make live/cloud checks explicit opt-in steps.
-- Define promotion/completion gates before interpreting results and record failures without hiding them.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
-- Make route/candidate decisions deterministic and inspectable from explicit inputs for this phase.
-- Preserve hard strict-free/privacy/capability/context-limit constraints before optimization logic.
-- Record selected/rejected candidates and reason codes in safe trace metadata.
-- Keep the domain application authoritative; Personal AI reads/reasons/proposes through typed contracts only.
-- Carry application/workspace/entity references and sensitivity/provenance without copying authoritative records into core storage.
-- Add domain isolation tests and at least one end-to-end synthetic scenario using the shared core contracts.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- This phase validates the built system; it is not permission to add missing product features.
-- Cloud/provider/emulator checks remain opt-in and must be reported separately from offline deterministic results.
-- Strict-$0 guardrails cover supporting GCP infrastructure as well as model inference.
-- Contracts must not expose provider SDK or Firestore implementation types above their boundary.
-- Unknown/unsupported values fail explicitly rather than being silently coerced.
-- Secrets and authorization headers are never logged or persisted in test artifacts.
-- Provider failures map to stable application error categories.
-- Deny by default when required policy facts are missing or unverified.
-- Policy is enforced in code; prompt instructions are not authorization.
-- Observability is not a second source of truth and must respect the underlying data sensitivity.
-- Evaluation must distinguish skipped external checks from passing checks.
-- No personal/private data is required in committed fixtures.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
-- Optimization logic cannot widen a hard eligibility boundary.
-- Core orchestration must not query the domain database directly.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Representative valid and invalid contract fixtures are covered offline.
-- Callers can depend on the new contract without importing implementation-specific SDK types.
-- Fake-based tests exercise all required operations and failure classes.
-- External checks, when run, are recorded separately from offline completion.
-- Negative tests prove protected data/provider paths are never invoked after denial.
-- A developer can reconstruct the decision path from safe metadata for named fixtures.
-- Results are reproducible from a clean checkout using documented commands.
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
-- Named fixtures reproduce route decisions and rejection reasons.
-- Domain state remains authoritative after the scenario; Personal AI stores only AI-owned conversation/memory/metadata as designed.
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- new domain features
-- new provider families
-- major architecture rewrites
-- claims of regulatory compliance
-
-### P28.2 — Phase integration, regression verification, and evidence closeout
-
-**Dependencies:** P28.1 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 28 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Wire the completed work packages through the narrow existing integration seam for this phase; do not add new product behavior.
-- Run the phase verification matrix and all affected existing regressions from a clean checkout.
-- Update the implementation guide/release evidence with actual code paths, tested revision, commands, outcomes, and explicit external verification gaps.
-- Confirm every later-phase gate remains disabled/absent unless the integrated roadmap explicitly requires it now.
-- Reconcile the existing implementation relevant to **Integrate the completed Phase work, run the required regression/evaluation matrix, update implementation documentation/evidence, and leave later-phase capabilities disabled or absent.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Create/reuse named synthetic fixtures with explicit expected selections, exclusions, errors, and invariants.
-- Run deterministic offline comparisons first; make live/cloud checks explicit opt-in steps.
-- Define promotion/completion gates before interpreting results and record failures without hiding them.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
-
-**Requirements:**
-
-- This phase validates the built system; it is not permission to add missing product features.
-- Cloud/provider/emulator checks remain opt-in and must be reported separately from offline deterministic results.
-- Strict-$0 guardrails cover supporting GCP infrastructure as well as model inference.
-- Evaluation must distinguish skipped external checks from passing checks.
-- No personal/private data is required in committed fixtures.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
-
-**Acceptance criteria:**
-
-- No known cross-app isolation failure.
-- No known paid-overflow path.
-- No sensitivity-unsafe fallback.
-- No public/unauthorized artifact path.
-- Firestore does not retain avoidable bulky raw evaluation/trace data.
-- Provider failures degrade explicitly.
-- Regression suites cover quality and resource behavior.
-- Results are reproducible from a clean checkout using documented commands.
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
-
-**Out of scope:**
-
-- new domain features
-- new provider families
-- major architecture rewrites
-- claims of regulatory compliance
-
----
-
-## Phase verification and closeout
-
-### Required local/offline checks
-
-- `make backend-test`
-- `make backend-lint`
-- `make frontend-test`
-- `make frontend-lint`
-- `make frontend-typecheck`
-- phase-specific inference/routing evaluation command added by the implementation if no existing command covers it
-- storage/artifact fake integration suite
-- `bash -n infrastructure/gcp/deploy.sh` when deployment scripts change
-- `git diff --check`
-
-### Optional external checks
-
-- Run only the provider/emulator/cloud/browser/native checks that are relevant to the phase and available in the environment.
-- Use synthetic data. Never use the absence of credentials/network/cloud access as a reason to weaken offline tests.
-- Record a skipped external check as **unverified**, not passed.
-
-### Documentation/evidence closeout
-
-- Update this plan only if implementation discovered a necessary scope-preserving clarification; do not silently rewrite the roadmap after coding.
-- Create/update the phase implementation guide with actual files/classes/routes/configuration and a concise code map.
-- Record release/verification evidence with date, tested revision, commands, outcomes, and explicit remaining external gaps.
-- Update ADRs/API/deployment/runbook docs only where their contracts actually changed.
-
-## Phase 28 completion review
-
-- 1. Did implementation satisfy every normative Phase 28 commitment without adding later-phase product behavior?
-- 2. Can a reviewer identify the authoritative source of each new piece of state and the boundary that owns it?
-- 3. Do negative/isolation/failure tests prove the new behavior fails safely instead of silently broadening access or provider use?
-- 4. Are offline verification and external/provider/cloud verification clearly distinguished?
-- 5. Can the new behavior be disabled/absent without regressing the previously working path where backward compatibility is required?
-- 6. Are docs, implementation evidence, and remaining gaps accurate at the tested revision?
-- 7. Can any reusable ChatGPT credential reach managed cloud persistence, logs, traces, analytics, exports, or browser storage? The required answer is no.
-- 8. Can optional artifact persistence failure break successful user inference, or can required exports fail silently? Both required answers are no.
-
-## Handoff to the next phase
-
-Do not begin the next phase until the Phase 28 acceptance criteria are met locally or any deliberately deferred external checks are documented as verification gaps. The next session should read the implementation guide/release evidence produced here in addition to the next phase plan.
+Record actual files/interfaces, tested revision/configuration, command results, disabled gates and unresolved external checks in an implementation guide/release evidence. Follow the shared execution contract for failure, isolation, retention and scope preservation. Completion requires every normative commitment and package locally verified; external gates may remain pending only with the affected live capability unavailable. Do not describe a skipped check as passed.

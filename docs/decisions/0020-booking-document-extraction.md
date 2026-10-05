@@ -1,6 +1,6 @@
 # ADR 0020 — Bounded booking document extraction
 
-- **Status:** local implementation candidate; coordinator whole-Phase 6 verification pending
+- **Status:** accepted for reviewed local integration; external private-input/provider/cloud gates remain closed
 - **Date:** 2026-10-05
 - **Scope:** upstream extraction prerequisite for the personal travel app
 
@@ -11,7 +11,7 @@ boundary. It needs bounded candidate extraction, but no upstream contract
 currently handles private booking text, data use, replay, and retention.
 Travel remains the authority for booking fields and confirmation.
 
-## Decision candidate
+## Decision
 
 Add the separately gated `booking-document-extraction-v1` API. Derive owner
 identity only from the verified principal. Accept one hash-bound text source of
@@ -39,8 +39,8 @@ environment. One monotonic deadline covers body receipt, durable claim, model
 execution, and terminal persistence. Results enforce unique evidence spans,
 literal field support, explicit uncertainty, valid bounded expiry, and an empty
 candidate list for non-completed states. Provider quality/data-use review,
-deployed identity and Firestore TTL remain unverified. This is a local
-integration candidate; coordinator verification remains pending.
+deployed identity and Firestore TTL remain unverified. The local coordinator acceptance recorded in the
+[booking extraction contract](../booking-document-extraction-contract.md#local-coordinator-acceptance--2026-10-05) supersedes the earlier pending status. It does not establish live provider, IAM, Firestore retention or deployed readiness.
 
 ## Consequences
 

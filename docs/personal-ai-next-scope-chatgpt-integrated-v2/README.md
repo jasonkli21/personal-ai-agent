@@ -1,6 +1,6 @@
 # Personal AI — Final Integrated Next-Scope Handoff
 
-Status: proposed integrated design and implementation handoff  
+Status: Phase 0 reconciled implementation handoff; next-scope implementation not started
 Date: 2026-10-05
 
 ## Purpose
@@ -182,7 +182,7 @@ Internal provider/gateway boundary
 Gemini / Groq / Cloudflare
 ```
 
-LiteLLM is a provider-normalization dependency, not the owner of:
+If selected, LiteLLM is an internal provider-normalization dependency, not the owner of:
 
 - task classification,
 - privacy policy,
@@ -218,9 +218,9 @@ Initial actions:
 
 - **Copy** everywhere;
 - **Insert** only into non-authoritative drafts;
-- **Apply** only after the existing mutation-proposal framework validates a typed change and the user confirms it.
+- **Apply** only after the planned Phase 23 mutation-proposal framework validates a typed change and the user confirms it.
 
-Travel and Shopping can use broad-but-bounded context more freely. Finance and Health should default to minimal context and expose clearer sensitive-category selection/preview.
+All domains use narrow authorized context. Travel booking and Shopping budget/preferences can be sensitive too; Finance and Health default to stricter minimization and clearer sensitive-category selection/preview.
 
 
 ## Documents
@@ -294,7 +294,15 @@ Travel and Shopping can use broad-but-bounded context more freely. Finance and H
 - Prefer more small phases over a few broad phases.
 
 
-- Preserve the full substantive scope and ordering of the original roadmap; insert one additive Phase 17 ChatGPT account-integration/AI-sidecar block, then renumber the original downstream phases to 18-28 without changing their scope.
+- Preserve the full substantive scope and current numbering. Distinguish recommended order from the verified prerequisite graph; additive domain sidecar tasks require 17.4, while baseline domain read work can proceed independently of live ChatGPT approval.
 - Never store SIWC access/refresh/ID tokens in Firestore, GCS, Secret Manager, browser storage, logs, traces, analytics, or exports.
 - Keep ChatGPT-plan use explicit and outside strict-free automatic candidate selection.
 - Re-verify current SIWC/Responses constraints at implementation/release time instead of hard-coding preview behavior.
+
+## Reconciled execution handoff
+
+Start with the [comprehensive Phase 0 review](09-phase-0-reconciliation.md), which verifies and includes the [earlier incomplete review](personal-ai-next-scope-detailed-implementation-plans/phase-0-reconciliation-2026-10-05.md). Read the [32 corrected detailed plans](personal-ai-next-scope-detailed-implementation-plans/README.md), [shared execution contract](personal-ai-next-scope-detailed-implementation-plans/execution-contract.md) and [verification record](07-final-review-record.md).
+
+The source-of-truth order is actual code/tests/accepted ADRs for existing behavior, then reconciled product/architecture intent, then detailed execution guidance. `source/` retains compatibility paths as links to these canonical documents; it is no longer a second editable snapshot. Target interfaces are future contracts until implemented. Existing Phases 1–9 and next-scope numbering are distinct.
+
+Next-scope Phase 1 is ready for offline identity/scope implementation. Existing account deletion/migration, provider-data, strict-$0 deployment and external operational gates remain open. ChatGPT distribution, plan-only billing and transport require separate verification. No substantive implementation occurred in Phase 0.

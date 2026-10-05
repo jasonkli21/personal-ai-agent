@@ -70,9 +70,9 @@ every field before reservation confirmation.
 The capability and provider gates default off independently. Local tests use
 the fake generator and explicit synthetic fixtures. Real model use still needs
 provider data-use/retention review, deployed verified user and service
-authentication, Firestore TTL policy, and whole-Phase 6 coordinator
-verification. No live provider, Google IAM, cloud project, or real private
-document was used for this candidate. Verification currently covers the full
+authentication, Firestore retention/deletion policy and deployed verification. Local whole-Phase 6
+coordinator acceptance is recorded below. No live provider, Google IAM, cloud project, or real private
+document was used for this local acceptance. Verification currently covers the full
 backend suite and synthetic API flows; it does not establish hosted readiness.
 
 ## Local coordinator acceptance — 2026-10-05

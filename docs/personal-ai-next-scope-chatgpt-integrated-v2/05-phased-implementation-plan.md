@@ -27,6 +27,21 @@ Numbering is local to this handoff. Phase 0 must reconcile it with the actual re
 
 ---
 
+## Reconciled execution rules
+
+The [comprehensive Phase 0 review](09-phase-0-reconciliation.md) verifies the earlier Phase 0 record and defines capability status, requirement allocation, changes and exact dependencies. All detailed plans are execution backlogs grounded in current seams; target abstractions are explicitly future.
+
+- Phase 1 extends all owner-scoped AI records, repository reads, jobs and replay identities with app/workspace isolation; legacy data is standalone/null only, without an automatic backfill.
+- Phases 3–5 already require scoped, deny-by-default retrieval. Phase 7 completes field/sensitivity policy before live domain adapters; earlier fakes never bypass authorization.
+- Phase 8 owns neutral generation/count/embedding results, automatic-turn attribution and the direct memory-extraction budget gap. Phase 9 reuses these contracts and adds provider-specific implementations only.
+- Phase 11 accounts for every operation, including search/count/summary/embedding/worker work, using provider account/project windows plus owner attribution. Basic search admission is required here; Phase 25 optimizes it.
+- Phase 12 defines non-atomic Firestore/GCS reference lifecycle, retention, artifact export/deletion and cost preflight. Existing account physical deletion is not falsely completed by adding a bucket.
+- Phase 13 uses explicit unmeasured deterministic priorities. Phase 14 measures quality; 15–16 use those profiles. Optimization in 24–27 requires a recorded deterministic baseline and promotion thresholds.
+- Phase 17.2 owns authenticated external-turn prepare/finalize and attribution trust. Phase 17.3 owns the ContextPackage endpoint and sidecar client/UI; 17.4 adapts their shared contracts without rebuilding persistence or auth.
+- Existing Phase 9 owner migration, physical deletion, provider-data review and cloud operational closeout remain required release work. Earliest affected phase gates new live paths; Phase 28 closes and verifies integrated obligations, rather than deferring safety until the end.
+
+
+
 # Phase 0 — Reconcile with current repository and roadmap
 
 ## Goal
@@ -141,7 +156,7 @@ Make context assembly explicit, budgeted, and sensitivity-aware.
 
 ## Acceptance criteria
 
-- Final context can be reconstructed.
+- A safe manifest identifies the actual selected/excluded context and budget decisions. Estimated later reconstruction is labelled separately and is not proof of exact historical provider input.
 - Budgets are enforced.
 - Effective sensitivity is deterministic.
 
@@ -232,7 +247,7 @@ Create neutral seams without intelligent routing.
 - Add minimal neutral generation operations.
 - Add explicit embedding boundary with model/dimension metadata.
 - Add fake backend.
-- Migrate representative existing Gemini call paths incrementally.
+- Migrate existing Gemini call paths incrementally, including the direct memory-extraction preparation gap, before new providers can bypass shared admission/budgeting.
 
 ## Acceptance criteria
 
@@ -252,7 +267,7 @@ Prove the provider boundary against the three explicitly planned providers witho
 
 ### Gemini
 - migrate existing generation behind neutral backend;
-- migrate structured memory extraction behind neutral backend;
+- reuse and verify the Phase 8 structured memory-extraction migration behind the neutral backend;
 - preserve existing Gemini embeddings initially.
 
 ### Groq
@@ -275,7 +290,7 @@ Prove the provider boundary against the three explicitly planned providers witho
 
 ## Acceptance criteria
 
-- Gemini, Groq, and Cloudflare can satisfy neutral contracts in opt-in compatibility checks.
+- Gemini, Groq, and Cloudflare satisfy neutral contracts offline; independently recorded opt-in compatibility checks are required before each live enablement.
 - Strict-free tests never require paid provider paths.
 - No provider-specific types leak into context/domain logic.
 
@@ -913,7 +928,7 @@ Validate the complete multi-app, multi-provider, two-tier-storage platform.
 - authority confusion,
 - mutation safety,
 - strict-free enforcement,
-- Gemini/Cloudflare failure handling,
+- Gemini/Groq/Cloudflare failure handling,
 - quota exhaustion,
 - cascade correctness,
 - sensitive routing,
@@ -993,7 +1008,7 @@ Revisit only if measured structured/queryable Firestore state approaches the fre
 
 ---
 
-# Dependency order
+# Recommended execution order
 
 ```text
 reconcile
@@ -1027,7 +1042,7 @@ reconcile
  -> integrated hardening
 ```
 
-Additive dependency block for ChatGPT integration:
+Recommended ChatGPT integration block (exact technical dependencies are in the table below):
 
 ```text
 existing platform foundation (Phases 0-16)
@@ -1042,10 +1057,49 @@ existing platform foundation (Phases 0-16)
   -> existing optimization/adaptive-routing/hardening (24-28)
 ```
 
-The original substantive dependency order remains intact. Original Phases 17-27 are renumbered to 18-28 solely to insert the additive ChatGPT Phase 17 block; their scope and ordering are unchanged.
+Original Phases 17–27 were renumbered to 18–28 to insert the additive ChatGPT block; this reconciliation preserves those numbers and all substantive scope. The verified prerequisites table below distinguish recommended ordering from actual dependencies. Domain backend work can proceed while externally blocked ChatGPT sidecar work remains pending.
 
 
 ---
+
+## Verified technical prerequisites
+
+These are the delivered contracts consumed by each phase, not an artificial all-predecessor chain. Conditional sidecar tasks in 18–23 additionally require 17.4; existing Phase 9 release obligations block live private-data/production promotion. See [state, coverage and rationale](09-phase-0-reconciliation.md).
+
+| Phase | Required prerequisites |
+| --- | --- |
+| 0 | none |
+| 1 | 0 |
+| 2 | 1 |
+| 3 | 1, 2 |
+| 4 | 3 |
+| 5 | 4 |
+| 6 | 5 |
+| 7 | 3, 5, 6 |
+| 8 | 4, 7 |
+| 9 | 8 |
+| 10 | 7, 9 |
+| 11 | 10 |
+| 12 | 1, 6, 11 |
+| 13 | 8, 10, 11 |
+| 14 | 12, 13 |
+| 15 | 14 |
+| 16 | 15 |
+| 17.1 | 8, 10 |
+| 17.2 | 11, 13, 17.1 |
+| 17.3 | 6, 17.2 |
+| 17.4 | 17.3 |
+| 18 | 7, 13, 16 |
+| 19 | 7, 13, 16 |
+| 20 | 7, 13, 16 |
+| 21 | 7, 13, 16 |
+| 22 | 7, 18, 19, 20, 21 |
+| 23 | 7, 18, 19, 20, 21 |
+| 24 | 14, 22 |
+| 25 | 11, 12, 14 |
+| 26 | 1, 4, 8, 14 |
+| 27 | 14, 15, 16 |
+| 28 | 12, 17.4, 22, 23, 24, 25, 26, 27 |
 
 # Codex guidance
 

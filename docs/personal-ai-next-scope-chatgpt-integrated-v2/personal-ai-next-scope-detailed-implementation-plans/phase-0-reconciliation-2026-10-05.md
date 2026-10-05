@@ -1,5 +1,7 @@
 # Phase 0 repository reconciliation
 
+**Historical review — incomplete and superseded for execution.** The [comprehensive reconciliation](../09-phase-0-reconciliation.md) independently checks this record against `ad1dea5912af81eda0c9c5d6a41180ce186a07a5`. Its original findings and verification claims are retained below as earlier evidence, not new results. In particular, the package is now tracked; ADR 0020 local acceptance, the extraction budget gap, CI evaluation coverage and real dependency gates are corrected in the new review.
+
 **Date:** 2026-10-05
 **Reviewed revision:** `24f75a7` on `codex/phase-6-decision-support`
 **Evidence type:** code, tests, accepted ADRs, and existing local release records; no provider, emulator, or cloud execution in this documentation review.

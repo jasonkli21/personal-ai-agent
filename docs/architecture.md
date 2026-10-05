@@ -172,3 +172,9 @@ See the [Phase 9 plan](phase-9-implementation-plan.md),
 [operations runbook](phase-9-operations-runbook.md), and
 [repository review](repository-review-2026-10-03.md). These local code paths do
 not establish cloud IAM, recovery, provider-policy, or production readiness.
+
+## Reconciled next-scope handoff — 2026-10-05
+
+The [comprehensive Phase 0 reconciliation](personal-ai-next-scope-chatgpt-integrated-v2/09-phase-0-reconciliation.md) verifies the additive application/context, provider/routing, Firestore/GCS and ChatGPT/domain handoff against revision `ad1dea5912af81eda0c9c5d6a41180ce186a07a5`. Its next-scope Phases 0–28 are separate from the existing implementation history. Phase 0 changes documentation only; next-scope Phase 1 has not been implemented. Existing Phase 9 physical deletion, full owner migration and provider/cloud operational gates remain open. The target is incremental and preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.
+
+The current budget guarantee applies to chat/evidence/proposal/extraction preparation. Structured memory extraction still calls Gemini directly with character/output bounds; next-scope Phase 8 must route it through shared preparation. Existing Gemini remote token counting is a disclosure, and future provider fallback needs an eligible endpoint-specific counter rather than sending all prompts to Gemini. The current context inspector reports estimated reconstructed context, not an exact historical dispatch.

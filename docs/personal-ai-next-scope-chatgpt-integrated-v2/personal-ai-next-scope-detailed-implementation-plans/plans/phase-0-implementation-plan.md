@@ -1,64 +1,19 @@
-# Phase 0 implementation plan — Reconcile with current repository and roadmap
+# Phase 0 implementation plan — Repository, architecture and planning reconciliation
 
-This is the documentation-only execution plan for integrated next-scope Phase 0. The [integrated roadmap](../source/05-phased-implementation-plan.md) defines its scope. The [dated reconciliation record](../phase-0-reconciliation-2026-10-05.md) records the review against the repository at `24f75a7`.
+Phase 0 is the active documentation-only scope. No substantive implementation of Phase 1 or later is authorized in this session. The [comprehensive review](../../09-phase-0-reconciliation.md) is the current outcome; the [earlier Phase 0 record](../phase-0-reconciliation-2026-10-05.md) is retained and explicitly audited as incomplete historical evidence.
 
-## Scope and precedence
+## P0.0 — Verify the baseline
 
-Review current code, tests, accepted ADRs, release evidence, infrastructure, and the integrated source documents before changing behavior. Current code and verified evidence determine implementation status and reusable seams; the integrated source documents define product scope; detailed plans elaborate that scope. Do not treat speculative file names or generic work-package text as authority to create parallel abstractions.
+Read AGENTS.md, project brief, architecture and existing phase guides/plans/evidence/ADRs. Inspect git status and preserve unrelated changes. Trace real API/auth/scope, context, memory/vector/lifecycle, search/evidence/decisions/domains, generation/count/embed/fakes, repositories/indexes/export/deletion, UI/proxies/SSE and infrastructure/CI seams. Classify actual behavior separately from similarly named abstractions and external readiness. Verify the earlier review's assertions rather than accepting them.
 
-The next-scope Phase 0–28 numbering is independent of the repository's existing Phases 1–9. Existing Phases 1–8 are locally implemented; existing Phase 9 is partial. Next-scope Phase 1 is the first planned implementation phase. No Phase 1 or later behavior is implemented in this review.
+## P0.1 — Reconcile all source designs and phases
 
-### Normative commitments
+Review every product, architecture, provider, storage, operational, ChatGPT, roadmap and detailed-plan document. Resolve contradictions at their source and propagate corrections. Preserve every intended requirement; distinguish already implemented, partial, reusable, needs extension/refactor, duplicated, missing, intentionally deferred and external-verification-only work. Remove generic duplicate implementation tasks while retaining acceptance duties. Document exact phase prerequisites, baseline-before-optimization rules, scope/authority/privacy/storage/mutation guarantees and future types versus verified file seams. Use current official provider documentation only to verify operational facts, not to claim live compatibility.
 
-- Review existing plans, guides, ADRs, release and verification records, and tests.
-- Map API identity/auth, context, memory and embeddings, research/search/evidence, domains, LLM/structured generation, Firestore/vector indexes, evaluation/tracing, frontend, and deployment.
-- Confirm Gemini generation/embedding and Firestore index dependencies.
-- Classify roadmap work as implemented, partial, reusable, needing extension/refactor, missing, or intentionally deferred.
-- Reconcile dependencies, phase boundaries, verification commands, and external gaps without reducing integrated scope.
+## P0.2 — Record and verify the handoff
 
-### Explicit exclusions
-
-- Substantive code refactors, new provider integrations, schema migrations, and domain-application integration.
-- New fixtures, contracts, fakes, integration tests, or live provider/cloud checks solely for this documentation audit.
-- Production approval or closure of existing Phase 9 release gates.
-
-## Repository review areas
-
-Use the actual paths, not proposed module names:
-
-- `backend/src/personal_ai/api/`, `auth/`, `services/`, `entities/`, and `storage/` for request identity, chat, and owner-scoped persistence.
-- `context/`, `memory/`, `llm/`, `search/`, `evidence/`, `agents/research/`, `decisions/`, `ranking/`, `domains/`, `booking_extractions/`, and `itinerary_proposals/` for intelligence paths.
-- `evaluation/`, `backend/tests/`, `frontend/tests/`, and `.github/workflows/quality.yml` for reproducible evidence.
-- `frontend/src/app/`, `frontend/src/features/`, `frontend/src/lib/`, `frontend/src/middleware.ts`, `infrastructure/gcp/deploy.sh`, and `firestore.indexes.json` for client and deployment boundaries.
-
-## Work packages
-
-### P0.0 — Establish baseline
-
-Read `AGENTS.md`, `docs/project-brief.md`, `docs/architecture.md`, `docs/phase-1-implementation-guide.md`, the relevant existing phase guides/plans, Phase 9 plan/evidence, accepted ADRs, release records, and the integrated next-scope source documents. Inspect `git status` first and preserve unrelated user changes. Record the reviewed revision and distinguish current code from historical evidence.
-
-### P0.1 — Map actual subsystem seams
-
-Trace the request from Next.js proxy through authenticated FastAPI owner resolution, active-branch context assembly, provider call, and persistence. Trace memory extraction/embedding/vector retrieval, bounded research/evidence/decision/domain paths, evaluation, and deployment. Document exact reusable contracts and limitations; do not create implementation artifacts.
-
-### P0.2 — Reconcile roadmap and detailed plans
-
-Check each phase against actual modules, already-completed prerequisites, missing work, and dependencies. Preserve all domain-context, strict-free Gemini/Groq/Cloudflare, storage, routing, evaluation, and ChatGPT requirements. Keep 17.1–17.4 additive and retain domain-application authority. Correct misleading work-package details and commands where necessary.
-
-### P0.3 — Record evidence and gaps
-
-Publish a dated reconciliation with a reuse/refactor/missing/defer map, phase sequence, verified local state, external verification gaps, and first implementation-phase readiness. Do not promote fake tests to provider/emulator/cloud evidence or close Phase 9 operational gates by assertion.
-
-### P0.4 — Verify documentation
-
-Review relative links, copied integrated source consistency, detailed-plan coverage, manifest sizes, Phase 17 dependencies, domain authority, and strict-free/security invariants. Run `git diff --check`. This documentation-only phase does not require backend/frontend test or build commands; later implementation phases retain their phase-specific tests and evaluation gates.
+Maintain substantive issue/correction/rationale/scope/sequencing records and requirement-to-phase/package coverage. Keep one authoritative source per design; compatibility source pointers must resolve. Verify all 32 plans, manifest sizes/order/dependencies, local links/cross-references, known paths, acyclic prerequisite graph and realistic commands. Run relevant cheap offline repository checks where useful and git diff --check; report skipped external checks as unverified. Final report identifies existing reuse, important corrections, gaps, preserved scope, implementation sequence and first genuinely ready phase. Stop before implementation.
 
 ## Acceptance
 
-- The next-scope numbering and existing repository phase numbering are clearly distinguished.
-- Every integrated requirement remains assigned to a phase, with no ChatGPT substitution for strict-free work.
-- Actual code seams, existing capability, partial Phase 9 status, and verification gaps are recorded accurately.
-- No new product behavior, provider call, datastore migration, or deployment is introduced.
-- Link/content review and `git diff --check` pass; any skipped external checks remain explicitly unverified.
-
-Phase 1 may begin only after this review is complete. Its offline implementation can proceed while existing Phase 9 production gates remain open; live personal-data use and deployment require those gates to be satisfied independently.
+Every handoff file and capability area has been reviewed against code/ADRs and the rest of the package. All scope remains represented, dependencies are acyclic, plans are grounded in real seams, source pointers resolve, documented commands exist or are explicitly future, and external verification is not overstated. The old review is included but superseded where evidence contradicts it. Next-scope Phase 1 may start offline only after this reconciliation; this does not authorize production or private-data promotion.

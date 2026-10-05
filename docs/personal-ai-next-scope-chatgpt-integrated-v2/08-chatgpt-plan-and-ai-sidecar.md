@@ -23,7 +23,7 @@ The system must not embed/scrape the chatgpt.com consumer interface and must not
 
 ## 2. Relationship to the existing plan
 
-The existing automatic runtime remains unchanged:
+The intended automatic runtime remains:
 
 ```text
 automatic strict-free inference
@@ -59,7 +59,7 @@ As of 2026-10-05, current OpenAI documentation/terms indicate:
 - eligible ChatGPT Plus/Pro users can authorize supported plan-backed AI requests from open-source/local applications without supplying an API key;
 - plan-use authorization is separate from basic identity sign-in;
 - the flow does not grant access to the user's existing ChatGPT conversations or other ChatGPT account context;
-- persistent SIWC authentication tokens must remain local or in a runtime controlled by the user, not in a remote managed environment;
+- this product keeps persistent SIWC credentials in a protected local/user-controlled runtime and forbids managed cloud custody; this is an architectural choice, not evidence that every hosted application is eligible for the open-source flow;
 - direct plan-backed inference uses the public Responses API;
 - current HTTP requests require `store: false` and `stream: true` and the required context/history must be supplied with the request;
 - account-visible models should be discovered using the authenticated account instead of hard-coded;
@@ -69,6 +69,22 @@ As of 2026-10-05, current OpenAI documentation/terms indicate:
 These are operational integration facts, not permanent architecture constants. Re-verify before implementation and release.
 
 ---
+
+### 3.1 Verified compatibility snapshot and enablement gates
+
+Checked against official documentation on 2026-10-05; no live account/OAuth/provider call was performed. The [open-source flow overview](https://developers.openai.com/siwc/token-sharing-open-source) distinguishes local/open-source clients from paid or remotely hosted applications requiring a separate approval path. The hosted web plus local bridge distribution must be classified and approved where required before live enablement. Local token custody alone does not prove eligibility.
+
+The [registration contract](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) uses fresh state/nonce/PKCE, a stable host ID, and an issued client ID associated with validated account identity and granted plan-use permission. The host ID is an identifier, never caller authentication. Keep account registration distinct from Personal AI owner/application/workspace scope.
+
+The [models/inference contract](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) has account-specific `models[]` with visibility/display/slug metadata and requires consuming streamed Responses through a completed terminal event. The [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) reject some normal API fields, including `max_output_tokens` and system-role messages. Keep an explicit versioned serializer below the bridge boundary: use supported instruction/developer forms, input arrays and HTTP `store: false`, `stream: true`; omit unsupported controls. Local byte/deadline cancellation bounds are not a provider generation-token cap or proof that cancelled work consumed no usage. Native tools are not automatically enabled by this integration.
+
+[Accounts/usage guidance](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions) discusses both plan allowance and credits. Verify that account/app controls prevent automatic credit overflow before offering this product's plan-only lane. If this guarantee cannot be established, leave live plan inference unavailable; preserve the offline bridge, context and UI scope. Basic sign-in and explicit model selection do not prove plan-only admission. Refresh must serialize per registration; sign-out stops local use and reports remote revocation separately when unconfirmed.
+
+[Recovery guidance](https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery) distinguishes admission failures from structured Responses errors. Preserve safe status/code/request-ID diagnostics, avoid interpreting arbitrary error text as a stable enum, and never infer quota/reset from a generic limit error. Revalidate this snapshot at implementation and release; it is not a permanent API guarantee.
+
+### 3.2 Local transport feasibility
+
+A separate local bridge client is a deliberate exception to the normal browser → Next.js proxy → cloud API path. It never forwards Google user tokens or Cloud Run IAM credentials to loopback. Pair authorized callers with expiring request authorization; enforce exact Origin and Host checks, bind loopback only, reject DNS rebinding/wildcards, bound requests and streams, and cancel on disconnect. Verify HTTPS web-to-loopback private-network/mixed-content behavior in supported browsers; if unavailable, use a supported native transport or report the lane unavailable. Do not assume installation, pairing or mobile transport works from a diagram.
 
 ## 4. Target architecture
 
@@ -200,6 +216,12 @@ This also permits an explicit provider switch within a Personal AI thread while 
 
 ---
 
+### 7.1 External-turn ownership and trust
+
+Phase 17.2 extends `services/chat_turns.py`, `entities/conversation.py` and existing repository transactions with scoped prepare/finalize. Prepare reserves one owner/app/workspace/conversation turn with active-branch snapshot, authorized source/grant versions, package fingerprint, expiry and explicit provider/model intent. Completion validates reservation, bounds, policy/grant validity and branch continuity and is idempotent; foreign, expired, superseded or mismatched submissions cannot append output. Recovery uses the same key and never silently invokes another provider call.
+
+Browser/local completion is an untrusted client report. Persist producing provider/model and usage with `client_reported` provenance unless independently verified; never use it as trusted billing/quota evidence or domain authority. Actual automatic runtime attribution is introduced in Phases 8/13, not duplicated here. Interrupted ChatGPT output stays transient (or a separately labelled explicit draft); durable failure/reservation metadata remains for recovery. This does not change existing cloud-chat failed-partial-message behavior. Recheck source permissions before later history/summary reuse.
+
 ## 8. Context-package contract
 
 Conceptual:
@@ -229,7 +251,9 @@ Every context item retains:
 - retrieval timestamp/freshness;
 - transformations.
 
-The sidecar should show a human-readable context manifest rather than requiring the user to inspect raw JSON.
+The sidecar should show a human-readable context manifest rather than requiring the user to inspect raw JSON. `prompt` is the bounded current user input, not an already-concatenated full prompt; selected history and context items are serialized exactly once by the approved target adapter. The authenticated ContextPackage endpoint is distinct from the development-only debug inspector. It returns authorized content for execution plus a redacted human-readable manifest; routine traces do not retain the content.
+
+Preparation also returns reservation ID, package fingerprint, policy/grant versions, expiry and a short-lived server-issued dispatch authorization bound to the exact package, explicit provider/model and paired caller. The bridge verifies this authorization and content binding before external disclosure; browser-provided sensitivity or action flags cannot replace the authorized manifest. Define the proof/verifier format in Phase 17.1 using a narrow signed capability or equivalent verifiable grant; Phase 17.2 supplies the authenticated server issuer, without forwarding Google/IAM or ChatGPT credentials. Changing context/model requires a new preparation, not editing the proof. This authorizes a bounded dispatch and does not attest that client-reported output came from OpenAI.
 
 ---
 
@@ -269,7 +293,7 @@ Only into explicitly non-authoritative draft/edit surfaces. Insertion is not equ
 
 #### Apply — later
 
-Only after Phase 23 converts output to a typed mutation proposal, the domain validates it, and the user confirms where required.
+Only after Phase 23 converts output to a typed mutation proposal, the domain validates it, and the user confirms the authoritative write.
 
 ---
 

@@ -114,7 +114,7 @@ Use for commodity work where beneficial:
 - request/response translation,
 - streaming differences,
 - common errors/usage,
-- basic retry primitives.
+- basic retry primitives, disabled unless the runtime explicitly admits a safe bounded retry; hidden SDK retries may not bypass invocation accounting or unknown-outcome fences.
 
 Do not delegate:
 
@@ -226,7 +226,11 @@ Each model call emits normalized metadata:
 - input/output tokens if available,
 - latency,
 - result/error class,
-- retry/cascade IDs.
+- retry/cascade IDs,
+- terminal completion/incomplete state,
+- usage source/confidence and counter/serializer versions.
+
+Extend the current stream-only `llm/client.py` and existing Gemini/fake adapters. Remote token counting and embedding are disclosures subject to the same eligibility policy as generation: never use Gemini counting for a prompt that cannot be disclosed to Gemini. Phase 8 adds endpoint-aware final fit/count and closes direct memory-extraction preparation gaps. Existing normalized Gemini vector space stays unchanged until an explicit migration. See [architecture preparation semantics](02-target-architecture.md#121-preparation-disclosure-and-completion).
 
 ### 6.1 ChatGPT plan bridge contract
 
@@ -348,7 +352,7 @@ configured
 unknown
 ```
 
-Unknown stays unknown.
+Unknown stays unknown. Invocation identity, correlation and replay identity are distinct. Reservations precede every external operation, including token counting, summaries, extraction, embeddings, worker model work, search and lookup. Ledger quota buckets use provider account/project/tier scope plus unit/window/reset source/confidence; local owner/app attribution does not create independent provider quotas. Settle confirmed usage or conservatively retain uncertain reservations. Basic search admission is Phase 11; Phase 25 reuses it rather than first introducing it.
 
 ### 9.1 Separate ChatGPT-plan usage accounting
 
@@ -360,7 +364,7 @@ Record safe per-turn metadata such as:
 - latency;
 - completion/failure;
 - normalized auth/eligibility/usage-limit error class;
-- token usage if the route returns trustworthy usage metadata.
+- token usage with its observation/trust source; client-submitted completion is `client_reported`, not trusted provider accounting.
 
 Do not store OAuth access/refresh tokens, authorization URLs containing sensitive hints, or raw credential diagnostics.
 
@@ -399,6 +403,7 @@ OR user/workspace not eligible
 OR selected model not currently available
 OR sensitivity/policy disallows the requested context
 OR known ChatGPT app/plan usage unavailable
+OR distribution approval or plan-only credit-overflow controls are unverified
 ```
 
 This eligibility check is separate from strict-free candidate filtering.
@@ -410,7 +415,7 @@ This eligibility check is separate from strict-free candidate filtering.
 
 Establish deterministic task routes before scarcity optimization.
 
-Example:
+Illustrative configuration only; the numbers below are not measured project scores. Phase 13 uses versioned fixed priorities labelled unmeasured. Phase 14 must establish profile evidence before any quality floor is claimed or consumed by Phase 15/16. Missing required measured quality rejects rather than inventing confidence.
 
 ```yaml
 routes:
@@ -530,6 +535,8 @@ Safe fallback:
 3. recompute eligible candidates,
 4. select next within the same free/privacy/capability constraints,
 5. stop at bounded attempts.
+
+Re-fit/recount with each selected endpoint's serializer/limits using the same authorized sources. Fallback is allowed only before visible stream output; once a delta is exposed, fail that attempt explicitly rather than concatenate another model. Uncertain dispatch remains fenced and cannot be silently retried. Cascades validate bounded buffered internal attempts before exposure.
 
 Never:
 

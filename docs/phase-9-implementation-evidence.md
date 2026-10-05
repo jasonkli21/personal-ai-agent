@@ -67,3 +67,7 @@ data and refuses unsupported collections before writes. Full Phase 3–8
 migration remains open. Provider budgets are request estimates rather than
 complete provider accounting. Deletion, restore, operational release and
 external acceptance gaps above remain open.
+
+## Next-scope reconciliation — 2026-10-05
+
+The [Phase 0 review](personal-ai-next-scope-chatgpt-integrated-v2/09-phase-0-reconciliation.md) independently preserves these open obligations. Next-scope Phase 11 owns new per-operation ledger delivery; 12 owns artifact lifecycle propagation; 28 must close existing physical deletion, full legacy-owner migration and operational release acceptance using this plan/checklist rather than treating duplicate names as completion. The existing bootstrap TTL policy conflicts with strict-free intent and remains an implementation gap. The current review adds no operational implementation or external acceptance evidence.

@@ -207,7 +207,7 @@ Examples:
 - application-independent defaults,
 - durable cross-domain preferences appropriate to share.
 
-Keep this small.
+Keep this small. Phase 3 implements this bounded AI-owned profile/provider separately from memory and domain state; Phases 4–7 govern budgeting and explicit permitted-field sharing. It is not an implicit all-app data source.
 
 ### 4.2 Domain profile
 
@@ -238,7 +238,7 @@ Owned by Personal AI.
 Examples:
 
 - conversational preferences,
-- prior reasoning outcomes,
+- user-confirmed reasoning outcomes and decisions, attributed to their sources; AI interpretations remain fallible artifacts rather than unqualified durable facts,
 - remembered decisions,
 - soft context learned from chat,
 - unresolved threads.
@@ -469,7 +469,7 @@ Not required in the main phased plan:
 
 These may be added after the initial provider architecture is proven and only when they provide a concrete quality, quota, capability, or privacy benefit.
 
-### 10.4 ChatGPT plan through Sign in with ChatGPT — additive explicit lane
+### 10.5 ChatGPT plan through Sign in with ChatGPT — additive explicit lane
 
 ChatGPT-plan usage is required as an additive integration but is **not** a fourth automatic strict-free provider.
 
@@ -500,8 +500,16 @@ credential_location: user_controlled_runtime
 conversation_storage: personal_ai
 ```
 
-`strict_free_eligible: false` here means **not eligible for automatic strict-free routing**, not that the application incurs per-request API spend when an eligible user explicitly uses their ChatGPT plan.
+`strict_free_eligible: false` means **not eligible for automatic strict-free routing**. Plan entitlement does not itself prove that credit overflow is disabled. This product requires verified plan-only controls before live use; if preventing silent credit consumption cannot be verified, the lane stays unavailable. API-key billing is outside this integration.
 
+
+### 10.6 Reconciled product boundaries
+
+Application/workspace labels and client capabilities express scope or intent; only verified server identity plus registered policy authorizes access. Legacy owner-only data belongs to standalone/no-workspace scope and must never become implicitly available in another application. Global profile is a future, explicitly permitted source, not an exemption from field policy.
+
+Derived context remains sensitivity-bearing. Conversation history, working summaries, memory, caches, traces, exports and generated artifacts must retain source scope and applicable permission dependencies so revocation cannot be bypassed through a previously copied slice. AI memory remains attributed personal assertions; external evidence and live domain state retain their distinct lifetimes and authority.
+
+Strict-free is a target guarantee, not a description of today's deployment. Each new external path needs eligibility, privacy and bounded resource admission before enablement. Missing account/data-policy or cost-control evidence fails closed for the affected path. Denial or exhaustion may reduce available functionality, never weaken privacy or silently enable billable overflow. See the [verified Phase 0 review](09-phase-0-reconciliation.md).
 
 ## 11. Provider/model capability registry
 
@@ -862,7 +870,7 @@ Authorization must answer:
 - Is cross-app use permitted?
 - Which model providers may receive it?
 - Is the operation read-only/mutating?
-- Is confirmation required?
+- Has the user confirmed this AI-assisted authoritative write? Confirmation is mandatory in Phase 23, alongside fresh domain validation and authorization.
 
 Unknown provider data policy should default conservatively for sensitive use.
 

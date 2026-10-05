@@ -1,6 +1,6 @@
 # Phase 17.1 implementation plan — ChatGPT authentication and local bridge
 
-This is the detailed execution plan for integrated next-scope **Phase 17.1 — ChatGPT authentication and local bridge**. It elaborates the normative scope in [../source/05-phased-implementation-plan.md](../source/05-phased-implementation-plan.md) using the structure and verification style of the repository’s existing phase implementation plans. It is an execution backlog, not permission to broaden product scope. Phase 0/current-repository evidence wins over hypothetical file/module assumptions. ChatGPT-specific design constraints are additionally defined in [../source/08-chatgpt-plan-and-ai-sidecar.md](../source/08-chatgpt-plan-and-ai-sidecar.md).
+Reconciled on 2026-10-05 against `ad1dea5912af81eda0c9c5d6a41180ce186a07a5`. This is **next-scope** numbering, distinct from existing repository Phases 1–9. Read the [source roadmap](../../05-phased-implementation-plan.md), [comprehensive Phase 0 review](../../09-phase-0-reconciliation.md) and [shared execution contract](../execution-contract.md) first. This plan preserves product scope and defines future implementation; it does not claim delivery.
 
 ## Scope boundary
 
@@ -37,662 +37,91 @@ This is the detailed execution plan for integrated next-scope **Phase 17.1 — C
 - ChatGPT conversation-history import
 - native-mobile credential design before capability verification
 
-## Repository baseline and candidate code areas
+## Current state and reuse
 
-The current repository already separates backend API/auth/context/domain/evaluation/evidence/LLM/memory/ranking/search concerns, plus frontend and infrastructure. Candidate areas for this phase are intentionally advisory until Phase 0/current-code inspection confirms the exact seam:
+The ChatGPT credential runtime, OAuth flow and discovery are missing. This is a new local runtime boundary; it is not a Cloud Run provider credential or the existing Google browser sign-in.
 
-- new local/user-controlled bridge runtime
-- `frontend/ bridge client seam`
-- `backend/src/personal_ai/llm/ normalized contracts`
-- `docs/`
+Verified existing backend seams (paths exist at the reviewed revision):
 
-Do not create a new parallel subsystem when an existing contract can be extended cleanly. Do not rename/reorganize unrelated code merely to make the phase look cleaner.
+- `backend/src/personal_ai/llm/client.py`
+- `backend/src/personal_ai/llm/errors.py`
+- `backend/src/personal_ai/llm/fake.py`
+- `backend/src/personal_ai/settings.py`
 
-## Phase 0 repository reconciliation
+Frontend integration, where needed, extends `frontend/src/lib/api.ts`, `frontend/src/lib/conversation-proxy.ts`, `frontend/src/lib/sse.ts`, `frontend/src/features/chat/chat-state.ts` and adjacent feature/UI components. Infrastructure extends `infrastructure/gcp/deploy.sh`, `firestore.indexes.json`, `Makefile` and `.github/workflows/quality.yml` only when required. Named target types in this plan are **future contracts**; choose their exact file/class placement beside these seams during implementation. Do not create fictitious files or parallel services merely to match a diagram.
 
-No ChatGPT bridge, SIWC credential store, local IPC transport, or account-model discovery exists. `frontend/src/lib/auth.ts` holds only a Google ID token in memory for Personal AI OIDC; it must not be reused as ChatGPT-plan authorization. Re-verify current account/API eligibility and platform support before implementation. A local/user-controlled bridge must keep reusable credentials out of Cloud Run, Firestore, GCS, browser storage, logs and exports. See the [dated Phase 0 code and dependency map](../phase-0-reconciliation-2026-10-05.md).
+## Prerequisites and work ordering
 
-## Delivery conventions and invariants
+Required phases: 8, 10. Each must deliver the contracts this plan consumes; a similarly named existing phase is not a substitute. Recommended numerical order is recorded in the roadmap. Within this plan, work packages run in order; each consumes prior packages' delivered contracts, then closes verification below.
 
-- Begin by reading `AGENTS.md`, `docs/project-brief.md`, `docs/architecture.md`, the current authoritative roadmap, and this phase plan.
-- Inspect `git status` before editing; preserve unrelated user changes and existing accepted decisions unless this phase explicitly supersedes them.
-- Keep routes/UI thin and keep provider/storage SDK details behind existing service/repository boundaries.
-- Use deterministic fakes for automated tests; credentialed provider, emulator, and cloud checks are opt-in and must be reported separately.
-- Preserve owner/application/workspace isolation and safe error semantics across every new path.
-- Do not add later-phase features merely because they would make the current phase easier.
-- Update docs when contracts/behavior change and record tested revision, commands, outcomes, and remaining external verification gaps.
-- Finish repository changes with relevant tests/lint/type-check/build checks plus `git diff --check`; documentation-only changes still require link/content review and `git diff --check`.
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
+## Phase-specific invariants
+
 - Reusable credentials stay exclusively in protected user-controlled storage.
 - Browser JavaScript and managed cloud services never receive access/refresh tokens.
 - Treat preview/operational OpenAI requirements as revalidated configuration/compatibility facts, not permanent assumptions.
 
-## Dependency map
+## Work packages
 
-**Prerequisites:** Phase 16 / Checkpoint D
+### P17_1.0 — Eligibility and transport decision
 
-```text
-P17_1.0 External-requirements -> P17_1.1 Local
-P17_1.1 Local -> P17_1.2 SIWC
-P17_1.2 SIWC -> P17_1.3 Authenticated
-P17_1.3 Authenticated -> P17_1.4 Responses
-P17_1.4 Responses -> P17_1.5 Browser/local
-P17_1.5 Browser/local -> P17_1.6 Fake
-```
+**Depends on:** required phases above.
 
-The map is sequencing guidance, not a requirement to commit once per work package. Prefer a few coherent commits that preserve reviewable boundaries.
+Revalidate the dated SIWC snapshot in source 08 before live work. Classify hosted web plus installed bridge distribution and obtain any required approval; verify plan-only controls without silent credit use. Prototype supported loopback/local IPC with exact Origin/Host checks, pairing and expiring caller authorization, DNS-rebinding prevention and bounded streams. Browser compatibility/PNA/mixed-content and native mobile support are explicit external gates, not assumptions. No Google/IAM tokens are forwarded to bridge.
 
-## Required verification matrix
+**Acceptance:** The distribution/transport/plan-only decision is documented; failed external gates leave live inference unavailable.
 
-- Offline unit/contract tests cover success plus malformed/denied/unavailable/error paths for each new contract.
-- Integration tests prove the phase composes with the existing owner/application/workspace and context boundaries.
-- Regression tests prove the phase-disabled/default path preserves prior behavior.
-- No automated test requires live provider credentials, a real GCP project, or personal data unless explicitly marked opt-in.
-- Safe tracing/evidence records IDs, counts, versions, states, and reason codes without raw secrets or unnecessary private content.
-- Documentation/release evidence states exactly which external provider/emulator/cloud checks were run, skipped, or remain open.
-- Provider/model compatibility and quota/eligibility assertions are tested with fakes/config fixtures; real-provider behavior is an opt-in compatibility check.
-- ChatGPT-mode tests prove credentials never enter managed cloud persistence or browser storage and provider switching remains explicit.
+### P17_1.1 — Local identity and credential lifecycle
 
-## Required implementation artifacts
+**Depends on:** P17_1.0.
 
-- Code/configuration changes required by the work packages below, limited to Phase 17.1 scope.
-- Deterministic fixtures/fakes and tests for every new public/internal contract and failure class.
-- Updated architecture/API/operations documentation only where the implemented behavior changes those contracts.
-- A phase implementation guide/release-evidence update after implementation, including tested revision, commands, results, and remaining verification gaps.
-- Any ADR required to resolve a durable architectural decision that is not already accepted; routine implementation details do not need separate ADRs.
+Define future ChatGPTPlanBridge types using Phase 8 neutral records and an independently tested fake. Implement documented public-client OAuth/OIDC/PKCE with per-attempt state/nonce, validated issued client identity and granted plan-use scopes; stable host ID alone never authenticates a caller. Keep account/client/workspace registrations separate in protected local storage. Serialize rotating refresh, atomically replace credentials, stop on confirmed revocation, sign out/disconnect locally and distinguish unconfirmed remote revocation. Browser/cloud see only safe connection state. Define the package-bound dispatch-grant format, verifier and fake issuer here; Phase 17.2 consumes this contract to implement authenticated cloud issuance. Cloud ContextPackages are not enabled before that issuance exists. Synthetic native/provider compatibility checks in this subphase do not claim live cloud/private-domain integration.
 
----
+**Acceptance:** OAuth and rotating refresh fixtures reject account/state/scope mismatches and expose no reusable tokens.
 
-## Phase 17.1 work packages
+### P17_1.2 — Discovery and supported inference
 
-### P17_1.0 — Re-verify current Sign in with ChatGPT open-source/local-runtime requirements before…
+**Depends on:** P17_1.1.
 
-**Dependencies:** Phase 16 / Checkpoint D  
+Discover account-specific models with supported models[]/visibility/display/slug semantics and refresh on account change. A versioned bridge serializer implements supported Responses fields, input/instructions and required HTTP non-persistence/streaming; reject unsupported fields/tools instead of forwarding the normal API body. Consume terminal completion, classify interrupted/auth/admission/eligibility/usage failures, and bound input/output bytes and total deadline. No max_output_tokens assumption, credits/API-key fallback, conversation import or implicit retry after uncertain dispatch.
 
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
+**Acceptance:** Discovery and supported serialization handle terminal loss and usage/admission errors without billing fallback.
 
-**Work:**
+### P17_1.3 — Security and compatibility closeout
 
-- Re-verify current Sign in with ChatGPT open-source/local-runtime requirements before implementation.
-- Reconcile the existing implementation relevant to **Re-verify current Sign in with ChatGPT open-source/local-runtime requirements before implementation.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Thread the new data/behavior through API → service → repository/provider/context boundaries with one clear ownership path.
-- Preserve existing default behavior when the new capability is absent or disabled.
-- Add integration tests for success, explicit failure, cancellation/retry where relevant, and isolation boundaries.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
+**Depends on:** P17_1.2.
 
-**Requirements:**
+Test the bridge/fake contract and synthetic auth transports independently of cloud services. Assert no token or authorization URL enters returned objects, browser storage, Firestore, GCS, Secret Manager, telemetry/export or committed fixtures. Document installation, pairing, lifecycle states, supported desktop transport and opt-in provider flow; mobile remains a capability check. Live eligibility failure leaves additive work pending rather than changing automatic providers.
 
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- No hidden side channel may bypass existing authorization/context/provider boundaries.
-- Existing public API/SSE behavior changes only when this phase explicitly requires it.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
+**Acceptance:** Local-runtime tests and redaction scans cover every credential persistence/output path; skipped compatibility remains unverified.
 
-**Acceptance criteria:**
+## Requirement coverage
 
-- Existing regression tests remain green with the new path disabled/defaulted.
-- The enabled path is attributable in traces/evidence without exposing sensitive payloads.
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
+The commitments above remain normative. This mapping assigns every commitment to the concrete packages; verification covers all packages and acceptance criteria.
 
-**Out of scope:**
+| Requirement | Work packages |
+| --- | --- |
+| R17.1.1: Re-verify current Sign in with ChatGPT open-source/local-runtime requirements before implementation. | P17_1.0 |
+| R17.1.2: Define `ChatGPTPlanBridge` / local-client contract using normalized Personal AI request/output types where practical. | P17_1.1 |
+| R17.1.3: Implement supported OAuth/OIDC/PKCE registration/sign-in flow. | P17_1.1 |
+| R17.1.4: Persist stable host/client registration metadata and credentials only in protected local/user-controlled storage. | P17_1.1 |
+| R17.1.5: Validate ID token identity and required ChatGPT-plan usage scope. | P17_1.1 |
+| R17.1.6: Implement token refresh, sign-out/disconnect, and revocation/recovery behavior. | P17_1.1 |
+| R17.1.7: Implement account-specific model discovery. | P17_1.2 |
+| R17.1.8: Implement direct Responses API streaming behind the bridge using current required request semantics. | P17_1.2 |
+| R17.1.9: Normalize completed/incomplete/auth/eligibility/usage-limit errors. | P17_1.2 |
+| R17.1.10: Add fake bridge and contract tests. | P17_1.3 |
+| R17.1.11: Ensure the bridge never returns reusable OAuth tokens to browser/cloud callers. | P17_1.3 |
+| R17.1.12: For hosted web integration, define loopback/local-IPC transport with origin allowlisting and anti-CSRF/request authorization. | P17_1.0 |
+| R17.1.13: Treat native-mobile support as capability to verify rather than assuming desktop loopback mechanics. | P17_1.0 |
 
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
+## Targeted verification and closeout
 
-### P17_1.1 — `ChatGPTPlanBridge` / local-client contract using normalized Personal AI…
+Test OAuth state/nonce/issuer/audience/expiry/scope failures, swapped account/client credentials, concurrent refresh, storage failure, revoked versus temporarily unavailable auth, model churn, malformed stream/terminal loss, caller-origin/Host attacks, cancellation and secret redaction. Add a real documented local-runtime test command when its language/package is selected; it does not exist today.
 
-**Dependencies:** P17_1.0 plus any earlier work packages whose contracts it consumes  
+Run `make backend-test` and `make backend-lint` for backend changes. Run `make frontend-test`, `make frontend-lint` and `make frontend-typecheck` when frontend/proxy/UI contracts change. Activate the backend venv and use the README's pinned Node/pnpm/uv setup; bare shell `python` is not assumed to exist. Run builds only for dependency/build changes, and `bash -n infrastructure/gcp/deploy.sh` for deployment script edits. Finish with `git diff --check`.
 
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
+New routing/storage/bridge evaluation runners are **future artifacts**: add an actual documented command during the implementing phase before claiming it ran. Use deterministic fakes and synthetic fixtures; missing credentials cannot block or weaken offline tests.
 
-**Work:**
+**External checks:** Distribution approval, OAuth/model access, plan-only billing controls, loopback browser behavior and native-mobile mechanics must be independently verified before enabling the affected clients.
 
-- Define `ChatGPTPlanBridge` / local-client contract using normalized Personal AI request/output types where practical.
-- Reconcile the existing implementation relevant to **Define `ChatGPTPlanBridge` / local-client contract using normalized Personal AI request/output types where practical.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Define typed/provider-neutral records or protocols with explicit versioning/validation where persistence or cross-process exchange is involved.
-- Specify required/optional fields, stable enums/reason codes, serialization behavior, and invalid-input semantics.
-- Add deterministic contract/schema tests for valid, missing, malformed, and forward-compatibility cases.
-- Normalize request/response/error/usage metadata into Personal AI types and keep vendor/client objects inside the adapter boundary.
-- Implement a deterministic fake with the same contract for unit/integration tests.
-- Define opt-in real-provider compatibility checks that skip cleanly without credentials/network.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- Contracts must not expose provider SDK or Firestore implementation types above their boundary.
-- Unknown/unsupported values fail explicitly rather than being silently coerced.
-- Secrets and authorization headers are never logged or persisted in test artifacts.
-- Provider failures map to stable application error categories.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Representative valid and invalid contract fixtures are covered offline.
-- Callers can depend on the new contract without importing implementation-specific SDK types.
-- Fake-based tests exercise all required operations and failure classes.
-- External checks, when run, are recorded separately from offline completion.
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.2 — Supported OAuth/OIDC/PKCE registration/sign-in flow
-
-**Dependencies:** P17_1.1 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Implement supported OAuth/OIDC/PKCE registration/sign-in flow.
-- Reconcile the existing implementation relevant to **Implement supported OAuth/OIDC/PKCE registration/sign-in flow.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.3 — Persist stable host/client registration metadata and credentials only in protected…
-
-**Dependencies:** P17_1.2 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Persist stable host/client registration metadata and credentials only in protected local/user-controlled storage.
-- Reconcile the existing implementation relevant to **Persist stable host/client registration metadata and credentials only in protected local/user-controlled storage.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Keep persistence behind repository/store protocols and provide an in-memory fake for automated tests.
-- Define idempotency/concurrency/failure semantics for partial writes or retries.
-- Document required indexes/object layout/retention behavior without exposing storage details to higher layers.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- Storage failures must have explicit user-visible versus best-effort semantics.
-- No collection/bucket scan may become a normal request-path dependency unless explicitly designed.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Persistence tests cover create/read/update or append semantics, isolation, missing records, and injected failure.
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.4 — Validate ID token identity and required ChatGPT-plan usage scope
-
-**Dependencies:** P17_1.3 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Validate ID token identity and required ChatGPT-plan usage scope.
-- Reconcile the existing implementation relevant to **Validate ID token identity and required ChatGPT-plan usage scope.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.5 — Token refresh, sign-out/disconnect, and revocation/recovery behavior
-
-**Dependencies:** P17_1.4 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Implement token refresh, sign-out/disconnect, and revocation/recovery behavior.
-- Reconcile the existing implementation relevant to **Implement token refresh, sign-out/disconnect, and revocation/recovery behavior.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.6 — Account-specific model discovery
-
-**Dependencies:** P17_1.5 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Implement account-specific model discovery.
-- Reconcile the existing implementation relevant to **Implement account-specific model discovery.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Define typed/provider-neutral records or protocols with explicit versioning/validation where persistence or cross-process exchange is involved.
-- Specify required/optional fields, stable enums/reason codes, serialization behavior, and invalid-input semantics.
-- Add deterministic contract/schema tests for valid, missing, malformed, and forward-compatibility cases.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- Contracts must not expose provider SDK or Firestore implementation types above their boundary.
-- Unknown/unsupported values fail explicitly rather than being silently coerced.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Representative valid and invalid contract fixtures are covered offline.
-- Callers can depend on the new contract without importing implementation-specific SDK types.
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.7 — Direct Responses API streaming behind the bridge using current required request…
-
-**Dependencies:** P17_1.6 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Implement direct Responses API streaming behind the bridge using current required request semantics.
-- Reconcile the existing implementation relevant to **Implement direct Responses API streaming behind the bridge using current required request semantics.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Normalize request/response/error/usage metadata into Personal AI types and keep vendor/client objects inside the adapter boundary.
-- Implement a deterministic fake with the same contract for unit/integration tests.
-- Define opt-in real-provider compatibility checks that skip cleanly without credentials/network.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- Secrets and authorization headers are never logged or persisted in test artifacts.
-- Provider failures map to stable application error categories.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Fake-based tests exercise all required operations and failure classes.
-- External checks, when run, are recorded separately from offline completion.
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.8 — Normalize completed/incomplete/auth/eligibility/usage-limit errors
-
-**Dependencies:** P17_1.7 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Normalize completed/incomplete/auth/eligibility/usage-limit errors.
-- Reconcile the existing implementation relevant to **Normalize completed/incomplete/auth/eligibility/usage-limit errors.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Implement hard allow/deny evaluation before protected data retrieval or model invocation, as appropriate.
-- Return structured denial/rejection reasons suitable for safe tracing and tests.
-- Build an explicit negative matrix covering cross-owner/app/workspace/provider cases.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- Deny by default when required policy facts are missing or unverified.
-- Policy is enforced in code; prompt instructions are not authorization.
-
-**Acceptance criteria:**
-
-- Negative tests prove protected data/provider paths are never invoked after denial.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.9 — Fake bridge and contract tests
-
-**Dependencies:** P17_1.8 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Add fake bridge and contract tests.
-- Reconcile the existing implementation relevant to **Add fake bridge and contract tests.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Define typed/provider-neutral records or protocols with explicit versioning/validation where persistence or cross-process exchange is involved.
-- Specify required/optional fields, stable enums/reason codes, serialization behavior, and invalid-input semantics.
-- Add deterministic contract/schema tests for valid, missing, malformed, and forward-compatibility cases.
-- Normalize request/response/error/usage metadata into Personal AI types and keep vendor/client objects inside the adapter boundary.
-- Implement a deterministic fake with the same contract for unit/integration tests.
-- Define opt-in real-provider compatibility checks that skip cleanly without credentials/network.
-- Create/reuse named synthetic fixtures with explicit expected selections, exclusions, errors, and invariants.
-- Run deterministic offline comparisons first; make live/cloud checks explicit opt-in steps.
-- Define promotion/completion gates before interpreting results and record failures without hiding them.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- Contracts must not expose provider SDK or Firestore implementation types above their boundary.
-- Unknown/unsupported values fail explicitly rather than being silently coerced.
-- Secrets and authorization headers are never logged or persisted in test artifacts.
-- Provider failures map to stable application error categories.
-- Evaluation must distinguish skipped external checks from passing checks.
-- No personal/private data is required in committed fixtures.
-
-**Acceptance criteria:**
-
-- Representative valid and invalid contract fixtures are covered offline.
-- Callers can depend on the new contract without importing implementation-specific SDK types.
-- Fake-based tests exercise all required operations and failure classes.
-- External checks, when run, are recorded separately from offline completion.
-- Results are reproducible from a clean checkout using documented commands.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.10 — Ensure the bridge never returns reusable OAuth tokens to browser/cloud callers
-
-**Dependencies:** P17_1.9 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Ensure the bridge never returns reusable OAuth tokens to browser/cloud callers.
-- Reconcile the existing implementation relevant to **Ensure the bridge never returns reusable OAuth tokens to browser/cloud callers.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Normalize request/response/error/usage metadata into Personal AI types and keep vendor/client objects inside the adapter boundary.
-- Implement a deterministic fake with the same contract for unit/integration tests.
-- Define opt-in real-provider compatibility checks that skip cleanly without credentials/network.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- Secrets and authorization headers are never logged or persisted in test artifacts.
-- Provider failures map to stable application error categories.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Fake-based tests exercise all required operations and failure classes.
-- External checks, when run, are recorded separately from offline completion.
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.11 — For hosted web integration, define loopback/local-IPC transport with origin…
-
-**Dependencies:** P17_1.10 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- For hosted web integration, define loopback/local-IPC transport with origin allowlisting and anti-CSRF/request authorization.
-- Reconcile the existing implementation relevant to **For hosted web integration, define loopback/local-IPC transport with origin allowlisting and anti-CSRF/request authorization.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Thread the new data/behavior through API → service → repository/provider/context boundaries with one clear ownership path.
-- Preserve existing default behavior when the new capability is absent or disabled.
-- Add integration tests for success, explicit failure, cancellation/retry where relevant, and isolation boundaries.
-- Implement hard allow/deny evaluation before protected data retrieval or model invocation, as appropriate.
-- Return structured denial/rejection reasons suitable for safe tracing and tests.
-- Build an explicit negative matrix covering cross-owner/app/workspace/provider cases.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- No hidden side channel may bypass existing authorization/context/provider boundaries.
-- Existing public API/SSE behavior changes only when this phase explicitly requires it.
-- Deny by default when required policy facts are missing or unverified.
-- Policy is enforced in code; prompt instructions are not authorization.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Existing regression tests remain green with the new path disabled/defaulted.
-- The enabled path is attributable in traces/evidence without exposing sensitive payloads.
-- Negative tests prove protected data/provider paths are never invoked after denial.
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.12 — Treat native-mobile support as capability to verify rather than assuming desktop…
-
-**Dependencies:** P17_1.11 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Treat native-mobile support as capability to verify rather than assuming desktop loopback mechanics.
-- Reconcile the existing implementation relevant to **Treat native-mobile support as capability to verify rather than assuming desktop loopback mechanics.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Keep reusable authentication material inside the user-controlled runtime and expose only normalized connection/model/request results to browser or cloud callers.
-- Define explicit lifecycle states for sign-in/refresh/revocation/disconnect or the relevant subset, with deterministic error mapping and recovery tests.
-- Add secret-scanning/redaction assertions proving credentials and authorization material cannot enter logs, traces, analytics, exports, Firestore, GCS, or browser storage.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- No automatic fallback may convert ChatGPT-plan use into API-key billing, credits, another account, or strict-free routing.
-- Current external SIWC/Responses constraints must be re-verified at implementation/release time rather than frozen as permanent assumptions.
-
-**Acceptance criteria:**
-
-- Credential-bound tests prove the managed cloud backend can operate without access/refresh tokens and browser callers never receive reusable tokens.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
-### P17_1.13 — Phase integration, regression verification, and evidence closeout
-
-**Dependencies:** P17_1.12 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 17.1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Wire the completed work packages through the narrow existing integration seam for this phase; do not add new product behavior.
-- Run the phase verification matrix and all affected existing regressions from a clean checkout.
-- Update the implementation guide/release evidence with actual code paths, tested revision, commands, outcomes, and explicit external verification gaps.
-- Confirm every later-phase gate remains disabled/absent unless the integrated roadmap explicitly requires it now.
-- Reconcile the existing implementation relevant to **Integrate the completed Phase work, run the required regression/evaluation matrix, update implementation documentation/evidence, and leave later-phase capabilities disabled or absent.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Create/reuse named synthetic fixtures with explicit expected selections, exclusions, errors, and invariants.
-- Run deterministic offline comparisons first; make live/cloud checks explicit opt-in steps.
-- Define promotion/completion gates before interpreting results and record failures without hiding them.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
-
-**Requirements:**
-
-- Never scrape, automate, or iframe chatgpt.com as the integration mechanism.
-- Reusable credentials stay exclusively in protected user-controlled storage.
-- Browser JavaScript and managed cloud services never receive access/refresh tokens.
-- Evaluation must distinguish skipped external checks from passing checks.
-- No personal/private data is required in committed fixtures.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
-
-**Acceptance criteria:**
-
-- Eligible signed-in user can complete a streamed ChatGPT-plan request through the local/user-controlled runtime.
-- No persistent ChatGPT credential appears in Firestore, GCS, Secret Manager, browser storage, logs, traces, analytics, or exports.
-- Managed Cloud Run services can operate with zero knowledge of ChatGPT access/refresh tokens.
-- Account model list is discovered rather than hard-coded.
-- Existing Gemini behavior and Phase 8 neutral contracts remain functional.
-- Results are reproducible from a clean checkout using documented commands.
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
-
-**Out of scope:**
-
-- automatic strict-free routing through ChatGPT
-- OpenAI API-key billing fallback
-- ChatGPT conversation-history import
-- native-mobile credential design before capability verification
-
----
-
-## Phase verification and closeout
-
-### Required local/offline checks
-
-- `make backend-test`
-- `make backend-lint`
-- `make frontend-test`
-- `make frontend-lint`
-- `make frontend-typecheck`
-- local bridge unit/contract/security test command
-- frontend checks when sidecar/browser integration changes
-- `git diff --check`
-
-### Optional external checks
-
-- Run only the provider/emulator/cloud/browser/native checks that are relevant to the phase and available in the environment.
-- Use synthetic data. Never use the absence of credentials/network/cloud access as a reason to weaken offline tests.
-- Record a skipped external check as **unverified**, not passed.
-
-### Documentation/evidence closeout
-
-- Update this plan only if implementation discovered a necessary scope-preserving clarification; do not silently rewrite the roadmap after coding.
-- Create/update the phase implementation guide with actual files/classes/routes/configuration and a concise code map.
-- Record release/verification evidence with date, tested revision, commands, outcomes, and explicit remaining external gaps.
-- Update ADRs/API/deployment/runbook docs only where their contracts actually changed.
-
-## Phase 17.1 completion review
-
-- 1. Did implementation satisfy every normative Phase 17.1 commitment without adding later-phase product behavior?
-- 2. Can a reviewer identify the authoritative source of each new piece of state and the boundary that owns it?
-- 3. Do negative/isolation/failure tests prove the new behavior fails safely instead of silently broadening access or provider use?
-- 4. Are offline verification and external/provider/cloud verification clearly distinguished?
-- 5. Can the new behavior be disabled/absent without regressing the previously working path where backward compatibility is required?
-- 6. Are docs, implementation evidence, and remaining gaps accurate at the tested revision?
-- 7. Can any reusable ChatGPT credential reach managed cloud persistence, logs, traces, analytics, exports, or browser storage? The required answer is no.
-
-## Handoff to the next phase
-
-Do not begin the next phase until the Phase 17.1 acceptance criteria are met locally or any deliberately deferred external checks are documented as verification gaps. The next session should read the implementation guide/release evidence produced here in addition to the next phase plan.
+Record actual files/interfaces, tested revision/configuration, command results, disabled gates and unresolved external checks in an implementation guide/release evidence. Follow the shared execution contract for failure, isolation, retention and scope preservation. Completion requires every normative commitment and package locally verified; external gates may remain pending only with the affected live capability unavailable. Do not describe a skipped check as passed.

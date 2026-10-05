@@ -1,6 +1,6 @@
 # Phase 26 implementation plan — Memory retrieval optimization
 
-This is the detailed execution plan for integrated next-scope **Phase 26 — Memory retrieval optimization**. It elaborates the normative scope in [../source/05-phased-implementation-plan.md](../source/05-phased-implementation-plan.md) using the structure and verification style of the repository’s existing phase implementation plans. It is an execution backlog, not permission to broaden product scope. Phase 0/current-repository evidence wins over hypothetical file/module assumptions.
+Reconciled on 2026-10-05 against `ad1dea5912af81eda0c9c5d6a41180ce186a07a5`. This is **next-scope** numbering, distinct from existing repository Phases 1–9. Read the [source roadmap](../../05-phased-implementation-plan.md), [comprehensive Phase 0 review](../../09-phase-0-reconciliation.md) and [shared execution contract](../execution-contract.md) first. This plan preserves product scope and defines future implementation; it does not claim delivery.
 
 ## Scope boundary
 
@@ -24,279 +24,80 @@ This is the detailed execution plan for integrated next-scope **Phase 26 — Mem
 - embedding-provider migration without explicit plan
 - learned routing
 
-## Repository baseline and candidate code areas
+## Current state and reuse
 
-The current repository already separates backend API/auth/context/domain/evaluation/evidence/LLM/memory/ranking/search concerns, plus frontend and infrastructure. Candidate areas for this phase are intentionally advisory until Phase 0/current-code inspection confirms the exact seam:
+Fixed/scored/consolidated validated retrieval and lifecycle experiments are implemented. Hybrid/entity/task-conditioned optimization needs evaluation and extension, not reimplementation of those variants.
 
-- `backend/src/personal_ai/memory/`
-- `backend/src/personal_ai/context/`
-- `backend/src/personal_ai/evaluation/`
-- `experiments/`
+Verified existing backend seams (paths exist at the reviewed revision):
 
-Do not create a new parallel subsystem when an existing contract can be extended cleanly. Do not rename/reorganize unrelated code merely to make the phase look cleaner.
+- `backend/src/personal_ai/memory/services.py`
+- `backend/src/personal_ai/memory/contracts.py`
+- `backend/src/personal_ai/memory/repositories.py`
+- `backend/src/personal_ai/memory/lifecycle_policy.py`
+- `backend/src/personal_ai/memory/lifecycle_repositories.py`
+- `backend/src/personal_ai/memory/inspection.py`
+- `backend/src/personal_ai/evaluation/memory.py`
+- `backend/src/personal_ai/evaluation/memory_lifecycle.py`
 
-## Phase 0 repository reconciliation
+Frontend integration, where needed, extends `frontend/src/lib/api.ts`, `frontend/src/lib/conversation-proxy.ts`, `frontend/src/lib/sse.ts`, `frontend/src/features/chat/chat-state.ts` and adjacent feature/UI components. Infrastructure extends `infrastructure/gcp/deploy.sh`, `firestore.indexes.json`, `Makefile` and `.github/workflows/quality.yml` only when required. Named target types in this plan are **future contracts**; choose their exact file/class placement beside these seams during implementation. Do not create fictitious files or parallel services merely to match a diagram.
 
-Benchmark against `memory/services.py`, `memory/policy.py`, lifecycle records, and owner-filtered `memory/repositories.py` KNN with the configured Gemini 768-dimensional indexes. Preserve attribution, source status, branch compatibility and the memory/evidence/domain-state distinction. Hybrid/entity-aware work is an evaluated experiment, not an implicit embedding migration. See the [dated Phase 0 code and dependency map](../phase-0-reconciliation-2026-10-05.md).
+## Prerequisites and work ordering
 
-**Existing regression evaluations:** `make context-eval`, `make memory-eval`, `make memory-lifecycle-eval`. Run those touched by this phase in addition to its backend/frontend test, lint, and type checks; add phase-specific fixtures for new behavior.
+Required phases: 1, 4, 8, 14. Each must deliver the contracts this plan consumes; a similarly named existing phase is not a substitute. Recommended numerical order is recorded in the roadmap. Within this plan, work packages run in order; each consumes prior packages' delivered contracts, then closes verification below.
 
-## Delivery conventions and invariants
+## Phase-specific invariants
 
-- Begin by reading `AGENTS.md`, `docs/project-brief.md`, `docs/architecture.md`, the current authoritative roadmap, and this phase plan.
-- Inspect `git status` before editing; preserve unrelated user changes and existing accepted decisions unless this phase explicitly supersedes them.
-- Keep routes/UI thin and keep provider/storage SDK details behind existing service/repository boundaries.
-- Use deterministic fakes for automated tests; credentialed provider, emulator, and cloud checks are opt-in and must be reported separately.
-- Preserve owner/application/workspace isolation and safe error semantics across every new path.
-- Do not add later-phase features merely because they would make the current phase easier.
-- Update docs when contracts/behavior change and record tested revision, commands, outcomes, and remaining external verification gaps.
-- Finish repository changes with relevant tests/lint/type-check/build checks plus `git diff --check`; documentation-only changes still require link/content review and `git diff --check`.
-- Memory remains attributable user-derived context, not external evidence or authoritative domain state.
 - Existing lifecycle exclusions/supersession/forgetting remain binding.
 - Embedding compatibility and Firestore vector path remain explicit.
 - No optimization may increase false-memory or cross-owner/context leakage.
 
-## Dependency map
+## Work packages
 
-**Prerequisites:** Phase 25
+### P26.0 — Retrieval benchmark
 
-```text
-P26.0 Memory-retrieval -> P26.1 Hybrid/entity-aware
-P26.1 Hybrid/entity-aware -> P26.2 Task-conditioned
-P26.2 Task-conditioned -> P26.3 Packing/compression
-P26.3 Packing/compression -> P26.4 Lifecycle/provenance
-P26.4 Lifecycle/provenance -> P26.5 Relevance/omission/staleness
-```
+**Depends on:** required phases above.
 
-The map is sequencing guidance, not a requirement to commit once per work package. Prefer a few coherent commits that preserve reviewable boundaries.
+Compare existing validated fixed/scored/consolidated paths against hybrid/entity-aware candidate selection on source-attributed held-out fixtures. Measure missed, irrelevant, stale and false memories, tokens/latency and downstream answer support. Keep owner/app/workspace/vector compatibility and active-source/lifecycle checks as hard prerequisites.
 
-## Required verification matrix
+**Acceptance:** Named held-out memory fixtures quantify baseline recall/irrelevance/staleness and source integrity.
 
-- Offline unit/contract tests cover success plus malformed/denied/unavailable/error paths for each new contract.
-- Integration tests prove the phase composes with the existing owner/application/workspace and context boundaries.
-- Regression tests prove the phase-disabled/default path preserves prior behavior.
-- No automated test requires live provider credentials, a real GCP project, or personal data unless explicitly marked opt-in.
-- Safe tracing/evidence records IDs, counts, versions, states, and reason codes without raw secrets or unnecessary private content.
-- Documentation/release evidence states exactly which external provider/emulator/cloud checks were run, skipped, or remain open.
+### P26.1 — Task budgets and extractive packing
 
-## Required implementation artifacts
+**Depends on:** P26.0.
 
-- Code/configuration changes required by the work packages below, limited to Phase 26 scope.
-- Deterministic fixtures/fakes and tests for every new public/internal contract and failure class.
-- Updated architecture/API/operations documentation only where the implemented behavior changes those contracts.
-- A phase implementation guide/release-evidence update after implementation, including tested revision, commands, results, and remaining verification gaps.
-- Any ADR required to resolve a durable architectural decision that is not already accepted; routine implementation details do not need separate ADRs.
+Add only justified task-conditioned selection/budgets and packing/compression experiments inside shared builder. Original/derived IDs and exact source coverage remain intact; derived packing is not new extraction semantics or domain truth. Preserve model/dimension/normalization/task space and Firestore vector search; no silent incompatible embeddings or re-index migration.
 
----
+**Acceptance:** Task packing preserves exact source coverage and current embedding space/lifecycle/scope filters.
 
-## Phase 26 work packages
+### P26.2 — Promotion and fallback
 
-### P26.0 — Benchmark current versus hybrid/entity-aware retrieval
+**Depends on:** P26.1.
 
-**Dependencies:** Phase 25  
+Require improvement without false-memory/provenance/sensitivity regression. Keep existing retrieval variant as deterministic fallback and version experiment policies. Recheck revoked context dependencies and source branch/lifecycle at injection; no cross-scope cache leakage or source deletion disguised as forgetting.
 
-**Goal:** implement this scoped Phase 26 commitment without pulling later-phase behavior forward.
+**Acceptance:** Promoted retrieval improves paired metrics with no false-memory/sensitivity regression and safe fallback.
 
-**Work:**
+## Requirement coverage
 
-- Benchmark current versus hybrid/entity-aware retrieval.
-- Reconcile the existing implementation relevant to **Benchmark current versus hybrid/entity-aware retrieval.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Create/reuse named synthetic fixtures with explicit expected selections, exclusions, errors, and invariants.
-- Run deterministic offline comparisons first; make live/cloud checks explicit opt-in steps.
-- Define promotion/completion gates before interpreting results and record failures without hiding them.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
+The commitments above remain normative. This mapping assigns every commitment to the concrete packages; verification covers all packages and acceptance criteria.
 
-**Requirements:**
+| Requirement | Work packages |
+| --- | --- |
+| R26.1: Benchmark current versus hybrid/entity-aware retrieval. | P26.0 |
+| R26.2: Add task-conditioned memory selection/budgets. | P26.1 |
+| R26.3: Run packing/compression experiments. | P26.1 |
+| R26.4: Measure irrelevant/missed/stale context. | P26.2 |
 
-- Memory remains attributable user-derived context, not external evidence or authoritative domain state.
-- Existing lifecycle exclusions/supersession/forgetting remain binding.
-- Embedding compatibility and Firestore vector path remain explicit.
-- Evaluation must distinguish skipped external checks from passing checks.
-- No personal/private data is required in committed fixtures.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
+## Targeted verification and closeout
 
-**Acceptance criteria:**
+Test entity ambiguity, invalid vector space, forgotten/superseded sources, stale branch/source fingerprints, revoked grants, compression coverage and hybrid failure fallback; paired relevance/omission metrics are required.
 
-- Results are reproducible from a clean checkout using documented commands.
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
+Run `make backend-test` and `make backend-lint` for backend changes. Run `make frontend-test`, `make frontend-lint` and `make frontend-typecheck` when frontend/proxy/UI contracts change. Activate the backend venv and use the README's pinned Node/pnpm/uv setup; bare shell `python` is not assumed to exist. Run builds only for dependency/build changes, and `bash -n infrastructure/gcp/deploy.sh` for deployment script edits. Finish with `git diff --check`.
 
-**Out of scope:**
+Affected existing evaluation targets: `make context-eval`, `make memory-eval`, `make memory-lifecycle-eval`.
 
-- new memory extraction semantics
-- authoritative domain-state storage in memory
-- embedding-provider migration without explicit plan
-- learned routing
+New routing/storage/bridge evaluation runners are **future artifacts**: add an actual documented command during the implementing phase before claiming it ran. Use deterministic fakes and synthetic fixtures; missing credentials cannot block or weaken offline tests.
 
-### P26.1 — Task-conditioned memory selection/budgets
+**External checks:** Only relevant provider/emulator/cloud/domain/browser checks run opt-in with explicit environment and synthetic data. Local fakes do not establish deployed compatibility.
 
-**Dependencies:** P26.0 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 26 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Add task-conditioned memory selection/budgets.
-- Reconcile the existing implementation relevant to **Add task-conditioned memory selection/budgets.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
-
-**Requirements:**
-
-- Memory remains attributable user-derived context, not external evidence or authoritative domain state.
-- Existing lifecycle exclusions/supersession/forgetting remain binding.
-- Embedding compatibility and Firestore vector path remain explicit.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
-
-**Acceptance criteria:**
-
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
-
-**Out of scope:**
-
-- new memory extraction semantics
-- authoritative domain-state storage in memory
-- embedding-provider migration without explicit plan
-- learned routing
-
-### P26.2 — Run packing/compression experiments
-
-**Dependencies:** P26.1 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 26 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Run packing/compression experiments.
-- Reconcile the existing implementation relevant to **Run packing/compression experiments.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-
-**Requirements:**
-
-- Memory remains attributable user-derived context, not external evidence or authoritative domain state.
-- Existing lifecycle exclusions/supersession/forgetting remain binding.
-- Embedding compatibility and Firestore vector path remain explicit.
-
-**Acceptance criteria:**
-
-- The workstream is covered by deterministic tests and composes with prior-phase behavior.
-- Failure is explicit and does not silently broaden data/provider access.
-
-**Out of scope:**
-
-- new memory extraction semantics
-- authoritative domain-state storage in memory
-- embedding-provider migration without explicit plan
-- learned routing
-
-### P26.3 — Measure irrelevant/missed/stale context
-
-**Dependencies:** P26.2 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 26 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Measure irrelevant/missed/stale context.
-- Reconcile the existing implementation relevant to **Measure irrelevant/missed/stale context.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
-
-**Requirements:**
-
-- Memory remains attributable user-derived context, not external evidence or authoritative domain state.
-- Existing lifecycle exclusions/supersession/forgetting remain binding.
-- Embedding compatibility and Firestore vector path remain explicit.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
-
-**Acceptance criteria:**
-
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
-
-**Out of scope:**
-
-- new memory extraction semantics
-- authoritative domain-state storage in memory
-- embedding-provider migration without explicit plan
-- learned routing
-
-### P26.4 — Phase integration, regression verification, and evidence closeout
-
-**Dependencies:** P26.3 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 26 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Wire the completed work packages through the narrow existing integration seam for this phase; do not add new product behavior.
-- Run the phase verification matrix and all affected existing regressions from a clean checkout.
-- Update the implementation guide/release evidence with actual code paths, tested revision, commands, outcomes, and explicit external verification gaps.
-- Confirm every later-phase gate remains disabled/absent unless the integrated roadmap explicitly requires it now.
-- Reconcile the existing implementation relevant to **Integrate the completed Phase work, run the required regression/evaluation matrix, update implementation documentation/evidence, and leave later-phase capabilities disabled or absent.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Create/reuse named synthetic fixtures with explicit expected selections, exclusions, errors, and invariants.
-- Run deterministic offline comparisons first; make live/cloud checks explicit opt-in steps.
-- Define promotion/completion gates before interpreting results and record failures without hiding them.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
-
-**Requirements:**
-
-- Memory remains attributable user-derived context, not external evidence or authoritative domain state.
-- Existing lifecycle exclusions/supersession/forgetting remain binding.
-- Embedding compatibility and Firestore vector path remain explicit.
-- Evaluation must distinguish skipped external checks from passing checks.
-- No personal/private data is required in committed fixtures.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
-
-**Acceptance criteria:**
-
-- Relevance improves without attribution/authority regression.
-- Results are reproducible from a clean checkout using documented commands.
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
-
-**Out of scope:**
-
-- new memory extraction semantics
-- authoritative domain-state storage in memory
-- embedding-provider migration without explicit plan
-- learned routing
-
----
-
-## Phase verification and closeout
-
-### Required local/offline checks
-
-- `make backend-test`
-- `make backend-lint`
-- existing context/memory/research evaluation commands affected by the change
-- `git diff --check`
-
-### Optional external checks
-
-- Run only the provider/emulator/cloud/browser/native checks that are relevant to the phase and available in the environment.
-- Use synthetic data. Never use the absence of credentials/network/cloud access as a reason to weaken offline tests.
-- Record a skipped external check as **unverified**, not passed.
-
-### Documentation/evidence closeout
-
-- Update this plan only if implementation discovered a necessary scope-preserving clarification; do not silently rewrite the roadmap after coding.
-- Create/update the phase implementation guide with actual files/classes/routes/configuration and a concise code map.
-- Record release/verification evidence with date, tested revision, commands, outcomes, and explicit remaining external gaps.
-- Update ADRs/API/deployment/runbook docs only where their contracts actually changed.
-
-## Phase 26 completion review
-
-- 1. Did implementation satisfy every normative Phase 26 commitment without adding later-phase product behavior?
-- 2. Can a reviewer identify the authoritative source of each new piece of state and the boundary that owns it?
-- 3. Do negative/isolation/failure tests prove the new behavior fails safely instead of silently broadening access or provider use?
-- 4. Are offline verification and external/provider/cloud verification clearly distinguished?
-- 5. Can the new behavior be disabled/absent without regressing the previously working path where backward compatibility is required?
-- 6. Are docs, implementation evidence, and remaining gaps accurate at the tested revision?
-
-## Handoff to the next phase
-
-Do not begin the next phase until the Phase 26 acceptance criteria are met locally or any deliberately deferred external checks are documented as verification gaps. The next session should read the implementation guide/release evidence produced here in addition to the next phase plan.
+Record actual files/interfaces, tested revision/configuration, command results, disabled gates and unresolved external checks in an implementation guide/release evidence. Follow the shared execution contract for failure, isolation, retention and scope preservation. Completion requires every normative commitment and package locally verified; external gates may remain pending only with the affected live capability unavailable. Do not describe a skipped check as passed.

@@ -71,7 +71,8 @@ Keep in Firestore:
 - conversations,
 - messages,
 - summaries,
-- compact context-inspection metadata.
+- compact context-inspection metadata,
+- bounded AI-owned global profile/preferences (domain profiles remain in their applications).
 
 ### Memory
 - memory records,
@@ -200,6 +201,13 @@ Conceptual:
 ```python
 @dataclass(frozen=True)
 class ArtifactRef:
+    owner_id: str
+    application_id: str
+    workspace_id: str | None
+    schema_version: str
+    status: str  # pending / ready / missing / deleting / deleted
+    generation: str | None
+    expires_at: datetime
     key: str
     content_type: str
     size_bytes: int
@@ -263,6 +271,12 @@ Example compact Firestore metadata:
 {
   "artifact_id": "...",
   "owner_id": "...",
+  "application_id": "standalone",
+  "workspace_id": null,
+  "schema_version": "artifact-ref-v1",
+  "status": "ready",
+  "generation": "...",
+  "expires_at": "...",
   "type": "evaluation_results",
   "storage": "gcs",
   "key": "evaluations/...",
@@ -350,7 +364,15 @@ Record a compact Firestore warning/metric where possible.
 
 ### Required artifact failure
 
-Exports and explicitly requested retained artifacts must fail atomically/clearly if storage fails.
+Exports and explicitly requested retained artifacts must fail clearly if storage fails. There is no atomic transaction spanning Firestore and GCS: keep the scoped reference pending until both object and metadata are verified, then publish ready. A failed required artifact must never return a successful download reference.
+
+### Reference lifecycle and concurrency
+
+References include owner/application/workspace, schema version, opaque key, object generation, compressed and uncompressed size bounds, hash, sensitivity, permission dependencies, status, expiry and owning run/export. Object names contain no private content. Readers authorize and recheck expiry/grants before generation-specific reads; reject corrupt hashes and decompression beyond configured ceilings. User-supplied bucket/key/URI is never an authorization shortcut.
+
+Use idempotent operation identities and generation preconditions. Exports include a bounded version/generation manifest and declared consistency, not a claimed atomic cross-store snapshot. Oversized/incomplete required exports fail explicitly. Retried puts cannot overwrite another artifact; deletes cover references and all retained versions under policy. Pending/missing/deleting records are excluded from ordinary reads. Reconcile crashes after object creation, metadata publication and deletion with bounded scans or durable work items. Optional telemetry failure is advisory; export failure is explicit.
+
+Account deletion/export must enumerate artifacts, source-derived AI records and permitted operational metadata through `auth/owner_data.py` and `auth/account_data.py`. Existing confirmed deletion only awaits an operator; the general physical-deletion workflow is still missing. Phase 12 owns artifact propagation, and Phase 28 requires closure of the existing Phase 9 deletion/migration/recovery obligations. Retention deadlines alone do not establish erasure. Managed TTL, backups/PITR, object versioning and soft-delete storage must be explicitly reviewed for cost and deletion behavior before enablement.
 
 ### Orphan handling
 

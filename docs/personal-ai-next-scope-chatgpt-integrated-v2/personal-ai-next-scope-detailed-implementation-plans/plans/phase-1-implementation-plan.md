@@ -1,6 +1,6 @@
 # Phase 1 implementation plan — Application and workspace identity
 
-This is the detailed execution plan for integrated next-scope **Phase 1 — Application and workspace identity**. It elaborates the normative scope in [../source/05-phased-implementation-plan.md](../source/05-phased-implementation-plan.md) using the structure and verification style of the repository’s existing phase implementation plans. It is an execution backlog, not permission to broaden product scope. Phase 0/current-repository evidence wins over hypothetical file/module assumptions.
+Reconciled on 2026-10-05 against `ad1dea5912af81eda0c9c5d6a41180ce186a07a5`. This is **next-scope** numbering, distinct from existing repository Phases 1–9. Read the [source roadmap](../../05-phased-implementation-plan.md), [comprehensive Phase 0 review](../../09-phase-0-reconciliation.md) and [shared execution contract](../execution-contract.md) first. This plan preserves product scope and defines future implementation; it does not claim delivery.
 
 ## Scope boundary
 
@@ -27,300 +27,88 @@ This is the detailed execution plan for integrated next-scope **Phase 1 — Appl
 - domain database access
 - new domain features
 
-## Repository baseline and candidate code areas
+## Current state and reuse
 
-The current repository already separates backend API/auth/context/domain/evaluation/evidence/LLM/memory/ranking/search concerns, plus frontend and infrastructure. Candidate areas for this phase are intentionally advisory until Phase 0/current-code inspection confirms the exact seam:
+Owner authentication and safe foreign-ID handling are reusable. Application/workspace fields, scoped vector queries and all AI record propagation need extension; no app/workspace isolation currently exists.
 
-- `backend/src/personal_ai/api/`
-- `backend/src/personal_ai/context/`
-- `backend/src/personal_ai/memory/`
-- `backend/src/personal_ai/domains/`
-- `frontend/`
+Verified existing backend seams (paths exist at the reviewed revision):
 
-Do not create a new parallel subsystem when an existing contract can be extended cleanly. Do not rename/reorganize unrelated code merely to make the phase look cleaner.
+- `backend/src/personal_ai/api/schemas.py`
+- `backend/src/personal_ai/api/dependencies.py`
+- `backend/src/personal_ai/auth/contracts.py`
+- `backend/src/personal_ai/auth/middleware.py`
+- `backend/src/personal_ai/services/conversations.py`
+- `backend/src/personal_ai/services/chat_turns.py`
+- `backend/src/personal_ai/entities/conversation.py`
+- `backend/src/personal_ai/storage/repositories.py`
+- `backend/src/personal_ai/storage/firestore.py`
+- `backend/src/personal_ai/storage/fake.py`
+- `backend/src/personal_ai/memory/contracts.py`
+- `backend/src/personal_ai/memory/repositories.py`
+- `backend/src/personal_ai/memory/lifecycle_jobs.py`
+- `backend/src/personal_ai/auth/owner_data.py`
+- `backend/src/personal_ai/context/repositories.py`
 
-## Phase 0 repository reconciliation
+Frontend integration, where needed, extends `frontend/src/lib/api.ts`, `frontend/src/lib/conversation-proxy.ts`, `frontend/src/lib/sse.ts`, `frontend/src/features/chat/chat-state.ts` and adjacent feature/UI components. Infrastructure extends `infrastructure/gcp/deploy.sh`, `firestore.indexes.json`, `Makefile` and `.github/workflows/quality.yml` only when required. Named target types in this plan are **future contracts**; choose their exact file/class placement beside these seams during implementation. Do not create fictitious files or parallel services merely to match a diagram.
 
-`AuthenticatedPrincipal` in `auth/contracts.py` and owner-only `Conversation`/`Message` in `entities/conversation.py` are the current identity seam. Extend API schemas, owner-scoped repository contracts, chat services, and the Next.js proxy together; no `application_id` or `workspace_id` is currently persisted. Phase 1 is the first new implementation phase, not a rerun of existing repository Phase 1. Keep deployed owner verification authoritative and preserve old conversation access through an explicit standalone identity/migration rule. See the [dated Phase 0 code and dependency map](../phase-0-reconciliation-2026-10-05.md).
+## Prerequisites and work ordering
 
-**Existing regression evaluations:** `make context-eval`, `make memory-eval`. Run those touched by this phase in addition to its backend/frontend test, lint, and type checks; add phase-specific fixtures for new behavior.
+Required phases: 0. Each must deliver the contracts this plan consumes; a similarly named existing phase is not a substitute. Recommended numerical order is recorded in the roadmap. Within this plan, work packages run in order; each consumes prior packages' delivered contracts, then closes verification below.
 
-## Delivery conventions and invariants
+## Phase-specific invariants
 
-- Begin by reading `AGENTS.md`, `docs/project-brief.md`, `docs/architecture.md`, the current authoritative roadmap, and this phase plan.
-- Inspect `git status` before editing; preserve unrelated user changes and existing accepted decisions unless this phase explicitly supersedes them.
-- Keep routes/UI thin and keep provider/storage SDK details behind existing service/repository boundaries.
-- Use deterministic fakes for automated tests; credentialed provider, emulator, and cloud checks are opt-in and must be reported separately.
-- Preserve owner/application/workspace isolation and safe error semantics across every new path.
-- Do not add later-phase features merely because they would make the current phase easier.
-- Update docs when contracts/behavior change and record tested revision, commands, outcomes, and remaining external verification gaps.
-- Finish repository changes with relevant tests/lint/type-check/build checks plus `git diff --check`; documentation-only changes still require link/content review and `git diff --check`.
-- Treat standalone chat as a canonical application identity, not a bypass.
 - Never accept application/workspace identity as authority for ownership; authenticated principal remains authoritative.
 - Workspace is optional and must have explicit null/no-workspace semantics.
 - Existing conversation IDs and owner scoping must remain valid.
 
-## Dependency map
+## Work packages
 
-**Prerequisites:** Phase 0
+### P1.0 — Scope contract and compatibility
 
-```text
-P1.0 Identity/request-envelope -> P1.1 API
-P1.1 API -> P1.2 Conversation
-P1.2 Conversation -> P1.3 Tool/tracing/context
-P1.3 Tool/tracing/context -> P1.4 Backward
-```
+**Depends on:** required phases above.
 
-The map is sequencing guidance, not a requirement to commit once per work package. Prefer a few coherent commits that preserve reviewable boundaries.
+Define a validated request scope containing server-derived owner, canonical application ID and nullable workspace. Standalone is the explicit backward-compatible default only for existing standalone routes. Keep correlation request ID separate from operation idempotency key. Use a minimal canonical ID set in this phase; the full metadata registry is Phase 2. Unknown workspace authority and unsupported external app operations fail closed until their domain integration exists. Validate IDs and bounded capabilities/client context; these cannot authorize workspace membership. Extend the Next.js proxy/API helpers to forward validated correlation and scope without accepting client owner claims.
 
-## Required verification matrix
+**Acceptance:** Validated scope reaches backend/proxy without client owner authority; standalone/null requests still work.
 
-- Offline unit/contract tests cover success plus malformed/denied/unavailable/error paths for each new contract.
-- Integration tests prove the phase composes with the existing owner/application/workspace and context boundaries.
-- Regression tests prove the phase-disabled/default path preserves prior behavior.
-- No automated test requires live provider credentials, a real GCP project, or personal data unless explicitly marked opt-in.
-- Safe tracing/evidence records IDs, counts, versions, states, and reason codes without raw secrets or unnecessary private content.
-- Documentation/release evidence states exactly which external provider/emulator/cloud checks were run, skipped, or remain open.
+### P1.1 — Persist and enforce scope everywhere
 
-## Required implementation artifacts
+**Depends on:** P1.0.
 
-- Code/configuration changes required by the work packages below, limited to Phase 1 scope.
-- Deterministic fixtures/fakes and tests for every new public/internal contract and failure class.
-- Updated architecture/API/operations documentation only where the implemented behavior changes those contracts.
-- A phase implementation guide/release-evidence update after implementation, including tested revision, commands, results, and remaining verification gaps.
-- Any ADR required to resolve a durable architectural decision that is not already accepted; routine implementation details do not need separate ADRs.
+Extend repository protocols and service calls for conversation/messages, summaries, original/derived memory, research/evidence, entities/claims, decisions, comparisons, proposals, extraction results, jobs and existing traces. Future grants and other new records must consume the same scope contract when introduced. Scope all reads, exports and replay keys, and include scope in deterministic memory/derived/job identities where needed. Vector queries prefilter scope with model/dimension/status. Worker messages carry scope but re-resolve it against the durable job. Foreign scope returns safe not-found, including direct ID access and retries.
 
----
+**Acceptance:** Every existing AI record family and replay/vector path rejects foreign app/workspace under the same owner.
 
-## Phase 1 work packages
+### P1.2 — Legacy and regression contract
 
-### P1.0 — `application_id`
+**Depends on:** P1.1.
 
-**Dependencies:** Phase 0  
+Read absent scope as standalone/null only under its verified existing owner. Existing Travel/Shopping comparison screens are standalone Personal AI features; their domain labels do not retroactively relabel legacy records as an external app namespace. Do not backfill or move legacy local-owner data automatically. Define a scoped serialization version/query discriminator so legacy compatibility reads cannot fetch new foreign-app records; prove both original v1 and derived v2 source/ID compatibility without rewriting old records. Document the required scope-prefiltered and legacy-discriminator vector/composite indexes and their opt-in provisioning. Preserve branch links and superseded records; active branch cannot join messages from other scope. Capture identity tests before extending the record families so omission of any collection is visible.
 
-**Goal:** implement this scoped Phase 1 commitment without pulling later-phase behavior forward.
+**Acceptance:** Legacy standalone reads and branch/replay regressions pass without backfill or reassignment.
 
-**Work:**
+## Requirement coverage
 
-- Add/verify `application_id`.
-- Reconcile the existing implementation relevant to **Add/verify `application_id`.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
+The commitments above remain normative. This mapping assigns every commitment to the concrete packages; verification covers all packages and acceptance criteria.
 
-**Requirements:**
+| Requirement | Work packages |
+| --- | --- |
+| R1.1: Add/verify `application_id`. | P1.0 |
+| R1.2: Add optional `workspace_id`. | P1.0 |
+| R1.3: Thread identity through API, conversation, memory scope, tracing, and tools. | P1.1 |
+| R1.4: Define canonical app IDs. | P1.0 |
+| R1.5: Preserve standalone use. | P1.2 |
 
-- Treat standalone chat as a canonical application identity, not a bypass.
-- Never accept application/workspace identity as authority for ownership; authenticated principal remains authoritative.
-- Workspace is optional and must have explicit null/no-workspace semantics.
+## Targeted verification and closeout
 
-**Acceptance criteria:**
+Test same owner across two apps/workspaces, foreign owner, absent/null workspace, forged client owner, direct-ID reads, vector filters, summary reuse, worker/replay collisions, export and legacy standalone reads. Existing send/regenerate/edit and SSE behavior must pass.
 
-- The workstream is covered by deterministic tests and composes with prior-phase behavior.
-- Failure is explicit and does not silently broaden data/provider access.
+Run `make backend-test` and `make backend-lint` for backend changes. Run `make frontend-test`, `make frontend-lint` and `make frontend-typecheck` when frontend/proxy/UI contracts change. Activate the backend venv and use the README's pinned Node/pnpm/uv setup; bare shell `python` is not assumed to exist. Run builds only for dependency/build changes, and `bash -n infrastructure/gcp/deploy.sh` for deployment script edits. Finish with `git diff --check`.
 
-**Out of scope:**
+Affected existing evaluation targets: `make context-eval`, `make memory-eval`, `make memory-lifecycle-eval`, `make research-eval`, `make decision-eval`, `make domain-eval`, `make iterative-research-eval`, `make itinerary-proposal-eval`.
 
-- application registry policy
-- cross-app permissions
-- domain database access
-- new domain features
+New routing/storage/bridge evaluation runners are **future artifacts**: add an actual documented command during the implementing phase before claiming it ran. Use deterministic fakes and synthetic fixtures; missing credentials cannot block or weaken offline tests.
 
-### P1.1 — Optional `workspace_id`
+**External checks:** Emulator transactions/index readiness and deployed Google/IAM/proxy membership behavior are opt-in; local owner migration remains existing Phase 9 work.
 
-**Dependencies:** P1.0 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Add optional `workspace_id`.
-- Reconcile the existing implementation relevant to **Add optional `workspace_id`.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-
-**Requirements:**
-
-- Treat standalone chat as a canonical application identity, not a bypass.
-- Never accept application/workspace identity as authority for ownership; authenticated principal remains authoritative.
-- Workspace is optional and must have explicit null/no-workspace semantics.
-
-**Acceptance criteria:**
-
-- The workstream is covered by deterministic tests and composes with prior-phase behavior.
-- Failure is explicit and does not silently broaden data/provider access.
-
-**Out of scope:**
-
-- application registry policy
-- cross-app permissions
-- domain database access
-- new domain features
-
-### P1.2 — Thread identity through API, conversation, memory scope, tracing, and tools
-
-**Dependencies:** P1.1 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Thread identity through API, conversation, memory scope, tracing, and tools.
-- Reconcile the existing implementation relevant to **Thread identity through API, conversation, memory scope, tracing, and tools.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
-
-**Requirements:**
-
-- Treat standalone chat as a canonical application identity, not a bypass.
-- Never accept application/workspace identity as authority for ownership; authenticated principal remains authoritative.
-- Workspace is optional and must have explicit null/no-workspace semantics.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
-
-**Acceptance criteria:**
-
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
-
-**Out of scope:**
-
-- application registry policy
-- cross-app permissions
-- domain database access
-- new domain features
-
-### P1.3 — Canonical app IDs
-
-**Dependencies:** P1.2 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Define canonical app IDs.
-- Reconcile the existing implementation relevant to **Define canonical app IDs.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-
-**Requirements:**
-
-- Treat standalone chat as a canonical application identity, not a bypass.
-- Never accept application/workspace identity as authority for ownership; authenticated principal remains authoritative.
-- Workspace is optional and must have explicit null/no-workspace semantics.
-
-**Acceptance criteria:**
-
-- The workstream is covered by deterministic tests and composes with prior-phase behavior.
-- Failure is explicit and does not silently broaden data/provider access.
-
-**Out of scope:**
-
-- application registry policy
-- cross-app permissions
-- domain database access
-- new domain features
-
-### P1.4 — Preserve standalone use
-
-**Dependencies:** P1.3 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Preserve standalone use.
-- Reconcile the existing implementation relevant to **Preserve standalone use.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-
-**Requirements:**
-
-- Treat standalone chat as a canonical application identity, not a bypass.
-- Never accept application/workspace identity as authority for ownership; authenticated principal remains authoritative.
-- Workspace is optional and must have explicit null/no-workspace semantics.
-
-**Acceptance criteria:**
-
-- The workstream is covered by deterministic tests and composes with prior-phase behavior.
-- Failure is explicit and does not silently broaden data/provider access.
-
-**Out of scope:**
-
-- application registry policy
-- cross-app permissions
-- domain database access
-- new domain features
-
-### P1.5 — Phase integration, regression verification, and evidence closeout
-
-**Dependencies:** P1.4 plus any earlier work packages whose contracts it consumes  
-
-**Goal:** implement this scoped Phase 1 commitment without pulling later-phase behavior forward.
-
-**Work:**
-
-- Wire the completed work packages through the narrow existing integration seam for this phase; do not add new product behavior.
-- Run the phase verification matrix and all affected existing regressions from a clean checkout.
-- Update the implementation guide/release evidence with actual code paths, tested revision, commands, outcomes, and explicit external verification gaps.
-- Confirm every later-phase gate remains disabled/absent unless the integrated roadmap explicitly requires it now.
-- Reconcile the existing implementation relevant to **Integrate the completed Phase work, run the required regression/evaluation matrix, update implementation documentation/evidence, and leave later-phase capabilities disabled or absent.** in the candidate code areas; extend existing contracts rather than creating a parallel subsystem.
-- Create/reuse named synthetic fixtures with explicit expected selections, exclusions, errors, and invariants.
-- Run deterministic offline comparisons first; make live/cloud checks explicit opt-in steps.
-- Define promotion/completion gates before interpreting results and record failures without hiding them.
-- Preserve source class, authority, freshness/provenance, sensitivity, and boundedness through the full path.
-- Define deterministic behavior for unavailable/empty/invalid sources instead of broadening retrieval silently.
-- Add fixtures for relevant, irrelevant, stale, conflicting, sensitive, and over-budget inputs as applicable.
-
-**Requirements:**
-
-- Treat standalone chat as a canonical application identity, not a bypass.
-- Never accept application/workspace identity as authority for ownership; authenticated principal remains authoritative.
-- Workspace is optional and must have explicit null/no-workspace semantics.
-- Evaluation must distinguish skipped external checks from passing checks.
-- No personal/private data is required in committed fixtures.
-- Context/evidence/memory boundaries remain distinct; no source class silently becomes another.
-
-**Acceptance criteria:**
-
-- App namespaces cannot leak.
-- Existing chat works.
-- Traces identify app/workspace.
-- Results are reproducible from a clean checkout using documented commands.
-- Tests prove excluded/unauthorized/over-budget material is not supplied downstream.
-
-**Out of scope:**
-
-- application registry policy
-- cross-app permissions
-- domain database access
-- new domain features
-
----
-
-## Phase verification and closeout
-
-### Required local/offline checks
-
-- `make backend-test`
-- `make backend-lint`
-- `make frontend-test`
-- `make frontend-lint`
-- `make frontend-typecheck`
-- `git diff --check`
-
-### Optional external checks
-
-- Run only the provider/emulator/cloud/browser/native checks that are relevant to the phase and available in the environment.
-- Use synthetic data. Never use the absence of credentials/network/cloud access as a reason to weaken offline tests.
-- Record a skipped external check as **unverified**, not passed.
-
-### Documentation/evidence closeout
-
-- Update this plan only if implementation discovered a necessary scope-preserving clarification; do not silently rewrite the roadmap after coding.
-- Create/update the phase implementation guide with actual files/classes/routes/configuration and a concise code map.
-- Record release/verification evidence with date, tested revision, commands, outcomes, and explicit remaining external gaps.
-- Update ADRs/API/deployment/runbook docs only where their contracts actually changed.
-
-## Phase 1 completion review
-
-- 1. Did implementation satisfy every normative Phase 1 commitment without adding later-phase product behavior?
-- 2. Can a reviewer identify the authoritative source of each new piece of state and the boundary that owns it?
-- 3. Do negative/isolation/failure tests prove the new behavior fails safely instead of silently broadening access or provider use?
-- 4. Are offline verification and external/provider/cloud verification clearly distinguished?
-- 5. Can the new behavior be disabled/absent without regressing the previously working path where backward compatibility is required?
-- 6. Are docs, implementation evidence, and remaining gaps accurate at the tested revision?
-
-## Handoff to the next phase
-
-Do not begin the next phase until the Phase 1 acceptance criteria are met locally or any deliberately deferred external checks are documented as verification gaps. The next session should read the implementation guide/release evidence produced here in addition to the next phase plan.
+Record actual files/interfaces, tested revision/configuration, command results, disabled gates and unresolved external checks in an implementation guide/release evidence. Follow the shared execution contract for failure, isolation, retention and scope preservation. Completion requires every normative commitment and package locally verified; external gates may remain pending only with the affected live capability unavailable. Do not describe a skipped check as passed.

@@ -1,85 +1,48 @@
 # Detailed next-scope implementation plans
 
-Generated: 2026-10-05
+Reconciled: 2026-10-05, code revision `ad1dea5912af81eda0c9c5d6a41180ce186a07a5`.
 
-This package expands the integrated next-scope roadmap into phase-by-phase execution plans using the current `personal-ai-system` repository's implementation-plan conventions as the structural benchmark.
+Read the [canonical roadmap](../05-phased-implementation-plan.md), [comprehensive Phase 0 review](../09-phase-0-reconciliation.md) and [shared execution contract](execution-contract.md). The [earlier Phase 0 record](phase-0-reconciliation-2026-10-05.md) remains historical and incomplete; its assertions are independently verified in the new review.
 
-## Scope rule
+Actual repository behavior and accepted ADRs define the baseline; canonical product/architecture documents define intended scope; these plans define execution. All original normative commitments, acceptance and exclusions remain represented. Existing working services/repositories/fakes are reused, and new target types are marked future. `source/` preserves old link paths as canonical-document pointers rather than duplicate content.
 
-The plans **elaborate but do not broaden** the integrated roadmap. The source documents are copied under `source/` for review. If a detailed plan conflicts with the integrated source scope, the integrated source scope wins and Phase 0 should reconcile the discrepancy before implementation.
+There are **32 plans**. Phase 17 is represented by four subphase documents, with no separate parent plan. The next-scope numbering is separate from existing repository Phases 1–9. Exact prerequisite IDs and current byte sizes live in [manifest.json](manifest.json); recommended order is the table order.
 
-The existing substantive work remains unchanged. ChatGPT integration is additive and is represented as four separate implementation documents for **17.1–17.4**, followed by the renumbered existing domain/optimization phases.
+| Phase | Plan | Required prerequisites |
+| --- | --- | --- |
+| 0 | [Reconcile with current repository and roadmap](plans/phase-0-implementation-plan.md) | none |
+| 1 | [Application and workspace identity](plans/phase-1-implementation-plan.md) | 0 |
+| 2 | [Application registry and manifest model](plans/phase-2-implementation-plan.md) | 1 |
+| 3 | [Context source and provider abstraction](plans/phase-3-implementation-plan.md) | 1, 2 |
+| 4 | [Context builder refactor](plans/phase-4-implementation-plan.md) | 3 |
+| 5 | [Deterministic context planner](plans/phase-5-implementation-plan.md) | 4 |
+| 6 | [Provenance and context inspection](plans/phase-6-implementation-plan.md) | 5 |
+| 7 | [Permissions and sensitivity policy](plans/phase-7-implementation-plan.md) | 3, 5, 6 |
+| 8 | [Provider-neutral inference and embedding contracts](plans/phase-8-implementation-plan.md) | 4, 7 |
+| 9 | [Concrete provider adapters: Gemini, Groq, Cloudflare](plans/phase-9-implementation-plan.md) | 8 |
+| 10 | [Provider/model registry and strict-free eligibility](plans/phase-10-implementation-plan.md) | 7, 9 |
+| 11 | [Provider usage accounting and quota ledger](plans/phase-11-implementation-plan.md) | 10 |
+| 12 | [Cloud Storage artifact tier and retention](plans/phase-12-implementation-plan.md) | 1, 6, 11 |
+| 13 | [Deterministic task-aware routing](plans/phase-13-implementation-plan.md) | 8, 10, 11 |
+| 14 | [Cross-provider task evaluation matrix](plans/phase-14-implementation-plan.md) | 12, 13 |
+| 15 | [Quota-aware routing](plans/phase-15-implementation-plan.md) | 14 |
+| 16 | [Bounded cascades and deterministic validation](plans/phase-16-implementation-plan.md) | 15 |
+| 17.1 | [ChatGPT authentication and local bridge](plans/phase-17-1-implementation-plan.md) | 8, 10 |
+| 17.2 | [ChatGPT provider/runtime integration, policy, and usage handling](plans/phase-17-2-implementation-plan.md) | 11, 13, 17.1 |
+| 17.3 | [Shared AI sidecar UI](plans/phase-17-3-implementation-plan.md) | 6, 17.2 |
+| 17.4 | [ChatGPT domain integration contract](plans/phase-17-4-implementation-plan.md) | 17.3 |
+| 18 | [Travel integration](plans/phase-18-implementation-plan.md) | 7, 13, 16 |
+| 19 | [Shopping integration](plans/phase-19-implementation-plan.md) | 7, 13, 16 |
+| 20 | [Finance integration](plans/phase-20-implementation-plan.md) | 7, 13, 16 |
+| 21 | [Health integration](plans/phase-21-implementation-plan.md) | 7, 13, 16 |
+| 22 | [Cross-app context federation](plans/phase-22-implementation-plan.md) | 7, 18, 19, 20, 21 |
+| 23 | [Mutation proposal framework](plans/phase-23-implementation-plan.md) | 7, 18, 19, 20, 21 |
+| 24 | [Smarter context planning](plans/phase-24-implementation-plan.md) | 14, 22 |
+| 25 | [Search and evidence retrieval optimization](plans/phase-25-implementation-plan.md) | 11, 12, 14 |
+| 26 | [Memory retrieval optimization](plans/phase-26-implementation-plan.md) | 1, 4, 8, 14 |
+| 27 | [Adaptive routing experiments](plans/phase-27-implementation-plan.md) | 14, 15, 16 |
+| 28 | [Integrated evaluation and hardening](plans/phase-28-implementation-plan.md) | 12, 17.4, 22, 23, 24, 25, 26, 27 |
 
-## Repository conventions used
+Domain baseline/backend work in 18–23 consumes shared context/runtime/domain contracts. Its additive sidecar tasks additionally require 17.4; do not remove pending scope if live ChatGPT eligibility is blocked. Optimization consumes recorded deterministic baselines before promotion. Local completion and external enablement are separate milestones; existing Phase 9 lifecycle/migration/cloud release gaps remain required.
 
-The generated plans follow the current repo's patterns:
-
-- explicit scope boundary and exclusions;
-- dependency map;
-- numbered work packages;
-- dependencies / goal / work / requirements / acceptance criteria / out of scope for each package;
-- deterministic fake/offline tests by default;
-- opt-in provider/emulator/cloud verification recorded separately;
-- implementation-guide and release-evidence closeout;
-- completion review before advancing phases.
-
-They also honor current `AGENTS.md` boundaries: provider SDKs remain behind the LLM boundary, Firestore remains behind repositories, model turns use shared context assembly, current owner/auth behavior is preserved, and external evidence remains distinct from durable memory.
-
-## Phase 0 repository reconciliation
-
-The [dated Phase 0 review](phase-0-reconciliation-2026-10-05.md) maps the code at `24f75a7`, existing Phase 1–8 local implementations, partial existing Phase 9 safeguards, reusable classes, missing work, dependency order, and external verification gaps. The [revised Phase 0 plan](plans/phase-0-implementation-plan.md) is documentation-only. Every later detailed plan has a repository-specific note; its hypothetical candidate paths and repeated boilerplate do not require parallel subsystems or advance later-phase scope.
-
-The next-scope Phase 1–28 numbering is separate from the repository's existing Phase 1–9 history. Phase 17.1–17.4 is additive: strict-free Gemini/Groq/Cloudflare, context, storage, routing, evaluation, and domain work remain required. Existing Phase 9 release gates still block live private-data/production claims, while offline next-scope work can proceed with synthetic data.
-
-## Plan files
-
-There is no separate parent Phase 17 plan. The ChatGPT block is intentionally split into four execution documents.
-
-| Phase | Plan | Size |
-|---|---|---:|
-| 0 | [Reconcile with current repository and roadmap](plans/phase-0-implementation-plan.md) | 5,593 B |
-| 1 | [Application and workspace identity](plans/phase-1-implementation-plan.md) | 16,345 B |
-| 2 | [Application registry and manifest model](plans/phase-2-implementation-plan.md) | 16,848 B |
-| 3 | [Context source and provider abstraction](plans/phase-3-implementation-plan.md) | 20,867 B |
-| 4 | [Context builder refactor](plans/phase-4-implementation-plan.md) | 19,060 B |
-| 5 | [Deterministic context planner](plans/phase-5-implementation-plan.md) | 17,165 B |
-| 6 | [Provenance and context inspection](plans/phase-6-implementation-plan.md) | 16,401 B |
-| 7 | [Permissions and sensitivity policy](plans/phase-7-implementation-plan.md) | 19,628 B |
-| 8 | [Provider-neutral inference and embedding contracts](plans/phase-8-implementation-plan.md) | 18,125 B |
-| 9 | [Concrete provider adapters: Gemini, Groq, Cloudflare](plans/phase-9-implementation-plan.md) | 26,644 B |
-| 10 | [Provider/model registry and strict-free eligibility](plans/phase-10-implementation-plan.md) | 21,429 B |
-| 11 | [Provider usage accounting and quota ledger](plans/phase-11-implementation-plan.md) | 19,315 B |
-| 12 | [Cloud Storage artifact tier and retention](plans/phase-12-implementation-plan.md) | 27,244 B |
-| 13 | [Deterministic task-aware routing](plans/phase-13-implementation-plan.md) | 19,694 B |
-| 14 | [Cross-provider task evaluation matrix](plans/phase-14-implementation-plan.md) | 19,018 B |
-| 15 | [Quota-aware routing](plans/phase-15-implementation-plan.md) | 19,379 B |
-| 16 | [Bounded cascades and deterministic validation](plans/phase-16-implementation-plan.md) | 18,609 B |
-| 17.1 | [ChatGPT authentication and local bridge](plans/phase-17-1-implementation-plan.md) | 45,567 B |
-| 17.2 | [ChatGPT provider/runtime integration, policy, and usage handling](plans/phase-17-2-implementation-plan.md) | 38,222 B |
-| 17.3 | [Shared AI sidecar UI](plans/phase-17-3-implementation-plan.md) | 40,086 B |
-| 17.4 | [ChatGPT domain integration contract](plans/phase-17-4-implementation-plan.md) | 28,536 B |
-| 18 | [Travel integration](plans/phase-18-implementation-plan.md) | 26,106 B |
-| 19 | [Shopping integration](plans/phase-19-implementation-plan.md) | 25,301 B |
-| 20 | [Finance integration](plans/phase-20-implementation-plan.md) | 29,461 B |
-| 21 | [Health integration](plans/phase-21-implementation-plan.md) | 29,312 B |
-| 22 | [Cross-app context federation](plans/phase-22-implementation-plan.md) | 20,840 B |
-| 23 | [Mutation proposal framework](plans/phase-23-implementation-plan.md) | 23,572 B |
-| 24 | [Smarter context planning](plans/phase-24-implementation-plan.md) | 18,452 B |
-| 25 | [Search and evidence retrieval optimization](plans/phase-25-implementation-plan.md) | 18,029 B |
-| 26 | [Memory retrieval optimization](plans/phase-26-implementation-plan.md) | 16,687 B |
-| 27 | [Adaptive routing experiments](plans/phase-27-implementation-plan.md) | 15,910 B |
-| 28 | [Integrated evaluation and hardening](plans/phase-28-implementation-plan.md) | 25,988 B |
-
-
-## Count
-
-- **32 implementation-plan documents** total.
-- Includes Phase 0 because it is part of the authoritative integrated roadmap.
-- Phase 17 is represented by four documents: 17.1, 17.2, 17.3, 17.4.
-
-## Recommended execution
-
-1. Start with Phase 0 against the live repository and reconcile any drift.
-2. Use each detailed plan as the phase backlog after reading its repository-specific note and the integrated source scope.
-3. After implementation, produce/update the phase implementation guide and release evidence from the actual code and verification results.
-4. Do not carry speculative file names or implementation assumptions forward when the repository provides a better existing seam.
+Next implementation: **Phase 1 — Application and workspace identity**, offline with synthetic fixtures and disabled live gates. Phase 0 stops after documentation reconciliation and verification.
