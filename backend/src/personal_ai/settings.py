@@ -192,6 +192,14 @@ class Settings(BaseSettings):
     itinerary_proposal_max_output_tokens: int = Field(default=2048, ge=128, le=4096)
     itinerary_proposal_max_response_bytes: int = Field(default=32768, ge=1024, le=131072)
 
+    booking_extractions_enabled: bool = False
+    booking_extraction_generator: str = Field(default="fake", pattern=r"^(fake|gemini)$")
+    booking_extraction_provider_enabled: bool = False
+    booking_extraction_storage: str = Field(default="firestore", pattern=r"^(firestore|memory)$")
+    booking_extraction_timeout_seconds: float = Field(default=30, gt=0, le=35)
+    booking_extraction_max_input_tokens: int = Field(default=8192, ge=512, le=32768)
+    booking_extraction_max_output_tokens: int = Field(default=2048, ge=128, le=4096)
+
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
         available = (
@@ -248,6 +256,31 @@ class Settings(BaseSettings):
             raise ValueError("itinerary_proposal_configuration_invalid")
         if self.itinerary_proposal_provider_enabled and not self.itinerary_proposals_enabled:
             raise ValueError("itinerary_proposal_configuration_invalid")
+        if self.booking_extractions_enabled and (
+            self.booking_extraction_max_input_tokens > available
+            or self.booking_extraction_max_output_tokens > self.max_response_tokens
+        ):
+            raise ValueError("booking_extraction_configuration_invalid")
+        if self.booking_extraction_provider_enabled and not self.booking_extractions_enabled:
+            raise ValueError("booking_extraction_configuration_invalid")
+        if self.booking_extraction_generator == "gemini" and (
+            not self.booking_extractions_enabled
+            or not self.booking_extraction_provider_enabled
+            or self.ai_provider.lower() != "gemini"
+            or not self.ai_api_key.get_secret_value()
+            or self.booking_extraction_storage != "firestore"
+        ):
+            raise ValueError("booking_extraction_configuration_invalid")
+        if (
+            self.booking_extractions_enabled
+            and self.app_environment not in {"local", "test"}
+            and (
+                self.booking_extraction_generator != "gemini"
+                or self.booking_extraction_storage != "firestore"
+                or not self.booking_extraction_provider_enabled
+            )
+        ):
+            raise ValueError("booking_extraction_configuration_invalid")
         if self.itinerary_proposal_generator == "gemini" and (
             not self.itinerary_proposals_enabled
             or not self.itinerary_proposal_provider_enabled

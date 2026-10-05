@@ -189,6 +189,27 @@ Each citation exposes original normalized URL, optional title, observation time,
 evidence expiry and source/evidence IDs. Known old publication dates are excluded;
 missing dates remain unknown. See [Phase 5 plan](phase-5-implementation-plan.md).
 
+## Booking document extraction candidate (`booking-document-extraction-v1`)
+
+The bounded local implementation is described by the
+[candidate contract](booking-document-extraction-contract.md) and [ADR 0020](decisions/0020-booking-document-extraction.md).
+Both `BOOKING_EXTRACTIONS_ENABLED` and `BOOKING_EXTRACTION_PROVIDER_ENABLED`
+default off. The route requires a verified owner outside local/test development,
+explicit submit consent, an owner-scoped UUID idempotency key, and a source hash
+matching at most 200,000 characters of extracted text. The special route body
+limit is 1,300,000 bytes; ordinary API JSON limits are unchanged.
+
+`POST /v1/travel/booking-extractions` returns no more than ten uncertain typed
+candidates with bounded literal source spans. `GET /{UUID}` and
+`GET /by-key/{UUID}` recover the same owner/key result. `DELETE /{UUID}` removes
+candidate details; `DELETE /by-key/{UUID}` accepts the expected
+`source_sha256` and can install a deletion tombstone before a late POST. Both
+retain only a short-lived idempotency tombstone. Raw
+document text is ephemeral and never stored in Firestore. Fake generation
+requires `synthetic_fixture: true`. The candidate is not yet accepted for
+cross-repository private-data use; model/provider data-use review, live
+identity/IAM, Firestore TTL and whole-Phase 6 coordinator review remain open.
+
 ## Phase 6 decision support (`decision-v1`)
 
 Decision routes require `DECISION_ENABLED`; inspection additionally requires

@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 PUBLIC_PATHS = {"/health", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _store_initialization_lock = threading.Lock()
 MAX_ITINERARY_PROPOSAL_REQUEST_BYTES = 262_144
+MAX_BOOKING_EXTRACTION_REQUEST_BYTES = 1_300_000
 
 
 def _settings_for_request(request: Request) -> Settings:
@@ -122,8 +123,11 @@ def _enforce_safeguards(request, settings, principal) -> None:
     calls, tokens = _provider_reservation(request, settings)
     if calls or tokens:
         store.reserve_daily(
-            principal.owner_id, calls, tokens,
-            settings.provider_calls_per_day_limit, settings.input_tokens_per_day_limit,
+            principal.owner_id,
+            calls,
+            tokens,
+            settings.provider_calls_per_day_limit,
+            settings.input_tokens_per_day_limit,
         )
 
 
@@ -166,6 +170,10 @@ def _provider_reservation(request: Request, settings: Settings) -> tuple[int, in
         calls = 1
         tokens = settings.itinerary_proposal_max_input_tokens
         uses_external = settings.itinerary_proposal_generator == "gemini"
+    elif path == "/v1/travel/booking-extractions":
+        calls = 1
+        tokens = settings.booking_extraction_max_input_tokens
+        uses_external = settings.booking_extraction_generator == "gemini"
     else:
         return (0, 0)
     return (calls, tokens) if uses_external else (0, 0)
@@ -365,7 +373,11 @@ async def authenticate_request(request: Request) -> Response | None:
             try:
                 await anyio.to_thread.run_sync(
                     partial(
-                        _ensure_active_principal, request, settings, principal, correlation_id,
+                        _ensure_active_principal,
+                        request,
+                        settings,
+                        principal,
+                        correlation_id,
                     )
                 )
             except IdentityMappingConflict:
@@ -469,13 +481,22 @@ class AuthenticationMiddleware:
         if (
             response is None
             and scope.get("method") == "POST"
-            and scope.get("path") == "/v1/travel/itinerary-proposals"
+            and scope.get("path")
+            in {
+                "/v1/travel/itinerary-proposals",
+                "/v1/travel/booking-extractions",
+            }
         ):
+            body_limit = (
+                MAX_BOOKING_EXTRACTION_REQUEST_BYTES
+                if scope.get("path") == "/v1/travel/booking-extractions"
+                else MAX_ITINERARY_PROPOSAL_REQUEST_BYTES
+            )
             content_length = request.headers.get("content-length")
             too_large = False
             if content_length is not None:
                 try:
-                    too_large = int(content_length) > MAX_ITINERARY_PROPOSAL_REQUEST_BYTES
+                    too_large = int(content_length) > body_limit
                 except ValueError:
                     too_large = True
             chunks: list[bytes] = []
@@ -488,17 +509,22 @@ class AuthenticationMiddleware:
                     break
                 chunk = message.get("body", b"")
                 received += len(chunk)
-                if received > MAX_ITINERARY_PROPOSAL_REQUEST_BYTES:
+                if received > body_limit:
                     too_large = True
                     break
                 chunks.append(chunk)
                 if not message.get("more_body", False):
                     break
             if too_large:
+                code, message = (
+                    ("proposal_request_too_large", "The proposal request exceeds its size limit.")
+                    if scope.get("path") == "/v1/travel/itinerary-proposals"
+                    else ("request_body_too_large", "The request exceeds its size limit.")
+                )
                 response = _error(
                     413,
-                    "proposal_request_too_large",
-                    "The proposal request exceeds its size limit.",
+                    code,
+                    message,
                     request=request,
                     correlation_id=correlation_id,
                 )

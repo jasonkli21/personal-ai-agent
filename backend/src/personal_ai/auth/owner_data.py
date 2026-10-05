@@ -7,6 +7,7 @@ OWNER_DATA_COLLECTIONS = (
     "research_sessions",
     "research_request_keys",
     "itinerary_proposals",
+    "booking_document_extractions",
     "iterative_research_runs",
     "iterative_research_request_keys",
     "memories",
