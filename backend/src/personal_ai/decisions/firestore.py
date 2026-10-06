@@ -6,7 +6,13 @@ from uuid import UUID
 from google.api_core.exceptions import GoogleAPICallError, RetryError
 from google.cloud import firestore
 
-from personal_ai.auth.scope import scope_matches, scope_normalized_dump, scope_query, scoped_record
+from personal_ai.auth.scope import (
+    scope_filtered_snapshots,
+    scope_matches,
+    scope_normalized_dump,
+    scope_query,
+    scoped_record,
+)
 from personal_ai.decisions.contracts import (
     CandidateEvaluation,
     DecisionResult,
@@ -52,11 +58,12 @@ class FirestoreDecisionRepository:
                     self.entities.where(filter=firestore.FieldFilter("owner_id", "==", scope_owner))
                     .where(filter=firestore.FieldFilter("entity_type", "==", entity_type))
                     .where(filter=firestore.FieldFilter("status", "==", "active"))
-                    .limit(limit + 1)
                 )
                 query = scope_query(query)
                 records.extend(
-                    entity for item in query.stream(retry=None, timeout=5)
+                    entity for item in scope_filtered_snapshots(
+                        query, limit=limit + 1, timeout=5
+                    )
                     if scope_matches(entity := CanonicalEntity.model_validate(item.to_dict()))
                 )
             return tuple(sorted({item.id: item for item in records}.values(), key=lambda item: str(item.id))[: limit + 1])
@@ -73,14 +80,15 @@ class FirestoreDecisionRepository:
                     query = (
                         self.aliases.where(filter=firestore.FieldFilter("owner_id", "==", scope_owner))
                         .where(filter=firestore.FieldFilter("entity_id", "in", group))
-                        .limit(100 * len(group) + 1)
                     )
                     query = scope_query(query)
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError("decision alias query deadline exceeded")
                     values = tuple(
-                        alias for item in query.stream(retry=None, timeout=remaining)
+                        alias for item in scope_filtered_snapshots(
+                            query, limit=100 * len(group) + 1, timeout=remaining
+                        )
                         if scope_matches(alias := EntityAlias.model_validate(item.to_dict()))
                     )
                     if len(values) > 100 * len(group):
@@ -107,11 +115,12 @@ class FirestoreDecisionRepository:
                             filter=firestore.FieldFilter("attribute", "==", attribute)
                         )
                     query = scope_query(query)
-                    query = query.limit(limit + 1)
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError("decision claim query deadline exceeded")
-                    for item in query.stream(retry=None, timeout=remaining):
+                    for item in scope_filtered_snapshots(
+                        query, limit=limit + 1, timeout=remaining
+                    ):
                         record = EntityClaim.model_validate(item.to_dict())
                         if scope_matches(record):
                             records_by_id[record.id] = record
@@ -132,11 +141,12 @@ class FirestoreDecisionRepository:
             query = (
                 self.claims.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
                 .where(filter=firestore.FieldFilter("evidence_ids", "array_contains", str(evidence_id)))
-                .limit(limit)
             )
             query = scope_query(query)
             return tuple(
-                claim for item in query.stream(retry=None, timeout=5)
+                claim for item in scope_filtered_snapshots(
+                    query, limit=limit, timeout=5
+                )
                 if scope_matches(claim := EntityClaim.model_validate(item.to_dict()))
             )
 

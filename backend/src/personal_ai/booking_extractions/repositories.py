@@ -15,6 +15,7 @@ from personal_ai.auth.scope import (
     STANDALONE_APPLICATION_ID,
     ApplicationScopedRecord,
     current_application_scope,
+    scope_filtered_snapshots,
     scope_matches,
     scope_query,
     scoped_record,
@@ -308,13 +309,15 @@ class FirestoreBookingExtractionRepository:
     def purge_expired(self, now, *, limit):
         if not 1 <= limit <= 500:
             raise ValueError("cleanup limit must be between one and 500")
-        snapshots = list(
-            scope_query(
-                self.collection.where("state", "==", "completed")
-                .where("expires_at", "<=", now)
-            )
-            .limit(limit)
-            .stream(retry=None, timeout=5)
+        query = scope_query(
+            self.collection.where("state", "==", "completed")
+            .where("expires_at", "<=", now)
+        )
+        snapshots = scope_filtered_snapshots(
+            query,
+            limit=limit,
+            timeout=5,
+            order_field="expires_at",
         )
         purged = 0
         for snapshot in snapshots:

@@ -11,6 +11,7 @@ from personal_ai.agents.research.contracts import (
     evolve,
 )
 from personal_ai.agents.research.repositories import InMemoryResearchRepository
+from personal_ai.evidence.contracts import SearchQuery
 from personal_ai.search.policy import SnippetExtractor, canonical_url, planned_queries
 from personal_ai.settings import Settings
 from personal_ai.storage.errors import ResourceNotFoundError
@@ -53,6 +54,34 @@ def test_atomic_idempotency_owner_and_fence():
     )
     with pytest.raises(ResearchError):
         repo.save(evolve(terminal, revision=terminal.revision + 1))
+
+
+def test_legacy_query_envelope_survives_research_session_update():
+    repo = InMemoryResearchRepository()
+    created = repo.create(session())
+    running = repo.claim("local", created.id, uuid4(), NOW, NOW + timedelta(seconds=30))
+    query = SearchQuery(
+        id=uuid4(), session_id=running.id, owner_id=running.owner_id,
+        normalized_query="synthetic query", sequence=0, created_at=NOW,
+    )
+    data = evolve(running, queries=(query,)).model_dump(mode="python")
+    data["run_token"] = str(running.run_token)
+    data.pop("application_id")
+    data.pop("workspace_id")
+    data.pop("scope_version")
+    for field in ("application_id", "workspace_id", "scope_version"):
+        data["queries"][0].pop(field)
+    legacy = ResearchSession.model_validate(data)
+    repo.sessions[legacy.id] = legacy
+
+    saved = repo.save(evolve(
+        legacy, state="failed", failure_code="synthetic_failure", revision=legacy.revision + 1,
+    ))
+
+    assert saved.scope_version == 2
+    assert saved.queries[0].scope_version == 1
+    assert saved.queries[0].id == query.id
+    assert saved.queries[0].normalized_query == query.normalized_query
 
 
 @pytest.mark.parametrize(

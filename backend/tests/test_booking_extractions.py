@@ -425,7 +425,7 @@ def test_firestore_retention_uses_native_timestamps_and_preserves_tombstone():
         to_dict=lambda: records[("booking_document_extractions", str(record.extraction_id))],
     )
     query = collections["booking_document_extractions"].where.return_value
-    query.where.return_value.limit.return_value.stream.return_value = [snapshot]
+    query.where.return_value.order_by.return_value.limit.return_value.stream.return_value = [snapshot]
     expired_at = now + timedelta(days=8)
     assert repo.purge_expired(expired_at, limit=10) == 1
     expired = repo.get("verified-owner", record.extraction_id)

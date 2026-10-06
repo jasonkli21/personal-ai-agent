@@ -1,7 +1,7 @@
 """End-to-end Phase 8 state-machine, fencing, and restart tests."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -11,6 +11,7 @@ from personal_ai.agents.research.contracts import ResearchError, ResearchRequest
 from personal_ai.agents.research.iterative_contracts import (
     DecisionIntent,
     IterativeResearchRequest,
+    ResearchRun,
     RunState,
     StopReason,
 )
@@ -216,6 +217,45 @@ async def test_same_owner_and_idempotency_key_create_independent_runs_per_scope(
             assert runs.get(service.owner_id, expected.id) == expected
             assert runs.session(service.owner_id, expected.session_id).iterative_run_id == expected.id
     assert runs.get_by_key(service.owner_id, req.idempotency_key) == standalone
+
+
+def _without_scope_envelopes(value):
+    if isinstance(value, dict):
+        return {
+            key: _without_scope_envelopes(item)
+            for key, item in value.items()
+            if key not in {"application_id", "workspace_id", "scope_version"}
+        }
+    if isinstance(value, (tuple, list)):
+        return type(value)(_without_scope_envelopes(item) for item in value)
+    return value
+
+
+@pytest.mark.anyio
+async def test_legacy_iterative_run_and_budget_can_be_claimed_without_rewriting_history():
+    service, _, clock, sessions, runs = build_service()
+    initial = await service.create(request())
+    legacy_run = ResearchRun.model_validate(_without_scope_envelopes(
+        initial.model_dump(mode="python")
+    ))
+    legacy_session = ResearchSession.model_validate(_without_scope_envelopes(
+        (await service.session(initial.id)).model_dump(mode="python")
+    ))
+    runs.runs[legacy_run.id] = legacy_run
+    sessions.sessions[legacy_session.id] = legacy_session
+
+    claimed, claimed_session = runs.claim(
+        service.owner_id, legacy_run.id, uuid4(), clock(),
+        clock() + timedelta(seconds=30),
+        clock() + timedelta(minutes=1),
+    )
+
+    assert claimed.scope_version == 2
+    assert claimed.budget.scope_version == 1
+    assert claimed.events[0].scope_version == 1
+    assert claimed.ledger[0].scope_version == 1
+    assert claimed.events[-1].scope_version == 2
+    assert claimed_session.scope_version == 1
 
 
 @pytest.mark.anyio

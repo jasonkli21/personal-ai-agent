@@ -16,9 +16,10 @@ from tests.test_decisions import evidence, make_service
 
 
 class Snapshot:
-    def __init__(self, data):
+    def __init__(self, data, identifier=None):
         self.exists = data is not None
         self._data = data
+        self.id = identifier
 
     def to_dict(self):
         return self._data
@@ -30,20 +31,31 @@ class Document:
         self.identifier = identifier
 
     def get(self, **_):
-        return Snapshot(self.collection.client.records.get((self.collection.name, self.identifier)))
+        return Snapshot(
+            self.collection.client.records.get((self.collection.name, self.identifier)),
+            self.identifier,
+        )
 
 
 class Query:
-    def __init__(self, collection, filters=(), maximum=None):
+    def __init__(self, collection, filters=(), maximum=None, ordering=None, after=None):
         self.collection = collection
         self.filters = filters
         self.maximum = maximum
+        self.ordering = ordering
+        self.after = after
 
     def where(self, *, filter):
-        return Query(self.collection, (*self.filters, filter), self.maximum)
+        return Query(self.collection, (*self.filters, filter), self.maximum, self.ordering, self.after)
 
     def limit(self, maximum):
-        return Query(self.collection, self.filters, maximum)
+        return Query(self.collection, self.filters, maximum, self.ordering, self.after)
+
+    def order_by(self, field, *, direction=None):
+        return Query(self.collection, self.filters, self.maximum, (field, direction), self.after)
+
+    def start_after(self, snapshot):
+        return Query(self.collection, self.filters, self.maximum, self.ordering, snapshot.id)
 
     def stream(self, **_):
         docs = []
@@ -51,7 +63,16 @@ class Query:
             if collection_name != self.collection.name:
                 continue
             if all(self._matches(data, condition) for condition in self.filters):
-                docs.append(Snapshot(data))
+                docs.append(Snapshot(data, identifier))
+        if self.ordering:
+            field, direction = self.ordering
+            docs.sort(
+                key=lambda item: item.id if field == "__name__" else item.to_dict().get(field),
+                reverse=direction == "DESCENDING",
+            )
+        if self.after is not None:
+            index = next((i for i, item in enumerate(docs) if item.id == self.after), None)
+            docs = docs[index + 1:] if index is not None else []
         return docs[: self.maximum]
 
     @staticmethod
@@ -198,6 +219,24 @@ def test_firestore_claim_attribute_filter_finds_relevant_record_past_unrelated_p
     }
     fake.claims[relevant.id] = relevant
     assert fake.list_claims("local", (entity_id,), ("price",), limit=5) == (relevant,)
+
+
+def test_standalone_entity_limit_is_applied_after_scope_filtering():
+    repository, client, _ = repository_environment()
+    result = decision_result()
+    standalone = result.entities[0].model_copy(update={
+        "id": uuid4(), "application_id": "personal_ai", "workspace_id": None,
+        "scope_version": 2,
+    })
+    for index in range(120):
+        foreign = standalone.model_copy(update={
+            "id": uuid4(), "canonical_name": f"Foreign {index}",
+            "application_id": "travel", "scope_version": 2,
+        })
+        client.records[("canonical_entities", f"a-{index:03}")] = foreign.model_dump(mode="json")
+    client.records[("canonical_entities", "z-standalone")] = standalone.model_dump(mode="json")
+
+    assert repository.list_entities("local", "object", limit=1) == (standalone,)
 
 
 def test_firestore_alias_reads_batch_entity_ids_and_preserve_all_owner_scoped_aliases(monkeypatch):

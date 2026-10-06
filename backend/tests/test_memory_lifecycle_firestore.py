@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from google.cloud.firestore_v1.vector import Vector
 
 from personal_ai.evaluation.memory_lifecycle import NOW, build_fixture, load_fixtures
+from personal_ai.memory import lifecycle_repositories
 from personal_ai.memory.lifecycle_policy import make_event
 from personal_ai.memory.lifecycle_repositories import (
     FirestoreMemoryLifecycleRepository,
@@ -89,6 +90,45 @@ def test_event_and_projection_commit_atomically_with_source_and_ancestor_reads()
     assert lifecycle.apply_event(event).reason == "source_inactive"
     transaction.create.assert_not_called()
     transaction.set.assert_not_called()
+
+
+def test_maintenance_discovery_skips_foreign_scope_before_state_lookup(monkeypatch):
+    env, lifecycle, _records, _refs, _client, _transaction = environment()
+    memory = next(
+        item for item in env["records"].values()
+        if item.memory_type in {"preference", "explicit_correction"}
+    )
+    foreign_data = memory.model_dump(mode="json")
+    foreign_data.update(application_id="travel", workspace_id=None, scope_version=2)
+    legacy_data = memory.model_dump(mode="json")
+    for field in ("application_id", "workspace_id", "scope_version"):
+        legacy_data.pop(field)
+
+    class Snapshot:
+        def __init__(self, data):
+            self.data = data
+
+        def to_dict(self):
+            return self.data
+
+    calls = 0
+
+    def scoped_page(_query, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return (Snapshot(foreign_data), Snapshot(legacy_data)) if calls == 1 else ()
+
+    state_lookups = []
+    monkeypatch.setattr(lifecycle_repositories, "scope_filtered_snapshots", scoped_page)
+    monkeypatch.setattr(
+        lifecycle, "get_state",
+        lambda *, owner_id, memory_id: state_lookups.append(memory_id)
+        or SimpleNamespace(retrieval_status="active"),
+    )
+    monkeypatch.setattr(lifecycle_repositories, "source_messages", lambda *args, **kwargs: True)
+
+    assert lifecycle.discover_maintenance_candidates(owner_id="local", limit=1) == (memory.id,)
+    assert state_lookups == [memory.id]
 
 
 def test_consolidation_commits_all_sources_events_reverse_links_and_operation_together():

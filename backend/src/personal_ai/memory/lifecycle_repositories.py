@@ -18,6 +18,7 @@ from personal_ai.auth.scope import (
     STANDALONE_APPLICATION_ID,
     current_application_scope,
     data_scope_matches,
+    scope_filtered_snapshots,
     scope_matches,
     scope_normalized_dump,
     scope_query,
@@ -1335,12 +1336,13 @@ class FirestoreMemoryLifecycleRepository:
             ):
                 query = query.where(filter=firestore.FieldFilter(field, "==", value))
             query = scope_query(query)
-            query = query.order_by("effective_at", direction=firestore.Query.DESCENDING)
-            query = query.limit(min(100, limit * 4))
-            snapshots = self.memories._run(
-                lambda query=query: list(query.stream(retry=None, timeout=rpc_timeout()))
-            )
+            snapshots = self.memories._run(lambda query=query: scope_filtered_snapshots(
+                query, limit=min(100, limit * 4), timeout=rpc_timeout(),
+                order_field="effective_at", direction=firestore.Query.DESCENDING,
+            ))
             for snapshot in snapshots:
+                if not data_scope_matches(snapshot.to_dict() or {}):
+                    continue
                 memory = self.memories._record(snapshot)
                 state = self.get_state(owner_id=owner_id, memory_id=memory.id)
                 if state.retrieval_status == "active" and source_messages(
@@ -1359,7 +1361,7 @@ class FirestoreMemoryLifecycleRepository:
         query = query.where(filter=firestore.FieldFilter("source_memory_id", "==", str(memory_id)))
         query = scope_query(query)
         snapshots = self.memories._run(
-            lambda: list(query.limit(limit).stream(retry=None, timeout=rpc_timeout()))
+            lambda: scope_filtered_snapshots(query, limit=limit, timeout=rpc_timeout())
         )
         return tuple(
             UUID(values["derived_memory_id"])
@@ -1430,11 +1432,13 @@ class FirestoreMemoryLifecycleRepository:
                 query = query.where(filter=firestore.FieldFilter(field, "==", value))
             query = scope_query(query)
             query = query.where(filter=firestore.FieldFilter("effective_at", "<=", cutoff))
-            query = query.order_by("effective_at", direction=firestore.Query.ASCENDING).limit(limit)
-            snapshots = self.memories._run(
-                lambda query=query: list(query.stream(retry=None, timeout=rpc_timeout()))
-            )
+            snapshots = self.memories._run(lambda query=query: scope_filtered_snapshots(
+                query, limit=limit, timeout=rpc_timeout(), order_field="effective_at",
+                direction=firestore.Query.ASCENDING,
+            ))
             for snapshot in snapshots:
+                if not data_scope_matches(snapshot.to_dict() or {}):
+                    continue
                 record = self.memories._record(snapshot)
                 if (
                     self.get_state(owner_id=owner_id, memory_id=record.id).retrieval_status
