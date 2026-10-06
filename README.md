@@ -1,300 +1,386 @@
 # Personal AI System
 
-A personal AI system and research playground: chat, long-term memory, and evidence-grounded research. It is a reusable AI/research substrate. Travel and shopping can add shared AI-side domain modules here; future rich applications may live in separate repositories and own their domain data and UI.
+A personal AI platform and research environment focused on the systems around large language models: streaming chat, context management, long-term memory, evidence-grounded research, decision support, domain integrations, evaluation, and application-facing AI capabilities.
 
-## Initial technology stack
+The project is intentionally not a model-training or local-model-hosting project. It uses hosted model/provider APIs behind replaceable interfaces and concentrates on the surrounding architecture: memory, retrieval, evidence, routing, constraints, persistence, observability, and cost-aware orchestration.
 
-- **Web:** Next.js, React, and TypeScript, deployed as a Cloud Run service.
-- **API and worker:** Python, FastAPI, and Uvicorn, deployed as separate Cloud Run services.
-- **Durable application data:** Cloud Firestore in Native mode.
-- **Asynchronous work:** Pub/Sub push delivery to the private worker for gated, durable Phase 4 memory-lifecycle jobs. Chat and bounded Phase 5 research use direct requests and SSE.
-- **Secrets:** Secret Manager; no provider key is committed to source control.
-- **Build and delivery:** Locked Docker builds through Cloud Build, Artifact Registry, and immutable Cloud Run image digests.
+## What it does
 
-The GCP layout and deployment path are documented in [GCP deployment](docs/gcp-deployment.md).
+The system provides reusable AI capabilities that can be used directly through its web UI or consumed by domain applications such as travel and shopping.
+
+Core capabilities include:
+
+- streamed conversational chat;
+- persistent conversation history;
+- token-budgeted context management and working summaries;
+- attributable long-term memory with retrieval;
+- bounded memory lifecycle experiments;
+- source-grounded research with persisted evidence;
+- iterative research with explicit budgets and recovery;
+- canonical research entities and evidence-backed claims;
+- deterministic hard constraints and explainable ranking;
+- decision snapshots with source attribution;
+- travel and shopping comparison modules;
+- itinerary-proposal and booking-extraction capability boundaries;
+- owner-scoped application/workspace identity foundations;
+- account export/deletion workflow foundations;
+- synthetic evaluation suites for memory, context, research, decisions, and domain behavior.
+
+## Design principles
+
+- **The model provider is replaceable.**
+- **Memory and external evidence are different data classes.**
+- **Current evidence can override stale memory.**
+- **Hard constraints are enforced by application code, not delegated to a model.**
+- **Research is bounded by time, token, source, and cost budgets.**
+- **Domain applications keep authority over their own data and business rules.**
+- **Experiments require measurable evaluation before promotion.**
+- **Cloud resources should scale to zero or stay disabled when not needed.**
+
+## Architecture
+
+```text
+                         Browser
+                            |
+                            v
+                +-----------------------+
+                | Next.js / React       |
+                | public web service    |
+                +-----------+-----------+
+                            |
+                     server-side proxy
+                            |
+                            v
+                +-----------------------+
+                | private FastAPI API   |
+                |                       |
+                | chat + context        |
+                | memory + research     |
+                | evidence + decisions  |
+                | domain capabilities   |
+                +----+-------------+----+
+                     |             |
+                     |             +-------> hosted LLM/search providers
+                     |
+                     v
+               Firestore Native
+                     |
+                     | durable async jobs
+                     v
+                   Pub/Sub
+                     |
+                     v
+              private Cloud Run
+                   worker
+```
+
+Domain applications integrate over explicit HTTP contracts rather than importing internal packages.
 
 ## Repository layout
 
 ```text
-frontend/
-  src/                       Next.js interface, server proxies and UI features
-  tests/                     Vitest component, client and proxy tests
-backend/                     FastAPI application and domain packages
-  src/personal_ai/
-    services/                Conversation and chat-turn orchestration
-    agents/                  Single-pass and iterative research orchestration
-    auth/                    Verified identity, owner mapping and account safeguards
-    context/                 Shared token-budgeted model input assembly
-    storage/                 Chat repositories and shared persistence primitives
-    memory/                  Preference, episodic, and semantic memory
-    search/                  Search pipeline and provider adapters
-    evidence/                Fresh, attributable source observations
-    entities/                Chat records and canonical research candidates/claims
-    decisions/               Evidence-backed decision contracts and persistence
-    ranking/                 Deterministic constraints and explainable ranking
-    domains/                 Thin travel/shopping comparisons and bounded providers
-    evaluation/              Reproducible system and agent evaluation
-  tests/                     Backend contract, route, service and adapter tests
-infrastructure/              Local and cloud deployment configuration
-experiments/                 Isolated memory, search, and ranking experiments
-docs/                        Architecture, data-model, and decision notes
+.
+├── backend/
+│   ├── src/personal_ai/
+│   │   ├── agents/          # research orchestration
+│   │   ├── auth/            # identity and owner boundaries
+│   │   ├── context/         # token-budgeted context assembly
+│   │   ├── decisions/       # evidence-backed decision contracts
+│   │   ├── domains/         # thin travel/shopping capabilities
+│   │   ├── entities/        # chat and canonical research entities
+│   │   ├── evidence/        # attributable observations
+│   │   ├── evaluation/      # reproducible synthetic evaluation
+│   │   ├── memory/          # durable memory and lifecycle logic
+│   │   ├── ranking/         # deterministic ranking/constraints
+│   │   ├── search/          # search adapters and pipeline
+│   │   ├── services/        # chat/application orchestration
+│   │   └── storage/         # Firestore and persistence primitives
+│   └── tests/
+├── frontend/
+│   ├── src/                 # Next.js application and API proxies
+│   └── tests/
+├── infrastructure/          # local/GCP deployment assets
+├── experiments/             # isolated research experiments
+├── docs/                    # architecture, ADRs, runbooks, evaluations
+├── firestore.indexes.json
+└── Makefile
 ```
 
-## Getting started
+## Tech stack
 
-Phases 1–8 are implemented locally. Phase 9 adds Google OIDC authentication,
-owner-scoped access, private API/worker deployment, request limits, account
-export, and an audited deletion-request workflow. Phase 9 remains incomplete:
-physical deletion, full legacy-data migration, provider usage accounting,
-operational release gates, and cloud/provider verification are still open.
-See the [repository review](docs/repository-review-2026-10-03.md) and
-[Phase 9 evidence](docs/phase-9-implementation-evidence.md).
+### Web
 
-Local/test development explicitly uses the unauthenticated `local` owner.
-Staging/production require a verified Google identity and exact allowlist.
-Production readiness is not established by the local implementation.
+- Next.js 15
+- React 19
+- TypeScript
+- pnpm 11.19.0
+
+### API / worker
+
+- Python 3.11+
+- FastAPI
+- Uvicorn
+- Google Gen AI SDK behind an application-level provider abstraction
+
+### Cloud
+
+- Google Cloud Run
+- Cloud Firestore Native mode
+- Pub/Sub
+- Secret Manager
+- Artifact Registry
+- Cloud Build
+
+## Local setup
 
 ### Prerequisites
 
-- Python 3.11 or newer (the Docker image uses Python 3.12) and uv 0.11.13.
-- Node.js 22 and pnpm 11.19.0 (the version pinned by `frontend/package.json`).
-- No GCP account, cloud credentials, Firestore Emulator, or Gemini API key is required for the quality checks.
+- Python 3.11+; Python 3.12 is used by the containerized runtime
+- `uv` 0.11.13
+- Node.js 22
+- pnpm 11.19.0
+- optional Google Cloud CLI for the Firestore emulator
 
-### Install dependencies
+### 1. Clone the repository
 
-Install the backend from its committed lockfile, including locked build tools,
-then activate the isolated environment:
+```bash
+git clone https://github.com/jasonkli21/personal-ai-system.git
+cd personal-ai-system
+```
 
-```sh
+### 2. Install backend dependencies
+
+```bash
 cd backend
+
 uv sync --locked --only-group build --no-install-project
 uv sync --locked --extra dev --group build --no-build-isolation
+
 cd ..
 source backend/.venv/bin/activate
 ```
 
-Install the frontend dependencies from the committed lockfile:
+### 3. Install frontend dependencies
 
-```sh
+```bash
 cd frontend
 pnpm install --frozen-lockfile
+cd ..
 ```
 
-### Configure local environment files
+### 4. Configure local environment files
 
-Copy `backend/.env.example` to `backend/.env` when configuring the API, and copy `frontend/.env.local.example` to `frontend/.env.local` when configuring the UI. Leave provider credentials empty unless an implementation task specifically requires them.
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.local.example frontend/.env.local
+```
 
-Only example environment files are committed. Local `.env` and `.env.*` files are ignored; never place credentials or personal data in a tracked file.
+The default local configuration keeps optional research, memory-lifecycle, decision, domain, export, deletion, and provider-backed features disabled.
 
-For a local UI-only or route check, the default `AI_API_KEY=` is enough until a
-chat turn is sent. For a real streamed response, set `AI_API_KEY` to a Gemini
-key and choose an available `AI_MODEL`; a missing key produces the safe
-`invalid_configuration` stream error. Never use a production key in a tracked
-file. Automated tests use fake repositories and a fake LLM, so they need
-neither a key nor GCP credentials.
+Automated tests use fakes and do not require model credentials or GCP access.
 
-### Local Firestore persistence
+### 5. Optional: start the Firestore emulator
 
-For manual persistence testing, install the Google Cloud CLI plus the Firestore
-emulator component, then run the emulator in a separate terminal:
+For manual persistence testing:
 
-```sh
+```bash
 gcloud components install cloud-firestore-emulator
 gcloud emulators firestore start --host-port=127.0.0.1:8080
 ```
 
-Keep `FIRESTORE_PROJECT_ID=example-personal-ai` and
-`FIRESTORE_EMULATOR_HOST=127.0.0.1:8080` in `backend/.env` (the example file
-already contains equivalent values). This is opt-in: tests never contact the
-emulator or Firestore. If the emulator is not running, use the fake-backed test
-suite rather than starting the API with Firestore configured.
+The example backend environment already points to:
 
-### Local quality commands
+```env
+FIRESTORE_PROJECT_ID=example-personal-ai
+FIRESTORE_EMULATOR_HOST=localhost:8080
+```
 
-Run these commands from the repository root. They do not need cloud credentials or a model key.
+### 6. Start the application
 
-| Command | Check |
-| --- | --- |
-| `make backend-test` | Backend pytest suite |
-| `make backend-lint` | Backend Ruff checks |
-| `make frontend-test` | Frontend Vitest suite |
-| `make frontend-lint` | Frontend ESLint checks |
-| `make frontend-typecheck` | Frontend TypeScript checks |
-| `make context-eval` | Synthetic Phase 2 context evaluation |
-| `make memory-eval` | Synthetic Phase 3 memory evaluation |
-| `make research-eval` | Synthetic Phase 5 source-grounded research evaluation |
-| `make decision-eval` | Synthetic Phase 6 decision evaluation |
-| `make domain-eval` | Synthetic Phase 7 travel/shopping evaluation |
-| `make iterative-research-eval` | Paired Phase 5/8 research evaluation |
-| `make memory-lifecycle-eval` | Synthetic Phase 4 lifecycle/variant evaluation |
-| `make backend-build` | Backend source distribution and wheel |
-| `make frontend-build` | Next.js production build |
+In separate terminals:
 
-For local development, run `make run-backend` and `make run-frontend` in separate terminals. The API listens on port 8000 and the web app on port 3000.
+```bash
+make run-backend
+```
 
-Open `http://localhost:3000`, create a conversation, and send a message after
-both the emulator and a valid model key are configured. Refresh the page to
-confirm that the completed conversation was persisted. If the page shows API
-unavailable, confirm the backend is running and `API_BASE_URL` remains
-`http://localhost:8000`; if the turn fails with invalid configuration, set the
-model key and verify `AI_PROVIDER=gemini` and `AI_MODEL` in `backend/.env`.
+```bash
+make run-frontend
+```
 
-To verify that a check detects a failure, temporarily change either health-test assertion or the frontend expected application name, run its corresponding command, and then revert that temporary edit. CI runs the five quality checks, backend packaging on Python 3.11/3.12, the Next.js production build, and both Docker builds on pull requests and pushes to `main`; it does not deploy or use secrets.
+Open:
 
-See [dependency and build management](docs/dependency-management.md) for lockfile
-updates, Docker build commands, and the limits of build reproducibility.
+```text
+http://localhost:3000
+```
 
-For AI coding sessions, follow [AGENTS.md](AGENTS.md), then start with the
-[project brief](docs/project-brief.md). It
-captures the project intent, current state, guardrails, and immediate
-implementation status. The
-[Phase 1 implementation plan](docs/phase-1-implementation-plan.md) defines the
-work and acceptance criteria; its companion
-[implementation guide](docs/phase-1-implementation-guide.md) maps every part to
-the delivered code, tests, and commits. See
-[architecture notes](docs/architecture.md) for component boundaries and
-[research-agent notes](docs/research-agent.md) for the future search-agent
-model.
+The frontend server-side proxy defaults to:
 
-The [architecture reconciliation record](docs/architecture-reconciliation-2026-10-02.md)
-explains the post-Phase 5 documentation changes and remaining verification gaps.
+```env
+API_BASE_URL=http://localhost:8000
+```
 
-Phase 1 code and local disconnect regression tests are implemented; real
-persistence/provider/deployment and deployed browser cancellation verification
-remain open. The
-[verification closeout plan](docs/phase-1-verification-plan.md) outlines that
-work. Phase 2 context-window management is implemented locally; see the
-[implementation guide](docs/phase-2-implementation-guide.md) and
-[verification record](docs/releases/phase-2-context-management.md).
+## Model and provider configuration
 
-## Context-window management
+The default model configuration is Gemini:
 
-Every model turn uses a token budget, a compatible working summary when useful,
-and complete recent active-branch turns. The newest prompt is never dropped or
-truncated. An oversized prompt remains persisted without an assistant and can
-be shortened with **Edit and retry**. Summaries are lossy conversation context,
-not long-term memory, and do not promise perfect recall.
+```env
+AI_PROVIDER=gemini
+AI_MODEL=gemini-2.5-flash
+AI_API_KEY=
+```
 
-Backend example settings include a 32,768-token application capacity, 4,096-token
-response reserve, 1,024-token safety margin, 12,000-token summary trigger, and
-2,048-token summary ceiling. Validate these against `AI_MODEL` when changing it.
-`MAX_PHASE_1_HISTORY_MESSAGES` has been replaced by the token budget.
-Production counting uses Gemini; offline planning/inspection clearly labels estimates.
+Leave `AI_API_KEY` empty for offline/fake-backed testing.
 
-Run `make context-eval` for the five synthetic offline regression fixtures.
-For the read-only development view, enable `CONTEXT_INSPECTION_ENABLED=true`
-in both local environment files, restart the servers, and open
-`http://localhost:3000/development/context`. Both applications default to false;
-the deployment script keeps the view disabled. Provider quality verification is
-opt-in as described in the implementation guide.
+For a real streamed model response, set the key only in the untracked local environment file or Secret Manager in cloud deployments.
 
-## Deploy and verify
+Research, memory, decision, travel, shopping, proposal, and extraction capabilities each have independent gates. Enable only the specific path you are testing and preserve its provider/storage policy controls.
 
-Follow the [GCP deployment guide](docs/gcp-deployment.md) and complete the
-[Phase 1 deployment checklist](docs/phase-1-deployment-checklist.md). The
-deployer reads the model key only from Secret Manager. The web sign-in shell is public; the API and worker require Cloud Run IAM
-and independently verified user/service identities. Keep real personal data out
-until the [Phase 9 release checklist](docs/phase-9-release-checklist.md) has
-dated acceptance evidence.
+## Quality and evaluation
 
-## Principles
+Common checks from the repository root:
 
-- Keep the model provider behind the `llm` module.
-- Keep durable user memory separate from time-sensitive external evidence.
-- Let memory guide research and ranking, never silently replace current evidence.
-- Keep search providers and domain-specific APIs behind adapters.
-- Treat experiments as disposable until measured results justify promotion.
-- Avoid putting credentials or user data in version control.
+```bash
+make backend-test
+make backend-lint
+make frontend-test
+make frontend-lint
+make frontend-typecheck
+make backend-build
+make frontend-build
+```
 
-## Simple long-term memory
+The repository also includes deterministic evaluation suites:
 
-Phase 3 is implemented locally and disabled by default. When deliberately enabled,
-the system extracts a few exact, attributable user statements from successfully
-completed turns, stores their provenance and compatible embeddings, and retrieves
-relevant historical context across conversations. Selected records pass through
-the same total token budget as working summaries and recent turns. Memory is
-fallible user knowledge, not external evidence or guaranteed recall. Current
-requests and corrections take precedence. Phase 3 itself has no automatic
-contradiction resolution, editing, consolidation or forgetting; gated Phase 4
-lifecycle behavior is described below.
+```bash
+make context-eval
+make memory-eval
+make memory-lifecycle-eval
+make research-eval
+make iterative-research-eval
+make decision-eval
+make domain-eval
+```
 
-Review provider-data suitability before setting `MEMORY_ENABLED=true` and
-`MEMORY_EXTRACTION_ENABLED=true`; the local/test `local` owner is not authentication, and production readiness
-requires the Phase 9 release checks. Provision the matching Firestore vector index before
-enabling retrieval. Run `make memory-eval` for fourteen offline synthetic cases.
-The development context inspector can estimate fit for explicitly supplied memory
-IDs when `MEMORY_INSPECTION_ENABLED=true` is set in both local environment files;
-it makes no provider calls and does not replay prior model requests.
-See the [Phase 3 guide](docs/phase-3-implementation-guide.md),
-[decisions](docs/decisions/0009-simple-attributable-memory.md), and
-[release evidence](docs/releases/phase-3-simple-memory.md) for configuration,
-index ordering, manual checks and remaining gaps. Phase 4 is now implemented
-locally; see the Phase 4 guide and release evidence below.
+These evaluations are designed to make changes to memory, retrieval, ranking, context assembly, and research behavior measurable rather than purely subjective.
 
-Phase 4 experimental memory is implemented locally with gates disabled and fixed
-retrieval as the default. See the [guide](docs/phase-4-implementation-guide.md) for
-scoring, immutable lifecycle records, private worker, notification recovery,
-inspection and opt-in checks, and the [release evidence](docs/releases/phase-4-experimental-memory.md)
-for results and remaining external verification gaps. Forgetting changes retrieval
-eligibility; it does not delete data.
+## Cloud deployment
 
-## Source-grounded research
+The deployed topology is designed around a public web shell, private API/worker services, Firestore, and authenticated Pub/Sub delivery.
 
-Phase 5 is implemented locally and disabled by default. It adds a separate
-`/research` page with bounded single-pass search, expiring attributable evidence,
-validated cited excerpts, saved sessions and gated inspection. Research never
-writes to personal memory. Answers expose source observations and uncertainty;
-strict excerpt synthesis does not promise independent factual verification.
+```text
+Browser
+  |
+  v
+Cloud Run: personal-ai-web
+  |
+  | service identity + end-user identity
+  v
+Cloud Run: personal-ai-api
+  |
+  +------> Firestore
+  |
+  +------> hosted model/search providers
+  |
+  +------> Pub/Sub ---> Cloud Run: personal-ai-worker
+```
 
-Run `make research-eval` for thirteen synthetic full-pipeline fixtures. For a
-credential-free demo, enable research in both untracked environment files and set
-backend `RESEARCH_STORAGE=memory` and `RESEARCH_SEARCH_ADAPTER=fake`. The page
-labels its synthetic results. See the [Phase 5 guide](docs/phase-5-implementation-guide.md)
-for the exact workflow, contracts, bounds, retention/index policy and real-provider
-gates. Brave requires explicit suitable storage/AI-use rights and an operator
-acknowledgement before enablement. Emulator/provider/deployment checks remain
-pending; see [release evidence](docs/releases/phase-5-source-grounded-research.md).
+### Prerequisites
 
-## Evidence-backed decision support
+Provision or prepare:
 
-Phase 6 adds canonical research candidates, immutable evidence-backed claims,
-conservative entity resolution, deterministic hard constraints, and
-explainable preference ranking. A decision can consume a completed Phase 5
-session or explicitly supplied excerpt evidence; both paths validate ownership
-and provenance. Decision creation and inspection default off.
+1. a GCP project with billing enabled;
+2. a Google OAuth web client;
+3. a Gemini API key stored in Secret Manager;
+4. a reviewed staging domain/origin;
+5. appropriate Cloud Run, Firestore, Pub/Sub, Secret Manager, IAM, and Artifact Registry permissions.
 
-Run `make decision-eval` for 15 synthetic cases covering identity ambiguity,
-freshness/conflicts, typed constraints, tie-breaking, preference limits, and
-ranking fallback. With both backend and frontend `DECISION_ENABLED=true`, open
-`/decisions` and enter a saved decision ID to review evidence-backed facts and
-source links. The development-only `/development/decisions` inspector also
-requires `DECISION_INSPECTION_ENABLED=true` in both applications. Real
-Firestore transaction/index readiness remains unverified, and the fixed
-`local` owner is not authentication. See the [Phase 6 guide](docs/phase-6-implementation-guide.md)
-and [release evidence](docs/releases/phase-6-decision-support.md).
+### Store the model key
 
-## Bounded iterative research
+Example:
 
-Phase 8 is implemented locally and remains off by default. It adds explicit
-finite-state research runs, named evidence gaps, deterministic gap-linked
-follow-up templates, versioned resource budgets, safe persisted progress,
-cancellation, and conservative lease recovery over the existing Phase 5 and
-Phase 6 paths. A decision intent still requires the shared deterministic
-decision service to verify evidence; search snippets cannot become claims by
-themselves. Reconnect reads stored events and does not restart work.
+```bash
+printf '%s' "$GEMINI_API_KEY" | \
+  gcloud secrets create personal-ai-gemini-api-key \
+  --replication-policy=automatic \
+  --data-file=-
+```
 
-Run `make iterative-research-eval` for eighteen paired Phase 5/8 synthetic
-cases. To expose the bounded mode locally, enable `RESEARCH_ENABLED`,
-`ITERATIVE_RESEARCH_ENABLED`, and `ITERATIVE_PROGRESS_ENABLED` in the backend
-and set the matching server settings plus `NEXT_PUBLIC_ITERATIVE_RESEARCH_ENABLED`
-for the frontend. These settings default off, and the research page remains in
-single-pass mode unless the user selects bounded follow-ups. See the
-[Phase 8 implementation guide](docs/phase-8-implementation-guide.md),
-[task plan](docs/phase-8-implementation-plan.md), and [release evidence](docs/releases/phase-8-iterative-research.md)
-for budgets, recovery, data handling, offline checks, and external gaps. Real
-Firestore, search-provider, Gemini, deployment, authentication, and retention
-behavior remain unverified or out of scope.
+Do not place the key in repository files or command-line arguments.
 
-## Reconciled next-scope handoff — 2026-10-05
+### Deploy
 
-The [comprehensive Phase 0 reconciliation](docs/personal-ai-next-scope-chatgpt-integrated-v2/09-phase-0-reconciliation.md) verifies the additive application/context, provider/routing, Firestore/GCS and ChatGPT/domain handoff against revision `ad1dea5912af81eda0c9c5d6a41180ce186a07a5`. Its next-scope Phases 0–28 are separate from the existing implementation history. Next-scope Phase 0 was documentation-only; Phases 1–2 application/workspace identity and the application registry are implemented and verified locally. See the [Phase 1 guide](docs/personal-ai-next-scope-chatgpt-integrated-v2/phase-1-implementation-guide.md), [Phase 2 guide](docs/personal-ai-next-scope-chatgpt-integrated-v2/phase-2-implementation-guide.md), and [Phase 2 evidence](docs/personal-ai-next-scope-chatgpt-integrated-v2/phase-2-implementation-evidence-2026-10-05.md). Domain providers/actions, cross-app grants, workspace membership, and later next-scope phases remain unimplemented. Existing Phase 9 physical deletion, full owner migration and provider/cloud operational gates remain open. The target is incremental and preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.
+From a clean reviewed commit:
+
+```bash
+chmod +x infrastructure/gcp/deploy.sh
+
+infrastructure/gcp/deploy.sh \
+  staging \
+  YOUR_STAGING_PROJECT \
+  us-central1 \
+  personal-ai-gemini-api-key \
+  gemini-2.5-flash \
+  YOUR_GOOGLE_OAUTH_WEB_CLIENT_ID.apps.googleusercontent.com \
+  owner@example.com \
+  https://personal.example \
+  2
+```
+
+The deployment script:
+
+- enables required GCP APIs;
+- creates Firestore and indexes;
+- builds backend/frontend images;
+- resolves immutable image digests;
+- deploys separate web, API, and worker services;
+- creates scoped service identities;
+- configures authenticated Pub/Sub delivery;
+- injects the model key from an explicit Secret Manager version.
+
+Production deployment requires the repository's explicit production acknowledgement and should be rehearsed in a synthetic staging project first.
+
+## Cost and free-tier considerations
+
+The architecture is intentionally compatible with low-idle-cost personal use:
+
+- Cloud Run uses request-based billing and can scale to zero;
+- Firestore is the primary durable record store;
+- Pub/Sub is used only for concrete durable async work;
+- optional providers remain disabled until needed;
+- provider usage is bounded by application-level request/token/call limits.
+
+This is **free-tier-aware**, not a guarantee of zero cost. Firestore backups/TTL behavior, external providers, network egress, and model usage can incur charges.
+
+## Security notes
+
+- local `AUTH_MODE=development` is a development convenience, not production authentication;
+- deployed API and worker services use separate service identities;
+- the API validates end-user identity independently of Cloud Run service identity;
+- production/staging origins are explicit allowlists;
+- provider credentials belong in Secret Manager;
+- research/provider outputs are bounded and validated;
+- persistent memory retains attribution/provenance;
+- external evidence has freshness/retention semantics separate from memory;
+- account export/deletion controls remain gated operational capabilities.
+
+Do not put personal data, provider credentials, service-account keys, or production environment files in version control.
+
+## Documentation
+
+Detailed documentation lives in `docs/`.
+
+Useful entry points include:
+
+```text
+docs/project-brief.md
+docs/architecture.md
+docs/api-contract.md
+docs/gcp-deployment.md
+docs/research-agent.md
+docs/dependency-management.md
+docs/decisions/
+```
+
+## License
+
+No license is currently specified. Add an explicit `LICENSE` file before treating the repository as generally reusable open-source software.

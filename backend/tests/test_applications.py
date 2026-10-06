@@ -41,19 +41,31 @@ def test_default_registry_registers_initial_manifests_and_unavailable_stubs() ->
     assert registry.application_ids == {
         "personal_ai", "travel", "shopping", "finance", "health"
     }
-    assert registry.get("personal_ai").context_provider_ids == (
+    assert registry.get("personal_ai").context_provider_ids == ()
+    shared = registry.registration("personal_ai").context_providers
+    assert tuple(provider.capability_id for provider in shared) == (
         "conversation_history", "ai_memory"
     )
     assert registry.capability(
         "personal_ai", "conversation_history", kind="context_provider"
     ).available
-    assert not registry.capability("personal_ai", "ai_memory", kind="context_provider").available
+    memory = registry.capability("personal_ai", "ai_memory", kind="context_provider")
+    assert memory.available
+    assert memory.feature_gate == "memory_enabled"
+    assert not memory.is_enabled({"memory_enabled": False})
+    assert memory.is_enabled({"memory_enabled": True})
     for application_id in ("travel", "shopping", "finance", "health"):
         registration = registry.registration(application_id)
         assert registration.definition.cross_application.mode == "disabled"
-        assert registration.context_providers
+        assert {p.capability_id for p in registration.context_providers} >= {
+            "conversation_history", "ai_memory"
+        }
         assert registration.tools
-        assert all(not provider.available for provider in registration.context_providers)
+        assert all(
+            not provider.available
+            for provider in registration.context_providers
+            if provider.capability_id not in {"conversation_history", "ai_memory"}
+        )
         assert all(not tool.available for tool in registration.tools)
     assert registry.registration("travel").comparison_modules[0].registration.domain_id == "travel"
     assert registry.registration("shopping").comparison_modules[0].registration.domain_id == "shopping"
@@ -186,3 +198,31 @@ def test_synthetic_application_flows_into_context_without_application_branching(
     assert registry.capability(
         "synthetic", "synthetic.context", kind="context_provider"
     ).available
+
+
+@pytest.mark.parametrize("declares_memory", [False, True])
+def test_shared_context_is_composed_for_builtin_and_synthetic_applications(
+    declares_memory: bool,
+) -> None:
+    registry = default_application_registry()
+    synthetic_providers = ("ai_memory",) if declares_memory else ()
+    synthetic = ApplicationDefinition(
+        application_id="synthetic",
+        display_name="Synthetic",
+        memory_namespace="synthetic",
+        context_provider_ids=synthetic_providers,
+    )
+    synthetic_registry = ApplicationRegistry((synthetic,))
+
+    for selected_registry, application_id in (
+        (registry, "personal_ai"),
+        (registry, "travel"),
+        (synthetic_registry, "synthetic"),
+    ):
+        providers = selected_registry.registration(application_id).context_providers
+        provider_ids = tuple(provider.capability_id for provider in providers)
+        assert "conversation_history" in provider_ids
+        assert "ai_memory" in provider_ids
+        assert selected_registry.capability(
+            application_id, "ai_memory", kind="context_provider"
+        ).is_enabled({"memory_enabled": True})

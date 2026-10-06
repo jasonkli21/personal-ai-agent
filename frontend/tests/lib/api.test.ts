@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { conversationsApi, type Message, type StreamHandlers } from "../../src/lib/api";
+import { applicationScopeHeaders, conversationsApi, type Message, type StreamHandlers } from "../../src/lib/api";
 
 const assistant: Message = {
   id: "assistant", conversation_id: "conversation", owner_id: "local",
@@ -25,6 +25,19 @@ function mockResponse(chunks: Uint8Array[], closed = true) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("chat SSE protocol", () => {
+  it("keeps the application scope extensible and defaults to standalone", () => {
+    expect(applicationScopeHeaders()["X-Application-ID"]).toBe("personal_ai");
+    expect(applicationScopeHeaders({
+      applicationId: "synthetic",
+      workspaceId: "team-a",
+      requestId: "trace-123",
+    })).toMatchObject({
+      "X-Application-ID": "synthetic",
+      "X-Workspace-ID": "team-a",
+      "X-Request-ID": "trace-123",
+    });
+  });
+
   it("handles byte-split UTF-8 and CRLF frames and stops at completion", async () => {
     const bytes = new TextEncoder().encode(frame("response.delta", { message_id: assistant.id, delta: assistant.content }) + frame("response.completed", { message: assistant }));
     const { body, cancel } = mockResponse(Array.from(bytes, (byte) => new Uint8Array([byte])), false);

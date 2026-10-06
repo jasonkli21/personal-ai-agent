@@ -42,7 +42,8 @@ export type StreamHandlers = {
 };
 
 export type ApplicationScopeRequest = {
-  applicationId?: "personal_ai" | "travel" | "shopping" | "finance" | "health";
+  /** App IDs are extensible; the backend registry remains the authority. */
+  applicationId?: string;
   workspaceId?: string | null;
   requestId?: string;
   capabilities?: string[];

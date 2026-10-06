@@ -11,7 +11,7 @@ describe("conversation streaming proxy", () => {
     vi.stubGlobal("fetch", fetchMock);
     const request = new NextRequest("http://localhost/api/conversations", {
       headers: {
-        "X-Application-ID": "travel",
+        "X-Application-ID": "synthetic",
         "X-Workspace-ID": "team-a",
         "X-Request-ID": "trace-123",
         "X-Client-Capabilities": "chat.streaming",
@@ -26,7 +26,7 @@ describe("conversation streaming proxy", () => {
       "X-Application-ID", "X-Workspace-ID", "X-Request-ID",
       "X-Client-Capabilities", "X-Client-Context",
     ].map((name) => [name, forwarded.get(name)]) )).toEqual({
-      "X-Application-ID": "travel",
+      "X-Application-ID": "synthetic",
       "X-Workspace-ID": "team-a",
       "X-Request-ID": "trace-123",
       "X-Client-Capabilities": "chat.streaming",

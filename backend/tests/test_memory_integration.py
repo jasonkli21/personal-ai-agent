@@ -18,6 +18,7 @@ from personal_ai.api.dependencies import (
     get_message_repository,
     get_summary_repository,
 )
+from personal_ai.applications.registry import default_application_registry
 from personal_ai.context import ContextAssembler
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import FakeTokenCounter
@@ -94,6 +95,40 @@ def test_retrieval_injection_and_sse_order(environment):
     assert "I prefer quiet mountain cabins." in llm.requests[0][0].content
     active = messages.list_active(owner_id="local", conversation_id=pending.conversation_id)
     assert active[-1].status == MessageStatus.COMPLETED
+
+
+def test_shared_memory_capability_tracks_feature_gate_and_injection(environment):
+    client, settings, _, _, pending, service, llm, _ = environment
+    capability = default_application_registry().capability(
+        "personal_ai", "ai_memory", kind="context_provider"
+    )
+
+    settings.memory_enabled = False
+    service._memory_retriever = None
+    assert capability.available
+    assert not capability.is_enabled({"memory_enabled": settings.memory_enabled})
+    disabled = client.post(
+        f"/v1/conversations/{pending.conversation_id}/messages",
+        json={"content": pending.content},
+    )
+    assert disabled.status_code == 200
+    assert "Historical personal memory" not in llm.requests[-1][0].content
+
+    settings.memory_enabled = True
+    service._memory_retriever = MemoryRetriever(
+        settings,
+        app.dependency_overrides[get_memory_repository](),
+        app.dependency_overrides[get_message_repository](),
+        app.dependency_overrides[get_memory_adapter](),
+    )
+    assert capability.available
+    assert capability.is_enabled({"memory_enabled": settings.memory_enabled})
+    enabled = client.post(
+        f"/v1/conversations/{pending.conversation_id}/messages",
+        json={"content": pending.content},
+    )
+    assert enabled.status_code == 200
+    assert "Historical personal memory" in llm.requests[-1][0].content
 
 
 @pytest.mark.parametrize("mode", ["disabled", "no_match", "failed", "budget"])

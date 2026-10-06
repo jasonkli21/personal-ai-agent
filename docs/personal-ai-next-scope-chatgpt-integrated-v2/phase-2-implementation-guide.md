@@ -29,12 +29,15 @@ definitions and capability registrations for deterministic tests.
 The initial registry contains `personal_ai`, `travel`, `shopping`, `finance`,
 and `health`. It composes the existing Travel and Shopping `DomainModule`
 registrations by reference; their comparison modules remain comparison
-contracts and do not become authoritative app state. Existing shared
-conversation assembly is registered as an available context capability.
-Memory remains unavailable in the default registry while its retrieval path is
-feature-gated. Application-level Travel, Shopping, Finance, and Health providers
-and tools are explicit unavailable stubs. Their metadata does not imply a
-working adapter or action.
+contracts and do not become authoritative app state. Every registered chat
+application receives the shared `conversation_history` and `ai_memory`
+providers through registry composition, including synthetic applications that
+do not repeat those IDs in their manifest. `CapabilityRegistration.available`
+means an implementation exists; `feature_gate` and `is_enabled()` distinguish
+an implemented capability that is disabled by configuration. Shared memory is
+implemented and gated by the existing `memory_enabled` setting. Application-
+level Travel, Shopping, Finance, and Health providers and tools are explicit
+unavailable stubs. Their metadata does not imply a working adapter or action.
 
 All initial cross-app declarations are disabled. The contract can describe a
 future declaration-only relationship, but registration does not grant a data
@@ -64,8 +67,8 @@ boundaries; Phase 2 adds no domain retrieval or action execution.
 - `backend/src/personal_ai/applications/contracts.py` — versioned manifest,
   capability, sensitivity, budget, cross-app, and request-context contracts.
 - `backend/src/personal_ai/applications/registry.py` — validation, lookup,
-  built-in manifests, capability status, and existing comparison-module
-  composition.
+  built-in manifests, shared history/memory composition, capability status, and
+  existing comparison-module composition.
 - `backend/src/personal_ai/auth/scope.py` — validates extensible app slugs;
   registry lookup is now the app allowlist.
 - `backend/src/personal_ai/auth/middleware.py` — rejects unknown registered
@@ -79,8 +82,11 @@ boundaries; Phase 2 adds no domain retrieval or action execution.
   `backend/tests/test_conversation_routes.py` — manifest validation, stub
   status, unknown app denial, comparison composition, and synthetic app flow.
 
-No frontend or infrastructure change was needed. No routes for domain context,
-cross-app grants, provider routing, or domain mutations were added.
+`frontend/src/lib/api.ts` accepts extensible application IDs and preserves
+`personal_ai` as the default. The frontend forwards the requested scope; the
+backend registry continues to reject unknown IDs. No app-selector UI,
+infrastructure change, route for domain context, cross-app grant, provider
+routing, or domain mutation was added.
 
 ## Remaining boundaries
 

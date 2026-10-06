@@ -118,7 +118,10 @@ class CapabilityRegistration(BaseModel):
     schema_version: Literal["application-capability-v1"] = "application-capability-v1"
     capability_id: str = Field(pattern=_CAPABILITY_ID_PATTERN, min_length=2, max_length=81)
     kind: CapabilityKind
+    # `available` means an implementation exists. A feature gate can still
+    # disable its use for a given deployment without turning it into a stub.
     available: bool = False
+    feature_gate: Literal["memory_enabled"] | None = None
     unavailable_reason: str | None = Field(default=None, min_length=1, max_length=160)
 
     @model_validator(mode="after")
@@ -128,6 +131,14 @@ class CapabilityRegistration(BaseModel):
         if not self.available and self.unavailable_reason is None:
             raise ValueError("unavailable_capability_requires_reason")
         return self
+
+    def is_enabled(self, feature_flags: dict[str, bool] | None = None) -> bool:
+        """Return whether this implementation is enabled by supplied config."""
+        if not self.available:
+            return False
+        if self.feature_gate is None:
+            return True
+        return bool((feature_flags or {}).get(self.feature_gate, False))
 
 
 class ApplicationContextRequest(BaseModel):

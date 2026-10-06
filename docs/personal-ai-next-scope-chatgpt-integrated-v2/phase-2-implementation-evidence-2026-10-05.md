@@ -52,3 +52,33 @@
   storage/deployment verification gaps remain unresolved. Existing Phase 9
   deletion, owner migration, provider accounting, and operational closeout also
   remain open.
+
+## Independent-review remediation — 2026-10-06
+
+Applied against base revision `2c2562d8b4aa798acd5961192b7405dc2539e01c`;
+the following results cover the working tree with the review fixes and this
+evidence update. Backend used Python 3.11.15 from `backend/.venv`. Frontend
+checks used the bundled Node.js 24.19.0 runtime because Node 22 is not on PATH;
+Node 22 compatibility remains unverified.
+
+| Check | Result |
+| --- | --- |
+| `PATH="$PWD/backend/.venv/bin:$PATH" make backend-test` | Passed: 605 collected, 593 passed, 12 skipped. Skips are opt-in provider/emulator checks. |
+| `PATH="$PWD/backend/.venv/bin:$PATH" make backend-lint` | Passed: Ruff reports all checks passed. |
+| `PATH="/Users/jasonkli/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH" make frontend-test` | Passed: 97 tests across 19 files. |
+| `PATH="/Users/jasonkli/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH" make frontend-lint` | Passed. |
+| `PATH="/Users/jasonkli/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH" make frontend-typecheck` | Passed for both TypeScript configurations. |
+| `git diff --check` | Passed. |
+
+The capability contract now separates implementation availability from its
+`memory_enabled` feature gate. Registry composition gives all registered chat
+applications shared conversation history and memory metadata; domain-specific
+providers/actions remain unavailable stubs. Offline integration coverage checks
+memory disabled/enabled against actual fake model input, and registry coverage
+checks standalone, built-in domain, and synthetic apps with and without an
+explicit memory declaration. The frontend client accepts extensible app IDs,
+defaults to `personal_ai`, and forwards synthetic app/workspace/correlation
+headers; unknown applications continue to be rejected by the backend registry.
+
+No emulator, live provider, deployed browser/IAM, workspace membership, or Node
+22 verification was performed. Local fakes do not establish live readiness.

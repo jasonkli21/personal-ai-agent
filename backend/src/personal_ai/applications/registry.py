@@ -13,6 +13,8 @@ from personal_ai.applications.contracts import (
     CapabilityRegistration,
 )
 
+SHARED_CONTEXT_PROVIDER_IDS = ("conversation_history", "ai_memory")
+
 
 class _ComparisonModule(Protocol):
     registration: object
@@ -53,9 +55,29 @@ class ApplicationRegistry:
                 )
             definition_by_id[definition.application_id] = definition
 
+        capability_values = list(capabilities)
+        registered_ids = {item.capability_id for item in capability_values}
+        if "conversation_history" not in registered_ids:
+            capability_values.append(
+                CapabilityRegistration(
+                    capability_id="conversation_history",
+                    kind="context_provider",
+                    available=True,
+                )
+            )
+        if "ai_memory" not in registered_ids:
+            capability_values.append(
+                CapabilityRegistration(
+                    capability_id="ai_memory",
+                    kind="context_provider",
+                    available=True,
+                    feature_gate="memory_enabled",
+                )
+            )
+
         capability_by_key: dict[tuple[CapabilityKind, str], CapabilityRegistration] = {}
         capability_ids: set[str] = set()
-        for capability in capabilities:
+        for capability in capability_values:
             key = (capability.kind, capability.capability_id)
             if capability.capability_id in capability_ids:
                 raise ApplicationRegistryError(
@@ -72,8 +94,18 @@ class ApplicationRegistry:
 
         registrations: dict[str, RegisteredApplication] = {}
         for definition in definition_by_id.values():
-            providers = self._resolve_capabilities(
+            app_providers = self._resolve_capabilities(
                 definition, "context_provider", definition.context_provider_ids, capability_by_key
+            )
+            shared_providers = self._resolve_capabilities(
+                definition,
+                "context_provider",
+                SHARED_CONTEXT_PROVIDER_IDS,
+                capability_by_key,
+            )
+            providers = shared_providers + tuple(
+                provider for provider in app_providers
+                if provider.capability_id not in SHARED_CONTEXT_PROVIDER_IDS
             )
             tools = self._resolve_capabilities(
                 definition, "tool", definition.tool_ids, capability_by_key
@@ -148,9 +180,9 @@ class ApplicationRegistry:
     ) -> CapabilityRegistration:
         registration = self.registration(application_id)
         declared_ids = (
-            registration.definition.context_provider_ids
+            tuple(provider.capability_id for provider in registration.context_providers)
             if kind == "context_provider"
-            else registration.definition.tool_ids
+            else tuple(tool.capability_id for tool in registration.tools)
         )
         if capability_id not in declared_ids:
             raise ApplicationRegistryError("application_capability_not_declared")
@@ -162,19 +194,21 @@ def _capability(
     kind: CapabilityKind,
     *,
     available: bool = False,
+    feature_gate: str | None = None,
     reason: str = "application_integration_not_implemented",
 ) -> CapabilityRegistration:
     return CapabilityRegistration(
         capability_id=capability_id,
         kind=kind,
         available=available,
+        feature_gate=feature_gate,
         unavailable_reason=None if available else reason,
     )
 
 
 @lru_cache(maxsize=1)
 def default_application_registry() -> ApplicationRegistry:
-    """Build the five initial manifests and compose existing comparison modules."""
+    """Build initial manifests with common chat context and comparison modules."""
     from personal_ai.domains.registry import registry as domain_registry
 
     comparison_modules = domain_registry()
@@ -183,7 +217,8 @@ def default_application_registry() -> ApplicationRegistry:
         _capability(
             "ai_memory",
             "context_provider",
-            reason="memory_retrieval_is_feature_gated",
+            available=True,
+            feature_gate="memory_enabled",
         ),
         _capability("travel.trip_context", "context_provider"),
         _capability("travel.research_context", "context_provider"),
@@ -204,7 +239,6 @@ def default_application_registry() -> ApplicationRegistry:
                 application_id="personal_ai",
                 display_name="Personal AI",
                 workspace_kind="optional",
-                context_provider_ids=("conversation_history", "ai_memory"),
                 memory_namespace="personal_ai",
             ),
             ApplicationDefinition(
