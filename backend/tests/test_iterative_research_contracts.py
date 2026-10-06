@@ -19,6 +19,7 @@ from personal_ai.agents.research.iterative_contracts import (
     validate_run_transition,
 )
 from personal_ai.agents.research.iterative_fakes import DeterministicClock
+from personal_ai.auth.scope import scoped_record
 from personal_ai.decisions.contracts import Candidate, ClaimProposal, Constraint
 from personal_ai.entities.research import TextValue
 from personal_ai.settings import Settings
@@ -71,11 +72,12 @@ def initial_run(*, max_queries=3):
             status="reserved", created_at=NOW,
         ),
     )
-    return ResearchRun(
+    return scoped_record(ResearchRun(
+        scope_version=2,
         id=run_id, owner_id="local", session_id=session_id, state=RunState.PENDING,
         idempotency_key=key, request_fingerprint="a" * 64, budget=policy,
         created_at=NOW, updated_at=NOW, events=events, ledger=ledger,
-    )
+    ))
 
 
 def test_iterative_request_is_normalized_and_idempotency_fingerprint_ignores_key():

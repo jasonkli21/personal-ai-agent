@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from personal_ai.auth.scope import ApplicationScopedRecord
+
 
 class ResearchRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -32,7 +34,11 @@ class ResearchRecord(BaseModel):
         return value.astimezone(UTC)
 
 
-class SearchQuery(ResearchRecord):
+class ScopedResearchRecord(ResearchRecord, ApplicationScopedRecord):
+    """Persisted research record; request envelopes remain unscoped inputs."""
+
+
+class SearchQuery(ScopedResearchRecord):
     id: UUID
     session_id: UUID
     owner_id: str = Field(min_length=1, max_length=200)
@@ -49,7 +55,7 @@ class SearchQuery(ResearchRecord):
     executed_at: datetime | None = None
 
 
-class AdapterAttempt(ResearchRecord):
+class AdapterAttempt(ScopedResearchRecord):
     id: UUID
     session_id: UUID
     query_id: UUID
@@ -64,7 +70,7 @@ class AdapterAttempt(ResearchRecord):
     error_code: str | None = Field(default=None, max_length=80)
 
 
-class SourceObservation(ResearchRecord):
+class SourceObservation(ScopedResearchRecord):
     id: UUID
     session_id: UUID
     query_id: UUID
@@ -89,7 +95,7 @@ class SourceObservation(ResearchRecord):
         return self
 
 
-class Evidence(ResearchRecord):
+class Evidence(ScopedResearchRecord):
     id: UUID
     session_id: UUID
     owner_id: str = Field(min_length=1, max_length=200)
@@ -115,7 +121,7 @@ class Evidence(ResearchRecord):
         return self
 
 
-class EvidenceSelection(ResearchRecord):
+class EvidenceSelection(ScopedResearchRecord):
     id: UUID
     session_id: UUID
     owner_id: str = Field(min_length=1, max_length=200)

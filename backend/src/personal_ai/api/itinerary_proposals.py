@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from personal_ai.agents.research.repositories import FirestoreResearchRepository
-from personal_ai.api.dependencies import get_current_owner_id
+from personal_ai.api.dependencies import get_current_owner_id, require_standalone_application_scope
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.itinerary_proposals.contracts import (
@@ -25,7 +25,11 @@ from personal_ai.llm.gemini import GeminiLLMClient
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.errors import ResourceNotFoundError
 
-router = APIRouter(prefix="/v1/travel/itinerary-proposals", tags=["itinerary proposals"])
+router = APIRouter(
+    prefix="/v1/travel/itinerary-proposals",
+    tags=["itinerary proposals"],
+    dependencies=[Depends(require_standalone_application_scope)],
+)
 
 
 def proposal_settings(settings: Annotated[Settings, Depends(get_settings)]) -> Settings:

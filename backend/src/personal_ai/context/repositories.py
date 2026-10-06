@@ -7,6 +7,7 @@ from uuid import UUID
 
 from google.cloud import firestore
 
+from personal_ai.auth.scope import scope_matches, scope_query, scoped_record
 from personal_ai.context.contracts import ConversationSummary, is_compatible
 from personal_ai.entities import Message
 from personal_ai.storage.errors import ConversationConflictError
@@ -27,6 +28,7 @@ class InMemorySummaryRepository:
         self._lock = RLock()
 
     def create(self, summary: ConversationSummary) -> ConversationSummary:
+        summary = scoped_record(summary)
         with self._lock:
             if summary.id in self.records:
                 raise ConversationConflictError("summary already exists")
@@ -46,6 +48,7 @@ class InMemorySummaryRepository:
                     s
                     for s in self.records.values()
                     if s.owner_id == owner_id and s.conversation_id == conversation_id
+                    and scope_matches(s)
                 ],
                 active,
             )
@@ -66,6 +69,7 @@ class FirestoreSummaryRepository:
         self._conversations = FirestoreConversationRepository(self._client)
 
     def create(self, summary: ConversationSummary) -> ConversationSummary:
+        summary = scoped_record(summary)
         self._conversations.get(owner_id=summary.owner_id, conversation_id=summary.conversation_id)
         data = summary.model_dump(mode="json")
         data["created_at"] = summary.created_at
@@ -80,12 +84,16 @@ class FirestoreSummaryRepository:
         active: Sequence[Message],
     ) -> ConversationSummary | None:
         self._conversations.get(owner_id=owner_id, conversation_id=conversation_id)
-        snapshots = self._conversations._run(
-            lambda: list(
+        def fetch():
+            query = scope_query(
                 self._collection.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
                 .where(filter=firestore.FieldFilter("conversation_id", "==", str(conversation_id)))
-                .stream()
             )
-        )
-        summaries = [ConversationSummary.model_validate(s.to_dict()) for s in snapshots]
+            return list(query.stream())
+
+        snapshots = self._conversations._run(fetch)
+        summaries = [
+            summary for snapshot in snapshots
+            if scope_matches(summary := ConversationSummary.model_validate(snapshot.to_dict()))
+        ]
         return newest_compatible(summaries, active)

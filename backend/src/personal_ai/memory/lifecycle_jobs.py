@@ -10,8 +10,13 @@ from uuid import UUID
 
 from google.api_core.exceptions import GoogleAPICallError, RetryError
 from google.cloud import pubsub_v1
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
 
+from personal_ai.auth.scope import (
+    ApplicationScope,
+    ApplicationScopedRecord,
+    application_scope_context,
+)
 from personal_ai.llm.errors import LLMError
 from personal_ai.memory.contracts import Memory
 from personal_ai.memory.lifecycle import MemoryJob, ScorePolicy
@@ -30,10 +35,11 @@ from personal_ai.storage.errors import ResourceNotFoundError, StorageError
 logger = logging.getLogger(__name__)
 
 
-class MemoryJobNotification(BaseModel):
+class MemoryJobNotification(ApplicationScopedRecord):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     job_id: UUID
+    scope_version: Literal[2] = 2
     schema_version: Literal[1] = 1
 
 
@@ -53,7 +59,11 @@ class PubSubMemoryJobPublisher:
         client = self.client or pubsub_v1.PublisherClient()
         try:
             topic = client.topic_path(project, self.settings.memory_lifecycle_topic)
-            payload = MemoryJobNotification(job_id=job.id).model_dump_json().encode()
+            payload = MemoryJobNotification(
+                job_id=job.id,
+                application_id=job.application_id,
+                workspace_id=job.workspace_id,
+            ).model_dump_json().encode()
             client.publish(topic, payload, retry=None, timeout=timeout).result(timeout=timeout)
         finally:
             if self.client is None:
@@ -226,10 +236,15 @@ class MemoryLifecycleCoordinator:
             return
         from personal_ai.memory.lifecycle_repositories import rpc_timeout
 
-        self.publisher.publish(job, timeout=rpc_timeout())
-        self.lifecycle.mark_published(
-            owner_id=job.owner_id, job_id=job.id, updated_at=job.updated_at
+        scope = ApplicationScope(
+            application_id=job.application_id,
+            workspace_id=job.workspace_id,
         )
+        with application_scope_context(scope):
+            self.publisher.publish(job, timeout=rpc_timeout())
+            self.lifecycle.mark_published(
+                owner_id=job.owner_id, job_id=job.id, updated_at=job.updated_at
+            )
 
     def republish_pending(self, *, limit: int = 50):
         if (
@@ -268,10 +283,19 @@ class MemoryLifecycleWorker:
         self.clock = clock or (lambda: datetime.now(UTC))
         self.consolidator = consolidator or DeterministicMemoryConsolidator()
 
-    def process(self, job_id: UUID) -> Literal["completed", "busy", "retry", "disabled"]:
+    def process(
+        self,
+        job_id: UUID,
+        *,
+        application_id: str = "personal_ai",
+        workspace_id: str | None = None,
+    ) -> Literal["completed", "busy", "retry", "disabled"]:
         from personal_ai.memory.lifecycle_repositories import lifecycle_deadline
 
-        with lifecycle_deadline(self.settings.memory_job_execution_seconds):
+        scope = ApplicationScope(application_id=application_id, workspace_id=workspace_id)
+        with application_scope_context(scope), lifecycle_deadline(
+            self.settings.memory_job_execution_seconds
+        ):
             return self._process(job_id)
 
     def _process(self, job_id):

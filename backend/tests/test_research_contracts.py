@@ -21,6 +21,7 @@ NOW = datetime(2026, 10, 2, tzinfo=UTC)
 def session(owner="local", request=None):
     request = request or ResearchRequest(question="Synthetic test?", idempotency_key=uuid4())
     return ResearchSession(
+        scope_version=2,
         id=uuid4(),
         owner_id=owner,
         request=request,

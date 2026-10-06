@@ -1,3 +1,4 @@
+import { applicationScopeHeaders, type ApplicationScopeRequest } from "./api";
 import { authenticatedFetch } from "./auth";
 
 export type DeletionRequest = {
@@ -14,10 +15,10 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function exportAccount() {
+export async function exportAccount(scope?: ApplicationScopeRequest) {
   const response = await authenticatedFetch("/api/account/export", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...applicationScopeHeaders(scope) },
     body: JSON.stringify({ idempotency_key: crypto.randomUUID() }),
   });
   if (!response.ok) return parseResponse<never>(response);

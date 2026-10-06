@@ -12,13 +12,33 @@ from personal_ai.agents.research.iterative_contracts import (
     validate_run_transition,
 )
 from personal_ai.agents.research.repositories import validate_save
+from personal_ai.auth.scope import (
+    STANDALONE_APPLICATION_ID,
+    current_application_scope,
+    data_scope_matches,
+    scope_matches,
+    scoped_record,
+)
 from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
 from personal_ai.storage.firestore import _firestore_client
 from personal_ai.storage.transactions import bounded_transaction
 
 
-def request_key(run: ResearchRun) -> str:
-    return sha256(f"{run.owner_id}:{run.idempotency_key}".encode()).hexdigest()
+def request_key(
+    owner_id: str,
+    idempotency_key: UUID,
+    application_id: str | None = None,
+    workspace_id: str | None = None,
+) -> str:
+    scope = current_application_scope()
+    application_id = application_id or scope.application_id
+    if application_id == scope.application_id and workspace_id is None:
+        workspace_id = scope.workspace_id
+    namespace = (
+        "" if application_id == STANDALONE_APPLICATION_ID and workspace_id is None
+        else f":{application_id}:{workspace_id or ''}"
+    )
+    return sha256(f"{owner_id}{namespace}:{idempotency_key}".encode()).hexdigest()
 
 
 class IterativeResearchRepository(Protocol):
@@ -48,8 +68,9 @@ class InMemoryIterativeResearchRepository:
         self.lock = sessions.lock
 
     def create(self, run):
+        run = scoped_record(run)
         with self.lock:
-            key = request_key(run)
+            key = request_key(run.owner_id, run.idempotency_key, run.application_id, run.workspace_id)
             if key in self.keys:
                 old = self.runs[self.keys[key]]
                 if old.request_fingerprint != run.request_fingerprint:
@@ -65,13 +86,13 @@ class InMemoryIterativeResearchRepository:
     def get(self, owner_id, run_id):
         with self.lock:
             run = self.runs.get(run_id)
-            if run is None or run.owner_id != owner_id:
+            if run is None or run.owner_id != owner_id or not scope_matches(run):
                 raise ResourceNotFoundError("research run not found")
             return run
 
     def get_by_key(self, owner_id, key):
         with self.lock:
-            run_id = self.keys.get(sha256(f"{owner_id}:{key}".encode()).hexdigest())
+            run_id = self.keys.get(request_key(owner_id, key))
             if run_id is None:
                 raise ResourceNotFoundError("research run not found")
             return self.get(owner_id, run_id)
@@ -129,6 +150,7 @@ class InMemoryIterativeResearchRepository:
                 "lease_expires_at": lease_until, "updated_at": now,
                 "revision": run.revision + 1, "events": (*run.events, event),
             })
+            candidate = scoped_record(candidate)
             from personal_ai.agents.research.iterative_contracts import validate_run_transition
             validate_run_transition(run, candidate, lease_recovery=run.lease_owner is not None)
             self.runs[run.id] = candidate
@@ -136,6 +158,9 @@ class InMemoryIterativeResearchRepository:
             return candidate, updated_session
 
     def commit(self, owner_id, run, session=None, *, now=None, allow_expired_lease=False):
+        run = scoped_record(run)
+        if session is not None:
+            session = scoped_record(session)
         with self.lock:
             current = self.get(owner_id, run.id)
             now = now or run.updated_at
@@ -187,7 +212,7 @@ class FirestoreIterativeResearchRepository:
         if not snapshot.exists:
             raise ResourceNotFoundError("research run not found")
         run = ResearchRun.model_validate(snapshot.to_dict())
-        if run.owner_id != owner_id:
+        if run.owner_id != owner_id or not scope_matches(run):
             raise ResourceNotFoundError("research run not found")
         return run
 
@@ -196,7 +221,7 @@ class FirestoreIterativeResearchRepository:
         if not snapshot.exists:
             raise ResourceNotFoundError("research not found")
         session = ResearchSession.model_validate(snapshot.to_dict())
-        if session.owner_id != owner_id:
+        if session.owner_id != owner_id or not scope_matches(session):
             raise ResourceNotFoundError("research not found")
         return session
 
@@ -208,12 +233,15 @@ class FirestoreIterativeResearchRepository:
             raise StorageUnavailableError("iterative research storage unavailable") from error
 
     def create(self, run):
+        run = scoped_record(run)
         def operation(transaction, timeout):
-            key_ref = self.keys.document(request_key(run))
+            key_ref = self.keys.document(
+                request_key(run.owner_id, run.idempotency_key, run.application_id, run.workspace_id)
+            )
             key_snapshot = key_ref.get(transaction=transaction, retry=None, timeout=timeout())
             if key_snapshot.exists:
                 data = key_snapshot.to_dict()
-                if data.get("owner_id") != run.owner_id:
+                if data.get("owner_id") != run.owner_id or not data_scope_matches(data):
                     raise ResourceNotFoundError("research run not found")
                 old = self._decode(
                     self.runs.document(data["run_id"]).get(
@@ -233,7 +261,13 @@ class FirestoreIterativeResearchRepository:
             if session.state != "pending" or session.iterative_run_id != run.id:
                 raise ResearchError("research_busy", 409)
             transaction.create(self.runs.document(str(run.id)), self._data(run))
-            transaction.create(key_ref, {"owner_id": run.owner_id, "run_id": str(run.id)})
+            transaction.create(key_ref, {
+                "owner_id": run.owner_id,
+                "run_id": str(run.id),
+                "application_id": run.application_id,
+                "workspace_id": run.workspace_id,
+                "scope_version": 2,
+            })
             return run
 
         return self._run(lambda: bounded_transaction(self.client, operation))
@@ -248,10 +282,11 @@ class FirestoreIterativeResearchRepository:
     def get_by_key(self, owner_id, key):
         mapping = self._run(
             lambda: self.keys.document(
-                sha256(f"{owner_id}:{key}".encode()).hexdigest()
+                request_key(owner_id, key)
             ).get(retry=None, timeout=5)
         )
-        if not mapping.exists or mapping.to_dict().get("owner_id") != owner_id:
+        if (not mapping.exists or mapping.to_dict().get("owner_id") != owner_id
+                or not data_scope_matches(mapping.to_dict())):
             raise ResourceNotFoundError("research run not found")
         return self.get(owner_id, UUID(mapping.to_dict()["run_id"]))
 
@@ -310,6 +345,7 @@ class FirestoreIterativeResearchRepository:
                 "lease_expires_at": lease_until, "updated_at": now,
                 "revision": run.revision + 1, "events": (*run.events, event),
             })
+            candidate = scoped_record(candidate)
             validate_run_transition(run, candidate, lease_recovery=run.lease_owner is not None)
             transaction.set(run_ref, self._data(candidate))
             transaction.set(session_ref, self._data(updated_session))
@@ -325,6 +361,11 @@ class FirestoreIterativeResearchRepository:
         )
 
     def commit(self, owner_id, run, session=None, *, now=None, allow_expired_lease=False):
+        run = scoped_record(run)
+        if session is not None:
+            session = scoped_record(session)
+        if not scope_matches(run) or session is not None and not scope_matches(session):
+            raise ResourceNotFoundError("research run not found")
         def operation(transaction, timeout):
             run_ref = self.runs.document(str(run.id))
             current = self._decode(

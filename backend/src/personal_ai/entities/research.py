@@ -11,6 +11,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from personal_ai.auth.scope import ApplicationScopedRecord
+
 EntityType = Literal["object", "place", "organization", "other"]
 
 
@@ -25,6 +27,10 @@ class DecisionRecord(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("timezone required")
         return value.astimezone(UTC)
+
+
+class ScopedDecisionRecord(DecisionRecord, ApplicationScopedRecord):
+    """Persisted decision/entity record; user request contracts remain unscoped."""
 
 
 class TextValue(BaseModel):
@@ -131,7 +137,7 @@ TypedValue = Annotated[
 ]
 
 
-class EvidenceReference(DecisionRecord):
+class EvidenceReference(ScopedDecisionRecord):
     """Immutable source attribution copied into a decision evidence snapshot."""
 
     evidence_id: UUID
@@ -159,7 +165,7 @@ class EvidenceReference(DecisionRecord):
         return self
 
 
-class CanonicalEntity(DecisionRecord):
+class CanonicalEntity(ScopedDecisionRecord):
     id: UUID
     entity_type: EntityType
     canonical_name: str = Field(min_length=1, max_length=300)
@@ -184,7 +190,7 @@ class CanonicalEntity(DecisionRecord):
         return self
 
 
-class EntityAlias(DecisionRecord):
+class EntityAlias(ScopedDecisionRecord):
     id: UUID
     entity_id: UUID
     owner_id: str = Field(min_length=1, max_length=200)
@@ -193,7 +199,7 @@ class EntityAlias(DecisionRecord):
     created_at: datetime
 
 
-class EntityClaim(DecisionRecord):
+class EntityClaim(ScopedDecisionRecord):
     """An immutable observation; mutable values never become entity truth."""
 
     id: UUID
@@ -236,7 +242,7 @@ class EntityClaim(DecisionRecord):
 
 
 
-class EntityMatch(DecisionRecord):
+class EntityMatch(ScopedDecisionRecord):
     id: UUID
     decision_id: UUID
     subject_id: UUID

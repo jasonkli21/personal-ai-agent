@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
 
+from personal_ai.auth.scope import STANDALONE_APPLICATION_ID, RequestScope
 from personal_ai.context import ContextAssembler
 from personal_ai.context.contracts import ConversationSummaryRepository
 from personal_ai.context.repositories import FirestoreSummaryRepository
@@ -34,6 +35,24 @@ def get_current_principal(request: Request):
     if principal is None:
         raise HTTPException(status_code=401, detail="authentication_required")
     return principal
+
+
+def get_request_scope(request: Request) -> RequestScope:
+    """Return scope validated by auth middleware, including server owner identity."""
+    scope = getattr(request.state, "request_scope", None)
+    if scope is None:
+        raise HTTPException(status_code=401, detail="authentication_required")
+    return scope
+
+
+def require_standalone_application_scope(
+    scope: Annotated[RequestScope, Depends(get_request_scope)],
+) -> RequestScope:
+    """Keep current Travel/Shopping comparison tools in Personal AI's namespace."""
+    if scope.application_id != STANDALONE_APPLICATION_ID or scope.workspace_id is not None:
+        # A comparison domain label does not establish an external app identity.
+        raise HTTPException(status_code=404, detail="not_found")
+    return scope
 
 
 def require_recent_auth(

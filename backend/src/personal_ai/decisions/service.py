@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from personal_ai.agents.research.contracts import ResearchSession
+from personal_ai.auth.scope import STANDALONE_APPLICATION_ID, current_application_scope
 from personal_ai.decisions.contracts import (
     CandidateProposal,
     DecisionCreateRequest,
@@ -43,16 +44,26 @@ logger = logging.getLogger(__name__)
 
 
 def decision_id_for(owner_id: str, idempotency_key: UUID) -> UUID:
-    return uuid5(NAMESPACE_URL, f"decision-v1:{owner_id}:{idempotency_key}")
+    scope = current_application_scope()
+    namespace = (
+        "" if scope.application_id == STANDALONE_APPLICATION_ID and scope.workspace_id is None
+        else f":{scope.application_id}:{scope.workspace_id or ''}"
+    )
+    return uuid5(NAMESPACE_URL, f"decision-v1:{owner_id}{namespace}:{idempotency_key}")
 
 
 def _entity_id_for(owner_id: str, proposal: CandidateProposal) -> UUID:
+    scope = current_application_scope()
+    namespace = (
+        [] if scope.application_id == STANDALONE_APPLICATION_ID and scope.workspace_id is None
+        else [scope.application_id, scope.workspace_id or ""]
+    )
     identifiers = {
         key.casefold(): " ".join(value.casefold().split())
         for key, value in proposal.identifiers.items()
     }
     canonical = json.dumps(
-        [owner_id, proposal.entity_type, sorted(identifiers.items())],
+        [owner_id, *namespace, proposal.entity_type, sorted(identifiers.items())],
         separators=(",", ":"),
     )
     return uuid5(NAMESPACE_URL, f"canonical-entity-v1:{canonical}")

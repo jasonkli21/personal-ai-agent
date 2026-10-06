@@ -228,7 +228,7 @@ def transactional_fake(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def conversation(identifier: int = 1) -> Conversation:
     return Conversation(
-        id=UUID(int=identifier), owner_id=OWNER, title="Test",
+        id=UUID(int=identifier), owner_id=OWNER, scope_version=2, title="Test",
         created_at=NOW, updated_at=NOW,
     )
 
@@ -243,6 +243,7 @@ def message(
 ) -> Message:
     return Message(
         id=UUID(int=identifier), conversation_id=conversation_id, owner_id=OWNER,
+        scope_version=2,
         role=MessageRole.USER if identifier % 2 else MessageRole.ASSISTANT,
         content=f"message {identifier}", status=status,
         created_at=NOW + timedelta(seconds=offset), parent_message_id=parent_message_id,
@@ -380,6 +381,7 @@ def test_replacement_ignores_large_already_superseded_audit_branch(
         client.data["messages"][str(historical.id)] = _message_data(historical)
     replacement = Message(
         id=UUID(int=1_600), conversation_id=conversation_record.id, owner_id=OWNER,
+        scope_version=2,
         role=MessageRole.ASSISTANT, content="", status=MessageStatus.STREAMING,
         created_at=NOW + timedelta(seconds=1), parent_message_id=user.id,
         supersedes_message_id=old_answer.id,

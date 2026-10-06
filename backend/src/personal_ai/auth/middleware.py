@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import threading
@@ -30,6 +31,13 @@ from personal_ai.auth.safeguards import (
     SafeguardDenied,
     SafeguardStore,
     SafeguardUnavailable,
+)
+from personal_ai.auth.scope import (
+    CANONICAL_APPLICATION_IDS,
+    DenyWorkspaceAuthorizer,
+    RequestScope,
+    bind_request_scope,
+    reset_request_scope,
 )
 from personal_ai.auth.verification import (
     IdentityProviderUnavailable,
@@ -301,7 +309,16 @@ async def authenticate_request(request: Request) -> Response | None:
         if request.method == "OPTIONS":
             allowed_methods = {"GET", "POST", "OPTIONS"}
             requested_method = request.headers.get("access-control-request-method", "").upper()
-            allowed_headers = {"authorization", "content-type", "last-event-id", "x-request-id"}
+            allowed_headers = {
+                "authorization",
+                "content-type",
+                "last-event-id",
+                "x-request-id",
+                "x-application-id",
+                "x-workspace-id",
+                "x-client-capabilities",
+                "x-client-context",
+            }
             requested_headers = {
                 header.strip().lower()
                 for header in request.headers.get("access-control-request-headers", "").split(",")
@@ -322,7 +339,8 @@ async def authenticate_request(request: Request) -> Response | None:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Methods"] = ", ".join(sorted(allowed_methods))
             response.headers["Access-Control-Allow-Headers"] = (
-                "Authorization, Content-Type, Last-Event-ID, X-Request-ID"
+                "Authorization, Content-Type, Last-Event-ID, X-Request-ID, "
+                "X-Application-ID, X-Workspace-ID, X-Client-Capabilities, X-Client-Context"
             )
             response.headers["Access-Control-Max-Age"] = "600"
             response.headers["Vary"] = "Origin"
@@ -415,6 +433,77 @@ async def authenticate_request(request: Request) -> Response | None:
                 request=request,
                 correlation_id=correlation_id,
             )
+        application_id = request.headers.get("x-application-id", "personal_ai").strip()
+        workspace_id = request.headers.get("x-workspace-id")
+        if workspace_id is not None:
+            workspace_id = workspace_id.strip()
+        if application_id not in CANONICAL_APPLICATION_IDS:
+            logger.info("request_rejected reason=application_scope_invalid")
+            return _error(
+                400,
+                "application_scope_invalid",
+                "The application scope is invalid.",
+                request=request,
+                correlation_id=correlation_id,
+            )
+
+        capabilities_header = request.headers.get("x-client-capabilities", "")
+        capabilities = tuple(
+            item.strip() for item in capabilities_header.split(",") if item.strip()
+        )
+        client_context_header = request.headers.get("x-client-context", "")
+        try:
+            client_context = json.loads(client_context_header) if client_context_header else {}
+            if not isinstance(client_context, dict):
+                raise TypeError("client context must be an object")
+            request_scope = RequestScope(
+                owner_id=principal.owner_id,
+                request_id=correlation_id,
+                application_id=application_id,
+                workspace_id=workspace_id,
+                capabilities=capabilities,
+                client_context=client_context,
+            )
+        except (TypeError, ValueError):
+            logger.info("request_rejected reason=request_scope_invalid")
+            return _error(
+                400,
+                "request_scope_invalid",
+                "The request scope is invalid.",
+                request=request,
+                correlation_id=correlation_id,
+            )
+
+        if request_scope.workspace_id is not None:
+            authorizer = getattr(request.app.state, "workspace_authorizer", None)
+            if authorizer is None:
+                authorizer = DenyWorkspaceAuthorizer()
+            try:
+                allowed = authorizer.is_member(
+                    principal, request_scope.application_id, request_scope.workspace_id
+                )
+            except Exception as error:  # noqa: BLE001 - workspace authority fails closed
+                logger.info(
+                    "request_rejected reason=workspace_authority_unavailable error_class=%s",
+                    type(error).__name__,
+                )
+                return _error(
+                    503,
+                    "workspace_authority_unavailable",
+                    "Workspace access is temporarily unavailable.",
+                    request=request,
+                    correlation_id=correlation_id,
+                )
+            if not allowed:
+                logger.info("request_rejected reason=workspace_not_authorized")
+                return _error(
+                    403,
+                    "workspace_not_authorized",
+                    "This workspace is not available to this account.",
+                    request=request,
+                    correlation_id=correlation_id,
+                )
+        request.state.request_scope = request_scope
         if _provider_switch_is_on(request, settings):
             return _safeguard_error(
                 request,
@@ -591,6 +680,8 @@ class AuthenticationMiddleware:
             await send(message)
 
         try:
+            request_scope = getattr(request.state, "request_scope", None)
+            scope_token = bind_request_scope(request_scope) if response is None and request_scope else None
             if response is None:
                 await self.app(scope, app_receive, harden_send)
             else:
@@ -600,13 +691,18 @@ class AuthenticationMiddleware:
             route_template = getattr(route, "path", "protected")
             elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
             logger.info(
-                "api_request method=%s route=%s status=%d duration_ms=%d request_id=%s",
+                "api_request method=%s route=%s status=%d duration_ms=%d request_id=%s "
+                "application_id=%s workspace_id=%s",
                 scope.get("method", "GET"),
                 route_template,
                 status_code,
                 elapsed_ms,
                 correlation_id,
+                getattr(getattr(request.state, "request_scope", None), "application_id", "unknown"),
+                getattr(getattr(request.state, "request_scope", None), "workspace_id", None) or "none",
             )
+            if "scope_token" in locals() and scope_token is not None:
+                reset_request_scope(scope_token)
 
 
 def _harden_response(response: Response, request: Request, correlation_id: str) -> Response:

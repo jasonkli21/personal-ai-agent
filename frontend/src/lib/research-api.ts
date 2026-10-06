@@ -1,4 +1,4 @@
-import { ApiError } from "./api";
+import { ApiError, applicationScopeHeaders, type ApplicationScopeRequest } from "./api";
 import { authenticatedFetch } from "./auth";
 import { readSseFrames, SseError } from "./sse";
 
@@ -18,9 +18,11 @@ export type ResearchProgress = {
   query_count?: number; source_count?: number; evidence_count?: number;
 };
 
-async function response(path: string, init?: RequestInit) {
+async function response(path: string, init?: RequestInit, scope?: ApplicationScopeRequest) {
   const res = await authenticatedFetch(`/api/research${path}`, {
-    ...init, cache: "no-store", headers: { "Content-Type": "application/json" },
+    ...init,
+    cache: "no-store",
+    headers: { "Content-Type": "application/json", ...applicationScopeHeaders(scope), ...init?.headers },
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
@@ -33,17 +35,19 @@ const states = new Set(["pending", "running", "completed", "insufficient", "fail
 const events = new Set(["started", "planned", "attempt", "evidence", "selected", "terminal"]);
 
 export const researchApi = {
-  async create(question: string, freshness: "general" | "current", key: string, signal?: AbortSignal): Promise<ResearchSession> {
+  async create(question: string, freshness: "general" | "current", key: string, signal?: AbortSignal, scope?: ApplicationScopeRequest): Promise<ResearchSession> {
     return (await response("", { method: "POST", signal, body: JSON.stringify({
       schema_version: "research-v1", question, freshness, idempotency_key: key,
-    }) })).json();
+    }) }, scope)).json();
   },
-  async get(id: string, signal?: AbortSignal): Promise<ResearchSession> {
-    return (await response(`/${encodeURIComponent(id)}`, { signal })).json();
+  async get(id: string, signal?: AbortSignal, scope?: ApplicationScopeRequest): Promise<ResearchSession> {
+    return (await response(`/${encodeURIComponent(id)}`, { signal }, scope)).json();
   },
-  async inspect(id: string) { return (await response(`/${encodeURIComponent(id)}/inspection`)).json(); },
-  async run(id: string, onProgress: (event: string, data: ResearchProgress) => void, signal?: AbortSignal) {
-    const res = await response(`/${encodeURIComponent(id)}/run`, { method: "POST", signal });
+  async inspect(id: string, scope?: ApplicationScopeRequest) {
+    return (await response(`/${encodeURIComponent(id)}/inspection`, undefined, scope)).json();
+  },
+  async run(id: string, onProgress: (event: string, data: ResearchProgress) => void, signal?: AbortSignal, scope?: ApplicationScopeRequest) {
+    const res = await response(`/${encodeURIComponent(id)}/run`, { method: "POST", signal }, scope);
     if (!res.body || !res.headers.get("content-type")?.startsWith("text/event-stream")) {
       throw new ApiError("Research progress could not be read.");
     }

@@ -15,6 +15,7 @@ from google.api_core.exceptions import GoogleAPICallError, RetryError
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import firestore
 
+from personal_ai.auth.scope import data_scope_matches, scope_matches, scope_query, scoped_record
 from personal_ai.entities import Conversation, Message, MessageStatus
 from personal_ai.storage.branches import active_path, descendant_ids, effective_message
 from personal_ai.storage.errors import (
@@ -40,6 +41,7 @@ class FirestoreConversationRepository:
         self._collection = self._client.collection("conversations")
 
     def create(self, conversation: Conversation) -> Conversation:
+        conversation = scoped_record(conversation)
         self._run(
             lambda: self._collection.document(str(conversation.id)).create(
                 _conversation_data(conversation)
@@ -52,27 +54,31 @@ class FirestoreConversationRepository:
         if not snapshot.exists:
             raise ResourceNotFoundError("conversation not found")
         conversation = _conversation_from_data(snapshot.to_dict())
-        if conversation.owner_id != owner_id:
+        if conversation.owner_id != owner_id or not scope_matches(conversation):
             raise ResourceNotFoundError("conversation not found")
         return conversation
 
     def list(self, *, owner_id: str, limit: int = 50) -> list[Conversation]:
         if limit < 1:
             return []
-        snapshots = self._run(
-            lambda: list(
-                self._collection.where(
-                    filter=firestore.FieldFilter("owner_id", "==", owner_id)
-                )
-                .order_by("updated_at", direction=firestore.Query.DESCENDING)
-                .limit(limit)
-                .stream()
+        def fetch():
+            query = scope_query(
+                self._collection.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
             )
-        )
-        return [_conversation_from_data(snapshot.to_dict()) for snapshot in snapshots]
+            return list(
+                query.order_by("updated_at", direction=firestore.Query.DESCENDING).stream()
+            )
+
+        snapshots = self._run(fetch)
+        return [
+            conversation for snapshot in snapshots
+            if scope_matches(conversation := _conversation_from_data(snapshot.to_dict()))
+        ][:limit]
 
     def update(self, conversation: Conversation) -> Conversation:
         self.get(owner_id=conversation.owner_id, conversation_id=conversation.id)
+        if not scope_matches(conversation):
+            raise ResourceNotFoundError("conversation not found")
         self._run(
             lambda: self._collection.document(str(conversation.id)).set(
                 _conversation_data(conversation)
@@ -123,7 +129,8 @@ class FirestoreMessageRepository:
             def release(transaction: Any) -> None:
                 snapshot = next(transaction.get(reference), None)
                 if snapshot is None or not snapshot.exists \
-                        or snapshot.to_dict().get("owner_id") != owner_id:
+                        or snapshot.to_dict().get("owner_id") != owner_id \
+                        or not data_scope_matches(snapshot.to_dict()):
                     raise ResourceNotFoundError("conversation not found")
                 if snapshot.to_dict().get("context_preparation_id") == str(preparation_id):
                     transaction.update(reference, {
@@ -134,6 +141,10 @@ class FirestoreMessageRepository:
         self._run(operation)
 
     def create(self, message: Message) -> Message:
+        message = scoped_record(message)
+        FirestoreConversationRepository(self._client).get(
+            owner_id=message.owner_id, conversation_id=message.conversation_id
+        )
         def operation() -> None:
             batch = self._client.batch()
             batch.create(self._collection.document(str(message.id)), _message_data(message))
@@ -151,14 +162,17 @@ class FirestoreMessageRepository:
         if not snapshot.exists:
             raise ResourceNotFoundError("message not found")
         message = _message_from_data(snapshot.to_dict())
-        if message.owner_id != owner_id or message.conversation_id != conversation_id:
+        if (message.owner_id != owner_id or message.conversation_id != conversation_id
+                or not scope_matches(message)):
             raise ResourceNotFoundError("message not found")
         history = self._run(lambda: list(self._message_query(
             owner_id=owner_id, conversation_id=conversation_id,
         ).stream()))
-        return effective_message(message, {
-            item.id: item for item in (_message_from_data(s.to_dict()) for s in history)
-        })
+        scoped_history = [
+            item for snapshot in history
+            if scope_matches(item := _message_from_data(snapshot.to_dict()))
+        ]
+        return effective_message(message, {item.id: item for item in scoped_history})
 
     def list_active(self, *, owner_id: str, conversation_id: UUID, timeout: float | None = None) -> list[Message]:
         snapshots = self._run(
@@ -168,7 +182,10 @@ class FirestoreMessageRepository:
                 .stream(**({"retry": None, "timeout": timeout} if timeout is not None else {}))
             )
         )
-        messages = [_message_from_data(snapshot.to_dict()) for snapshot in snapshots]
+        messages = [
+            message for snapshot in snapshots
+            if scope_matches(message := _message_from_data(snapshot.to_dict()))
+        ]
         return active_path(messages)
 
     def update_status(
@@ -186,6 +203,9 @@ class FirestoreMessageRepository:
     ) -> Message | None:
         message = self.get(
             owner_id=owner_id, conversation_id=conversation_id, message_id=message_id
+        )
+        FirestoreConversationRepository(self._client).get(
+            owner_id=owner_id, conversation_id=conversation_id
         )
         if expected_status is not None and message.status is not expected_status:
             return None
@@ -212,14 +232,21 @@ class FirestoreMessageRepository:
                     if snapshot is None or not snapshot.exists:
                         return False
                     current = _message_from_data(snapshot.to_dict())
-                    if current.owner_id != owner_id or current.conversation_id != conversation_id:
+                    if (current.owner_id != owner_id or current.conversation_id != conversation_id
+                            or not scope_matches(current)):
                         raise ResourceNotFoundError("message not found")
                     stored = [
                         _message_from_data(item.to_dict())
                         for item in transaction.get(self._message_query(
                             owner_id=owner_id, conversation_id=conversation_id,
                         ))
+                        if data_scope_matches(item.to_dict())
                     ]
+                    conversation_snapshot = next(transaction.get(conversation_ref), None)
+                    if (conversation_snapshot is None or not conversation_snapshot.exists
+                            or conversation_snapshot.to_dict().get("owner_id") != owner_id
+                            or not data_scope_matches(conversation_snapshot.to_dict())):
+                        raise ResourceNotFoundError("conversation not found")
                     current = effective_message(current, {item.id: item for item in stored})
                     if current.status is not expected_status:
                         return False
@@ -258,11 +285,14 @@ class FirestoreMessageRepository:
                 snapshot = next(transaction.get(conversation_ref), None)
                 if snapshot is None or not snapshot.exists:
                     raise ResourceNotFoundError("conversation not found")
-                if snapshot.to_dict().get("owner_id") != owner_id:
+                if snapshot.to_dict().get("owner_id") != owner_id \
+                        or not data_scope_matches(snapshot.to_dict()):
                     raise ResourceNotFoundError("conversation not found")
                 query = self._message_query(owner_id=owner_id, conversation_id=conversation_id)
                 messages = [
-                    _message_from_data(item.to_dict()) for item in transaction.get(query)
+                    message for item in transaction.get(query)
+                    if data_scope_matches(item.to_dict())
+                    for message in [_message_from_data(item.to_dict())]
                 ]
                 active = active_path(messages)
                 stale = [
@@ -313,6 +343,7 @@ class FirestoreMessageRepository:
         Supersession and every replacement record share the same atomic commit.
         """
         conversation_ref = self._conversations.document(str(conversation_id))
+        messages = tuple(scoped_record(item) for item in messages)
         message_refs = {item.id: self._collection.document(str(item.id)) for item in messages}
 
         def operation() -> list[Message]:
@@ -324,7 +355,8 @@ class FirestoreMessageRepository:
                 if conversation_snapshot is None or not conversation_snapshot.exists:
                     raise ResourceNotFoundError("conversation not found")
                 conversation_data = conversation_snapshot.to_dict()
-                if conversation_data.get("owner_id") != owner_id:
+                if conversation_data.get("owner_id") != owner_id \
+                        or not data_scope_matches(conversation_data):
                     raise ResourceNotFoundError("conversation not found")
 
                 lease = conversation_data.get("context_preparation_id")
@@ -335,7 +367,11 @@ class FirestoreMessageRepository:
 
                 query = self._message_query(owner_id=owner_id, conversation_id=conversation_id)
                 snapshots = list(transaction.get(query))
-                stored = [_message_from_data(snapshot.to_dict()) for snapshot in snapshots]
+                stored = [
+                    message for snapshot in snapshots
+                    if data_scope_matches(snapshot.to_dict())
+                    for message in [_message_from_data(snapshot.to_dict())]
+                ]
                 stored_by_id = {item.id: item for item in stored}
                 active = active_path(stored)
                 if [item.id for item in active] != list(expected_active_ids):
@@ -390,7 +426,10 @@ class FirestoreMessageRepository:
                 self._message_query(owner_id=owner_id, conversation_id=conversation_id).stream()
             )
         )
-        messages = [_message_from_data(snapshot.to_dict()) for snapshot in snapshots]
+        messages = [
+            message for snapshot in snapshots
+            if scope_matches(message := _message_from_data(snapshot.to_dict()))
+        ]
         by_id = {message.id: message for message in messages}
         identifiers = descendant_ids(messages, message_id)
         replaced = [
@@ -418,9 +457,10 @@ class FirestoreMessageRepository:
         ]
 
     def _message_query(self, *, owner_id: str, conversation_id: UUID) -> Any:
-        return self._collection.where(
+        query = self._collection.where(
             filter=firestore.FieldFilter("owner_id", "==", owner_id)
         ).where(filter=firestore.FieldFilter("conversation_id", "==", str(conversation_id)))
+        return scope_query(query)
 
     @staticmethod
     def _run(operation: Callable[[], Any]) -> Any:

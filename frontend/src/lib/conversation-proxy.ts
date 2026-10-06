@@ -70,6 +70,18 @@ export async function proxyApi(request: NextRequest, path: string) {
     if (request.signal.aborted) upstreamAbort.abort();
     upstreamAbort.signal.throwIfAborted();
     const headers = await backendAuthorizationHeaders(request, baseUrl);
+    // Scope labels and correlation are forwarded as untrusted request metadata;
+    // backend authentication remains the sole source of owner identity.
+    for (const name of [
+      "X-Application-ID",
+      "X-Workspace-ID",
+      "X-Request-ID",
+      "X-Client-Capabilities",
+      "X-Client-Context",
+    ]) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
+    }
     if (request.method === "POST") headers.set("Content-Type", "application/json");
     const lastEventId = request.headers.get("Last-Event-ID");
     if (lastEventId) headers.set("Last-Event-ID", lastEventId);

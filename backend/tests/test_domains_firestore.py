@@ -71,6 +71,7 @@ def reservation():
     return DomainLookupReservation(
         id=uuid4(),
         owner_id="local",
+        scope_version=2,
         domain_id="travel",
         idempotency_key=uuid4(),
         request_fingerprint="a" * 64,

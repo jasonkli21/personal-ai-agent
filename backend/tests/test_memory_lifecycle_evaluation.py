@@ -1,6 +1,7 @@
 """Shared Phase 4 fixtures assert real service outcomes, never model-judged quality."""
 
 from datetime import timedelta
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -87,7 +88,16 @@ def test_forgotten_record_can_reactivate_only_with_valid_user_source():
 def test_atomic_forgetting_rejects_dependency_added_after_policy_preflight():
     env = build_fixture(named("stale-low-value-memory"))
     memory = env["records"]["stale"]
-    env["lifecycle"].derived_sources[("local", memory.id)] = {UUID(int=1)}
+    dependency_id = UUID(int=1)
+    env["memories"].derived_records[dependency_id] = SimpleNamespace(
+        id=dependency_id,
+        owner_id="local",
+        application_id="personal_ai",
+        workspace_id=None,
+    )
+    env["lifecycle"].derived_sources[("local", memory.id, "personal_ai", None)] = {
+        dependency_id
+    }
     event = make_event(
         owner_id="local",
         memory_id=memory.id,

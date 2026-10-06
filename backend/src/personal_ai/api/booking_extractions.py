@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from personal_ai.api.dependencies import get_current_owner_id
+from personal_ai.api.dependencies import get_current_owner_id, require_standalone_application_scope
 from personal_ai.booking_extractions.contracts import (
     BookingExtractionDeleteRequest,
     BookingExtractionRequest,
@@ -26,7 +26,11 @@ from personal_ai.llm.gemini import GeminiLLMClient
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.errors import ResourceNotFoundError
 
-router = APIRouter(prefix="/v1/travel/booking-extractions", tags=["booking extractions"])
+router = APIRouter(
+    prefix="/v1/travel/booking-extractions",
+    tags=["booking extractions"],
+    dependencies=[Depends(require_standalone_application_scope)],
+)
 
 
 def enabled_settings(settings: Annotated[Settings, Depends(get_settings)]) -> Settings:

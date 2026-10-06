@@ -8,8 +8,15 @@ from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from google.api_core.exceptions import GoogleAPICallError, RetryError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
+from personal_ai.auth.scope import (
+    STANDALONE_APPLICATION_ID,
+    ApplicationScopedRecord,
+    current_application_scope,
+    scope_matches,
+    scoped_record,
+)
 from personal_ai.itinerary_proposals.contracts import (
     ItineraryProposalRequest,
     ItineraryProposalResult,
@@ -24,10 +31,15 @@ IDEMPOTENCY_RETENTION = timedelta(hours=48)
 
 
 def proposal_id_for(owner_id: str, idempotency_key: UUID) -> UUID:
-    return uuid5(NAMESPACE_URL, f"itinerary-proposal-v1:{owner_id}:{idempotency_key}")
+    scope = current_application_scope()
+    namespace = (
+        "" if scope.application_id == STANDALONE_APPLICATION_ID and scope.workspace_id is None
+        else f":{scope.application_id}:{scope.workspace_id or ''}"
+    )
+    return uuid5(NAMESPACE_URL, f"itinerary-proposal-v1:{owner_id}{namespace}:{idempotency_key}")
 
 
-class ProposalRecord(BaseModel):
+class ProposalRecord(ApplicationScopedRecord):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     proposal_id: UUID
@@ -68,7 +80,7 @@ class ItineraryProposalRepository(Protocol):
 
 
 def _new_record(owner_id, request, request_fingerprint, now, execution_deadline):
-    return ProposalRecord(
+    return scoped_record(ProposalRecord(
         proposal_id=proposal_id_for(owner_id, request.idempotency_key),
         owner_id=owner_id,
         request_fingerprint=request_fingerprint,
@@ -79,11 +91,11 @@ def _new_record(owner_id, request, request_fingerprint, now, execution_deadline)
         execution_deadline=execution_deadline,
         proposal_expires_at=now + MAX_RESULT_LIFETIME,
         retained_until=now + IDEMPOTENCY_RETENTION,
-    )
+    ))
 
 
 def _check_replay(old: ProposalRecord, owner_id: str, fingerprint: str, now: datetime) -> None:
-    if old.owner_id != owner_id:
+    if old.owner_id != owner_id or not scope_matches(old):
         raise ResourceNotFoundError("proposal not found")
     if old.retained_until <= now:
         return
@@ -131,7 +143,7 @@ class InMemoryItineraryProposalRepository:
         del timeout_seconds, deadline
         with self._lock:
             old = self._records.get(record.proposal_id)
-            if old is None or old.owner_id != record.owner_id:
+            if old is None or old.owner_id != record.owner_id or not scope_matches(old):
                 raise ResourceNotFoundError("proposal not found")
             if old.state != "running" or old.request_fingerprint != record.request_fingerprint:
                 raise ProposalError("proposal_conflict", 409)
@@ -146,7 +158,7 @@ class InMemoryItineraryProposalRepository:
     def get(self, owner_id: str, proposal_id: UUID) -> ProposalRecord:
         with self._lock:
             old = self._records.get(proposal_id)
-            if old is None or old.owner_id != owner_id:
+            if old is None or old.owner_id != owner_id or not scope_matches(old):
                 raise ResourceNotFoundError("proposal not found")
             return old
 
@@ -170,7 +182,7 @@ class FirestoreItineraryProposalRepository:
         if not snapshot.exists:
             raise ResourceNotFoundError("proposal not found")
         record = ProposalRecord.model_validate(snapshot.to_dict())
-        if record.owner_id != owner_id:
+        if record.owner_id != owner_id or not scope_matches(record):
             raise ResourceNotFoundError("proposal not found")
         return record
 

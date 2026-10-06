@@ -14,6 +14,15 @@ from google.api_core.exceptions import GoogleAPICallError, RetryError
 from google.cloud import firestore
 from google.cloud.firestore_v1.vector import Vector
 
+from personal_ai.auth.scope import (
+    STANDALONE_APPLICATION_ID,
+    current_application_scope,
+    data_scope_matches,
+    scope_matches,
+    scope_query,
+    scoped_identifier,
+    scoped_record,
+)
 from personal_ai.context.contracts import fingerprint
 from personal_ai.entities import Message, MessageRole, MessageStatus
 from personal_ai.memory.contracts import DerivedMemory, Memory
@@ -30,6 +39,7 @@ from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailable
 from personal_ai.storage.transactions import bounded_transaction
 
 _OPERATION_DEADLINE = ContextVar("memory_lifecycle_deadline", default=None)
+_SCOPE_UNSET = object()
 
 
 @contextmanager
@@ -104,12 +114,36 @@ def _compatible_derivation(derived, sources):
     )
 
 
-def event_idempotency_id(key: str) -> UUID:
-    return uuid5(NAMESPACE_URL, "personal-ai-memory-event:" + key)
+def event_idempotency_id(
+    key: str,
+    application_id: str | None = None,
+    workspace_id: str | None | object = _SCOPE_UNSET,
+) -> UUID:
+    scope = current_application_scope()
+    application_id = application_id or scope.application_id
+    if workspace_id is _SCOPE_UNSET:
+        workspace_id = scope.workspace_id if application_id == scope.application_id else None
+    namespace = (
+        "" if application_id == STANDALONE_APPLICATION_ID and workspace_id is None
+        else f"{application_id}:{workspace_id or ''}:"
+    )
+    return uuid5(NAMESPACE_URL, "personal-ai-memory-event:" + namespace + key)
 
 
-def job_idempotency_id(key: str) -> UUID:
-    return uuid5(NAMESPACE_URL, "personal-ai-memory-job:" + key)
+def job_idempotency_id(
+    key: str,
+    application_id: str | None = None,
+    workspace_id: str | None | object = _SCOPE_UNSET,
+) -> UUID:
+    scope = current_application_scope()
+    application_id = application_id or scope.application_id
+    if workspace_id is _SCOPE_UNSET:
+        workspace_id = scope.workspace_id if application_id == scope.application_id else None
+    namespace = (
+        "" if application_id == STANDALONE_APPLICATION_ID and workspace_id is None
+        else f"{application_id}:{workspace_id or ''}:"
+    )
+    return uuid5(NAMESPACE_URL, "personal-ai-memory-job:" + namespace + key)
 
 
 def _utc(value: datetime) -> datetime:
@@ -119,7 +153,7 @@ def _utc(value: datetime) -> datetime:
 
 
 def _base_state(owner_id: str, memory_id: UUID) -> MemoryLifecycleState:
-    return MemoryLifecycleState(owner_id=owner_id, memory_id=memory_id)
+    return scoped_record(MemoryLifecycleState(owner_id=owner_id, memory_id=memory_id))
 
 
 class InMemoryMemoryLifecycleRepository:
@@ -130,10 +164,10 @@ class InMemoryMemoryLifecycleRepository:
         self.clock = clock or (lambda: datetime.now(UTC))
         self.states: dict[tuple[str, UUID], MemoryLifecycleState] = {}
         self.events: dict[tuple[str, UUID], list[MemoryLifecycleEvent]] = {}
-        self.events_by_key: dict[str, MemoryLifecycleEvent] = {}
+        self.events_by_key: dict[tuple[str, str | None, str], MemoryLifecycleEvent] = {}
         self.jobs: dict[UUID, MemoryJob] = {}
-        self.jobs_by_key: dict[str, UUID] = {}
-        self.derived_sources: dict[tuple[str, UUID], set[UUID]] = {}
+        self.jobs_by_key: dict[tuple[str, str | None, str], UUID] = {}
+        self.derived_sources: dict[tuple[str, UUID, str, str | None], set[UUID]] = {}
         self.operations: dict[tuple[UUID, str], str] = {}
         self._lock = RLock()
 
@@ -147,7 +181,11 @@ class InMemoryMemoryLifecycleRepository:
             return self.memories.get_derived(owner_id=owner_id, memory_id=memory_id)
 
     def _valid_source(self, memory: Memory, *, require_active: bool = True) -> bool:
-        if memory.status != "active" or source_messages(memory, self.messages) is None:
+        if (
+            not scope_matches(memory)
+            or memory.status != "active"
+            or source_messages(memory, self.messages) is None
+        ):
             return False
         conversation = getattr(self.messages, "_conversations", None)
         # Match the transaction reservation check in the production adapter.
@@ -158,6 +196,8 @@ class InMemoryMemoryLifecycleRepository:
             if getattr(record, "context_preparation_id", None):
                 return False
         state = self.states.get((memory.owner_id, memory.id))
+        if state is not None and not scope_matches(state):
+            return False
         return not require_active or state is None or state.retrieval_status == "active"
 
     def _valid_target(self, owner_id: str, memory_id: UUID, *, require_active: bool = True) -> bool:
@@ -166,7 +206,7 @@ class InMemoryMemoryLifecycleRepository:
             state = self.states.get((owner_id, memory_id))
             return self._valid_source(memory, require_active=require_active)
         state = self.states.get((owner_id, memory_id))
-        if require_active and state and state.retrieval_status != "active":
+        if require_active and state and scope_matches(state) and state.retrieval_status != "active":
             return False
         return all(
             self._valid_source(self.memories.get(owner_id=owner_id, memory_id=item.memory_id))
@@ -178,21 +218,26 @@ class InMemoryMemoryLifecycleRepository:
     def get_state(self, *, owner_id: str, memory_id: UUID) -> MemoryLifecycleState:
         with self._lock_sources(), self._lock:
             self._get_memory(owner_id, memory_id)
-            return self.states.get((owner_id, memory_id), _base_state(owner_id, memory_id))
+            state = self.states.get((owner_id, memory_id))
+            return state if state is not None and scope_matches(state) else _base_state(owner_id, memory_id)
 
     def list_events(self, *, owner_id: str, memory_id: UUID, limit: int = 50):
         if limit < 1 or limit > 100:
             raise ValueError("event_limit_invalid")
         with self._lock:
             self._get_memory(owner_id, memory_id)
-            items = self.events.get((owner_id, memory_id), [])
+            items = [
+                event for event in self.events.get((owner_id, memory_id), [])
+                if scope_matches(event)
+            ]
             return tuple(
                 sorted(items, key=lambda e: (e.expected_state_version, str(e.id)))[-limit:]
             )
 
     def find_event(self, *, owner_id: str, memory_id: UUID, idempotency_key: str):
         with self._lock:
-            event = self.events_by_key.get(idempotency_key)
+            current = current_application_scope()
+            event = self.events_by_key.get((current.application_id, current.workspace_id, idempotency_key))
             if event is None:
                 return None
             if event.owner_id != owner_id or event.memory_id != memory_id:
@@ -208,7 +253,9 @@ class InMemoryMemoryLifecycleRepository:
         lease_token: UUID | None = None,
     ) -> MemoryLifecycleOutcome:
         with self._lock_sources(), self._lock:
-            old = self.events_by_key.get(event.idempotency_key)
+            event = scoped_record(event)
+            event_key = (event.application_id, event.workspace_id, event.idempotency_key)
+            old = self.events_by_key.get(event_key)
             if old:
                 if old.model_dump() != event.model_dump():
                     raise ValueError("idempotency_key_reused")
@@ -217,7 +264,9 @@ class InMemoryMemoryLifecycleRepository:
                     state=self.get_state(owner_id=event.owner_id, memory_id=event.memory_id),
                     event_id=old.id,
                 )
-            if event.id != event_idempotency_id(event.idempotency_key):
+            if event.id != event_idempotency_id(
+                event.idempotency_key, event.application_id, event.workspace_id
+            ):
                 raise ValueError("event_identity_invalid")
             if event.job_id is not None:
                 current_job = (
@@ -228,6 +277,7 @@ class InMemoryMemoryLifecycleRepository:
                 if (
                     current_job is None
                     or current_job.owner_id != event.owner_id
+                    or not scope_matches(current_job)
                     or event.memory_id not in current_job.candidate_memory_ids
                     or not set(event.related_memory_ids) <= set(current_job.candidate_memory_ids)
                 ):
@@ -239,6 +289,7 @@ class InMemoryMemoryLifecycleRepository:
                 if (
                     assistant is None
                     or assistant.owner_id != event.owner_id
+                    or not scope_matches(assistant)
                     or assistant.role is not MessageRole.ASSISTANT
                     or assistant.status is not MessageStatus.COMPLETED
                 ):
@@ -253,9 +304,9 @@ class InMemoryMemoryLifecycleRepository:
                     return MemoryLifecycleOutcome(
                         status="conflict", reason="related_source_inactive"
                     )
-            current = self.states.get(
-                (event.owner_id, event.memory_id), _base_state(event.owner_id, event.memory_id)
-            )
+            current = self.states.get((event.owner_id, event.memory_id))
+            if current is None or not scope_matches(current):
+                current = _base_state(event.owner_id, event.memory_id)
             if event.event_type == "forgotten":
                 from personal_ai.memory.lifecycle_policy import forgetting_decision
 
@@ -291,40 +342,48 @@ class InMemoryMemoryLifecycleRepository:
                     )
                 raise
             self.events.setdefault((event.owner_id, event.memory_id), []).append(event)
-            self.events_by_key[event.idempotency_key] = event
+            self.events_by_key[event_key] = event
             self.states[(event.owner_id, event.memory_id)] = updated
             if event.event_type == "consolidated":
                 for derived_id in event.related_memory_ids:
-                    self.derived_sources.setdefault((event.owner_id, event.memory_id), set()).add(
-                        derived_id
-                    )
+                    self.derived_sources.setdefault(
+                        (
+                            event.owner_id,
+                            event.memory_id,
+                            event.application_id,
+                            event.workspace_id,
+                        ),
+                        set(),
+                    ).add(derived_id)
             return MemoryLifecycleOutcome(status="applied", state=updated, event_id=event.id)
 
     def create_job(self, job: MemoryJob) -> tuple[MemoryJob, bool]:
         with self._lock:
-            old_id = self.jobs_by_key.get(job.idempotency_key)
+            job = scoped_record(job)
+            job_key = (job.application_id, job.workspace_id, job.idempotency_key)
+            old_id = self.jobs_by_key.get(job_key)
             if old_id:
                 old = self.jobs[old_id]
                 if not _same_job_intent(old, job):
                     raise ValueError("idempotency_key_reused")
                 return old, False
-            if job.id != job_idempotency_id(job.idempotency_key):
+            if job.id != job_idempotency_id(job.idempotency_key, job.application_id, job.workspace_id):
                 raise ValueError("job_identity_invalid")
             self.jobs[job.id] = job
-            self.jobs_by_key[job.idempotency_key] = job.id
+            self.jobs_by_key[job_key] = job.id
             return job, True
 
     def get_job(self, *, owner_id: str, job_id: UUID) -> MemoryJob:
         with self._lock:
             job = self.jobs.get(job_id)
-            if job is None or job.owner_id != owner_id:
+            if job is None or job.owner_id != owner_id or not scope_matches(job):
                 raise ResourceNotFoundError("memory job not found")
             return job
 
     def get_job_by_id(self, *, job_id: UUID) -> MemoryJob:
         with self._lock:
             job = self.jobs.get(job_id)
-            if job is None:
+            if job is None or not scope_matches(job):
                 raise ResourceNotFoundError("memory job not found")
             return job
 
@@ -367,6 +426,7 @@ class InMemoryMemoryLifecycleRepository:
         current = self.jobs.get(job.id)
         if (
             current is None
+            or not scope_matches(current)
             or current.owner_id != job.owner_id
             or current.status != "leased"
             or current.lease_token != token
@@ -450,6 +510,7 @@ class InMemoryMemoryLifecycleRepository:
                 record
                 for record in self.memories.records.values()
                 if record.owner_id == owner_id
+                and scope_matches(record)
                 and record.memory_type == anchor.memory_type
                 and record.status == "active"
                 and record.id != memory_id
@@ -488,8 +549,12 @@ class InMemoryMemoryLifecycleRepository:
                     raise ValueError("operation_key_reused")
                 return "replayed"
             current_job = self._fenced_job(job, token, now)
-            if current_job is None:
+            if current_job is None or not scope_matches(job) or not scope_matches(derived):
                 return "stale_lease"
+            if (derived.application_id, derived.workspace_id) != (
+                job.application_id, job.workspace_id
+            ):
+                return "source_mismatch"
             if (
                 derived.owner_id != job.owner_id
                 or derived.source_memory_ids != job.candidate_memory_ids
@@ -503,6 +568,8 @@ class InMemoryMemoryLifecycleRepository:
                 if (
                     record.status != "active"
                     or record.source_fingerprint != source.source_fingerprint
+                    or state
+                    and not scope_matches(state)
                     or state
                     and state.retrieval_status != "active"
                     or not self._valid_source(record)
@@ -536,13 +603,18 @@ class InMemoryMemoryLifecycleRepository:
                 return "replayed"
             events, states = [], []
             for source in source_records:
-                state = self.states.get(
-                    (job.owner_id, source.id), _base_state(job.owner_id, source.id)
-                )
+                state = self.states.get((job.owner_id, source.id))
+                if state is None or not scope_matches(state):
+                    state = _base_state(job.owner_id, source.id)
                 key_value = f"{job.id}:consolidated:{source.id}"
                 event = MemoryLifecycleEvent(
-                    id=event_idempotency_id(key_value),
+                    id=event_idempotency_id(
+                        key_value, job.application_id, job.workspace_id
+                    ),
                     owner_id=job.owner_id,
+                    application_id=job.application_id,
+                    workspace_id=job.workspace_id,
+                    scope_version=2,
                     memory_id=source.id,
                     event_type="consolidated",
                     reason_code="derived_memory_created",
@@ -554,7 +626,8 @@ class InMemoryMemoryLifecycleRepository:
                     job_id=job.id,
                     expected_state_version=state.state_version,
                 )
-                old = self.events_by_key.get(key_value)
+                event_key = (event.application_id, event.workspace_id, event.idempotency_key)
+                old = self.events_by_key.get(event_key)
                 if old and old.model_dump() != event.model_dump():
                     raise ValueError("idempotency_key_reused")
                 events.append(event)
@@ -562,9 +635,11 @@ class InMemoryMemoryLifecycleRepository:
             self.memories.derived_records[derived.id] = derived
             for source, event, state in zip(source_records, events, states, strict=True):
                 self.events.setdefault((job.owner_id, source.id), []).append(event)
-                self.events_by_key[event.idempotency_key] = event
+                self.events_by_key[(event.application_id, event.workspace_id, event.idempotency_key)] = event
                 self.states[(job.owner_id, source.id)] = state
-                self.derived_sources.setdefault((job.owner_id, source.id), set()).add(derived.id)
+                self.derived_sources.setdefault(
+                    (job.owner_id, source.id, job.application_id, job.workspace_id), set()
+                ).add(derived.id)
             self.operations[key] = str(derived.id)
             return "applied"
 
@@ -573,16 +648,25 @@ class InMemoryMemoryLifecycleRepository:
             raise ValueError("dependency_limit_invalid")
         with self._lock:
             self._get_memory(owner_id, memory_id)
-            return tuple(
-                sorted(self.derived_sources.get((owner_id, memory_id), set()), key=str)[:limit]
-            )
+            found = []
+            scope = current_application_scope()
+            key = (owner_id, memory_id, scope.application_id, scope.workspace_id)
+            for derived_id in sorted(self.derived_sources.get(key, set()), key=str):
+                try:
+                    self.memories.get_derived(owner_id=owner_id, memory_id=derived_id)
+                except ResourceNotFoundError:
+                    continue
+                found.append(derived_id)
+                if len(found) == limit:
+                    break
+            return tuple(found)
 
     def rebuild_state(self, *, owner_id: str, memory_id: UUID):
         with self._lock_sources(), self._lock:
             self._get_memory(owner_id, memory_id)
             current = _base_state(owner_id, memory_id)
             events = sorted(
-                self.events.get((owner_id, memory_id), []),
+                (item for item in self.events.get((owner_id, memory_id), []) if scope_matches(item)),
                 key=lambda event: (event.expected_state_version, str(event.id)),
             )
             for item in events:
@@ -601,13 +685,11 @@ class InMemoryMemoryLifecycleRepository:
                 memory
                 for memory in self.memories.records.values()
                 if memory.owner_id == owner_id
+                and scope_matches(memory)
                 and memory.status == "active"
                 and memory.memory_type in ("episodic_observation", "semantic_summary")
                 and memory.effective_at <= cutoff
-                and self.states.get(
-                    (owner_id, memory.id), _base_state(owner_id, memory.id)
-                ).retrieval_status
-                == "active"
+                and self.get_state(owner_id=owner_id, memory_id=memory.id).retrieval_status == "active"
             ]
         eligible.sort(key=lambda item: (item.effective_at, str(item.id)))
         return tuple(item.id for item in eligible[:limit])
@@ -620,13 +702,11 @@ class InMemoryMemoryLifecycleRepository:
                 memory
                 for memory in self.memories.records.values()
                 if memory.owner_id == owner_id
+                and scope_matches(memory)
                 and memory.status == "active"
                 and memory.memory_type in ("preference", "explicit_correction")
                 and self._valid_source(memory)
-                and self.states.get(
-                    (owner_id, memory.id), _base_state(owner_id, memory.id)
-                ).retrieval_status
-                == "active"
+                and self.get_state(owner_id=owner_id, memory_id=memory.id).retrieval_status == "active"
             ]
         eligible.sort(key=lambda item: (-item.effective_at.timestamp(), str(item.id)))
         return tuple(item.id for item in eligible[:limit])
@@ -656,7 +736,7 @@ class FirestoreMemoryLifecycleRepository:
 
     @staticmethod
     def _state_ref_id(owner_id: str, memory_id: UUID) -> str:
-        return str(memory_id)
+        return scoped_identifier(memory_id)
 
     def _get_record(self, *, owner_id: str, memory_id: UUID, timeout: float = 5):
         try:
@@ -681,7 +761,7 @@ class FirestoreMemoryLifecycleRepository:
             state = MemoryLifecycleState.model_validate(snapshot.to_dict())
         except (ValueError, TypeError, KeyError) as error:
             raise StorageUnavailableError("memory lifecycle projection invalid") from error
-        if state.owner_id != owner_id or state.memory_id != memory_id:
+        if state.owner_id != owner_id or state.memory_id != memory_id or not scope_matches(state):
             raise ResourceNotFoundError("memory not found")
         return state
 
@@ -698,6 +778,7 @@ class FirestoreMemoryLifecycleRepository:
         self._get_record(owner_id=owner_id, memory_id=memory_id)
         query = self.events.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
         query = query.where(filter=firestore.FieldFilter("memory_id", "==", str(memory_id)))
+        query = scope_query(query)
         query = query.order_by(
             "expected_state_version", direction=firestore.Query.DESCENDING
         ).limit(limit)
@@ -707,7 +788,10 @@ class FirestoreMemoryLifecycleRepository:
         try:
             return tuple(
                 reversed(
-                    [MemoryLifecycleEvent.model_validate(item.to_dict()) for item in snapshots]
+                    [
+                        event for item in snapshots
+                        if scope_matches(event := MemoryLifecycleEvent.model_validate(item.to_dict()))
+                    ]
                 )
             )
         except (ValueError, TypeError, KeyError) as error:
@@ -724,7 +808,7 @@ class FirestoreMemoryLifecycleRepository:
             event = MemoryLifecycleEvent.model_validate(snapshot.to_dict())
         except (ValueError, TypeError, KeyError) as error:
             raise StorageUnavailableError("memory lifecycle event invalid") from error
-        if event.owner_id != owner_id or event.memory_id != memory_id:
+        if event.owner_id != owner_id or event.memory_id != memory_id or not scope_matches(event):
             raise ResourceNotFoundError("memory event not found")
         return event
 
@@ -737,9 +821,9 @@ class FirestoreMemoryLifecycleRepository:
         if conversation is None or not conversation.exists:
             return False
         conversation_data = conversation.to_dict()
-        if conversation_data.get("owner_id") != memory.owner_id or conversation_data.get(
-            "context_preparation_id"
-        ):
+        if (conversation_data.get("owner_id") != memory.owner_id
+                or not data_scope_matches(conversation_data)
+                or conversation_data.get("context_preparation_id")):
             return False
         message_collection = self.client.collection("messages")
         collected: dict[UUID, Message] = {}
@@ -774,6 +858,7 @@ class FirestoreMemoryLifecycleRepository:
                 if (
                     message.owner_id != memory.owner_id
                     or message.conversation_id != memory.source_conversation_id
+                    or not scope_matches(message)
                     or message.status is MessageStatus.SUPERSEDED
                 ):
                     return False
@@ -800,6 +885,7 @@ class FirestoreMemoryLifecycleRepository:
         source_valid = (
             assistant.owner_id == memory.owner_id
             and assistant.conversation_id == memory.source_conversation_id
+            and scope_matches(assistant)
             and assistant.role is MessageRole.ASSISTANT
             and assistant.parent_message_id in memory.source_message_ids
             and tuple(item.id for item in source_records) == memory.source_message_ids
@@ -818,6 +904,7 @@ class FirestoreMemoryLifecycleRepository:
             ("status", "completed"),
         ):
             query = query.where(filter=firestore.FieldFilter(field, "==", value))
+        query = scope_query(query)
         completions = list(transaction.get(query.limit(2)))
         return len(completions) == 1
 
@@ -826,7 +913,7 @@ class FirestoreMemoryLifecycleRepository:
         snapshot = next(transaction.get(original_ref), None)
         if snapshot is not None and snapshot.exists:
             record = self.memories._record(snapshot)
-            if record.owner_id != owner_id:
+            if record.owner_id != owner_id or not scope_matches(record):
                 raise ResourceNotFoundError("memory not found")
             return record
         derived_ref = self.client.collection("derived_memories").document(str(memory_id))
@@ -839,7 +926,7 @@ class FirestoreMemoryLifecycleRepository:
             record = DerivedMemory.model_validate(data)
         except (ValueError, TypeError, KeyError) as error:
             raise StorageUnavailableError("derived memory record invalid") from error
-        if record.owner_id != owner_id:
+        if record.owner_id != owner_id or not scope_matches(record):
             raise ResourceNotFoundError("memory not found")
         return record
 
@@ -875,7 +962,10 @@ class FirestoreMemoryLifecycleRepository:
         job: MemoryJob | None = None,
         lease_token: UUID | None = None,
     ) -> MemoryLifecycleOutcome:
-        if event.id != event_idempotency_id(event.idempotency_key):
+        event = scoped_record(event)
+        if event.id != event_idempotency_id(
+            event.idempotency_key, event.application_id, event.workspace_id
+        ):
             raise ValueError("event_identity_invalid")
         event_ref = self.events.document(str(event.id))
         state_ref = self.states.document(self._state_ref_id(event.owner_id, event.memory_id))
@@ -890,6 +980,8 @@ class FirestoreMemoryLifecycleRepository:
                     raise StorageUnavailableError("memory lifecycle event invalid") from error
                 if existing.model_dump() != event.model_dump():
                     raise ValueError("idempotency_key_reused")
+                if not scope_matches(existing):
+                    raise ResourceNotFoundError("memory event not found")
                 state = self._read_state(event.owner_id, event.memory_id, transaction=transaction)
                 return MemoryLifecycleOutcome(status="replayed", state=state, event_id=event.id)
             if completed_assistant_id is not None:
@@ -905,6 +997,7 @@ class FirestoreMemoryLifecycleRepository:
                     return MemoryLifecycleOutcome(status="conflict", reason="assistant_incomplete")
                 if (
                     assistant.owner_id != event.owner_id
+                    or not scope_matches(assistant)
                     or assistant.role is not MessageRole.ASSISTANT
                     or assistant.status is not MessageStatus.COMPLETED
                 ):
@@ -921,6 +1014,7 @@ class FirestoreMemoryLifecycleRepository:
                     raise StorageUnavailableError("memory job invalid") from error
                 if (
                     current_job.owner_id != event.owner_id
+                    or not scope_matches(current_job)
                     or event.memory_id not in current_job.candidate_memory_ids
                     or not set(event.related_memory_ids) <= set(current_job.candidate_memory_ids)
                     or current_job.status != "leased"
@@ -1004,7 +1098,8 @@ class FirestoreMemoryLifecycleRepository:
             raise StorageUnavailableError("memory lifecycle unavailable") from error
 
     def create_job(self, job: MemoryJob) -> tuple[MemoryJob, bool]:
-        if job.id != job_idempotency_id(job.idempotency_key):
+        job = scoped_record(job)
+        if job.id != job_idempotency_id(job.idempotency_key, job.application_id, job.workspace_id):
             raise ValueError("job_identity_invalid")
         reference = self.jobs.document(str(job.id))
 
@@ -1015,6 +1110,8 @@ class FirestoreMemoryLifecycleRepository:
                     existing = MemoryJob.model_validate(snapshot.to_dict())
                 except (ValueError, TypeError, KeyError) as error:
                     raise StorageUnavailableError("memory job invalid") from error
+                if not scope_matches(existing):
+                    raise ResourceNotFoundError("memory job not found")
                 if not _same_job_intent(existing, job):
                     raise ValueError("idempotency_key_reused")
                 return existing, False
@@ -1033,7 +1130,7 @@ class FirestoreMemoryLifecycleRepository:
             job = MemoryJob.model_validate(snapshot.to_dict())
         except (ValueError, TypeError, KeyError) as error:
             raise StorageUnavailableError("memory job invalid") from error
-        if job.owner_id != owner_id:
+        if job.owner_id != owner_id or not scope_matches(job):
             raise ResourceNotFoundError("memory job not found")
         return job
 
@@ -1044,9 +1141,12 @@ class FirestoreMemoryLifecycleRepository:
         if not snapshot.exists:
             raise ResourceNotFoundError("memory job not found")
         try:
-            return MemoryJob.model_validate(snapshot.to_dict())
+            job = MemoryJob.model_validate(snapshot.to_dict())
         except (ValueError, TypeError, KeyError) as error:
             raise StorageUnavailableError("memory job invalid") from error
+        if not scope_matches(job):
+            raise ResourceNotFoundError("memory job not found")
+        return job
 
     def claim_job(self, *, owner_id: str, job_id: UUID, now: datetime, lease_seconds: int):
         now = _utc(now)
@@ -1057,7 +1157,7 @@ class FirestoreMemoryLifecycleRepository:
             if snapshot is None or not snapshot.exists:
                 raise ResourceNotFoundError("memory job not found")
             job = MemoryJob.model_validate(snapshot.to_dict())
-            if job.owner_id != owner_id:
+            if job.owner_id != owner_id or not scope_matches(job):
                 raise ResourceNotFoundError("memory job not found")
             if job.status in ("completed", "terminal"):
                 return None
@@ -1104,6 +1204,8 @@ class FirestoreMemoryLifecycleRepository:
             current = MemoryJob.model_validate(snapshot.to_dict())
             if (
                 current.owner_id != job.owner_id
+                or not scope_matches(current)
+                or not scope_matches(job)
                 or current.status != "leased"
                 or current.lease_token != token
                 or current.lease_expires_at is None
@@ -1183,7 +1285,7 @@ class FirestoreMemoryLifecycleRepository:
             if snapshot is None or not snapshot.exists:
                 raise ResourceNotFoundError("memory job not found")
             job = MemoryJob.model_validate(snapshot.to_dict())
-            if job.owner_id != owner_id:
+            if job.owner_id != owner_id or not scope_matches(job):
                 raise ResourceNotFoundError("memory job not found")
             if job.status not in ("pending", "retry") or job.updated_at != _utc(updated_at):
                 return job
@@ -1228,6 +1330,7 @@ class FirestoreMemoryLifecycleRepository:
                 ("memory_type", memory_type),
             ):
                 query = query.where(filter=firestore.FieldFilter(field, "==", value))
+            query = scope_query(query)
             query = query.order_by("effective_at", direction=firestore.Query.DESCENDING)
             query = query.limit(min(100, limit * 4))
             snapshots = self.memories._run(
@@ -1250,15 +1353,21 @@ class FirestoreMemoryLifecycleRepository:
             raise ValueError("dependency_limit_invalid")
         query = self.relations.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
         query = query.where(filter=firestore.FieldFilter("source_memory_id", "==", str(memory_id)))
+        query = scope_query(query)
         snapshots = self.memories._run(
             lambda: list(query.limit(limit).stream(retry=None, timeout=rpc_timeout()))
         )
-        return tuple(UUID(item.to_dict()["derived_memory_id"]) for item in snapshots)
+        return tuple(
+            UUID(values["derived_memory_id"])
+            for item in snapshots
+            if data_scope_matches(values := item.to_dict())
+        )
 
     def rebuild_state(self, *, owner_id: str, memory_id: UUID):
         self._get_record(owner_id=owner_id, memory_id=memory_id)
         query = self.events.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
         query = query.where(filter=firestore.FieldFilter("memory_id", "==", str(memory_id)))
+        query = scope_query(query)
         query = query.order_by("expected_state_version", direction=firestore.Query.ASCENDING)
         records = []
         cursor = None
@@ -1272,7 +1381,8 @@ class FirestoreMemoryLifecycleRepository:
             if not snapshots:
                 break
             records.extend(
-                MemoryLifecycleEvent.model_validate(item.to_dict()) for item in snapshots
+                event for item in snapshots
+                if scope_matches(event := MemoryLifecycleEvent.model_validate(item.to_dict()))
             )
             cursor = snapshots[-1]
         if len(records) >= 10_000:
@@ -1289,6 +1399,8 @@ class FirestoreMemoryLifecycleRepository:
                 if current_snapshot is None or not current_snapshot.exists
                 else MemoryLifecycleState.model_validate(current_snapshot.to_dict())
             )
+            if not scope_matches(current):
+                raise ResourceNotFoundError("memory not found")
             if current.state_version > rebuilt.state_version:
                 return False
             transaction.set(reference, rebuilt.model_dump(mode="json"))
@@ -1312,6 +1424,7 @@ class FirestoreMemoryLifecycleRepository:
                 ("memory_type", memory_type),
             ):
                 query = query.where(filter=firestore.FieldFilter(field, "==", value))
+            query = scope_query(query)
             query = query.where(filter=firestore.FieldFilter("effective_at", "<=", cutoff))
             query = query.order_by("effective_at", direction=firestore.Query.ASCENDING).limit(limit)
             snapshots = self.memories._run(
@@ -1333,6 +1446,13 @@ class FirestoreMemoryLifecycleRepository:
         """Atomically revalidate lease and source provenance before derived writes."""
         now = _utc(now)
         derived = DerivedMemory.model_validate(derived.model_dump())
+        if (
+            not scope_matches(job)
+            or not scope_matches(derived)
+            or (job.application_id, job.workspace_id)
+            != (derived.application_id, derived.workspace_id)
+        ):
+            return "stale_lease"
         operation_id = f"{job.id}:consolidate"
         operation_ref = self.operations.document(hashlib.sha256(operation_id.encode()).hexdigest())
         job_ref = self.jobs.document(str(job.id))
@@ -1342,6 +1462,8 @@ class FirestoreMemoryLifecycleRepository:
             operation_snapshot = next(transaction.get(operation_ref), None)
             if operation_snapshot is not None and operation_snapshot.exists:
                 result = operation_snapshot.to_dict()
+                if not data_scope_matches(result):
+                    return "stale_lease"
                 if result.get("derived_memory_id") != str(derived.id):
                     raise ValueError("operation_key_reused")
                 return "replayed"
@@ -1351,6 +1473,7 @@ class FirestoreMemoryLifecycleRepository:
             current_job = MemoryJob.model_validate(job_snapshot.to_dict())
             if (
                 current_job.owner_id != job.owner_id
+                or not scope_matches(current_job)
                 or current_job.status != "leased"
                 or current_job.lease_token != token
                 or current_job.lease_expires_at is None
@@ -1372,6 +1495,7 @@ class FirestoreMemoryLifecycleRepository:
                 if (
                     not isinstance(record, Memory)
                     or record.status != "active"
+                    or not scope_matches(record)
                     or state.retrieval_status != "active"
                     or record.source_fingerprint != provenance.source_fingerprint
                     or record.content != provenance.excerpt
@@ -1393,8 +1517,13 @@ class FirestoreMemoryLifecycleRepository:
             for source, state in sources:
                 key = f"{job.id}:consolidated:{source.id}"
                 event = MemoryLifecycleEvent(
-                    id=event_idempotency_id(key),
+                    id=event_idempotency_id(
+                        key, job.application_id, job.workspace_id
+                    ),
                     owner_id=job.owner_id,
+                    application_id=job.application_id,
+                    workspace_id=job.workspace_id,
+                    scope_version=2,
                     memory_id=source.id,
                     event_type="consolidated",
                     reason_code="derived_memory_created",
@@ -1413,7 +1542,8 @@ class FirestoreMemoryLifecycleRepository:
                 updated_states.append(transition(state, event))
                 event_records.append((event_ref, event))
                 relation_id = hashlib.sha256(
-                    f"{job.owner_id}:{source.id}:{derived.id}".encode()
+                    f"{job.owner_id}:{job.application_id}:{job.workspace_id or ''}:"
+                    f"{source.id}:{derived.id}".encode()
                 ).hexdigest()
                 relation_refs.append((self.relations.document(relation_id), source.id))
             transaction.create(
@@ -1433,6 +1563,9 @@ class FirestoreMemoryLifecycleRepository:
                     relation_ref,
                     {
                         "owner_id": job.owner_id,
+                        "application_id": job.application_id,
+                        "workspace_id": job.workspace_id,
+                        "scope_version": 2,
                         "source_memory_id": str(source_id),
                         "derived_memory_id": str(derived.id),
                         "created_at": now.isoformat(),
@@ -1442,6 +1575,9 @@ class FirestoreMemoryLifecycleRepository:
                 operation_ref,
                 {
                     "owner_id": job.owner_id,
+                    "application_id": job.application_id,
+                    "workspace_id": job.workspace_id,
+                    "scope_version": 2,
                     "job_id": str(job.id),
                     "operation": "consolidate",
                     "derived_memory_id": str(derived.id),

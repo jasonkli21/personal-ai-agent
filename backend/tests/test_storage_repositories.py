@@ -23,6 +23,7 @@ def conversation(identifier: int, *, owner_id: str = OWNER, offset: int = 0) -> 
     return Conversation(
         id=UUID(int=identifier),
         owner_id=owner_id,
+        scope_version=2,
         title=f"Conversation {identifier}",
         created_at=instant,
         updated_at=instant,
@@ -42,6 +43,7 @@ def message(
         id=UUID(int=identifier),
         conversation_id=conversation_id,
         owner_id=owner_id,
+        scope_version=2,
         role=MessageRole.USER if identifier % 2 else MessageRole.ASSISTANT,
         content=f"message {identifier}",
         status=status,
@@ -181,6 +183,7 @@ def test_prepare_message_turn_supersedes_and_creates_replacement_atomically() ->
     repository.create(old_answer)
     replacement = Message(
         id=UUID(int=203), conversation_id=stored_conversation.id, owner_id=OWNER,
+        scope_version=2,
         role=MessageRole.ASSISTANT, content="", status=MessageStatus.STREAMING,
         created_at=BASE_TIME + timedelta(seconds=3), parent_message_id=user.id,
         supersedes_message_id=old_answer.id,
@@ -213,6 +216,7 @@ def test_failed_turn_preparation_preserves_active_branch_and_creates_nothing() -
     repository.create(old_answer)
     replacement = Message(
         id=UUID(int=213), conversation_id=conversation_id, owner_id=OWNER,
+        scope_version=2,
         role=MessageRole.ASSISTANT, content="", status=MessageStatus.STREAMING,
         created_at=BASE_TIME + timedelta(seconds=3), parent_message_id=user.id,
         supersedes_message_id=old_answer.id,

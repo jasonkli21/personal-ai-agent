@@ -188,8 +188,8 @@ def edit_and_retry_message(
 
 
 def _request_id(request: Request) -> str:
-    """Use a supplied correlation ID or create one without exposing request content."""
-    return request.headers.get("X-Request-ID") or str(uuid4())
+    """Use the authenticated middleware's bounded correlation ID."""
+    return getattr(request.state, "correlation_id", None) or str(uuid4())
 
 
 def _inspection_enabled(settings: Annotated[Settings, Depends(get_settings)]) -> Settings:

@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator
+
+from personal_ai.auth.scope import ApplicationScopedRecord
 
 MAX_MESSAGE_CONTENT_CHARS = 20_000
 
@@ -25,7 +27,7 @@ class MessageStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
-class TimestampedRecord(BaseModel):
+class TimestampedRecord(ApplicationScopedRecord):
     """Require timezone-aware timestamps and normalize them to UTC."""
 
     model_config = ConfigDict(extra="forbid")

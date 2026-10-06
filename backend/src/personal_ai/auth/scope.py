@@ -1,0 +1,235 @@
+"""Validated application/workspace scope for owner-scoped Personal AI data."""
+
+from __future__ import annotations
+
+import json
+import re
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from personal_ai.auth.contracts import AuthenticatedPrincipal
+
+STANDALONE_APPLICATION_ID = "personal_ai"
+CANONICAL_APPLICATION_IDS = frozenset(
+    {"personal_ai", "travel", "shopping", "finance", "health"}
+)
+ApplicationId = Literal["personal_ai", "travel", "shopping", "finance", "health"]
+_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+_CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
+
+
+class ApplicationScope(BaseModel):
+    """The namespace of a request; this never grants owner or workspace access."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    application_id: ApplicationId = STANDALONE_APPLICATION_ID
+    workspace_id: str | None = None
+
+    @field_validator("workspace_id")
+    @classmethod
+    def valid_workspace_id(cls, value: str | None) -> str | None:
+        if value is not None and not _ID_PATTERN.fullmatch(value):
+            raise ValueError("workspace_id_invalid")
+        return value
+
+
+class RequestScope(ApplicationScope):
+    """A validated request envelope with server-derived owner identity."""
+
+    owner_id: str = Field(min_length=1, max_length=200)
+    request_id: str = Field(min_length=1, max_length=100)
+    capabilities: tuple[str, ...] = Field(default=(), max_length=16)
+    client_context: dict[str, str | int | float | bool | None] = Field(
+        default_factory=dict, max_length=32
+    )
+
+    @field_validator("capabilities")
+    @classmethod
+    def valid_capabilities(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(values)) != len(values) or any(
+            not _CAPABILITY_PATTERN.fullmatch(value) for value in values
+        ):
+            raise ValueError("capabilities_invalid")
+        return values
+
+    @field_validator("client_context")
+    @classmethod
+    def valid_client_context(cls, values):
+        if any(not _ID_PATTERN.fullmatch(key) for key in values):
+            raise ValueError("client_context_invalid")
+        return values
+
+    @model_validator(mode="after")
+    def validate_payload_size(self):
+        if len(json.dumps(self.client_context, separators=(",", ":"))) > 4096:
+            raise ValueError("client_context_too_large")
+        return self
+
+
+class ApplicationScopedRecord(BaseModel):
+    """Persisted scope envelope.
+
+    Records written before application scoping omitted these fields and are
+    decoded as v1 standalone records. New repository writes use v2 and always
+    serialize both application and nullable workspace IDs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    application_id: ApplicationId = STANDALONE_APPLICATION_ID
+    workspace_id: str | None = None
+    scope_version: Literal[1, 2] = 1
+
+    @field_validator("workspace_id")
+    @classmethod
+    def valid_workspace_id(cls, value: str | None) -> str | None:
+        if value is not None and not _ID_PATTERN.fullmatch(value):
+            raise ValueError("workspace_id_invalid")
+        return value
+
+
+class WorkspaceAuthorizer(Protocol):
+    """Server-side workspace membership check; client context is never authority."""
+
+    def is_member(
+        self, principal: AuthenticatedPrincipal, application_id: str, workspace_id: str
+    ) -> bool: ...
+
+
+class DenyWorkspaceAuthorizer:
+    """Fail-closed default until an application supplies membership authority."""
+
+    def is_member(self, principal: AuthenticatedPrincipal, application_id: str, workspace_id: str) -> bool:
+        del principal, application_id, workspace_id
+        return False
+
+
+_request_scope: ContextVar[RequestScope | None] = ContextVar("personal_ai_request_scope", default=None)
+_application_scope: ContextVar[ApplicationScope | None] = ContextVar(
+    "personal_ai_application_scope", default=None
+)
+_DEFAULT_APPLICATION_SCOPE = ApplicationScope()
+
+
+def current_request_scope() -> RequestScope | None:
+    return _request_scope.get()
+
+
+def current_application_scope() -> ApplicationScope:
+    return _application_scope.get() or _DEFAULT_APPLICATION_SCOPE
+
+
+def scope_key(scope: ApplicationScope | None = None) -> tuple[str, str | None]:
+    scope = scope or current_application_scope()
+    return scope.application_id, scope.workspace_id
+
+
+def scoped_identifier(identifier, scope: ApplicationScope | None = None) -> str:
+    """Stable document-key partition that preserves legacy standalone IDs."""
+    scope = scope or current_application_scope()
+    if scope.application_id == STANDALONE_APPLICATION_ID and scope.workspace_id is None:
+        return str(identifier)
+    return f"{scope.application_id}__{scope.workspace_id or 'no-workspace'}__{identifier}"
+
+
+def bind_request_scope(scope: RequestScope):
+    """Bind scope for repositories and model builders during one ASGI request."""
+    return (_request_scope.set(scope), _application_scope.set(scope))
+
+
+def bind_application_scope(scope: ApplicationScope):
+    """Bind only the durable namespace while a worker resolves a scoped job."""
+    return _application_scope.set(scope)
+
+
+def reset_request_scope(token) -> None:
+    request_token, application_token = token
+    _request_scope.reset(request_token)
+    _application_scope.reset(application_token)
+
+
+def reset_application_scope(token) -> None:
+    _application_scope.reset(token)
+
+
+@contextmanager
+def application_scope_context(scope: ApplicationScope):
+    token = bind_application_scope(scope)
+    try:
+        yield
+    finally:
+        reset_application_scope(token)
+
+
+def scope_matches(record, scope: ApplicationScope | None = None) -> bool:
+    """Treat records without scope fields as legacy standalone/null records."""
+    scope = scope or current_application_scope()
+    return (
+        getattr(record, "application_id", STANDALONE_APPLICATION_ID) == scope.application_id
+        and getattr(record, "workspace_id", None) == scope.workspace_id
+    )
+
+
+def data_scope_matches(data: dict, scope: ApplicationScope | None = None) -> bool:
+    """Scope check for raw Firestore dictionaries before model hydration."""
+    scope = scope or current_application_scope()
+    return (
+        data.get("application_id", STANDALONE_APPLICATION_ID) == scope.application_id
+        and data.get("workspace_id") == scope.workspace_id
+    )
+
+
+def scoped_record(record, scope: ApplicationScope | None = None):
+    """Apply current scope recursively before a newly created aggregate is stored."""
+    scope = scope or current_application_scope()
+
+    def apply(value):
+        if isinstance(value, BaseModel):
+            updates = {}
+            for name in type(value).model_fields:
+                child = getattr(value, name)
+                mapped = apply(child)
+                if mapped is not child:
+                    updates[name] = mapped
+            if isinstance(value, ApplicationScopedRecord):
+                updates.update(
+                    application_id=scope.application_id,
+                    workspace_id=scope.workspace_id,
+                    scope_version=2,
+                )
+            return value.model_copy(update=updates) if updates else value
+        if isinstance(value, tuple):
+            mapped = tuple(apply(item) for item in value)
+            return mapped if any(a is not b for a, b in zip(value, mapped, strict=True)) else value
+        if isinstance(value, list):
+            mapped = [apply(item) for item in value]
+            return mapped if any(a is not b for a, b in zip(value, mapped, strict=True)) else value
+        if isinstance(value, dict):
+            mapped = {key: apply(item) for key, item in value.items()}
+            return mapped if any(mapped[key] is not value[key] for key in value) else value
+        return value
+
+    return apply(record)
+
+
+def scope_query(query, scope: ApplicationScope | None = None):
+    """Add Firestore prefilters for non-legacy namespaces.
+
+    Standalone compatibility queries intentionally retain their existing
+    owner-prefilter so absent-field v1 records remain readable; callers must
+    apply ``scope_matches`` to each result before returning it.
+    """
+    scope = scope or current_application_scope()
+    if scope.application_id == STANDALONE_APPLICATION_ID and scope.workspace_id is None:
+        return query
+    from google.cloud import firestore
+
+    return (
+        query.where(filter=firestore.FieldFilter("scope_version", "==", 2))
+        .where(filter=firestore.FieldFilter("application_id", "==", scope.application_id))
+        .where(filter=firestore.FieldFilter("workspace_id", "==", scope.workspace_id))
+    )

@@ -10,6 +10,7 @@ from pydantic import Field, model_validator
 
 from personal_ai.agents.research.contracts import ResearchRecord
 from personal_ai.decisions.contracts import Candidate, Constraint, Preference
+from personal_ai.evidence.contracts import ScopedResearchRecord
 
 POLICY_VERSION = "iterative-research-policy-v1"
 BUDGET_VERSION = "evidence-quality-budget-v1"
@@ -98,7 +99,7 @@ class EvidenceGapClass(StrEnum):
     CITATION_SUPPORT = "citation_support"
 
 
-class BudgetSnapshot(ResearchRecord):
+class BudgetSnapshot(ScopedResearchRecord):
     schema_version: Literal["evidence-quality-budget-v1"] = BUDGET_VERSION
     max_iterations: int = Field(ge=1, le=5)
     max_queries: int = Field(ge=1, le=3)
@@ -140,7 +141,7 @@ class BudgetSnapshot(ResearchRecord):
         return self
 
 
-class BudgetUsage(ResearchRecord):
+class BudgetUsage(ScopedResearchRecord):
     iterations: int = Field(default=0, ge=0)
     queries: int = Field(default=0, ge=0)
     sources: int = Field(default=0, ge=0)
@@ -150,7 +151,7 @@ class BudgetUsage(ResearchRecord):
     allowed_domains: int = Field(default=0, ge=0)
 
 
-class BudgetLedgerEntry(ResearchRecord):
+class BudgetLedgerEntry(ScopedResearchRecord):
     id: UUID
     run_id: UUID
     iteration_id: UUID | None = None
@@ -180,7 +181,7 @@ class BudgetLedgerEntry(ResearchRecord):
         return self
 
 
-class IterationRecord(ResearchRecord):
+class IterationRecord(ScopedResearchRecord):
     id: UUID
     run_id: UUID
     sequence: int = Field(ge=0, le=4)
@@ -202,7 +203,7 @@ class IterationRecord(ResearchRecord):
         return self
 
 
-class EvidenceGap(ResearchRecord):
+class EvidenceGap(ScopedResearchRecord):
     id: UUID
     run_id: UUID
     assessment_id: UUID
@@ -222,7 +223,7 @@ class EvidenceGap(ResearchRecord):
     ]
 
 
-class FollowupProposal(ResearchRecord):
+class FollowupProposal(ScopedResearchRecord):
     """A constrained template recommendation; it never carries planner text."""
 
     schema_version: Literal["iterative-followup-v1"] = "iterative-followup-v1"
@@ -251,7 +252,7 @@ class FollowupProposal(ResearchRecord):
         return self
 
 
-class SufficiencyAssessment(ResearchRecord):
+class SufficiencyAssessment(ScopedResearchRecord):
     id: UUID
     run_id: UUID
     iteration_id: UUID
@@ -266,7 +267,7 @@ class SufficiencyAssessment(ResearchRecord):
     created_at: datetime
 
 
-class SafeEventPayload(ResearchRecord):
+class SafeEventPayload(ScopedResearchRecord):
     iteration: int | None = Field(default=None, ge=0, le=4)
     query_count: int | None = Field(default=None, ge=0, le=3)
     source_count: int | None = Field(default=None, ge=0, le=12)
@@ -280,7 +281,7 @@ class SafeEventPayload(ResearchRecord):
     ] | None = None
 
 
-class RunEvent(ResearchRecord):
+class RunEvent(ScopedResearchRecord):
     id: UUID
     run_id: UUID
     sequence: int = Field(ge=0, le=127)
@@ -293,7 +294,7 @@ class RunEvent(ResearchRecord):
     occurred_at: datetime
 
 
-class ResearchRun(ResearchRecord):
+class ResearchRun(ScopedResearchRecord):
     schema_version: Literal["iterative-research-v1"] = "iterative-research-v1"
     id: UUID
     owner_id: str = Field(min_length=1, max_length=200)

@@ -68,6 +68,7 @@ def build_fixture(fixture: dict) -> tuple[list[Message], Message, list[Message]]
                 id=uuid5(conversation, f"{i}-{role}"),
                 conversation_id=conversation,
                 owner_id="local",
+                scope_version=2,
                 role=role,
                 content=text,
                 status=MessageStatus.COMPLETED,
@@ -80,6 +81,7 @@ def build_fixture(fixture: dict) -> tuple[list[Message], Message, list[Message]]
         id=uuid5(conversation, "pending"),
         conversation_id=conversation,
         owner_id="local",
+        scope_version=2,
         role=MessageRole.USER,
         content=" ".join(["question"] * fixture.get("pending_words", 5)),
         status=MessageStatus.COMPLETED,
@@ -185,7 +187,8 @@ def rewrite_fixture_branch(active, pending, summaries):
     conversations = InMemoryConversationRepository()
     messages = InMemoryMessageRepository(conversations)
     conversations.create(Conversation(
-        id=pending.conversation_id, owner_id="local", title="Synthetic branch fixture",
+        id=pending.conversation_id, owner_id="local", scope_version=2,
+        title="Synthetic branch fixture",
         created_at=active[0].created_at, updated_at=active[-1].created_at,
     ))
     original_ids = {

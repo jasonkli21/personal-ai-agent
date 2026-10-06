@@ -11,6 +11,11 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from personal_ai.auth.scope import (
+    STANDALONE_APPLICATION_ID,
+    ApplicationScopedRecord,
+    current_application_scope,
+)
 from personal_ai.entities import Message
 
 MemoryType = Literal[
@@ -20,6 +25,7 @@ MemoryType = Literal[
 LifecycleEventType = Literal[
     "consolidated", "superseded", "forgotten", "reactivated", "retrieved", "review_required"
 ]
+_SCOPE_UNSET = object()
 
 
 def normalize(content: str) -> str:
@@ -58,7 +64,7 @@ class MemoryCandidate(BaseModel):
         return value
 
 
-class Memory(MemoryCandidate):
+class Memory(MemoryCandidate, ApplicationScopedRecord):
     id: UUID
     owner_id: str = Field(min_length=1, max_length=200)
     normalized_content: str = Field(min_length=1, max_length=1000)
@@ -109,7 +115,7 @@ class DerivedMemorySource(BaseModel):
     excerpt: str = Field(min_length=1, max_length=1000)
 
 
-class DerivedMemory(BaseModel):
+class DerivedMemory(ApplicationScopedRecord):
     """Explicit schema for a bounded multi-source, extractive memory."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -159,7 +165,10 @@ class DerivedMemory(BaseModel):
             raise ValueError("source_coverage_invalid")
         if self.source_memory_ids != tuple(sorted(self.source_memory_ids, key=str)):
             raise ValueError("source_order_invalid")
-        key = sha256("\0".join([self.owner_id, self.derivation_policy_version] + [
+        namespace = [] if self.application_id == STANDALONE_APPLICATION_ID and self.workspace_id is None else [
+            self.application_id, self.workspace_id or ""
+        ]
+        key = sha256("\0".join([self.owner_id, *namespace, self.derivation_policy_version] + [
             f"{item.memory_id}:{item.source_fingerprint}" for item in self.sources
         ]).encode()).hexdigest()
         if self.source_set_identity != key or self.id != uuid5(NAMESPACE_URL, "personal-ai-derived-memory:" + key):
@@ -171,10 +180,25 @@ class DerivedMemory(BaseModel):
         return self
 
 
-def identity(owner: str, fingerprint: str, candidate: MemoryCandidate) -> UUID:
+def identity(
+    owner: str,
+    fingerprint: str,
+    candidate: MemoryCandidate,
+    *,
+    application_id: str | None = None,
+    workspace_id: str | None | object = _SCOPE_UNSET,
+) -> UUID:
+    scope = current_application_scope()
+    application_id = application_id or scope.application_id
+    if workspace_id is _SCOPE_UNSET:
+        workspace_id = scope.workspace_id if application_id == scope.application_id else None
+    namespace = (
+        [] if application_id == STANDALONE_APPLICATION_ID and workspace_id is None
+        else [application_id, workspace_id or ""]
+    )
     key = sha256(
         (
-            owner
+            "\0".join([owner, *namespace])
             + "\0"
             + fingerprint
             + "\0"

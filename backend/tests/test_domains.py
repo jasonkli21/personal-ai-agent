@@ -329,6 +329,7 @@ def test_lookup_repository_fences_completion_and_records_completed_result():
     reservation = DomainLookupReservation(
         id=uuid4(),
         owner_id="local",
+        scope_version=2,
         domain_id="travel",
         idempotency_key=uuid4(),
         request_fingerprint="a" * 64,

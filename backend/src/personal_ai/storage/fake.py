@@ -7,6 +7,7 @@ from datetime import datetime
 from threading import RLock
 from uuid import UUID
 
+from personal_ai.auth.scope import scope_matches, scoped_record
 from personal_ai.entities import Conversation, Message, MessageStatus
 from personal_ai.storage.branches import active_path, descendant_ids, effective_message
 from personal_ai.storage.errors import (
@@ -24,14 +25,17 @@ class InMemoryConversationRepository:
         self._lock = RLock()
 
     def create(self, conversation: Conversation) -> Conversation:
+        conversation = scoped_record(conversation)
         with self._lock:
+            if conversation.id in self._conversations:
+                raise ConversationConflictError("conversation already exists")
             self._conversations[conversation.id] = conversation
         return conversation
 
     def get(self, *, owner_id: str, conversation_id: UUID) -> Conversation:
         with self._lock:
             conversation = self._conversations.get(conversation_id)
-            if conversation is None or conversation.owner_id != owner_id:
+            if conversation is None or conversation.owner_id != owner_id or not scope_matches(conversation):
                 raise ResourceNotFoundError("conversation not found")
             return conversation
 
@@ -40,7 +44,10 @@ class InMemoryConversationRepository:
             return []
         with self._lock:
             return sorted(
-                (item for item in self._conversations.values() if item.owner_id == owner_id),
+                (
+                    item for item in self._conversations.values()
+                    if item.owner_id == owner_id and scope_matches(item)
+                ),
                 key=lambda item: (item.updated_at, str(item.id)),
                 reverse=True,
             )[:limit]
@@ -48,6 +55,8 @@ class InMemoryConversationRepository:
     def update(self, conversation: Conversation) -> Conversation:
         with self._lock:
             self.get(owner_id=conversation.owner_id, conversation_id=conversation.id)
+            if not scope_matches(conversation):
+                raise ResourceNotFoundError("conversation not found")
             self._conversations[conversation.id] = conversation
         return conversation
 
@@ -72,6 +81,7 @@ class InMemoryMessageRepository:
         self._mutation_lock = RLock()
 
     def create(self, message: Message) -> Message:
+        message = scoped_record(message)
         with self._mutation_lock:
             if message.id in self._messages:
                 raise ConversationConflictError("message already exists")
@@ -108,6 +118,7 @@ class InMemoryMessageRepository:
                     item
                     for item in self._messages.values()
                     if item.owner_id == owner_id and item.conversation_id == conversation_id
+                    and scope_matches(item)
                 ]
             )
             stale = [
@@ -147,11 +158,13 @@ class InMemoryMessageRepository:
         complete_preparation: bool = False,
     ) -> list[Message]:
         """Atomically validate the active snapshot and append a complete turn."""
+        messages = tuple(scoped_record(item) for item in messages)
         with self._mutation_lock:
             stored = [
                 item
                 for item in self._messages.values()
                 if item.owner_id == owner_id and item.conversation_id == conversation_id
+                and scope_matches(item)
             ]
             active = active_path(stored)
             if [item.id for item in active] != list(expected_active_ids):
@@ -204,9 +217,11 @@ class InMemoryMessageRepository:
                 message is None
                 or message.owner_id != owner_id
                 or message.conversation_id != conversation_id
+                or not scope_matches(message)
             ):
                 raise ResourceNotFoundError("message not found")
-            return effective_message(message, self._messages)
+            scoped_messages = {key: value for key, value in self._messages.items() if scope_matches(value)}
+            return effective_message(message, scoped_messages)
 
     def list_active(self, *, owner_id: str, conversation_id: UUID, timeout: float | None = None) -> list[Message]:
         with self._mutation_lock:
@@ -214,6 +229,7 @@ class InMemoryMessageRepository:
                 message
                 for message in self._messages.values()
                 if message.owner_id == owner_id and message.conversation_id == conversation_id
+                and scope_matches(message)
             ]
             return active_path(messages)
 
@@ -260,14 +276,17 @@ class InMemoryMessageRepository:
         with self._mutation_lock:
             self.get(owner_id=owner_id, conversation_id=conversation_id, message_id=message_id)
             self._validate_conversation(owner_id, conversation_id)
-            descendants = descendant_ids(list(self._messages.values()), message_id)
+            scoped_messages = [item for item in self._messages.values() if scope_matches(item)]
+            descendants = descendant_ids(scoped_messages, message_id)
             replaced = []
             for identifier in descendants:
                 message = self._messages[identifier]
                 if (
                     message.owner_id == owner_id
                     and message.conversation_id == conversation_id
-                    and effective_message(message, self._messages).status is not MessageStatus.SUPERSEDED
+                    and effective_message(message, {
+                        key: value for key, value in self._messages.items() if scope_matches(value)
+                    }).status is not MessageStatus.SUPERSEDED
                 ):
                     updated = message.model_copy(update={"status": MessageStatus.SUPERSEDED})
                     replaced.append(updated)

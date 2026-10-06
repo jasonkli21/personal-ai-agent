@@ -10,8 +10,9 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from personal_ai.auth.scope import ApplicationScopedRecord
 from personal_ai.memory.contracts import DerivedMemory, LifecycleEventType, Memory, ScoredMemory
 
 Actor = Literal["system", "developer_test"]
@@ -20,7 +21,7 @@ JobType = Literal["consolidation", "maintenance"]
 JobStatus = Literal["pending", "leased", "retry", "completed", "terminal"]
 
 
-class MemoryLifecycleEvent(BaseModel):
+class MemoryLifecycleEvent(ApplicationScopedRecord):
     """Immutable, replay-safe record of one lifecycle decision."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -47,7 +48,7 @@ class MemoryLifecycleEvent(BaseModel):
         return value.astimezone(UTC)
 
 
-class MemoryLifecycleState(BaseModel):
+class MemoryLifecycleState(ApplicationScopedRecord):
     """Rebuildable owner-scoped projection; source Memory documents stay immutable."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -75,7 +76,7 @@ class MemoryLifecycleState(BaseModel):
         return value
 
 
-class MemoryLifecycleOutcome(BaseModel):
+class MemoryLifecycleOutcome(ApplicationScopedRecord):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     status: Literal["applied", "replayed", "conflict"]
@@ -84,7 +85,7 @@ class MemoryLifecycleOutcome(BaseModel):
     reason: str | None = None
 
 
-class MemoryJob(BaseModel):
+class MemoryJob(ApplicationScopedRecord):
     """Durable work intent. Pub/Sub messages contain only ID and schema version."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)

@@ -132,6 +132,7 @@ def test_job_dedupe_retry_and_expired_lease_fencing():
     job = MemoryJob(
         id=job_idempotency_id(key),
         owner_id=memory.owner_id,
+        scope_version=2,
         job_type="maintenance",
         candidate_memory_ids=(memory.id,),
         policy_version="score-v1",
@@ -167,6 +168,7 @@ def test_expired_worker_lease_cannot_apply_a_lifecycle_event():
     job = MemoryJob(
         id=job_idempotency_id(key),
         owner_id=memory.owner_id,
+        scope_version=2,
         job_type="maintenance",
         candidate_memory_ids=(memory.id,),
         policy_version="score-v1",
@@ -201,6 +203,7 @@ def test_invalid_job_lease_and_wrong_owner_are_rejected():
         MemoryJob(
             id=job_idempotency_id("bad"),
             owner_id=memory.owner_id,
+            scope_version=2,
             job_type="maintenance",
             candidate_memory_ids=(),
             policy_version="score-v1",
@@ -215,6 +218,7 @@ def test_invalid_job_lease_and_wrong_owner_are_rejected():
     job = MemoryJob(
         id=job_idempotency_id(key),
         owner_id=memory.owner_id,
+        scope_version=2,
         job_type="maintenance",
         candidate_memory_ids=(),
         policy_version="score-v1",

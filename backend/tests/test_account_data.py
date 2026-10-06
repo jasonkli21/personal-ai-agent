@@ -138,6 +138,27 @@ def test_export_enforces_record_and_complete_envelope_byte_limits(repository):
         repo.export_owner("owner", max_records=2, max_bytes=50)
 
 
+def test_standalone_export_scans_past_other_application_records(repository):
+    repo, client = repository
+    client.data["memories"] = {
+        f"{index:04d}": {
+            "owner_id": "owner",
+            "application_id": "travel",
+            "workspace_id": None,
+            "scope_version": 2,
+        }
+        for index in range(260)
+    }
+    client.data["memories"]["zzzz-legacy"] = {"owner_id": "owner", "content": "legacy"}
+
+    result = repo.export_owner("owner", max_records=1, max_bytes=2000)
+
+    assert result["application_id"] == "personal_ai"
+    assert [item["document_id"] for item in result["collections"]["memories"]] == [
+        "zzzz-legacy"
+    ]
+
+
 def test_deletion_repository_replays_preserve_audit_and_enforce_owner_and_state(repository):
     repo, client = repository
     key = uuid4()

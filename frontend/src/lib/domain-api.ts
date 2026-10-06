@@ -1,4 +1,4 @@
-import { ApiError } from "./api";
+import { ApiError, applicationScopeHeaders } from "./api";
 import { authenticatedFetch } from "./auth";
 
 export type DomainId = "travel" | "shopping";
@@ -217,7 +217,7 @@ async function response(domain: DomainId, path: string, init?: RequestInit) {
   const result = await authenticatedFetch(`/api/domains/${domain}${path}`, {
     ...init,
     cache: "no-store",
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { "Content-Type": "application/json", ...applicationScopeHeaders(), ...init?.headers },
   });
   if (!result.ok) {
     const error = await result.json().catch(() => ({}));

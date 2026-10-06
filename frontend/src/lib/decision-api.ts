@@ -1,3 +1,4 @@
+import { applicationScopeHeaders, type ApplicationScopeRequest } from "./api";
 import { authenticatedFetch } from "./auth";
 
 export type EvidenceReference = {
@@ -83,24 +84,28 @@ export type DecisionInspection = {
   evidence_refs: EvidenceReference[];
 };
 
-async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await authenticatedFetch(path, { ...init, cache: "no-store" });
+async function getJson<T>(path: string, init?: RequestInit, scope?: ApplicationScopeRequest): Promise<T> {
+  const response = await authenticatedFetch(path, {
+    ...init,
+    cache: "no-store",
+    headers: { ...applicationScopeHeaders(scope), ...init?.headers },
+  });
   if (!response.ok) throw new Error("Decision details are unavailable.");
   return response.json() as Promise<T>;
 }
 
 export const decisionApi = {
-  create(request: unknown) {
+  create(request: unknown, scope?: ApplicationScopeRequest) {
     return getJson<DecisionResult>("/api/decisions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),
-    });
+    }, scope);
   },
-  get(id: string) {
-    return getJson<DecisionResult>(`/api/decisions/${encodeURIComponent(id)}`);
+  get(id: string, scope?: ApplicationScopeRequest) {
+    return getJson<DecisionResult>(`/api/decisions/${encodeURIComponent(id)}`, undefined, scope);
   },
-  inspect(id: string) {
-    return getJson<DecisionInspection>(`/api/decisions/${encodeURIComponent(id)}/inspection`);
+  inspect(id: string, scope?: ApplicationScopeRequest) {
+    return getJson<DecisionInspection>(`/api/decisions/${encodeURIComponent(id)}/inspection`, undefined, scope);
   },
 };

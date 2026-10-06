@@ -86,6 +86,41 @@ def test_create_list_and_get_empty_conversation(client: TestClient) -> None:
     assert detail.json() == {"conversation": conversation, "messages": []}
 
 
+def test_application_scope_isolated_and_client_owner_context_is_not_authority(
+    client: TestClient,
+) -> None:
+    standalone_response = client.post("/v1/conversations", json={})
+    travel_response = client.post(
+        "/v1/conversations",
+        json={},
+        headers={
+            "X-Application-ID": "travel",
+            "X-Client-Context": '{"owner_id":"forged-owner"}',
+        },
+    )
+
+    assert standalone_response.status_code == travel_response.status_code == 201
+    standalone = standalone_response.json()
+    travel = travel_response.json()
+    assert standalone["owner_id"] == travel["owner_id"] == "local"
+    assert standalone["application_id"] == "personal_ai"
+    assert travel["application_id"] == "travel"
+    assert client.get("/v1/conversations").json()["conversations"] == [standalone]
+    assert client.get(f"/v1/conversations/{travel['id']}").status_code == 404
+    assert client.get(
+        f"/v1/conversations/{travel['id']}", headers={"X-Application-ID": "travel"}
+    ).status_code == 200
+
+
+def test_workspace_scope_fails_closed_without_membership_authority(client: TestClient) -> None:
+    response = client.post(
+        "/v1/conversations", json={}, headers={"X-Workspace-ID": "team-a"}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "workspace_not_authorized"
+
+
 def test_get_returns_only_active_path(client: TestClient) -> None:
     """The detail route does not expose superseded branch history."""
     conversations = app.dependency_overrides[get_conversation_repository]()

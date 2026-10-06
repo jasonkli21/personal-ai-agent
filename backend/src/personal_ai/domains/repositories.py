@@ -5,6 +5,7 @@ from threading import RLock
 from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from personal_ai.auth.scope import scope_matches, scoped_identifier, scoped_record
 from personal_ai.domains.contracts import DomainComparisonResult, DomainLookupReservation
 from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
 
@@ -42,7 +43,14 @@ class DomainRepository(Protocol):
 
 
 def lookup_reservation_id(owner_id: str, domain_id: str, idempotency_key: UUID) -> UUID:
-    return uuid5(NAMESPACE_URL, f"domain-lookup-v1:{owner_id}:{domain_id}:{idempotency_key}")
+    from personal_ai.auth.scope import STANDALONE_APPLICATION_ID, current_application_scope
+
+    scope = current_application_scope()
+    namespace = (
+        "" if scope.application_id == STANDALONE_APPLICATION_ID and scope.workspace_id is None
+        else f":{scope.application_id}:{scope.workspace_id or ''}"
+    )
+    return uuid5(NAMESPACE_URL, f"domain-lookup-v1:{owner_id}{namespace}:{domain_id}:{idempotency_key}")
 
 
 def _updated_reservation(reservation: DomainLookupReservation, **updates):
@@ -60,9 +68,12 @@ class InMemoryDomainRepository:
         self.lock = RLock()
 
     def create(self, result):
+        result = scoped_record(result)
         with self.lock:
             existing = self.results.get(result.comparison.id)
             if existing is not None:
+                if not scope_matches(existing):
+                    raise ResourceNotFoundError("domain comparison not found")
                 if (
                     existing.comparison.owner_id != result.comparison.owner_id
                     or existing.comparison.domain_id != result.comparison.domain_id
@@ -76,14 +87,17 @@ class InMemoryDomainRepository:
     def get(self, owner_id, comparison_id):
         with self.lock:
             result = self.results.get(comparison_id)
-            if result is None or result.comparison.owner_id != owner_id:
+            if result is None or result.comparison.owner_id != owner_id or not scope_matches(result):
                 raise ResourceNotFoundError("domain comparison not found")
             return result
 
     def reserve_lookup(self, reservation):
+        reservation = scoped_record(reservation)
         with self.lock:
             existing = self.lookups.get(reservation.id)
             if existing is not None:
+                if not scope_matches(existing):
+                    raise DomainRepositoryError("domain_lookup_reservation_conflict")
                 if (
                     existing.owner_id != reservation.owner_id
                     or existing.domain_id != reservation.domain_id
@@ -106,7 +120,7 @@ class InMemoryDomainRepository:
     ):
         with self.lock:
             current = self.lookups.get(reservation_id)
-            if current is None or current.fence_token != fence_token:
+            if current is None or not scope_matches(current) or current.fence_token != fence_token:
                 raise DomainRepositoryError("domain_lookup_fence_lost")
             if current.state != "reserved":
                 return current
@@ -124,7 +138,7 @@ class InMemoryDomainRepository:
     def complete_lookup(self, reservation_id, fence_token, result):
         with self.lock:
             current = self.lookups.get(reservation_id)
-            if current is None:
+            if current is None or not scope_matches(current):
                 raise DomainRepositoryError("domain_lookup_reservation_missing")
             if (
                 current.owner_id != result.comparison.owner_id
@@ -185,9 +199,10 @@ class FirestoreDomainRepository:
         from personal_ai.domains.contracts import DomainRegistration
         from personal_ai.storage.transactions import bounded_transaction
 
+        result = scoped_record(result)
         snapshot = result.comparison
-        comparison_ref = self.comparisons.document(str(snapshot.id))
-        reservation_ref = self.lookups.document(str(reservation_id)) if reservation_id else None
+        comparison_ref = self.comparisons.document(scoped_identifier(snapshot.id))
+        reservation_ref = self.lookups.document(scoped_identifier(reservation_id)) if reservation_id else None
         registration = result.registration
         registration_ref = self.registrations.document(str(uuid5(
             NAMESPACE_URL,
@@ -195,13 +210,13 @@ class FirestoreDomainRepository:
             f"{registration.feature_policy_version}:{registration.source_policy_version}",
         )))
         claim_refs = [
-            (item, self.claims.document(str(uuid5(
+            (item, self.claims.document(scoped_identifier(uuid5(
                 NAMESPACE_URL, f"domain-claim-v1:{item.domain_id}:{item.claim_id}"
             ))) )
             for item in result.domain_claims
         ]
         observation_refs = [
-            (item, self.observations.document(str(item.source_observation_id)))
+            (item, self.observations.document(scoped_identifier(item.source_observation_id)))
             for item in result.provider_observations
         ]
 
@@ -215,6 +230,7 @@ class FirestoreDomainRepository:
                 if (
                     current_reservation.owner_id != snapshot.owner_id
                     or current_reservation.domain_id != snapshot.domain_id
+                    or not scope_matches(current_reservation)
                 ):
                     raise DomainRepositoryError("domain_lookup_result_conflict")
                 if current_reservation.state == "completed":
@@ -228,6 +244,7 @@ class FirestoreDomainRepository:
                         current_reservation.comparison_id != snapshot.id
                         or saved.comparison.owner_id != snapshot.owner_id
                         or saved.comparison.domain_id != snapshot.domain_id
+                        or not scope_matches(saved)
                     ):
                         raise DomainRepositoryError("domain_lookup_result_conflict")
                     return saved
@@ -246,6 +263,7 @@ class FirestoreDomainRepository:
                     existing.comparison.owner_id != snapshot.owner_id
                     or existing.comparison.domain_id != snapshot.domain_id
                     or existing.comparison.decision_id != snapshot.decision_id
+                    or not scope_matches(existing)
                 ):
                     raise DomainRepositoryError("domain_comparison_conflict")
                 existing_result = existing
@@ -291,7 +309,8 @@ class FirestoreDomainRepository:
     def reserve_lookup(self, reservation):
         from personal_ai.storage.transactions import bounded_transaction
 
-        reference = self.lookups.document(str(reservation.id))
+        reservation = scoped_record(reservation)
+        reference = self.lookups.document(scoped_identifier(reservation.id))
 
         def operation(transaction, timeout):
             del timeout
@@ -302,6 +321,7 @@ class FirestoreDomainRepository:
                     existing.owner_id != reservation.owner_id
                     or existing.domain_id != reservation.domain_id
                     or existing.idempotency_key != reservation.idempotency_key
+                    or not scope_matches(existing)
                 ):
                     raise DomainRepositoryError("domain_lookup_reservation_conflict")
                 return existing
@@ -322,6 +342,7 @@ class FirestoreDomainRepository:
                 existing.owner_id != reservation.owner_id
                 or existing.domain_id != reservation.domain_id
                 or existing.idempotency_key != reservation.idempotency_key
+                or not scope_matches(existing)
             ):
                 raise DomainRepositoryError("domain_lookup_reservation_conflict")
             return existing
@@ -338,7 +359,7 @@ class FirestoreDomainRepository:
     ):
         from personal_ai.storage.transactions import bounded_transaction
 
-        reference = self.lookups.document(str(reservation_id))
+        reference = self.lookups.document(scoped_identifier(reservation_id))
 
         def operation(transaction, timeout):
             del timeout
@@ -346,6 +367,8 @@ class FirestoreDomainRepository:
             if snapshot is None or not snapshot.exists:
                 raise DomainRepositoryError("domain_lookup_reservation_missing")
             current = DomainLookupReservation.model_validate(snapshot.to_dict())
+            if not scope_matches(current):
+                raise DomainRepositoryError("domain_lookup_reservation_missing")
             if current.fence_token != fence_token:
                 raise DomainRepositoryError("domain_lookup_fence_lost")
             if current.state != "reserved":
@@ -367,11 +390,11 @@ class FirestoreDomainRepository:
         from personal_ai.domains.contracts import DomainComparisonResult
 
         def operation():
-            document = self.comparisons.document(str(comparison_id)).get(retry=None, timeout=5)
+            document = self.comparisons.document(scoped_identifier(comparison_id)).get(retry=None, timeout=5)
             if not document.exists:
                 raise ResourceNotFoundError("domain comparison not found")
             result = DomainComparisonResult.model_validate(document.to_dict())
-            if result.comparison.owner_id != owner_id:
+            if result.comparison.owner_id != owner_id or not scope_matches(result):
                 raise ResourceNotFoundError("domain comparison not found")
             return result
 

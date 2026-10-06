@@ -6,6 +6,7 @@ from uuid import UUID
 from google.api_core.exceptions import GoogleAPICallError, RetryError
 from google.cloud import firestore
 
+from personal_ai.auth.scope import scope_matches, scope_query, scoped_record
 from personal_ai.decisions.contracts import (
     CandidateEvaluation,
     DecisionResult,
@@ -53,9 +54,10 @@ class FirestoreDecisionRepository:
                     .where(filter=firestore.FieldFilter("status", "==", "active"))
                     .limit(limit + 1)
                 )
+                query = scope_query(query)
                 records.extend(
-                    CanonicalEntity.model_validate(item.to_dict())
-                    for item in query.stream(retry=None, timeout=5)
+                    entity for item in query.stream(retry=None, timeout=5)
+                    if scope_matches(entity := CanonicalEntity.model_validate(item.to_dict()))
                 )
             return tuple(sorted({item.id: item for item in records}.values(), key=lambda item: str(item.id))[: limit + 1])
 
@@ -73,12 +75,13 @@ class FirestoreDecisionRepository:
                         .where(filter=firestore.FieldFilter("entity_id", "in", group))
                         .limit(100 * len(group) + 1)
                     )
+                    query = scope_query(query)
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError("decision alias query deadline exceeded")
                     values = tuple(
-                        EntityAlias.model_validate(item.to_dict())
-                        for item in query.stream(retry=None, timeout=remaining)
+                        alias for item in query.stream(retry=None, timeout=remaining)
+                        if scope_matches(alias := EntityAlias.model_validate(item.to_dict()))
                     )
                     if len(values) > 100 * len(group):
                         raise DecisionError("decision_alias_resolution_limit", 409)
@@ -103,13 +106,15 @@ class FirestoreDecisionRepository:
                         query = query.where(
                             filter=firestore.FieldFilter("attribute", "==", attribute)
                         )
+                    query = scope_query(query)
                     query = query.limit(limit + 1)
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError("decision claim query deadline exceeded")
                     for item in query.stream(retry=None, timeout=remaining):
                         record = EntityClaim.model_validate(item.to_dict())
-                        records_by_id[record.id] = record
+                        if scope_matches(record):
+                            records_by_id[record.id] = record
                         if len(records_by_id) > limit:
                             return tuple(sorted(
                                 records_by_id.values(),
@@ -129,14 +134,16 @@ class FirestoreDecisionRepository:
                 .where(filter=firestore.FieldFilter("evidence_ids", "array_contains", str(evidence_id)))
                 .limit(limit)
             )
+            query = scope_query(query)
             return tuple(
-                EntityClaim.model_validate(item.to_dict())
-                for item in query.stream(retry=None, timeout=5)
+                claim for item in query.stream(retry=None, timeout=5)
+                if scope_matches(claim := EntityClaim.model_validate(item.to_dict()))
             )
 
         return self._run(operation)
 
     def create(self, result: DecisionResult) -> DecisionResult:
+        result = scoped_record(result)
         decision = result.decision
         snapshot_ref = self.decisions.document(str(decision.id))
         evidence_ref = self.evidence_snapshots.document(str(result.evidence_snapshot.id))
@@ -155,7 +162,7 @@ class FirestoreDecisionRepository:
             current = next(transaction.get(snapshot_ref), None)
             if current is not None and current.exists:
                 old = DecisionSnapshot.model_validate(current.to_dict())
-                if old.owner_id != decision.owner_id:
+                if old.owner_id != decision.owner_id or not scope_matches(old):
                     raise ResourceNotFoundError("decision not found")
                 if old.request_fingerprint != decision.request_fingerprint:
                     raise DecisionError("idempotency_conflict")
@@ -203,7 +210,7 @@ class FirestoreDecisionRepository:
             if not snapshot.exists:
                 raise ResourceNotFoundError("decision not found")
             decision = DecisionSnapshot.model_validate(snapshot.to_dict())
-            if decision.owner_id != owner_id:
+            if decision.owner_id != owner_id or not scope_matches(decision):
                 raise ResourceNotFoundError("decision not found")
 
             evidence_snapshot_doc = self.evidence_snapshots.document(
@@ -212,13 +219,15 @@ class FirestoreDecisionRepository:
             if not evidence_snapshot_doc.exists:
                 raise StorageUnavailableError("decision evidence snapshot unavailable")
             evidence_snapshot = EvidenceSnapshot.model_validate(evidence_snapshot_doc.to_dict())
+            if not scope_matches(evidence_snapshot):
+                raise ResourceNotFoundError("decision not found")
 
             eval_query = self.evaluations.where(
                 filter=firestore.FieldFilter("decision_id", "==", str(decision_id))
             ).limit(24)
             evaluations = tuple(
-                CandidateEvaluation.model_validate(item.to_dict())
-                for item in eval_query.stream(retry=None, timeout=5)
+                evaluation for item in scope_query(eval_query).stream(retry=None, timeout=5)
+                if scope_matches(evaluation := CandidateEvaluation.model_validate(item.to_dict()))
             )
             if any(item.entity_id not in decision.candidate_ids for item in evaluations):
                 raise StorageUnavailableError("decision evaluation invalid")
@@ -229,7 +238,8 @@ class FirestoreDecisionRepository:
                 if not entity_doc.exists:
                     raise StorageUnavailableError("decision entity unavailable")
                 entity = CanonicalEntity.model_validate(entity_doc.to_dict())
-                if entity.owner_scope != "shared" and entity.owner_id != owner_id:
+                if ((entity.owner_scope != "shared" and entity.owner_id != owner_id)
+                        or not scope_matches(entity)):
                     raise ResourceNotFoundError("decision not found")
                 entities.append(entity)
 
@@ -240,7 +250,7 @@ class FirestoreDecisionRepository:
                 if not claim_doc.exists:
                     raise StorageUnavailableError("decision claim unavailable")
                 claim = EntityClaim.model_validate(claim_doc.to_dict())
-                if claim.owner_id != owner_id:
+                if claim.owner_id != owner_id or not scope_matches(claim):
                     raise ResourceNotFoundError("decision not found")
                 claims.append(claim)
 
@@ -254,11 +264,15 @@ class FirestoreDecisionRepository:
             match_query = self.matches.where(
                 filter=firestore.FieldFilter("owner_id", "==", owner_id)
             ).where(filter=firestore.FieldFilter("decision_id", "==", str(decision_id))).limit(24)
+            match_query = scope_query(match_query)
             matches = tuple(
-                EntityMatch.model_validate(item.to_dict())
-                for item in match_query.stream(retry=None, timeout=5)
+                match for item in match_query.stream(retry=None, timeout=5)
+                if scope_matches(match := EntityMatch.model_validate(item.to_dict()))
             )
             return DecisionResult(
+                application_id=decision.application_id,
+                workspace_id=decision.workspace_id,
+                scope_version=decision.scope_version,
                 decision=decision,
                 recommendation=decision.recommendation,
                 evidence_snapshot=evidence_snapshot,

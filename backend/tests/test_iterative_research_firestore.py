@@ -18,6 +18,7 @@ from personal_ai.agents.research.iterative_contracts import (
 from personal_ai.agents.research.iterative_repositories import (
     FirestoreIterativeResearchRepository,
 )
+from personal_ai.auth.scope import scoped_record
 from personal_ai.storage.errors import ResourceNotFoundError
 from tests.test_iterative_research_contracts import NOW, initial_run
 
@@ -60,6 +61,7 @@ def pending_session(run):
         idempotency_key=uuid4(),
     )
     return ResearchSession(
+        scope_version=2,
         id=run.session_id,
         owner_id=run.owner_id,
         request=request,
@@ -103,7 +105,7 @@ def test_firestore_run_create_claim_commit_and_owner_fencing():
         safe_payload=SafeEventPayload(state=RunState.CANCELLED, stop_reason=StopReason.CANCELLED),
         occurred_at=now,
     )
-    cancelled = ResearchRun.model_validate({
+    cancelled = scoped_record(ResearchRun.model_validate({
         **claimed.model_dump(),
         "state": RunState.CANCELLED,
         "terminal_reason": StopReason.CANCELLED,
@@ -112,7 +114,7 @@ def test_firestore_run_create_claim_commit_and_owner_fencing():
         "updated_at": now,
         "revision": claimed.revision + 1,
         "events": (*claimed.events, event),
-    })
+    }))
     stopped_session = evolve(
         running_session,
         state="insufficient",

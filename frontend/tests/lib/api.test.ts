@@ -4,6 +4,7 @@ import { conversationsApi, type Message, type StreamHandlers } from "../../src/l
 
 const assistant: Message = {
   id: "assistant", conversation_id: "conversation", owner_id: "local",
+  application_id: "personal_ai", workspace_id: null,
   role: "assistant", content: "Hello 🌍", status: "completed",
   created_at: "2026-01-01T00:00:00Z", parent_message_id: "user",
   supersedes_message_id: null, model: "fake", error_code: null,

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from personal_ai.auth.scope import STANDALONE_APPLICATION_ID
 from personal_ai.memory.contracts import (
     DerivedMemory,
     DerivedMemorySource,
@@ -173,9 +174,20 @@ class DeterministicMemoryConsolidator:
             )
             for record in records
         )
+        if any(
+            (record.application_id, record.workspace_id)
+            != (records[0].application_id, records[0].workspace_id)
+            for record in records
+        ):
+            return ConsolidationPlan("rejected", "source_scope_mismatch")
+        namespace = (
+            [] if records[0].application_id == STANDALONE_APPLICATION_ID
+            and records[0].workspace_id is None
+            else [records[0].application_id, records[0].workspace_id or ""]
+        )
         identity = hashlib.sha256(
             "\0".join(
-                [owner_id, DERIVATION_POLICY_VERSION]
+                [owner_id, *namespace, DERIVATION_POLICY_VERSION]
                 + [f"{item.memory_id}:{item.source_fingerprint}" for item in source_set]
             ).encode()
         ).hexdigest()
@@ -193,6 +205,9 @@ class DeterministicMemoryConsolidator:
         derived = DerivedMemory(
             id=derived_id,
             owner_id=owner_id,
+            application_id=records[0].application_id,
+            workspace_id=records[0].workspace_id,
+            scope_version=2,
             memory_type=target_type,
             content=content,
             normalized_content=normalize(content),

@@ -70,8 +70,8 @@ def test_authenticated_push_payload_dispatches_only_durable_job_id(monkeypatch):
             return 0
 
     class Worker:
-        def process(self, value):
-            calls.append(("process", value))
+        def process(self, value, *, application_id, workspace_id):
+            calls.append(("process", value, application_id, workspace_id))
             return "completed"
 
     monkeypatch.setattr("personal_ai.worker.get_settings", lambda: settings_value)
@@ -79,7 +79,7 @@ def test_authenticated_push_payload_dispatches_only_durable_job_id(monkeypatch):
     with TestClient(worker_app) as client:
         response = client.post("/tasks/memory", json=push_body(job_id))
     assert response.status_code == 204
-    assert calls == [("process", job_id)]
+    assert calls == [("process", job_id, "personal_ai", None)]
 
 
 def test_retryable_worker_result_returns_retry_status_and_invalid_payload_is_acked(monkeypatch):
@@ -90,7 +90,8 @@ def test_retryable_worker_result_returns_retry_status_and_invalid_payload_is_ack
             return 0
 
     class Worker:
-        def process(self, _):
+        def process(self, _, *, application_id, workspace_id):
+            del application_id, workspace_id
             return "retry"
 
     monkeypatch.setattr("personal_ai.worker.get_settings", lambda: settings_value)
@@ -174,7 +175,8 @@ def test_slow_memory_job_does_not_block_worker_health(monkeypatch):
     settings_value = settings(memory_enabled=True, memory_lifecycle_worker_enabled=True)
 
     class Worker:
-        def process(self, _):
+        def process(self, _, *, application_id, workspace_id):
+            del application_id, workspace_id
             entered.set()
             assert release.wait(timeout=5)
             return "completed"
@@ -214,9 +216,15 @@ def test_owned_publisher_is_lazy_bounded_and_closed_after_notification(
 
     if publication_fails:
         with pytest.raises(TimeoutError):
-            publisher.publish(SimpleNamespace(id=uuid4()), timeout=0.5)
+            publisher.publish(
+                SimpleNamespace(id=uuid4(), application_id="personal_ai", workspace_id=None),
+                timeout=0.5,
+            )
     else:
-        publisher.publish(SimpleNamespace(id=uuid4()), timeout=0.5)
+        publisher.publish(
+            SimpleNamespace(id=uuid4(), application_id="personal_ai", workspace_id=None),
+            timeout=0.5,
+        )
 
     constructor.assert_called_once()
     assert client.publish.call_args.kwargs == {"retry": None, "timeout": 0.5}

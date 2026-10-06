@@ -11,8 +11,10 @@ from decimal import Decimal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from personal_ai.auth.owner_data import OWNER_DATA_COLLECTIONS
+from personal_ai.auth.scope import current_application_scope, data_scope_matches, scope_query
 
 EXPORT_COLLECTIONS = (*OWNER_DATA_COLLECTIONS, "account_lifecycle_requests")
+MAX_EXPORT_SCAN_RECORDS = 100_000
 
 
 class AccountDataUnavailable(RuntimeError):
@@ -69,6 +71,7 @@ class FirestoreAccountDataRepository:
         self.client.close()
 
     def export_owner(self, owner_id: str, *, max_records: int, max_bytes: int) -> dict:
+        scope = current_application_scope()
         generated_at = datetime.now(UTC)
         collections: dict[str, list[dict]] = {}
         count = 0
@@ -76,26 +79,42 @@ class FirestoreAccountDataRepository:
         try:
             for collection_name in EXPORT_COLLECTIONS:
                 records = []
-                remaining = max_records - count
                 query = (
                     self.client.collection(collection_name)
                     .where(filter=self.firestore.FieldFilter("owner_id", "==", owner_id))
-                    .order_by("__name__")
-                    .limit(remaining + 1)
                 )
-                for snapshot in query.stream():
-                    count += 1
-                    if count > max_records:
-                        raise ExportTooLarge
-                    record = {"document_id": snapshot.id, "data": _portable(snapshot.to_dict() or {})}
-                    estimated_bytes += len(
-                        json.dumps(
-                            record, ensure_ascii=False, separators=(",", ":"), allow_nan=False
-                        ).encode("utf-8")
-                    ) + len(collection_name) + 4
-                    if estimated_bytes > max_bytes:
-                        raise ExportTooLarge
-                    records.append(record)
+                query = scope_query(query, scope).order_by("__name__")
+                cursor = None
+                scanned = 0
+                while True:
+                    page = query.limit(250)
+                    if cursor is not None:
+                        page = page.start_after(cursor)
+                    snapshots = list(page.stream())
+                    if not snapshots:
+                        break
+                    for snapshot in snapshots:
+                        cursor = snapshot
+                        scanned += 1
+                        if scanned > MAX_EXPORT_SCAN_RECORDS:
+                            raise ExportTooLarge
+                        values = snapshot.to_dict() or {}
+                        if not data_scope_matches(values, scope):
+                            continue
+                        count += 1
+                        if count > max_records:
+                            raise ExportTooLarge
+                        record = {"document_id": snapshot.id, "data": _portable(values)}
+                        estimated_bytes += len(
+                            json.dumps(
+                                record, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                            ).encode("utf-8")
+                        ) + len(collection_name) + 4
+                        if estimated_bytes > max_bytes:
+                            raise ExportTooLarge
+                        records.append(record)
+                    if len(snapshots) < 250:
+                        break
                 if records:
                     collections[collection_name] = records
         except ExportTooLarge:
@@ -106,6 +125,8 @@ class FirestoreAccountDataRepository:
             "schema_version": "personal-ai-export-v1",
             "generated_at": generated_at.isoformat(),
             "owner_id": owner_id,
+            "application_id": scope.application_id,
+            "workspace_id": scope.workspace_id,
             "collections": collections,
         }
         try:
@@ -121,6 +142,7 @@ class FirestoreAccountDataRepository:
         return result
 
     def record_export(self, *, owner_id: str, idempotency_key: UUID, correlation_id: str) -> None:
+        scope = current_application_scope()
         self._write_audit(
             owner_id=owner_id,
             action="account.export",
@@ -128,6 +150,8 @@ class FirestoreAccountDataRepository:
             idempotency_key=idempotency_key,
             correlation_id=correlation_id,
             result="generated",
+            application_id=scope.application_id,
+            workspace_id=scope.workspace_id,
         )
 
     def create_deletion(self, *, owner_id: str, idempotency_key: UUID, correlation_id: str) -> dict:
@@ -271,8 +295,19 @@ class FirestoreAccountDataRepository:
             raise AccountDataUnavailable from error
 
     @staticmethod
-    def _audit_id(owner_id: str, action: str, idempotency_key: UUID) -> str:
-        return hashlib.sha256(f"{owner_id}\0{action}\0{idempotency_key}".encode()).hexdigest()
+    def _audit_id(
+        owner_id: str,
+        action: str,
+        idempotency_key: UUID,
+        application_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> str:
+        namespace = "" if application_id in {None, "personal_ai"} and workspace_id is None else (
+            f"\0{application_id or 'personal_ai'}\0{workspace_id or ''}"
+        )
+        return hashlib.sha256(
+            f"{owner_id}\0{action}{namespace}\0{idempotency_key}".encode()
+        ).hexdigest()
 
     @staticmethod
     def _audit_data(
@@ -291,9 +326,20 @@ class FirestoreAccountDataRepository:
         }
 
     def _write_audit(
-        self, *, owner_id, action, target_type, idempotency_key, correlation_id, result
+        self,
+        *,
+        owner_id,
+        action,
+        target_type,
+        idempotency_key,
+        correlation_id,
+        result,
+        application_id=None,
+        workspace_id=None,
     ):
-        audit_id = self._audit_id(owner_id, action, idempotency_key)
+        audit_id = self._audit_id(
+            owner_id, action, idempotency_key, application_id, workspace_id
+        )
         ref = self.audit_events.document(audit_id)
         transaction = self.client.transaction()
 
@@ -301,18 +347,25 @@ class FirestoreAccountDataRepository:
         def apply(tx):
             if ref.get(transaction=tx).exists:
                 return
+            audit = self._audit_data(
+                audit_id,
+                owner_id,
+                action,
+                target_type,
+                audit_id,
+                correlation_id,
+                result,
+                datetime.now(UTC),
+            )
+            if application_id is not None:
+                audit.update(
+                    application_id=application_id,
+                    workspace_id=workspace_id,
+                    scope_version=2,
+                )
             tx.create(
                 ref,
-                self._audit_data(
-                    audit_id,
-                    owner_id,
-                    action,
-                    target_type,
-                    audit_id,
-                    correlation_id,
-                    result,
-                    datetime.now(UTC),
-                ),
+                audit,
             )
 
         try:

@@ -12,6 +12,7 @@ from personal_ai.evidence.contracts import (
     Evidence,
     EvidenceSelection,
     ResearchRecord,
+    ScopedResearchRecord,
     SearchQuery,
     SourceObservation,
 )
@@ -41,7 +42,7 @@ class ResearchRequest(ResearchRecord):
         return sha256(self.model_dump_json(exclude={"idempotency_key"}).encode()).hexdigest()
 
 
-class Citation(ResearchRecord):
+class Citation(ScopedResearchRecord):
     number: int = Field(ge=1)
     evidence_id: UUID
     source_observation_id: UUID
@@ -51,7 +52,7 @@ class Citation(ResearchRecord):
     expires_at: datetime
 
 
-class ResearchSession(ResearchRecord):
+class ResearchSession(ScopedResearchRecord):
     schema_version: Literal["research-v1"] = "research-v1"
     id: UUID
     owner_id: str = Field(min_length=1, max_length=200)

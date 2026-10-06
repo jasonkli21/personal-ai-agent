@@ -80,9 +80,14 @@ def _components(settings: Settings):
     return worker, republisher
 
 
-def _process_memory_job(settings: Settings, job_id: UUID) -> str:
+def _process_memory_job(
+    settings: Settings,
+    job_id: UUID,
+    application_id: str,
+    workspace_id: str | None,
+) -> str:
     worker, _ = _components(settings)
-    return worker.process(job_id)
+    return worker.process(job_id, application_id=application_id, workspace_id=workspace_id)
 
 
 @app.get("/health")
@@ -133,7 +138,13 @@ async def receive_memory_task(request: Request) -> Response:
     try:
         # Firestore, embeddings and service-token verification are synchronous;
         # keep them off the request loop so one slow job cannot stall health/push.
-        result = await io_call(_process_memory_job, settings, notification.job_id)
+        result = await io_call(
+            _process_memory_job,
+            settings,
+            notification.job_id,
+            notification.application_id,
+            notification.workspace_id,
+        )
     except ResourceNotFoundError:
         return Response(status_code=204)
     except StorageError as error:

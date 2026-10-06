@@ -15,6 +15,7 @@ from personal_ai.entities.research import (
     EntityClaim,
     EntityMatch,
     EvidenceReference,
+    ScopedDecisionRecord,
     TypedValue,
 )
 
@@ -189,7 +190,7 @@ class DecisionCreateRequest(DecisionRecord):
         return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-class EvidenceSnapshot(DecisionRecord):
+class EvidenceSnapshot(ScopedDecisionRecord):
     id: UUID
     decision_id: UUID
     owner_id: str
@@ -209,7 +210,7 @@ class EvidenceSnapshot(DecisionRecord):
         return self
 
 
-class RankingPolicy(DecisionRecord):
+class RankingPolicy(ScopedDecisionRecord):
     policy_version: Literal["rank-v1"] = "rank-v1"
     feature_weights: dict[str, float]
     normalization: Literal["weighted_mean-v1"] = "weighted_mean-v1"
@@ -227,7 +228,7 @@ class RankingPolicy(DecisionRecord):
         return value
 
 
-class PolicyVersions(DecisionRecord):
+class PolicyVersions(ScopedDecisionRecord):
     identity: Literal["identity-v1"] = "identity-v1"
     # Keep v1 readable so persisted historical snapshots retain their policy.
     resolution: Literal["resolve-v1", "resolve-v2"] = "resolve-v2"
@@ -245,7 +246,7 @@ class PolicyVersions(DecisionRecord):
     max_comparison_rows: int = Field(ge=0, le=24)
 
 
-class Recommendation(DecisionRecord):
+class Recommendation(ScopedDecisionRecord):
     status: Literal["recommended", "eligible_unranked", "research_needed", "no_verified_match"]
     selected_entity_id: UUID | None = None
     candidate_order: tuple[UUID, ...] = Field(default=(), max_length=24)
@@ -265,7 +266,7 @@ class Recommendation(DecisionRecord):
         return self
 
 
-class DecisionSnapshot(DecisionRecord):
+class DecisionSnapshot(ScopedDecisionRecord):
     id: UUID
     owner_id: str
     request_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -301,7 +302,7 @@ class DecisionSnapshot(DecisionRecord):
         return self
 
 
-class AttributeStatus(DecisionRecord):
+class AttributeStatus(ScopedDecisionRecord):
     attribute: str
     scope: str | None = None
     status: Literal["verified", "conflicting", "stale", "missing", "unverified"]
@@ -310,7 +311,7 @@ class AttributeStatus(DecisionRecord):
     reason: str = Field(min_length=1, max_length=100)
 
 
-class ConstraintOutcome(DecisionRecord):
+class ConstraintOutcome(ScopedDecisionRecord):
     constraint_id: UUID
     attribute: str
     outcome: Literal["pass", "fail", "unknown"]
@@ -319,7 +320,7 @@ class ConstraintOutcome(DecisionRecord):
     evidence_ids: tuple[UUID, ...] = Field(default=(), max_length=250)
 
 
-class FeatureScore(DecisionRecord):
+class FeatureScore(ScopedDecisionRecord):
     name: str
     value: float | None = Field(ge=0, le=1)
     weight: float = Field(ge=0, le=1)
@@ -327,7 +328,7 @@ class FeatureScore(DecisionRecord):
     missing_treatment: Literal["zero", "omit"] = "zero"
 
 
-class CandidateEvaluation(DecisionRecord):
+class CandidateEvaluation(ScopedDecisionRecord):
     id: UUID
     decision_id: UUID
     entity_id: UUID
@@ -354,7 +355,7 @@ class CandidateEvaluation(DecisionRecord):
         return self
 
 
-class DecisionResult(DecisionRecord):
+class DecisionResult(ScopedDecisionRecord):
     schema_version: Literal["decision-v1"] = "decision-v1"
     decision: DecisionSnapshot
     recommendation: Recommendation
@@ -453,7 +454,7 @@ class DecisionResult(DecisionRecord):
         return self
 
 
-class DecisionInspection(DecisionRecord):
+class DecisionInspection(ScopedDecisionRecord):
     schema_version: Literal["decision-inspection-v1"] = "decision-inspection-v1"
     decision_id: UUID
     state: str

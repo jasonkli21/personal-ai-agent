@@ -9,8 +9,16 @@ from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from google.api_core.exceptions import GoogleAPICallError, RetryError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
+from personal_ai.auth.scope import (
+    STANDALONE_APPLICATION_ID,
+    ApplicationScopedRecord,
+    current_application_scope,
+    scope_matches,
+    scope_query,
+    scoped_record,
+)
 from personal_ai.booking_extractions.contracts import BookingExtractionResult
 from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
 from personal_ai.storage.firestore import _firestore_client
@@ -26,10 +34,15 @@ class ExtractionError(RuntimeError):
 
 
 def extraction_id_for(owner_id: str, key: UUID) -> UUID:
-    return uuid5(NAMESPACE_URL, f"booking-document-extraction-v1:{owner_id}:{key}")
+    scope = current_application_scope()
+    namespace = (
+        "" if scope.application_id == STANDALONE_APPLICATION_ID and scope.workspace_id is None
+        else f":{scope.application_id}:{scope.workspace_id or ''}"
+    )
+    return uuid5(NAMESPACE_URL, f"booking-document-extraction-v1:{owner_id}{namespace}:{key}")
 
 
-class ExtractionRecord(BaseModel):
+class ExtractionRecord(ApplicationScopedRecord):
     model_config = ConfigDict(extra="forbid", frozen=True)
     extraction_id: UUID
     owner_id: str = Field(min_length=1, max_length=200)
@@ -75,7 +88,7 @@ def _new(
     now: datetime,
     deadline: datetime,
 ) -> ExtractionRecord:
-    return ExtractionRecord(
+    return scoped_record(ExtractionRecord(
         extraction_id=extraction_id_for(owner_id, key),
         owner_id=owner_id,
         idempotency_key=key,
@@ -86,11 +99,11 @@ def _new(
         execution_deadline=deadline,
         expires_at=now + RESULT_RETENTION,
         retained_until=now + RESULT_RETENTION,
-    )
+    ))
 
 
 def _check(old: ExtractionRecord, owner_id: str, fingerprint: str, source_sha256: str) -> None:
-    if old.owner_id != owner_id:
+    if old.owner_id != owner_id or not scope_matches(old):
         raise ResourceNotFoundError("extraction not found")
     if old.state == "deleted":
         if old.source_sha256 != source_sha256:
@@ -132,7 +145,7 @@ class InMemoryBookingExtractionRepository:
     def complete(self, record, result):
         with self._lock:
             old = self._records.get(record.extraction_id)
-            if old is None or old.owner_id != record.owner_id:
+            if old is None or old.owner_id != record.owner_id or not scope_matches(old):
                 raise ResourceNotFoundError("extraction not found")
             if old.state != "running" or old.request_fingerprint != record.request_fingerprint:
                 raise ExtractionError("extraction_conflict")
@@ -143,7 +156,7 @@ class InMemoryBookingExtractionRepository:
     def get(self, owner_id, extraction_id):
         with self._lock:
             record = self._records.get(extraction_id)
-            if record is None or record.owner_id != owner_id:
+            if record is None or record.owner_id != owner_id or not scope_matches(record):
                 raise ResourceNotFoundError("extraction not found")
             return record
 
@@ -153,7 +166,7 @@ class InMemoryBookingExtractionRepository:
     def delete(self, owner_id, extraction_id):
         with self._lock:
             record = self._records.get(extraction_id)
-            if record is None or record.owner_id != owner_id:
+            if record is None or record.owner_id != owner_id or not scope_matches(record):
                 raise ResourceNotFoundError("extraction not found")
             updated = _deleted(record)
             self._records[record.extraction_id] = updated
@@ -166,7 +179,8 @@ class InMemoryBookingExtractionRepository:
             if record is None:
                 fingerprint = sha256(f"deleted:{key}:{source_sha256}".encode()).hexdigest()
                 record = _new(owner_id, key, fingerprint, source_sha256, now, now)
-            elif record.owner_id != owner_id or record.source_sha256 != source_sha256:
+            elif (record.owner_id != owner_id or record.source_sha256 != source_sha256
+                  or not scope_matches(record)):
                 raise ExtractionError("idempotency_conflict")
             updated = _deleted(record)
             self._records[extraction_id] = updated
@@ -178,7 +192,8 @@ class InMemoryBookingExtractionRepository:
             for extraction_id, record in list(self._records.items()):
                 if removed >= limit:
                     break
-                if record.state != "completed" or record.expires_at > now or record.result is None:
+                if (not scope_matches(record) or record.state != "completed"
+                        or record.expires_at > now or record.result is None):
                     continue
                 expired_result = record.result.model_copy(
                     update={"state": "expired", "candidates": ()}
@@ -209,7 +224,7 @@ class FirestoreBookingExtractionRepository:
         if not snapshot.exists:
             raise ResourceNotFoundError("extraction not found")
         record = ExtractionRecord.model_validate(snapshot.to_dict())
-        if record.owner_id != owner_id:
+        if record.owner_id != owner_id or not scope_matches(record):
             raise ResourceNotFoundError("extraction not found")
         return record
 
@@ -294,8 +309,10 @@ class FirestoreBookingExtractionRepository:
         if not 1 <= limit <= 500:
             raise ValueError("cleanup limit must be between one and 500")
         snapshots = list(
-            self.collection.where("state", "==", "completed")
-            .where("expires_at", "<=", now)
+            scope_query(
+                self.collection.where("state", "==", "completed")
+                .where("expires_at", "<=", now)
+            )
             .limit(limit)
             .stream(retry=None, timeout=5)
         )

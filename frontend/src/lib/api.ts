@@ -4,6 +4,8 @@ import { readSseFrames, SseError } from "./sse";
 export type Conversation = {
   id: string;
   owner_id: string;
+  application_id: string;
+  workspace_id: string | null;
   title: string | null;
   created_at: string;
   updated_at: string;
@@ -13,6 +15,8 @@ export type Message = {
   id: string;
   conversation_id: string;
   owner_id: string;
+  application_id: string;
+  workspace_id: string | null;
   role: "user" | "assistant";
   content: string;
   status: "streaming" | "completed" | "failed" | "superseded";
@@ -37,6 +41,27 @@ export type StreamHandlers = {
   onError: (event: ResponseErrorEvent) => void;
 };
 
+export type ApplicationScopeRequest = {
+  applicationId?: "personal_ai" | "travel" | "shopping" | "finance" | "health";
+  workspaceId?: string | null;
+  requestId?: string;
+  capabilities?: string[];
+  clientContext?: Record<string, string | number | boolean | null>;
+};
+
+export function applicationScopeHeaders(scope: ApplicationScopeRequest = {}): Record<string, string> {
+  const headers: Record<string, string> = {
+    "X-Application-ID": scope.applicationId ?? "personal_ai",
+    "X-Request-ID": scope.requestId ?? crypto.randomUUID(),
+  };
+  if (scope.workspaceId) headers["X-Workspace-ID"] = scope.workspaceId;
+  if (scope.capabilities?.length) headers["X-Client-Capabilities"] = scope.capabilities.join(",");
+  if (scope.clientContext && Object.keys(scope.clientContext).length) {
+    headers["X-Client-Context"] = JSON.stringify(scope.clientContext);
+  }
+  return headers;
+}
+
 export class ApiError extends Error {
   constructor(message: string, readonly status?: number) {
     super(message);
@@ -44,12 +69,12 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, scope?: ApplicationScopeRequest): Promise<T> {
   let response: Response;
   try {
     response = await authenticatedFetch(`/api${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers: { "Content-Type": "application/json", ...applicationScopeHeaders(scope), ...init?.headers },
     });
   } catch {
     throw new ApiError("Unable to reach the Personal AI service. Please try again.");
@@ -61,12 +86,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function streamRequest(path: string, init: RequestInit, handlers: StreamHandlers): Promise<void> {
+async function streamRequest(path: string, init: RequestInit, handlers: StreamHandlers, scope?: ApplicationScopeRequest): Promise<void> {
   let response: Response;
   try {
     response = await authenticatedFetch(`/api${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init.headers },
+      headers: { "Content-Type": "application/json", ...applicationScopeHeaders(scope), ...init.headers },
     });
   } catch {
     throw new ApiError("Unable to reach the Personal AI service. Please try again.");
@@ -129,22 +154,22 @@ async function streamRequest(path: string, init: RequestInit, handlers: StreamHa
 }
 
 export const conversationsApi = {
-  create(title?: string, signal?: AbortSignal) {
-    return request<Conversation>("/conversations", { method: "POST", body: JSON.stringify(title ? { title } : {}), signal });
+  create(title?: string, signal?: AbortSignal, scope?: ApplicationScopeRequest) {
+    return request<Conversation>("/conversations", { method: "POST", body: JSON.stringify(title ? { title } : {}), signal }, scope);
   },
-  async list(signal?: AbortSignal) {
-    return (await request<{ conversations: Conversation[] }>("/conversations", { signal })).conversations;
+  async list(signal?: AbortSignal, scope?: ApplicationScopeRequest) {
+    return (await request<{ conversations: Conversation[] }>("/conversations", { signal }, scope)).conversations;
   },
-  get(conversationId: string, signal?: AbortSignal) {
-    return request<ConversationDetail>(`/conversations/${encodeURIComponent(conversationId)}`, { signal });
+  get(conversationId: string, signal?: AbortSignal, scope?: ApplicationScopeRequest) {
+    return request<ConversationDetail>(`/conversations/${encodeURIComponent(conversationId)}`, { signal }, scope);
   },
-  send(conversationId: string, content: string, handlers: StreamHandlers, signal?: AbortSignal) {
-    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages`, { method: "POST", body: JSON.stringify({ content }), signal }, handlers);
+  send(conversationId: string, content: string, handlers: StreamHandlers, signal?: AbortSignal, scope?: ApplicationScopeRequest) {
+    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages`, { method: "POST", body: JSON.stringify({ content }), signal }, handlers, scope);
   },
-  regenerate(conversationId: string, messageId: string, handlers: StreamHandlers, signal?: AbortSignal) {
-    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/regenerate`, { method: "POST", signal }, handlers);
+  regenerate(conversationId: string, messageId: string, handlers: StreamHandlers, signal?: AbortSignal, scope?: ApplicationScopeRequest) {
+    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/regenerate`, { method: "POST", signal }, handlers, scope);
   },
-  editAndRetry(conversationId: string, messageId: string, content: string, handlers: StreamHandlers, signal?: AbortSignal) {
-    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/edit-and-retry`, { method: "POST", body: JSON.stringify({ content }), signal }, handlers);
+  editAndRetry(conversationId: string, messageId: string, content: string, handlers: StreamHandlers, signal?: AbortSignal, scope?: ApplicationScopeRequest) {
+    return streamRequest(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/edit-and-retry`, { method: "POST", body: JSON.stringify({ content }), signal }, handlers, scope);
   },
 };

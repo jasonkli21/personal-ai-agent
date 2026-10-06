@@ -15,6 +15,7 @@ from personal_ai.decisions.contracts import (
     FeatureScore,
     PolicyVersions,
     Preference,
+    ScopedDecisionRecord,
 )
 from personal_ai.entities.research import TypedValue
 
@@ -68,7 +69,7 @@ class DomainRegistration(DecisionRecord):
         return self
 
 
-class ProviderObservationExtension(DecisionRecord):
+class ProviderObservationExtension(ScopedDecisionRecord):
     """Provider identity and policy metadata attached to core evidence."""
 
     source_observation_id: UUID
@@ -98,7 +99,7 @@ class ProviderObservationExtension(DecisionRecord):
         return self
 
 
-class DomainClaimExtension(DecisionRecord):
+class DomainClaimExtension(ScopedDecisionRecord):
     """Typed domain vocabulary linked to an immutable Phase 6 claim."""
 
     claim_id: UUID
@@ -120,7 +121,7 @@ class DomainClaimExtension(DecisionRecord):
         return self
 
 
-class ComparisonSource(DecisionRecord):
+class ComparisonSource(ScopedDecisionRecord):
     evidence_id: UUID
     source_observation_id: UUID
     url: str
@@ -131,7 +132,7 @@ class ComparisonSource(DecisionRecord):
     expires_at: datetime
 
 
-class ComparisonCell(DecisionRecord):
+class ComparisonCell(ScopedDecisionRecord):
     field: str
     label: str
     value: str | None = None
@@ -141,7 +142,7 @@ class ComparisonCell(DecisionRecord):
     sources: tuple[ComparisonSource, ...] = Field(default=(), max_length=24)
 
 
-class DomainComparisonRow(DecisionRecord):
+class DomainComparisonRow(ScopedDecisionRecord):
     candidate_id: UUID
     name: str = Field(min_length=1, max_length=300)
     eligible: bool
@@ -153,7 +154,7 @@ class DomainComparisonRow(DecisionRecord):
     features: tuple[FeatureScore, ...] = Field(default=(), max_length=20)
 
 
-class DomainComparisonSnapshot(DecisionRecord):
+class DomainComparisonSnapshot(ScopedDecisionRecord):
     id: UUID
     decision_id: UUID
     owner_id: str
@@ -230,7 +231,7 @@ class DomainLookupRequest(DecisionRecord):
         return sha256(canonical.encode()).hexdigest()
 
 
-class DomainLookupReservation(DecisionRecord):
+class DomainLookupReservation(ScopedDecisionRecord):
     """Durable, fenced idempotency state for provider-backed lookups."""
 
     id: UUID
@@ -270,7 +271,7 @@ class DomainFixtureDescription(DecisionRecord):
     description: str = Field(min_length=1, max_length=500)
 
 
-class DomainComparisonResult(DecisionRecord):
+class DomainComparisonResult(ScopedDecisionRecord):
     schema_version: Literal["domain-comparison-v1"] = "domain-comparison-v1"
     registration: DomainRegistration
     comparison: DomainComparisonSnapshot

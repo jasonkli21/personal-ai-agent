@@ -1,4 +1,4 @@
-import { ApiError } from "./api";
+import { ApiError, applicationScopeHeaders, type ApplicationScopeRequest } from "./api";
 import type { ResearchSession } from "./research-api";
 import { authenticatedFetch } from "./auth";
 import { readSseFrames, SseError } from "./sse";
@@ -159,11 +159,11 @@ function validRun(value: unknown): value is IterativeRun {
   return value.events.every((event, index) => record(event) && event.sequence === index && eventTypes.has(String(event.event_type)) && timestamp(event.occurred_at));
 }
 
-async function response(path: string, init?: RequestInit) {
+async function response(path: string, init?: RequestInit, scope?: ApplicationScopeRequest) {
   const res = await authenticatedFetch(`/api/research/iterative${path}`, {
     ...init,
     cache: "no-store",
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { "Content-Type": "application/json", ...applicationScopeHeaders(scope), ...init?.headers },
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
@@ -218,35 +218,35 @@ async function readProgress(
 }
 
 export const iterativeResearchApi = {
-  async start(request: Request, onProgress: (data: IterativeProgress) => void, signal?: AbortSignal) {
+  async start(request: Request, onProgress: (data: IterativeProgress) => void, signal?: AbortSignal, scope?: ApplicationScopeRequest) {
     const res = await response("", {
       method: "POST", signal,
       body: JSON.stringify({ schema_version: "iterative-research-request-v1", ...request }),
-    });
+    }, scope);
     return readProgress(res, onProgress, { after: -1, terminalRequired: true });
   },
-  async resume(runId: string, after: number, onProgress: (data: IterativeProgress) => void, signal?: AbortSignal) {
+  async resume(runId: string, after: number, onProgress: (data: IterativeProgress) => void, signal?: AbortSignal, scope?: ApplicationScopeRequest) {
     const res = await response(`/runs/${encodeURIComponent(runId)}/resume`, {
       method: "POST", signal, headers: { "Last-Event-ID": String(after) },
-    });
+    }, scope);
     // A live lease is returned as a finite persisted-event snapshot. Recovery may
     // also finish with a terminal event, so both outcomes are valid here.
     return readProgress(res, onProgress, { after, expectedRunId: runId, terminalRequired: false });
   },
-  async events(runId: string, after: number, onProgress: (data: IterativeProgress) => void, signal?: AbortSignal) {
-    const res = await response(`/runs/${encodeURIComponent(runId)}/events?after=${after}`, { signal });
+  async events(runId: string, after: number, onProgress: (data: IterativeProgress) => void, signal?: AbortSignal, scope?: ApplicationScopeRequest) {
+    const res = await response(`/runs/${encodeURIComponent(runId)}/events?after=${after}`, { signal }, scope);
     return readProgress(res, onProgress, { after, expectedRunId: runId, terminalRequired: false });
   },
-  async get(runId: string, signal?: AbortSignal): Promise<IterativeResearchDetail> {
-    const value: unknown = await (await response(`/runs/${encodeURIComponent(runId)}`, { signal })).json();
+  async get(runId: string, signal?: AbortSignal, scope?: ApplicationScopeRequest): Promise<IterativeResearchDetail> {
+    const value: unknown = await (await response(`/runs/${encodeURIComponent(runId)}`, { signal }, scope)).json();
     if (!record(value) || !validRun(value.run) || !validSession(value.session) ||
         value.run.id !== runId || value.run.session_id !== value.session.id) {
       throw new ApiError("Invalid saved research response.");
     }
     return value as IterativeResearchDetail;
   },
-  async cancel(runId: string, signal?: AbortSignal): Promise<IterativeRun> {
-    const value: unknown = await (await response(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", signal })).json();
+  async cancel(runId: string, signal?: AbortSignal, scope?: ApplicationScopeRequest): Promise<IterativeRun> {
+    const value: unknown = await (await response(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", signal }, scope)).json();
     if (!validRun(value) || value.id !== runId) throw new ApiError("Invalid saved research response.");
     return value;
   },

@@ -8,6 +8,13 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
 from google.cloud.firestore_v1.vector import Vector
 
+from personal_ai.auth.scope import (
+    current_application_scope,
+    data_scope_matches,
+    scope_matches,
+    scope_query,
+    scoped_record,
+)
 from personal_ai.context.contracts import fingerprint
 from personal_ai.entities import Message
 from personal_ai.memory.contracts import DerivedMemory, Memory, ScoredMemory, identity, vector
@@ -22,7 +29,13 @@ from personal_ai.storage.transactions import bounded_transaction
 
 def validate(memory):
     record = Memory.model_validate(memory.model_dump())
-    if record.id != identity(record.owner_id, record.source_fingerprint, record):
+    if record.id != identity(
+        record.owner_id,
+        record.source_fingerprint,
+        record,
+        application_id=record.application_id,
+        workspace_id=record.workspace_id,
+    ):
         raise ValueError("identity_invalid")
     return record.model_copy(
         update={"embedding": vector(record.embedding, record.embedding_dimensions)}
@@ -37,7 +50,7 @@ class InMemoryMemoryRepository:
         self._lock = RLock()
 
     def create(self, memory, *, timeout=5):
-        memory = validate(memory)
+        memory = validate(scoped_record(memory))
         with self.messages._mutation_lock:
             return self._create(memory)
 
@@ -66,7 +79,7 @@ class InMemoryMemoryRepository:
 
     def get(self, *, owner_id, memory_id, timeout=5):
         record = self.records.get(memory_id)
-        if record is None or record.owner_id != owner_id:
+        if record is None or record.owner_id != owner_id or not scope_matches(record):
             raise ResourceNotFoundError("memory not found")
         return record
 
@@ -80,6 +93,7 @@ class InMemoryMemoryRepository:
                 )
                 for m in self.records.values()
                 if m.owner_id == owner_id
+                and scope_matches(m)
                 and m.status == "active"
                 and m.embedding_model == model
                 and m.embedding_dimensions == dimensions
@@ -89,7 +103,7 @@ class InMemoryMemoryRepository:
 
     def get_derived(self, *, owner_id, memory_id, timeout=5):
         record = self.derived_records.get(memory_id)
-        if record is None or record.owner_id != owner_id:
+        if record is None or record.owner_id != owner_id or not scope_matches(record):
             raise ResourceNotFoundError("memory not found")
         return record
 
@@ -106,6 +120,7 @@ class InMemoryMemoryRepository:
                 )
                 for record in self.derived_records.values()
                 if record.owner_id == owner_id
+                and scope_matches(record)
                 and record.embedding_model == model
                 and record.embedding_dimensions == dimensions
             ]
@@ -134,12 +149,12 @@ class FirestoreMemoryRepository:
         if not snapshot.exists:
             raise ResourceNotFoundError("memory not found")
         record = self._record(snapshot)
-        if record.owner_id != owner_id:
+        if record.owner_id != owner_id or not scope_matches(record):
             raise ResourceNotFoundError("memory not found")
         return record
 
     def create(self, memory, *, timeout=5):
-        memory = validate(memory)
+        memory = validate(scoped_record(memory))
         reference = self.collection.document(str(memory.id))
         data = memory.model_dump(mode="json")
         data.update(
@@ -161,7 +176,7 @@ class FirestoreMemoryRepository:
             snapshot = reference.get(transaction=transaction, retry=None, timeout=remaining())
             if snapshot.exists:
                 existing = self._record(snapshot)
-                if existing.owner_id != memory.owner_id:
+                if existing.owner_id != memory.owner_id or not scope_matches(existing):
                     raise ResourceNotFoundError("memory not found")
                 return existing, False
             # Read the source and all ancestors in this transaction: a concurrent
@@ -171,7 +186,8 @@ class FirestoreMemoryRepository:
                 .document(str(memory.source_conversation_id))
                 .get(transaction=transaction, retry=None, timeout=remaining())
             )
-            if not conversation.exists or conversation.to_dict().get("owner_id") != memory.owner_id:
+            if (not conversation.exists or conversation.to_dict().get("owner_id") != memory.owner_id
+                    or not data_scope_matches(conversation.to_dict())):
                 raise ResourceNotFoundError("memory source not found")
             if conversation.to_dict().get("context_preparation_id"):
                 raise ConversationConflictError("memory source changing")
@@ -186,6 +202,7 @@ class FirestoreMemoryRepository:
             if (
                 assistant.owner_id != memory.owner_id
                 or assistant.conversation_id != memory.source_conversation_id
+                or not scope_matches(assistant)
                 or assistant.role.value != "assistant"
                 or assistant.status.value != "completed"
                 or assistant.parent_message_id not in memory.source_message_ids
@@ -219,6 +236,7 @@ class FirestoreMemoryRepository:
                         message.id != current
                         or message.owner_id != memory.owner_id
                         or message.conversation_id != memory.source_conversation_id
+                        or not scope_matches(message)
                         or message.status.value == "superseded"
                     ):
                         raise ConversationConflictError("memory source inactive")
@@ -250,13 +268,21 @@ class FirestoreMemoryRepository:
             ("embedding_dimensions", dimensions),
         ):
             query = query.where(filter=firestore.FieldFilter(field, "==", value))
+        query = scope_query(query)
+        requested_scope = current_application_scope()
+        candidate_limit = (
+            min(100, max(limit, limit * 4))
+            if requested_scope.application_id == "personal_ai"
+            and requested_scope.workspace_id is None
+            else limit
+        )
         if memory_type is not None:
             query = query.where(filter=firestore.FieldFilter("memory_type", "==", memory_type))
         nearest = query.find_nearest(
             vector_field="embedding",
             query_vector=Vector(vector(embedding, dimensions)),
             distance_measure=DistanceMeasure.COSINE,
-            limit=limit,
+            limit=candidate_limit,
             distance_result_field="vector_distance",
         )
         result = []
@@ -269,8 +295,9 @@ class FirestoreMemoryRepository:
                 memory = validate(Memory.model_validate(data))
             except (ValueError, TypeError, KeyError) as error:
                 raise StorageUnavailableError("memory record invalid") from error
-            result.append(ScoredMemory(memory, 1 - distance))
-        return sorted(result, key=lambda s: (-s.similarity, str(s.memory.id)))
+            if scope_matches(memory):
+                result.append(ScoredMemory(memory, 1 - distance))
+        return sorted(result, key=lambda s: (-s.similarity, str(s.memory.id)))[:limit]
 
     def get_derived(self, *, owner_id, memory_id, timeout=5):
         snapshot = self._run(
@@ -288,7 +315,7 @@ class FirestoreMemoryRepository:
             record = DerivedMemory.model_validate(data)
         except (ValueError, TypeError, KeyError) as error:
             raise StorageUnavailableError("derived memory record invalid") from error
-        if record.owner_id != owner_id:
+        if record.owner_id != owner_id or not scope_matches(record):
             raise ResourceNotFoundError("memory not found")
         return record
 
@@ -300,11 +327,19 @@ class FirestoreMemoryRepository:
             ("embedding_dimensions", dimensions),
         ):
             query = query.where(filter=firestore.FieldFilter(field, "==", value))
+        query = scope_query(query)
+        requested_scope = current_application_scope()
+        candidate_limit = (
+            min(100, max(limit, limit * 4))
+            if requested_scope.application_id == "personal_ai"
+            and requested_scope.workspace_id is None
+            else limit
+        )
         nearest = query.find_nearest(
             vector_field="embedding",
             query_vector=Vector(vector(embedding, dimensions)),
             distance_measure=DistanceMeasure.COSINE,
-            limit=limit,
+            limit=candidate_limit,
             distance_result_field="vector_distance",
         )
         result = []
@@ -316,5 +351,6 @@ class FirestoreMemoryRepository:
                 record = DerivedMemory.model_validate(data)
             except (ValueError, TypeError, KeyError) as error:
                 raise StorageUnavailableError("derived memory record invalid") from error
-            result.append(ScoredMemory(record, 1 - distance))
-        return sorted(result, key=lambda s: (-s.similarity, str(s.memory.id)))
+            if scope_matches(record):
+                result.append(ScoredMemory(record, 1 - distance))
+        return sorted(result, key=lambda s: (-s.similarity, str(s.memory.id)))[:limit]

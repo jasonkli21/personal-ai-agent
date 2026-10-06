@@ -32,6 +32,7 @@ def record(active, content="Launch color is amber.", **overrides):
         "id": uuid4(),
         "conversation_id": active[0].conversation_id,
         "owner_id": "local",
+        "scope_version": 2,
         "content": content,
         "source_message_ids": tuple(m.id for m in active),
         "source_fingerprint": fingerprint(active),

@@ -111,7 +111,7 @@ def build_fixture(fixture, variant="fixed"):
             embedding_model="fake-v1",
             embedding_dimensions=3,
         )
-        memories.create(memory)
+        memory, _ = memories.create(memory)
         records[label], originals[label], turns[label] = (
             memory,
             memory.model_dump(),

@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, status
 
 from personal_ai.agents.research.repositories import FirestoreResearchRepository
-from personal_ai.api.dependencies import get_current_owner_id
+from personal_ai.api.dependencies import get_current_owner_id, require_standalone_application_scope
 from personal_ai.decisions.firestore import FirestoreDecisionRepository
 from personal_ai.domains.contracts import (
     DomainComparisonCreateRequest,
@@ -34,6 +34,7 @@ def domain_settings(settings: Annotated[Settings, Depends(get_settings)]) -> Set
 def domain_service(
     settings: Annotated[Settings, Depends(domain_settings)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
+    _scope: Annotated[object, Depends(require_standalone_application_scope)],
 ) -> DomainService:
     decision_repository = FirestoreDecisionRepository(
         project_id=settings.firestore_project_id,
