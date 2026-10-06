@@ -13,6 +13,7 @@ from personal_ai.agents.research.contracts import ResearchError, ResearchSession
 from personal_ai.auth.scope import (
     STANDALONE_APPLICATION_ID,
     data_scope_matches,
+    preserve_legacy_child_scope,
     scope_matches,
     scoped_record,
 )
@@ -145,7 +146,9 @@ class InMemoryResearchRepository:
     def save(self, session):
         session = scoped_record(session)
         with self.lock:
-            validate_save(self.get(session.owner_id, session.id), session)
+            current = self.get(session.owner_id, session.id)
+            session = preserve_legacy_child_scope(current, session)
+            validate_save(current, session)
             self.sessions[session.id] = session
             return session
 
@@ -244,9 +247,10 @@ class FirestoreResearchRepository:
             old = self._decode(
                 ref.get(transaction=tx, retry=None, timeout=timeout()), session.owner_id
             )
-            validate_save(old, session)
-            tx.set(ref, self._data(session))
-            return session
+            candidate = preserve_legacy_child_scope(old, session)
+            validate_save(old, candidate)
+            tx.set(ref, self._data(candidate))
+            return candidate
 
         return self._run(lambda: bounded_transaction(self.client, operation))
 

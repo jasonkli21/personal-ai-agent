@@ -1,6 +1,6 @@
 # Next-scope Phase 1 implementation guide — Application and workspace identity
 
-Status: implemented and verified locally; external workspace authority and cloud provisioning remain pending
+Status: locally implemented; Firestore compatibility-query and deployed verification remain pending
 
 Date: 2026-10-05
 
@@ -45,7 +45,9 @@ construct these headers for browser API calls.
 `ApplicationScopedRecord` adds `application_id`, nullable `workspace_id`, and
 `scope_version`. Missing fields decode as version 1, standalone Personal AI,
 and no workspace. New repository writes recursively add the current scope and
-write `scope_version: 2`. No backfill or reassignment of legacy records occurs.
+write `scope_version: 2`. Aggregate updates retain the v1 scope envelopes of
+historical embedded records. No backfill or reassignment of legacy records
+occurs.
 
 The scope is persisted across conversations/messages and summaries; original
 and derived memory; lifecycle state, events, jobs and worker notifications;
@@ -57,13 +59,25 @@ document IDs retain their prior form for compatibility.
 
 Repository reads enforce the active scope for both direct-ID and collection
 access. Non-standalone Firestore queries prefilter by v2 scope fields. The
-standalone compatibility path retains owner-prefiltered queries so legacy
-records without scope fields remain visible, then checks every result against
-standalone/null scope before returning it. Vector retrieval applies scope before
-results enter model context. Export applies the same scope check while scanning
-owner records, pages through records so foreign app data cannot crowd legacy
-standalone data out of the export, and fails closed at a 100,000-record scan
-bound.
+standalone compatibility path uses bounded owner scans where legacy records
+have no queryable scope fields, then applies standalone/null scope before
+returning results. Standalone memory retrieval ranks eligible vectors after
+scope filtering instead of allowing foreign vectors to consume a KNN result
+cap; it fails closed after 5,000 records or the request deadline. This preserves
+legacy recall, but Firestore still reads foreign-scope documents during that
+compatibility scan. A zero-foreign-read legacy query requires a separate legacy
+data discriminator or storage partition and remains an open isolation item;
+no legacy backfill was authorized. Export pages owner records through the same
+scope check and resolves legacy ownerless evaluation/claim-extension rows only
+through owner- and scope-checked parent records. Export fails closed at a
+100,000-record scan bound.
+
+Conversation listing uses datastore pages, applies scope before filling the
+requested result count, and stops at a 5,000-record or five-second bound.
+Account deletion intents are account-wide operator workflows and currently
+reject non-standalone app/workspace scopes. Chat creation SSE events use the
+canonical records returned by persistence; decision inspection envelopes use
+the durable decision scope.
 
 Worker notifications carry application/workspace labels as routing metadata.
 The worker uses those labels to bind repository scope, then reloads the durable

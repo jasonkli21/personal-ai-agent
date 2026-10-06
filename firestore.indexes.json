@@ -979,6 +979,36 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "memories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "owner_id", "order": "ASCENDING" },
+        { "fieldPath": "embedding_model", "order": "ASCENDING" },
+        { "fieldPath": "embedding_dimensions", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "memories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "owner_id", "order": "ASCENDING" },
+        { "fieldPath": "embedding_model", "order": "ASCENDING" },
+        { "fieldPath": "embedding_dimensions", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "memory_type", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "derived_memories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "owner_id", "order": "ASCENDING" },
+        { "fieldPath": "embedding_model", "order": "ASCENDING" },
+        { "fieldPath": "embedding_dimensions", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [

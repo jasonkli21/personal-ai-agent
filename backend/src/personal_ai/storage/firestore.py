@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from time import monotonic
 from typing import Any
 from uuid import UUID
 
@@ -64,16 +65,40 @@ class FirestoreConversationRepository:
         def fetch():
             query = scope_query(
                 self._collection.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
-            )
-            return list(
-                query.order_by("updated_at", direction=firestore.Query.DESCENDING).stream()
-            )
+            ).order_by("updated_at", direction=firestore.Query.DESCENDING)
+            conversations = []
+            cursor = None
+            scanned = 0
+            deadline = monotonic() + 5
+            while len(conversations) < limit:
+                if monotonic() >= deadline:
+                    raise TimeoutError("conversation listing scan bound exceeded")
+                if scanned >= 5_000:
+                    probe = query.start_after(cursor).limit(1).stream(
+                        retry=None, timeout=max(0.1, deadline - monotonic())
+                    )
+                    if next(iter(probe), None) is not None:
+                        raise TimeoutError("conversation listing scan bound exceeded")
+                    break
+                page_query = query.limit(min(100, 5_000 - scanned))
+                if cursor is not None:
+                    page_query = page_query.start_after(cursor)
+                page = list(page_query.stream(retry=None, timeout=max(0.1, deadline - monotonic())))
+                if not page:
+                    break
+                scanned += len(page)
+                cursor = page[-1]
+                for snapshot in page:
+                    conversation = _conversation_from_data(snapshot.to_dict())
+                    if scope_matches(conversation):
+                        conversations.append(conversation)
+                        if len(conversations) == limit:
+                            break
+                if len(page) < min(100, 5_000 - scanned + len(page)):
+                    break
+            return conversations
 
-        snapshots = self._run(fetch)
-        return [
-            conversation for snapshot in snapshots
-            if scope_matches(conversation := _conversation_from_data(snapshot.to_dict()))
-        ][:limit]
+        return self._run(fetch)
 
     def update(self, conversation: Conversation) -> Conversation:
         self.get(owner_id=conversation.owner_id, conversation_id=conversation.id)
@@ -99,7 +124,7 @@ class FirestoreConversationRepository:
     def _run(operation: Callable[[], Any]) -> Any:
         try:
             return operation()
-        except (GoogleAPICallError, RetryError, OSError) as exc:
+        except (GoogleAPICallError, RetryError, OSError, TimeoutError) as exc:
             raise StorageUnavailableError("conversation storage unavailable") from exc
 
 

@@ -6,7 +6,7 @@ from uuid import UUID
 from google.api_core.exceptions import GoogleAPICallError, RetryError
 from google.cloud import firestore
 
-from personal_ai.auth.scope import scope_matches, scope_query, scoped_record
+from personal_ai.auth.scope import scope_matches, scope_normalized_dump, scope_query, scoped_record
 from personal_ai.decisions.contracts import (
     CandidateEvaluation,
     DecisionResult,
@@ -180,7 +180,10 @@ class FirestoreDecisionRepository:
             # are append-only; the snapshot and its evaluations commit together.
             for collection, record, ref, current_record in references:
                 if current_record is None or not current_record.exists:
-                    transaction.create(ref, self._data(record))
+                    data = self._data(record)
+                    if isinstance(record, CandidateEvaluation):
+                        data["owner_id"] = decision.owner_id
+                    transaction.create(ref, data)
                     continue
                 data = current_record.to_dict()
                 if isinstance(record, CanonicalEntity):
@@ -192,7 +195,10 @@ class FirestoreDecisionRepository:
                     ):
                         raise DecisionError("entity_identity_conflict")
                 elif collection is self.claims:
-                    if EntityClaim.model_validate(data) != record:
+                    old_claim = EntityClaim.model_validate(data)
+                    if not scope_matches(old_claim):
+                        raise ResourceNotFoundError("decision not found")
+                    if scope_normalized_dump(old_claim) != scope_normalized_dump(record):
                         raise DecisionError("claim_immutability_conflict")
                 else:
                     if data != self._data(record):
@@ -225,10 +231,14 @@ class FirestoreDecisionRepository:
             eval_query = self.evaluations.where(
                 filter=firestore.FieldFilter("decision_id", "==", str(decision_id))
             ).limit(24)
-            evaluations = tuple(
-                evaluation for item in scope_query(eval_query).stream(retry=None, timeout=5)
-                if scope_matches(evaluation := CandidateEvaluation.model_validate(item.to_dict()))
-            )
+            evaluations = []
+            for item in scope_query(eval_query).stream(retry=None, timeout=5):
+                data = item.to_dict()
+                data.pop("owner_id", None)
+                evaluation = CandidateEvaluation.model_validate(data)
+                if scope_matches(evaluation):
+                    evaluations.append(evaluation)
+            evaluations = tuple(evaluations)
             if any(item.entity_id not in decision.candidate_ids for item in evaluations):
                 raise StorageUnavailableError("decision evaluation invalid")
 

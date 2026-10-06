@@ -34,6 +34,7 @@ from personal_ai.agents.research.iterative_contracts import (
     StopReason,
     SufficiencyAssessment,
 )
+from personal_ai.auth.scope import current_application_scope
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.decisions.contracts import ClaimProposal, DecisionCreateRequest, DecisionResult
 from personal_ai.decisions.repositories import InMemoryDecisionRepository
@@ -57,6 +58,16 @@ GAP_PRIORITY = {
     EvidenceGapClass.CITATION_SUPPORT: 5,
     EvidenceGapClass.INITIAL_COVERAGE: 6,
 }
+
+
+def iterative_run_id(owner_id: str, idempotency_key: UUID, scope=None) -> UUID:
+    """Scope durable run identity while retaining historical standalone IDs."""
+    scope = scope or current_application_scope()
+    suffix = (
+        "" if scope.application_id == "personal_ai" and scope.workspace_id is None
+        else f":{scope.application_id}:{scope.workspace_id or ''}"
+    )
+    return uuid5(idempotency_key, f"phase8-run:{owner_id}{suffix}")
 
 
 def _snapshot_id(session: ResearchSession) -> UUID:
@@ -215,7 +226,9 @@ class IterativeResearchService:
             return existing
 
         now = self.clock()
-        run_id = uuid5(request.idempotency_key, f"phase8-run:{self.owner_id}")
+        # Keep historical standalone run IDs stable while partitioning the same
+        # owner/idempotency pair across application and workspace namespaces.
+        run_id = iterative_run_id(self.owner_id, request.idempotency_key)
         phase5_request = ResearchRequest(
             question=request.question,
             freshness=request.freshness,

@@ -6,6 +6,36 @@ import { proxyConversationApi } from "../../src/lib/conversation-proxy";
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("conversation streaming proxy", () => {
+  it("forwards the allowlisted scope and correlation headers without owner claims", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+    vi.stubGlobal("fetch", fetchMock);
+    const request = new NextRequest("http://localhost/api/conversations", {
+      headers: {
+        "X-Application-ID": "travel",
+        "X-Workspace-ID": "team-a",
+        "X-Request-ID": "trace-123",
+        "X-Client-Capabilities": "chat.streaming",
+        "X-Client-Context": "{\"surface\":\"web\"}",
+        "X-Owner-ID": "forged-owner",
+        "X-Idempotency-Key": "operation-key",
+      },
+    });
+    await proxyConversationApi(request);
+    const forwarded = new Headers(fetchMock.mock.calls[0][1].headers);
+    expect(Object.fromEntries([
+      "X-Application-ID", "X-Workspace-ID", "X-Request-ID",
+      "X-Client-Capabilities", "X-Client-Context",
+    ].map((name) => [name, forwarded.get(name)]) )).toEqual({
+      "X-Application-ID": "travel",
+      "X-Workspace-ID": "team-a",
+      "X-Request-ID": "trace-123",
+      "X-Client-Capabilities": "chat.streaming",
+      "X-Client-Context": "{\"surface\":\"web\"}",
+    });
+    expect(forwarded.has("X-Owner-ID")).toBe(false);
+    expect(forwarded.has("X-Idempotency-Key")).toBe(false);
+  });
+
   it("preserves status and streaming headers while forwarding the body", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("data", { headers: { "Content-Type": "text/event-stream", "X-Request-ID": "request" } })));
     const response = await proxyConversationApi(new NextRequest("http://localhost/api/conversations"));

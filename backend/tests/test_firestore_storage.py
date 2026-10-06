@@ -29,9 +29,10 @@ OWNER = "local"
 
 
 class FakeSnapshot:
-    def __init__(self, data: dict[str, Any] | None) -> None:
+    def __init__(self, data: dict[str, Any] | None, identifier: str | None = None) -> None:
         self._data = deepcopy(data)
         self.exists = data is not None
+        self.id = identifier
 
     def to_dict(self) -> dict[str, Any] | None:
         return deepcopy(self._data)
@@ -44,7 +45,7 @@ class FakeDocumentReference:
         self.id = identifier
 
     def get(self, **_: Any) -> FakeSnapshot:
-        return FakeSnapshot(self.client.data[self.collection_name].get(self.id))
+        return FakeSnapshot(self.client.data[self.collection_name].get(self.id), self.id)
 
     def create(self, data: dict[str, Any]) -> None:
         self.client.apply("create", self, data)
@@ -64,28 +65,36 @@ class FakeQuery:
         filters: tuple[Any, ...] = (),
         ordering: tuple[str, Any] | None = None,
         result_limit: int | None = None,
+        after: str | None = None,
     ) -> None:
         self.client = client
         self.collection_name = collection
         self.filters = filters
         self.ordering = ordering
         self.result_limit = result_limit
+        self.after = after
 
     def where(self, *, filter: Any) -> FakeQuery:
         return FakeQuery(
             self.client, self.collection_name, self.filters + (filter,), self.ordering,
-            self.result_limit,
+            self.result_limit, self.after,
         )
 
     def order_by(self, field: str, *, direction: Any = None) -> FakeQuery:
         return FakeQuery(
             self.client, self.collection_name, self.filters, (field, direction),
-            self.result_limit,
+            self.result_limit, self.after,
         )
 
     def limit(self, count: int) -> FakeQuery:
         return FakeQuery(
-            self.client, self.collection_name, self.filters, self.ordering, count
+            self.client, self.collection_name, self.filters, self.ordering, count, self.after
+        )
+
+    def start_after(self, snapshot: FakeSnapshot) -> FakeQuery:
+        return FakeQuery(
+            self.client, self.collection_name, self.filters, self.ordering,
+            self.result_limit, snapshot.id,
         )
 
     def stream(self, **_: Any):
@@ -102,10 +111,14 @@ class FakeQuery:
             if self.ordering:
                 field, direction = self.ordering
                 values.sort(key=lambda item: item[1].get(field), reverse=direction == "DESCENDING")
+            if self.after is not None:
+                position = next((index for index, (identifier, _) in enumerate(values)
+                                 if identifier == self.after), None)
+                values = values[position + 1:] if position is not None else []
             if self.result_limit is not None:
                 values = values[: self.result_limit]
-            for _, data in values:
-                yield FakeSnapshot(data)
+            for identifier, data in values:
+                yield FakeSnapshot(data, identifier)
 
         return snapshots()
 
@@ -224,6 +237,38 @@ def transactional_fake(monkeypatch: pytest.MonkeyPatch) -> None:
         return invoke
 
     monkeypatch.setattr(firestore, "transactional", transactional)
+
+
+def test_conversation_list_pages_past_foreign_scope_prefix_before_applying_limit() -> None:
+    client = FakeFirestoreClient()
+    repository = FirestoreConversationRepository(client)
+    for index in range(120):
+        conversation = Conversation(
+            id=UUID(int=index + 1),
+            owner_id=OWNER,
+            title=f"Foreign {index}",
+            created_at=NOW,
+            updated_at=NOW + timedelta(seconds=120 - index),
+            application_id="travel",
+            scope_version=2,
+        )
+        client.data["conversations"][str(conversation.id)] = conversation.model_dump(mode="json")
+    standalone = Conversation(
+        id=UUID(int=1000),
+        owner_id=OWNER,
+        title="Legacy standalone",
+        created_at=NOW,
+        updated_at=NOW - timedelta(seconds=1),
+    )
+    legacy_data = standalone.model_dump(mode="json")
+    legacy_data.pop("application_id")
+    legacy_data.pop("workspace_id")
+    legacy_data.pop("scope_version")
+    client.data["conversations"][str(standalone.id)] = legacy_data
+
+    result = repository.list(owner_id=OWNER, limit=1)
+
+    assert result == [standalone]
 
 
 def conversation(identifier: int = 1) -> Conversation:

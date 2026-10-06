@@ -17,6 +17,7 @@ from personal_ai.auth.account_data import (
     ExportTooLarge,
     FirestoreAccountDataRepository,
 )
+from personal_ai.auth.scope import ApplicationScope, application_scope_context
 from personal_ai.entities import Conversation
 
 
@@ -36,32 +37,38 @@ class Reference:
 
 
 class Query:
-    def __init__(self, client, name, owner=None, limit=None, after=None):
+    def __init__(self, client, name, filters=(), limit=None, after=None):
         self.client, self.name = client, name
-        self.owner, self.count, self.after = owner, limit, after
+        self.filters, self.count, self.after = filters, limit, after
 
     def document(self, document_id):
         return Reference(self.client, self.name, document_id)
 
     def where(self, *, filter):
-        assert filter.field_path == "owner_id" and filter.op_string == "=="
-        return Query(self.client, self.name, filter.value, self.count, self.after)
+        return Query(
+            self.client, self.name,
+            (*self.filters, (filter.field_path, filter.op_string, filter.value)),
+            self.count, self.after,
+        )
 
     def order_by(self, field):
         assert field == "__name__"
         return self
 
     def limit(self, count):
-        return Query(self.client, self.name, self.owner, count, self.after)
+        return Query(self.client, self.name, self.filters, count, self.after)
 
     def start_after(self, snapshot):
-        return Query(self.client, self.name, self.owner, self.count, snapshot.id)
+        return Query(self.client, self.name, self.filters, self.count, snapshot.id)
 
     def stream(self):
         records = [
             self.document(key).get()
             for key, value in sorted(self.client.data.get(self.name, {}).items())
-            if (self.owner is None or value.get("owner_id") == self.owner)
+            if all(
+                (value.get(field) == expected if operation == "==" else value.get(field) in expected)
+                for field, operation, expected in self.filters
+            )
             and (self.after is None or key > self.after)
         ]
         return iter(records[: self.count])
@@ -157,6 +164,60 @@ def test_standalone_export_scans_past_other_application_records(repository):
     assert [item["document_id"] for item in result["collections"]["memories"]] == [
         "zzzz-legacy"
     ]
+
+
+def test_export_joins_legacy_dependent_rows_through_owner_and_scope_checked_parents(repository):
+    repo, client = repository
+    client.data.update({
+        "decision_snapshots": {
+            "owned-decision": {"owner_id": "owner"},
+            "foreign-decision": {"owner_id": "other"},
+            "travel-decision": {"owner_id": "owner", "application_id": "travel", "scope_version": 2},
+        },
+        "candidate_evaluations": {
+            "owned-evaluation": {"decision_id": "owned-decision", "entity_id": "entity-a"},
+            "foreign-evaluation": {"decision_id": "foreign-decision", "entity_id": "entity-b"},
+            "travel-evaluation": {"decision_id": "travel-decision", "entity_id": "entity-c"},
+            "new-evaluation": {
+                "owner_id": "owner", "application_id": "personal_ai", "scope_version": 2,
+                "decision_id": "owned-decision",
+            },
+        },
+        "entity_claims": {
+            "owned-claim": {"owner_id": "owner"},
+            "foreign-claim": {"owner_id": "other"},
+        },
+        "domain_claim_extensions": {
+            "owned-extension": {"claim_id": "owned-claim"},
+            "foreign-extension": {"claim_id": "foreign-claim"},
+            "new-extension": {
+                "owner_id": "owner", "application_id": "personal_ai", "scope_version": 2,
+                "claim_id": "owned-claim",
+            },
+        },
+    })
+
+    result = repo.export_owner("owner", max_records=20, max_bytes=100_000)
+    exported = result["collections"]
+    assert {item["document_id"] for item in exported["candidate_evaluations"]} == {
+        "owned-evaluation", "new-evaluation"
+    }
+    assert {item["document_id"] for item in exported["domain_claim_extensions"]} == {
+        "owned-extension", "new-extension"
+    }
+
+
+def test_account_deletion_intents_fail_closed_outside_standalone(repository):
+    repo, _ = repository
+    with application_scope_context(ApplicationScope(application_id="travel")):
+        with pytest.raises(AccountRequestNotFound):
+            repo.create_deletion(owner_id="owner", idempotency_key=uuid4(), correlation_id="request")
+        with pytest.raises(AccountRequestNotFound):
+            repo.get_deletion(owner_id="owner", request_id=uuid4())
+        with pytest.raises(AccountRequestNotFound):
+            repo.transition_deletion(
+                owner_id="owner", request_id=uuid4(), action="confirm", correlation_id="request"
+            )
 
 
 def test_deletion_repository_replays_preserve_audit_and_enforce_owner_and_state(repository):

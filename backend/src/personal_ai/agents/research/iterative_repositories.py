@@ -16,6 +16,7 @@ from personal_ai.auth.scope import (
     STANDALONE_APPLICATION_ID,
     current_application_scope,
     data_scope_matches,
+    preserve_legacy_child_scope,
     scope_matches,
     scoped_record,
 )
@@ -79,6 +80,8 @@ class InMemoryIterativeResearchRepository:
             session = self.session_repository.get(run.owner_id, run.session_id)
             if session.state != "pending" or session.iterative_run_id != run.id:
                 raise ResearchError("research_busy", 409)
+            if run.id in self.runs:
+                raise ResearchError("research_run_conflict", 409)
             self.runs[run.id] = run
             self.keys[key] = run.id
             return run
@@ -151,6 +154,7 @@ class InMemoryIterativeResearchRepository:
                 "revision": run.revision + 1, "events": (*run.events, event),
             })
             candidate = scoped_record(candidate)
+            candidate = preserve_legacy_child_scope(run, candidate)
             from personal_ai.agents.research.iterative_contracts import validate_run_transition
             validate_run_transition(run, candidate, lease_recovery=run.lease_owner is not None)
             self.runs[run.id] = candidate
@@ -163,6 +167,7 @@ class InMemoryIterativeResearchRepository:
             session = scoped_record(session)
         with self.lock:
             current = self.get(owner_id, run.id)
+            run = preserve_legacy_child_scope(current, run)
             now = now or run.updated_at
             if (
                 current.lease_owner is not None
@@ -179,14 +184,15 @@ class InMemoryIterativeResearchRepository:
                 raise ResearchError("research_conflict", 409)
             if session is not None:
                 old_session = self.session_repository.get(owner_id, session.id)
+                candidate_session = preserve_legacy_child_scope(old_session, session)
                 if (
                     old_session.iterative_run_id != current.id
                     or old_session.run_token != current.lease_owner
                     or old_session.state == "pending" and current.state.value != "pending"
                 ):
                     raise ResearchError("research_conflict", 409)
-                validate_save(old_session, session)
-                self.session_repository.sessions[session.id] = session
+                validate_save(old_session, candidate_session)
+                self.session_repository.sessions[session.id] = candidate_session
             self.runs[run.id] = run
             return run
 
@@ -346,6 +352,7 @@ class FirestoreIterativeResearchRepository:
                 "revision": run.revision + 1, "events": (*run.events, event),
             })
             candidate = scoped_record(candidate)
+            candidate = preserve_legacy_child_scope(run, candidate)
             validate_run_transition(run, candidate, lease_recovery=run.lease_owner is not None)
             transaction.set(run_ref, self._data(candidate))
             transaction.set(session_ref, self._data(updated_session))
@@ -371,6 +378,7 @@ class FirestoreIterativeResearchRepository:
             current = self._decode(
                 run_ref.get(transaction=transaction, retry=None, timeout=timeout()), owner_id
             )
+            candidate_run = preserve_legacy_child_scope(current, run)
             checked_at = now or run.updated_at
             if (
                 current.lease_owner is not None
@@ -380,10 +388,10 @@ class FirestoreIterativeResearchRepository:
             ):
                 raise ResearchError("research_conflict", 409)
             try:
-                validate_run_transition(current, run)
+                validate_run_transition(current, candidate_run)
             except ValueError as error:
                 raise ResearchError("research_conflict", 409) from error
-            if current.lease_owner != run.lease_owner and run.lease_owner is not None:
+            if current.lease_owner != candidate_run.lease_owner and candidate_run.lease_owner is not None:
                 raise ResearchError("research_conflict", 409)
             session_ref, old_session = None, None
             if session is not None:
@@ -392,16 +400,19 @@ class FirestoreIterativeResearchRepository:
                     session_ref.get(transaction=transaction, retry=None, timeout=timeout()),
                     owner_id,
                 )
+                candidate_session = preserve_legacy_child_scope(old_session, session)
                 if (
                     old_session.iterative_run_id != current.id
                     or old_session.run_token != current.lease_owner
                     or old_session.state == "pending" and current.state.value != "pending"
                 ):
                     raise ResearchError("research_conflict", 409)
-                validate_save(old_session, session)
-            transaction.set(run_ref, self._data(run))
+                validate_save(old_session, candidate_session)
+            else:
+                candidate_session = None
+            transaction.set(run_ref, self._data(candidate_run))
             if session_ref is not None:
-                transaction.set(session_ref, self._data(session))
-            return run
+                transaction.set(session_ref, self._data(candidate_session))
+            return candidate_run
 
         return self._run(lambda: bounded_transaction(self.client, operation))

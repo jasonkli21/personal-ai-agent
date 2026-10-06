@@ -640,6 +640,9 @@ class DecisionService:
             raise ResourceNotFoundError("decision not found")
         result = self.detail(decision_id)
         return DecisionInspection(
+            application_id=result.decision.application_id,
+            workspace_id=result.decision.workspace_id,
+            scope_version=result.decision.scope_version,
             decision_id=decision_id,
             state=result.decision.state,
             policy_versions=result.decision.policy_versions,

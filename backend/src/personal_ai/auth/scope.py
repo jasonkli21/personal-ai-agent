@@ -216,6 +216,63 @@ def scoped_record(record, scope: ApplicationScope | None = None):
     return apply(record)
 
 
+def preserve_legacy_child_scope(current, candidate):
+    """Keep v1 child envelopes intact when rewriting a v2 aggregate.
+
+    The aggregate root may advance to the active scope. Historical embedded
+    records keep their original absent/v1 envelope and payload.
+    """
+    def preserve(old, new, *, include_self: bool):
+        if isinstance(old, BaseModel) and isinstance(new, type(old)):
+            updates = {}
+            if include_self and isinstance(old, ApplicationScopedRecord) and old.scope_version == 1:
+                updates.update(
+                    application_id=old.application_id,
+                    workspace_id=old.workspace_id,
+                    scope_version=old.scope_version,
+                )
+            for name in type(old).model_fields:
+                old_value = getattr(old, name)
+                new_value = getattr(new, name)
+                preserved = preserve(old_value, new_value, include_self=True)
+                if preserved is not new_value:
+                    updates[name] = preserved
+            return new.model_copy(update=updates) if updates else new
+        if isinstance(old, (tuple, list)) and isinstance(new, type(old)):
+            values = [
+                preserve(old[index], item, include_self=True)
+                if index < len(old) else item
+                for index, item in enumerate(new)
+            ]
+            return type(new)(values) if any(a is not b for a, b in zip(values, new, strict=True)) else new
+        if isinstance(old, dict) and isinstance(new, dict):
+            values = {key: preserve(old[key], value, include_self=True)
+                      if key in old else value for key, value in new.items()}
+            return values if any(values[key] is not new[key] for key in values) else new
+        return new
+
+    return preserve(current, candidate, include_self=False)
+
+
+def scope_normalized_dump(value):
+    """Serialize substantive record content without scope envelope fields."""
+    if isinstance(value, BaseModel):
+        return {
+            key: scope_normalized_dump(item)
+            for key, item in value.model_dump(mode="python").items()
+            if key not in {"application_id", "workspace_id", "scope_version"}
+        }
+    if isinstance(value, dict):
+        return {
+            key: scope_normalized_dump(item)
+            for key, item in value.items()
+            if key not in {"application_id", "workspace_id", "scope_version"}
+        }
+    if isinstance(value, (tuple, list)):
+        return [scope_normalized_dump(item) for item in value]
+    return value
+
+
 def scope_query(query, scope: ApplicationScope | None = None):
     """Add Firestore prefilters for non-legacy namespaces.
 

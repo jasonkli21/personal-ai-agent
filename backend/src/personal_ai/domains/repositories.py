@@ -5,7 +5,12 @@ from threading import RLock
 from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from personal_ai.auth.scope import scope_matches, scoped_identifier, scoped_record
+from personal_ai.auth.scope import (
+    scope_matches,
+    scope_normalized_dump,
+    scoped_identifier,
+    scoped_record,
+)
 from personal_ai.domains.contracts import DomainComparisonResult, DomainLookupReservation
 from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
 
@@ -281,8 +286,18 @@ class FirestoreDomainRepository:
                     old_static = old.model_copy(update={"enabled": record.enabled})
                     if old_static != record:
                         raise DomainRepositoryError("domain_registration_conflict")
-                elif data != self._data(record):
-                    raise DomainRepositoryError("domain_record_conflict")
+                else:
+                    comparable = dict(data)
+                    comparable.pop("owner_id", None)
+                    from personal_ai.domains.contracts import DomainClaimExtension
+
+                    if isinstance(record, DomainClaimExtension):
+                        old_claim = DomainClaimExtension.model_validate(comparable)
+                        if not scope_matches(old_claim):
+                            raise DomainRepositoryError("domain_comparison_conflict")
+                        comparable = old_claim
+                    if scope_normalized_dump(comparable) != scope_normalized_dump(self._data(record)):
+                        raise DomainRepositoryError("domain_record_conflict")
 
             if not any(ref == registration_ref and current is not None and current.exists
                        for _, ref, current in record_refs):
@@ -290,7 +305,10 @@ class FirestoreDomainRepository:
             for record, reference, current in record_refs:
                 if reference == registration_ref or current is not None and current.exists:
                     continue
-                transaction.create(reference, self._data(record))
+                data = self._data(record)
+                if record in result.domain_claims:
+                    data["owner_id"] = snapshot.owner_id
+                transaction.create(reference, data)
             if existing_result is None:
                 transaction.create(comparison_ref, self._data(result))
             saved = existing_result or result

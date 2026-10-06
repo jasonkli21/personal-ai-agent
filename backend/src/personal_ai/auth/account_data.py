@@ -11,7 +11,12 @@ from decimal import Decimal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from personal_ai.auth.owner_data import OWNER_DATA_COLLECTIONS
-from personal_ai.auth.scope import current_application_scope, data_scope_matches, scope_query
+from personal_ai.auth.scope import (
+    STANDALONE_APPLICATION_ID,
+    current_application_scope,
+    data_scope_matches,
+    scope_query,
+)
 
 EXPORT_COLLECTIONS = (*OWNER_DATA_COLLECTIONS, "account_lifecycle_requests")
 MAX_EXPORT_SCAN_RECORDS = 100_000
@@ -70,51 +75,90 @@ class FirestoreAccountDataRepository:
         """Release the per-request Firestore transport after an account action."""
         self.client.close()
 
+    @staticmethod
+    def _require_standalone_lifecycle() -> None:
+        scope = current_application_scope()
+        if scope.application_id != STANDALONE_APPLICATION_ID or scope.workspace_id is not None:
+            # Deletion requests currently represent account-wide operator
+            # intents. They have no app/workspace authority contract yet.
+            raise AccountRequestNotFound
+
     def export_owner(self, owner_id: str, *, max_records: int, max_bytes: int) -> dict:
         scope = current_application_scope()
         generated_at = datetime.now(UTC)
         collections: dict[str, list[dict]] = {}
+        eligible_parents = {"decision_snapshots": set(), "entity_claims": set()}
         count = 0
         estimated_bytes = 0
         try:
             for collection_name in EXPORT_COLLECTIONS:
                 records = []
-                query = (
-                    self.client.collection(collection_name)
-                    .where(filter=self.firestore.FieldFilter("owner_id", "==", owner_id))
-                )
-                query = scope_query(query, scope).order_by("__name__")
-                cursor = None
+                dependent_collection = collection_name in {
+                    "candidate_evaluations", "domain_claim_extensions"
+                }
+                if dependent_collection:
+                    parent_collection = (
+                        "decision_snapshots" if collection_name == "candidate_evaluations"
+                        else "entity_claims"
+                    )
+                    parent_field = "decision_id" if collection_name == "candidate_evaluations" else "claim_id"
+                    parent_ids = sorted(eligible_parents[parent_collection])
+                    base_queries = [
+                        self.client.collection(collection_name).where(
+                            filter=self.firestore.FieldFilter(
+                                parent_field, "in", parent_ids[offset:offset + 30]
+                            )
+                        )
+                        for offset in range(0, len(parent_ids), 30)
+                    ]
+                    base_queries = [scope_query(query, scope).order_by("__name__") for query in base_queries]
+                else:
+                    query = self.client.collection(collection_name)
+                    query = query.where(
+                        filter=self.firestore.FieldFilter("owner_id", "==", owner_id)
+                    )
+                    query = scope_query(query, scope)
+                    base_queries = [query.order_by("__name__")]
                 scanned = 0
-                while True:
-                    page = query.limit(250)
-                    if cursor is not None:
-                        page = page.start_after(cursor)
-                    snapshots = list(page.stream())
-                    if not snapshots:
-                        break
-                    for snapshot in snapshots:
-                        cursor = snapshot
-                        scanned += 1
-                        if scanned > MAX_EXPORT_SCAN_RECORDS:
-                            raise ExportTooLarge
-                        values = snapshot.to_dict() or {}
-                        if not data_scope_matches(values, scope):
-                            continue
-                        count += 1
-                        if count > max_records:
-                            raise ExportTooLarge
-                        record = {"document_id": snapshot.id, "data": _portable(values)}
-                        estimated_bytes += len(
-                            json.dumps(
-                                record, ensure_ascii=False, separators=(",", ":"), allow_nan=False
-                            ).encode("utf-8")
-                        ) + len(collection_name) + 4
-                        if estimated_bytes > max_bytes:
-                            raise ExportTooLarge
-                        records.append(record)
-                    if len(snapshots) < 250:
-                        break
+                for query in base_queries:
+                    cursor = None
+                    while True:
+                        page = query.limit(250)
+                        if cursor is not None:
+                            page = page.start_after(cursor)
+                        snapshots = list(page.stream())
+                        if not snapshots:
+                            break
+                        for snapshot in snapshots:
+                            cursor = snapshot
+                            scanned += 1
+                            if scanned > MAX_EXPORT_SCAN_RECORDS:
+                                raise ExportTooLarge
+                            values = snapshot.to_dict() or {}
+                            record_owner = values.get("owner_id")
+                            if dependent_collection:
+                                if not self._legacy_dependent_belongs(
+                                    collection_name, values, owner_id, scope
+                                ):
+                                    continue
+                            elif record_owner != owner_id or not data_scope_matches(values, scope):
+                                continue
+                            count += 1
+                            if count > max_records:
+                                raise ExportTooLarge
+                            record = {"document_id": snapshot.id, "data": _portable(values)}
+                            estimated_bytes += len(
+                                json.dumps(
+                                    record, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                                ).encode("utf-8")
+                            ) + len(collection_name) + 4
+                            if estimated_bytes > max_bytes:
+                                raise ExportTooLarge
+                            records.append(record)
+                            if collection_name in eligible_parents:
+                                eligible_parents[collection_name].add(snapshot.id)
+                        if len(snapshots) < 250:
+                            break
                 if records:
                     collections[collection_name] = records
         except ExportTooLarge:
@@ -141,6 +185,29 @@ class FirestoreAccountDataRepository:
             raise ExportTooLarge
         return result
 
+    def _legacy_dependent_belongs(self, collection_name, values, owner_id, scope):
+        """Resolve old ownerless child rows through their authoritative parent."""
+        if values.get("owner_id") not in {None, owner_id}:
+            return False
+        # Explicitly scoped children must agree with the requested namespace;
+        # absent fields are legacy standalone/null only.
+        if not data_scope_matches(values, scope):
+            return False
+        if collection_name == "candidate_evaluations":
+            parent_collection, parent_id = "decision_snapshots", values.get("decision_id")
+        else:
+            parent_collection, parent_id = "entity_claims", values.get("claim_id")
+        if not parent_id:
+            return False
+        try:
+            parent = self.client.collection(parent_collection).document(str(parent_id)).get()
+            parent_data = parent.to_dict() if parent.exists else None
+        except Exception as error:
+            raise AccountDataUnavailable from error
+        if not parent_data:
+            return False
+        return parent_data.get("owner_id") == owner_id and data_scope_matches(parent_data, scope)
+
     def record_export(self, *, owner_id: str, idempotency_key: UUID, correlation_id: str) -> None:
         scope = current_application_scope()
         self._write_audit(
@@ -155,6 +222,7 @@ class FirestoreAccountDataRepository:
         )
 
     def create_deletion(self, *, owner_id: str, idempotency_key: UUID, correlation_id: str) -> dict:
+        self._require_standalone_lifecycle()
         request_id = uuid5(NAMESPACE_URL, f"account-lifecycle-v1:{owner_id}:{idempotency_key}")
         ref = self.requests.document(str(request_id))
         audit_id = self._audit_id(owner_id, "account.deletion.request", idempotency_key)
@@ -207,6 +275,7 @@ class FirestoreAccountDataRepository:
             raise AccountDataUnavailable from error
 
     def get_deletion(self, *, owner_id: str, request_id: UUID) -> dict:
+        self._require_standalone_lifecycle()
         try:
             snapshot = self.requests.document(str(request_id)).get()
             data = snapshot.to_dict() if snapshot.exists else None
@@ -230,6 +299,7 @@ class FirestoreAccountDataRepository:
         action: str,
         correlation_id: str,
     ) -> dict:
+        self._require_standalone_lifecycle()
         if action not in {"confirm", "cancel"}:
             raise ValueError("unsupported_deletion_action")
         ref = self.requests.document(str(request_id))

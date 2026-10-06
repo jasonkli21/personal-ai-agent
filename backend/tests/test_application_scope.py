@@ -5,10 +5,14 @@ from hashlib import sha256
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
+from pydantic import ConfigDict
 
+from personal_ai.agents.research.iterative_service import iterative_run_id
 from personal_ai.auth.scope import (
     ApplicationScope,
+    ApplicationScopedRecord,
     application_scope_context,
+    preserve_legacy_child_scope,
     scope_matches,
     scoped_record,
 )
@@ -70,6 +74,27 @@ def test_absent_scope_fields_decode_as_legacy_standalone_only():
     assert legacy.scope_version == 1
     assert scope_matches(legacy, ApplicationScope())
     assert not scope_matches(legacy, ApplicationScope(application_id="shopping"))
+
+
+def test_aggregate_update_preserves_legacy_child_scope_and_content():
+    class Child(ApplicationScopedRecord):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        content: str
+
+    class Aggregate(ApplicationScopedRecord):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        children: tuple[Child, ...]
+        revision: int
+
+    original = Aggregate.model_validate({"children": [{"content": "historical"}], "revision": 1})
+    authored = scoped_record(original.model_copy(update={"revision": 2}))
+    persisted = preserve_legacy_child_scope(original, authored)
+    assert persisted.scope_version == 2
+    assert persisted.revision == 2
+    assert persisted.children[0].scope_version == 1
+    assert persisted.children[0].model_dump(exclude={"scope_version", "application_id", "workspace_id"}) == {
+        "content": "historical"
+    }
 
 
 def test_memory_v1_identity_is_preserved_and_new_scope_namespaces_are_distinct():
@@ -170,3 +195,18 @@ def test_lifecycle_replay_ids_keep_standalone_v1_and_partition_new_scopes():
     ):
         assert event_idempotency_id(key) != app_event
         assert job_idempotency_id(key) != app_job
+
+
+def test_iterative_run_identity_partitions_apps_and_workspaces_but_keeps_standalone_id():
+    key = UUID(int=9876)
+    standalone = iterative_run_id(OWNER, key, ApplicationScope())
+    app = iterative_run_id(OWNER, key, ApplicationScope(application_id="travel"))
+    second_app = iterative_run_id(OWNER, key, ApplicationScope(application_id="shopping"))
+    workspace_a = iterative_run_id(
+        OWNER, key, ApplicationScope(application_id="travel", workspace_id="team-a")
+    )
+    workspace_b = iterative_run_id(
+        OWNER, key, ApplicationScope(application_id="travel", workspace_id="team-b")
+    )
+    assert len({standalone, app, second_app, workspace_a, workspace_b}) == 5
+    assert standalone == uuid5(key, f"phase8-run:{OWNER}")

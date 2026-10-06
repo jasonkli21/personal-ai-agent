@@ -19,6 +19,7 @@ from personal_ai.auth.scope import (
     current_application_scope,
     data_scope_matches,
     scope_matches,
+    scope_normalized_dump,
     scope_query,
     scoped_identifier,
     scoped_record,
@@ -88,6 +89,9 @@ def _same_job_intent(first, second):
         "retry_reason",
         "next_attempt_at",
         "updated_at",
+        "application_id",
+        "workspace_id",
+        "scope_version",
     }
     return first.model_dump(exclude=fields) == second.model_dump(exclude=fields)
 
@@ -257,7 +261,7 @@ class InMemoryMemoryLifecycleRepository:
             event_key = (event.application_id, event.workspace_id, event.idempotency_key)
             old = self.events_by_key.get(event_key)
             if old:
-                if old.model_dump() != event.model_dump():
+                if scope_normalized_dump(old) != scope_normalized_dump(event):
                     raise ValueError("idempotency_key_reused")
                 return MemoryLifecycleOutcome(
                     status="replayed",
@@ -628,7 +632,7 @@ class InMemoryMemoryLifecycleRepository:
                 )
                 event_key = (event.application_id, event.workspace_id, event.idempotency_key)
                 old = self.events_by_key.get(event_key)
-                if old and old.model_dump() != event.model_dump():
+                if old and scope_normalized_dump(old) != scope_normalized_dump(event):
                     raise ValueError("idempotency_key_reused")
                 events.append(event)
                 states.append(transition(state, event))
@@ -978,7 +982,7 @@ class FirestoreMemoryLifecycleRepository:
                     existing = MemoryLifecycleEvent.model_validate(existing_snapshot.to_dict())
                 except (ValueError, TypeError, KeyError) as error:
                     raise StorageUnavailableError("memory lifecycle event invalid") from error
-                if existing.model_dump() != event.model_dump():
+                if scope_normalized_dump(existing) != scope_normalized_dump(event):
                     raise ValueError("idempotency_key_reused")
                 if not scope_matches(existing):
                     raise ResourceNotFoundError("memory event not found")

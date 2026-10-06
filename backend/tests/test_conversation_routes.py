@@ -112,6 +112,25 @@ def test_application_scope_isolated_and_client_owner_context_is_not_authority(
     ).status_code == 200
 
 
+def test_chat_creation_and_terminal_events_use_the_persisted_scope(client: TestClient) -> None:
+    conversation = client.post(
+        "/v1/conversations", json={}, headers={"X-Application-ID": "travel"}
+    ).json()
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Hello"},
+        headers={"X-Application-ID": "travel", "X-Request-ID": "scope-event-test"},
+    )
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    created = [payload["message"] for name, payload in events if name == "message.created"]
+    terminal = [payload["message"] for name, payload in events if name == "response.completed"]
+    assert len(created) == 2
+    assert len(terminal) == 1
+    assert all(item["application_id"] == "travel" and item["scope_version"] == 2
+               for item in (*created, *terminal))
+
+
 def test_workspace_scope_fails_closed_without_membership_authority(client: TestClient) -> None:
     response = client.post(
         "/v1/conversations", json={}, headers={"X-Workspace-ID": "team-a"}

@@ -24,6 +24,7 @@ from personal_ai.agents.research.iterative_repositories import (
 from personal_ai.agents.research.iterative_service import IterativeResearchService
 from personal_ai.agents.research.repositories import InMemoryResearchRepository
 from personal_ai.agents.research.service import ResearchService
+from personal_ai.auth.scope import ApplicationScope, application_scope_context
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.llm.fake import FakeResearchLLMClient
@@ -182,6 +183,39 @@ async def test_idempotency_owner_scope_and_reconnect_are_read_only():
     )
     with pytest.raises(ResourceNotFoundError):
         await other_owner.get(final.id)
+
+
+@pytest.mark.anyio
+async def test_same_owner_and_idempotency_key_create_independent_runs_per_scope():
+    service, _, _, sessions, runs = build_service()
+    req = request(key=uuid4())
+    standalone = await service.create(req)
+    scoped_runs = []
+    for scope in (
+        ApplicationScope(application_id="travel"),
+        ApplicationScope(application_id="shopping"),
+        ApplicationScope(application_id="travel", workspace_id="team-a"),
+        ApplicationScope(application_id="travel", workspace_id="team-b"),
+    ):
+        with application_scope_context(scope):
+            scoped_runs.append(await service.create(req))
+
+    all_runs = [standalone, *scoped_runs]
+    assert len({item.id for item in all_runs}) == len(all_runs)
+    assert len({item.session_id for item in all_runs}) == len(all_runs)
+    assert len(runs.runs) == len(all_runs)
+    assert len(sessions.sessions) == len(all_runs)
+    for scope, expected in zip((
+        ApplicationScope(application_id="travel"),
+        ApplicationScope(application_id="shopping"),
+        ApplicationScope(application_id="travel", workspace_id="team-a"),
+        ApplicationScope(application_id="travel", workspace_id="team-b"),
+    ), scoped_runs, strict=True):
+        with application_scope_context(scope):
+            assert runs.get_by_key(service.owner_id, req.idempotency_key) == expected
+            assert runs.get(service.owner_id, expected.id) == expected
+            assert runs.session(service.owner_id, expected.session_id).iterative_run_id == expected.id
+    assert runs.get_by_key(service.owner_id, req.idempotency_key) == standalone
 
 
 @pytest.mark.anyio

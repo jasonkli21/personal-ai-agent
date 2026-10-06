@@ -207,7 +207,7 @@ class ChatTurnService:
     ) -> AsyncIterator[str]:
         reservation = uuid4()
         deadline = monotonic() + self._context.settings.request_timeout_seconds
-        self._messages.prepare_message_turn(
+        persisted_users = self._messages.prepare_message_turn(
             owner_id=self._owner_id,
             conversation_id=user.conversation_id,
             expected_active_ids=[m.id for m in active],
@@ -240,7 +240,7 @@ class ChatTurnService:
                 parent_message_id=user.id,
                 supersedes_message_id=assistant_supersedes,
             )
-            self._messages.prepare_message_turn(
+            persisted_assistant = self._messages.prepare_message_turn(
                 owner_id=self._owner_id,
                 conversation_id=user.conversation_id,
                 expected_active_ids=[m.id for m in post_active],
@@ -275,8 +275,8 @@ class ChatTurnService:
         )
         return self._stream(
             _PreparedTurn(
-                (*created_users, assistant),
-                assistant,
+                (*persisted_users, persisted_assistant[0]),
+                persisted_assistant[0],
                 assembled.messages,
                 request_id,
                 assembled.selected_memory_ids,

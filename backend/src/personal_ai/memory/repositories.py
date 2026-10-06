@@ -1,5 +1,6 @@
-"""Owner-scoped memory stores; production search is bounded indexed KNN only."""
+"""Owner-scoped memory stores with bounded, scope-correct retrieval."""
 
+import math
 from threading import RLock
 from time import monotonic
 from uuid import UUID
@@ -25,6 +26,65 @@ from personal_ai.storage.errors import (
 )
 from personal_ai.storage.firestore import FirestoreConversationRepository, _firestore_client
 from personal_ai.storage.transactions import bounded_transaction
+
+
+def _standalone_scoped_vector_scan(collection, *, owner_id, embedding, model, dimensions,
+                                   limit, timeout, memory_type=None, derived=False):
+    """Rank eligible standalone records before applying the result limit.
+
+    Firestore cannot query legacy documents whose scope fields are absent. A
+    bounded owner scan preserves legacy recall without letting foreign vectors
+    consume the KNN top-k window.
+    """
+    query = collection.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
+    for field, value in (("embedding_model", model), ("embedding_dimensions", dimensions)):
+        query = query.where(filter=firestore.FieldFilter(field, "==", value))
+    if not derived:
+        query = query.where(filter=firestore.FieldFilter("status", "==", "active"))
+        if memory_type is not None:
+            query = query.where(filter=firestore.FieldFilter("memory_type", "==", memory_type))
+    cursor = None
+    scanned = 0
+    deadline = monotonic() + timeout
+    scored = []
+    target = vector(embedding, dimensions)
+    target_norm = math.sqrt(sum(value * value for value in target))
+    while scanned < 5_000:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("memory scope scan deadline exceeded")
+        page_query = query.order_by("__name__").limit(min(250, 5_000 - scanned))
+        if cursor is not None:
+            page_query = page_query.start_after(cursor)
+        page = list(page_query.stream(retry=None, timeout=remaining))
+        if not page:
+            break
+        scanned += len(page)
+        cursor = page[-1]
+        for snapshot in page:
+            data = snapshot.to_dict()
+            if not data_scope_matches(data):
+                continue
+            data["embedding"] = tuple(data["embedding"])
+            record = (DerivedMemory if derived else Memory).model_validate(data)
+            values = vector(record.embedding, dimensions)
+            norm = math.sqrt(sum(value * value for value in values))
+            similarity = sum(a * b for a, b in zip(values, target, strict=True)) / (norm * target_norm)
+            scored.append(ScoredMemory(record, similarity))
+        if len(page) < min(250, 5_000 - scanned + len(page)):
+            break
+    if scanned >= 5_000 and cursor is not None:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("memory scope scan deadline exceeded")
+        probe = list(
+            query.order_by("__name__").start_after(cursor).limit(1).stream(
+                retry=None, timeout=remaining
+            )
+        )
+        if probe:
+            raise StorageUnavailableError("memory scope scan exceeded its record bound")
+    return sorted(scored, key=lambda item: (-item.similarity, str(item.memory.id)))[:limit]
 
 
 def validate(memory):
@@ -260,6 +320,12 @@ class FirestoreMemoryRepository:
         return self._run(operation)
 
     def search(self, *, owner_id, embedding, model, dimensions, limit, timeout=5, memory_type=None):
+        requested_scope = current_application_scope()
+        if requested_scope.application_id == "personal_ai" and requested_scope.workspace_id is None:
+            return self._run(lambda: _standalone_scoped_vector_scan(
+                self.collection, owner_id=owner_id, embedding=embedding, model=model,
+                dimensions=dimensions, limit=limit, timeout=timeout, memory_type=memory_type,
+            ))
         query = self.collection
         for field, value in (
             ("owner_id", owner_id),
@@ -269,13 +335,7 @@ class FirestoreMemoryRepository:
         ):
             query = query.where(filter=firestore.FieldFilter(field, "==", value))
         query = scope_query(query)
-        requested_scope = current_application_scope()
-        candidate_limit = (
-            min(100, max(limit, limit * 4))
-            if requested_scope.application_id == "personal_ai"
-            and requested_scope.workspace_id is None
-            else limit
-        )
+        candidate_limit = limit
         if memory_type is not None:
             query = query.where(filter=firestore.FieldFilter("memory_type", "==", memory_type))
         nearest = query.find_nearest(
@@ -320,6 +380,13 @@ class FirestoreMemoryRepository:
         return record
 
     def search_derived(self, *, owner_id, embedding, model, dimensions, limit, timeout=5):
+        requested_scope = current_application_scope()
+        derived_collection = self.client.collection("derived_memories")
+        if requested_scope.application_id == "personal_ai" and requested_scope.workspace_id is None:
+            return self._run(lambda: _standalone_scoped_vector_scan(
+                derived_collection, owner_id=owner_id, embedding=embedding, model=model,
+                dimensions=dimensions, limit=limit, timeout=timeout, derived=True,
+            ))
         query = self.client.collection("derived_memories")
         for field, value in (
             ("owner_id", owner_id),
@@ -328,13 +395,7 @@ class FirestoreMemoryRepository:
         ):
             query = query.where(filter=firestore.FieldFilter(field, "==", value))
         query = scope_query(query)
-        requested_scope = current_application_scope()
-        candidate_limit = (
-            min(100, max(limit, limit * 4))
-            if requested_scope.application_id == "personal_ai"
-            and requested_scope.workspace_id is None
-            else limit
-        )
+        candidate_limit = limit
         nearest = query.find_nearest(
             vector_field="embedding",
             query_vector=Vector(vector(embedding, dimensions)),

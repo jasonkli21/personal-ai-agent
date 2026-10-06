@@ -83,27 +83,30 @@ def test_firestore_owner_status_model_prefilters_vector_limit_and_safe_failures(
     client = MagicMock()
     collection = client.collection.return_value
     collection.where.return_value = collection
-    nearest = collection.find_nearest.return_value
     data = memory.model_dump(mode="json")
     data["embedding"] = Vector(memory.embedding)
-    data["vector_distance"] = 0.02
-    nearest.stream.return_value = [snapshot(data)]
+    foreign = dict(data, application_id="travel")
+    collection.order_by.return_value = collection
+    collection.limit.return_value = collection
+    collection.start_after.return_value = collection
+    # More than the old 4x top-k overfetch cap precedes the eligible record.
+    collection.stream.return_value = [snapshot(foreign) for _ in range(120)] + [snapshot(data)]
     repository = FirestoreMemoryRepository(client)
     result = repository.search(
         owner_id="local", embedding=[1, 0, 0], model="fake-v1", dimensions=3, limit=10
     )
     assert result[0].memory.id == memory.id
-    assert result[0].similarity == 0.98
+    assert result[0].similarity == pytest.approx(1.0)
     filters = [call.kwargs["filter"] for call in collection.where.call_args_list]
     assert [(f.field_path, f.value) for f in filters] == [
         ("owner_id", "local"),
-        ("status", "active"),
         ("embedding_model", "fake-v1"),
         ("embedding_dimensions", 3),
+        ("status", "active"),
     ]
-    assert collection.find_nearest.call_args.kwargs["limit"] == 40
-    assert nearest.stream.call_args.kwargs["retry"] is None
-    nearest.stream.side_effect = ServiceUnavailable("private storage message")
+    assert collection.limit.call_args.args == (250,)
+    assert collection.stream.call_args.kwargs["retry"] is None
+    collection.stream.side_effect = ServiceUnavailable("private storage message")
     with pytest.raises(StorageUnavailableError) as caught:
         repository.search(
             owner_id="local", embedding=[1, 0, 0], model="fake-v1", dimensions=3, limit=10
