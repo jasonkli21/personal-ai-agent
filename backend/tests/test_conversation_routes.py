@@ -15,6 +15,8 @@ from personal_ai.api.dependencies import (
     get_message_repository,
     get_summary_repository,
 )
+from personal_ai.applications.contracts import ApplicationDefinition, CapabilityRegistration
+from personal_ai.applications.registry import ApplicationRegistry
 from personal_ai.context import ContextAssembler
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import EstimatedTokenCounter
@@ -110,6 +112,61 @@ def test_application_scope_isolated_and_client_owner_context_is_not_authority(
     assert client.get(
         f"/v1/conversations/{travel['id']}", headers={"X-Application-ID": "travel"}
     ).status_code == 200
+
+
+def test_unknown_registered_application_is_denied_with_a_stable_error(
+    client: TestClient,
+) -> None:
+    response = client.get(
+        "/v1/conversations", headers={"X-Application-ID": "not-registered"}
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "application_not_registered"
+
+
+def test_registered_synthetic_application_reaches_scoped_context_without_core_branching(
+    client: TestClient, monkeypatch,
+) -> None:
+    definition = ApplicationDefinition(
+        application_id="synthetic",
+        display_name="Synthetic",
+        memory_namespace="synthetic",
+        context_provider_ids=("synthetic.context",),
+    )
+    capability = CapabilityRegistration(
+        capability_id="synthetic.context",
+        kind="context_provider",
+        available=True,
+    )
+    registry = ApplicationRegistry((definition,), (capability,))
+    monkeypatch.setattr(app.state, "application_registry", registry)
+    context = app.dependency_overrides[get_context_assembler]()
+    application_contexts = []
+    original_assemble = context.assemble
+
+    def record_application_context(*args, **kwargs):
+        application_contexts.append(kwargs.get("application_context"))
+        return original_assemble(*args, **kwargs)
+
+    monkeypatch.setattr(context, "assemble", record_application_context)
+    app.dependency_overrides[get_context_assembler] = lambda: context
+
+    conversation_response = client.post(
+        "/v1/conversations", json={}, headers={"X-Application-ID": "synthetic"}
+    )
+    assert conversation_response.status_code == 201
+    conversation = conversation_response.json()
+    message_response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "hello from a registered app"},
+        headers={"X-Application-ID": "synthetic"},
+    )
+
+    assert message_response.status_code == 200
+    assert application_contexts[0].definition.application_id == "synthetic"
+    assert application_contexts[0].scope.application_id == "synthetic"
+    assert application_contexts[0].scope.owner_id == "local"
 
 
 def test_chat_creation_and_terminal_events_use_the_persisted_scope(client: TestClient) -> None:

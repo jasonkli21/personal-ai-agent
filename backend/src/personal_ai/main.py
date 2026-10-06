@@ -15,6 +15,7 @@ from personal_ai.api.iterative_research import router as iterative_research_rout
 from personal_ai.api.itinerary_proposals import router as itinerary_proposals_router
 from personal_ai.api.research import router as research_router
 from personal_ai.api.routes import router as conversations_router
+from personal_ai.applications.registry import default_application_registry
 from personal_ai.auth.account_data import AccountDataUnavailable
 from personal_ai.auth.middleware import AuthenticationMiddleware
 from personal_ai.booking_extractions.repositories import ExtractionError
@@ -36,6 +37,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Personal AI System", version="0.1.0", lifespan=lifespan)
+app.state.application_registry = default_application_registry()
 app.add_middleware(AuthenticationMiddleware)
 app.include_router(conversations_router)
 app.include_router(research_router)

@@ -17,6 +17,10 @@ from fastapi.responses import JSONResponse, Response
 from starlette.datastructures import MutableHeaders
 from starlette.routing import Match
 
+from personal_ai.applications.registry import (
+    ApplicationNotRegisteredError,
+    application_registry_for,
+)
 from personal_ai.auth.contracts import AuthenticatedPrincipal
 from personal_ai.auth.directory import (
     FirestorePrincipalDirectory,
@@ -33,7 +37,6 @@ from personal_ai.auth.safeguards import (
     SafeguardUnavailable,
 )
 from personal_ai.auth.scope import (
-    CANONICAL_APPLICATION_IDS,
     DenyWorkspaceAuthorizer,
     RequestScope,
     bind_request_scope,
@@ -437,7 +440,7 @@ async def authenticate_request(request: Request) -> Response | None:
         workspace_id = request.headers.get("x-workspace-id")
         if workspace_id is not None:
             workspace_id = workspace_id.strip()
-        if application_id not in CANONICAL_APPLICATION_IDS:
+        if not re.fullmatch(r"^[a-z][a-z0-9_-]{1,40}$", application_id):
             logger.info("request_rejected reason=application_scope_invalid")
             return _error(
                 400,
@@ -474,6 +477,33 @@ async def authenticate_request(request: Request) -> Response | None:
                 correlation_id=correlation_id,
             )
 
+        try:
+            application_definition = application_registry_for(request).get(application_id)
+        except ApplicationNotRegisteredError:
+            logger.info("request_rejected reason=application_not_registered")
+            return _error(
+                404,
+                "application_not_registered",
+                "The requested application is not registered.",
+                request=request,
+                correlation_id=correlation_id,
+            )
+        if application_definition.workspace_kind == "unsupported" and workspace_id is not None:
+            return _error(
+                400,
+                "application_workspace_unsupported",
+                "This application does not support workspace scope.",
+                request=request,
+                correlation_id=correlation_id,
+            )
+        if application_definition.workspace_kind == "required" and workspace_id is None:
+            return _error(
+                400,
+                "application_workspace_required",
+                "This application requires workspace scope.",
+                request=request,
+                correlation_id=correlation_id,
+            )
         if request_scope.workspace_id is not None:
             authorizer = getattr(request.app.state, "workspace_authorizer", None)
             if authorizer is None:

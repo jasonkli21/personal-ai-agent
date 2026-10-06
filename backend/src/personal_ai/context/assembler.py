@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from time import monotonic
 from uuid import UUID, uuid4
 
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.context.contracts import (
     AssembledContext,
     BudgetReport,
@@ -79,8 +80,20 @@ class ContextAssembler:
         refresh: bool = True,
         deadline: float | None = None,
         retrieval=None,
+        application_context: ApplicationContextRequest | None = None,
     ) -> AssembledContext:
         from personal_ai.context.deadline import DeadlineCounter, DeadlineSummarizer
+
+        if application_context is not None:
+            scope = application_context.scope
+            messages = (*active_messages, pending_user_message)
+            if any(
+                message.owner_id != scope.owner_id
+                or message.application_id != scope.application_id
+                or message.workspace_id != scope.workspace_id
+                for message in messages
+            ):
+                raise ContextError("application_context_scope_mismatch")
 
         scoped = ContextAssembler(
             self.settings,

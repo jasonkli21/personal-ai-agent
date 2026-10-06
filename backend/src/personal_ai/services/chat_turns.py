@@ -18,6 +18,7 @@ from personal_ai.api.schemas import (
     SSEResponseDelta,
     SSEResponseError,
 )
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.context import ContextAssembler
 from personal_ai.context.deadline import remaining
 from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
@@ -100,6 +101,7 @@ class ChatTurnService:
         llm: LLMClient,
         *,
         owner_id: str,
+        application_context: ApplicationContextRequest | None = None,
         model: str,
         stale_stream_after_seconds: float = 360,
         context_assembler: ContextAssembler,
@@ -111,6 +113,7 @@ class ChatTurnService:
         self._messages = messages
         self._llm = llm
         self._owner_id = owner_id
+        self._application_context = application_context
         self._context = context_assembler
         self._memory_retriever = memory_retriever
         self._memory_extraction = memory_extraction
@@ -228,7 +231,8 @@ class ChatTurnService:
                                 remaining(deadline) / 4),
                 )
             assembled = self._context.assemble(
-                post_active[:-1], user, deadline=deadline, retrieval=retrieval,
+                post_active[:-1], post_active[-1], deadline=deadline, retrieval=retrieval,
+                application_context=self._application_context,
             )
             remaining(deadline)
             assistant = self._new_message(

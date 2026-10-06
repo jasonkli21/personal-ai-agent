@@ -17,8 +17,9 @@ STANDALONE_APPLICATION_ID = "personal_ai"
 CANONICAL_APPLICATION_IDS = frozenset(
     {"personal_ai", "travel", "shopping", "finance", "health"}
 )
-ApplicationId = Literal["personal_ai", "travel", "shopping", "finance", "health"]
+ApplicationId = str
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+_APPLICATION_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,40}$")
 _CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
 
 
@@ -29,6 +30,13 @@ class ApplicationScope(BaseModel):
 
     application_id: ApplicationId = STANDALONE_APPLICATION_ID
     workspace_id: str | None = None
+
+    @field_validator("application_id")
+    @classmethod
+    def valid_application_id(cls, value: str) -> str:
+        if not _APPLICATION_PATTERN.fullmatch(value):
+            raise ValueError("application_id_invalid")
+        return value
 
     @field_validator("workspace_id")
     @classmethod
@@ -84,6 +92,13 @@ class ApplicationScopedRecord(BaseModel):
     application_id: ApplicationId = STANDALONE_APPLICATION_ID
     workspace_id: str | None = None
     scope_version: Literal[1, 2] = 1
+
+    @field_validator("application_id")
+    @classmethod
+    def valid_application_id(cls, value: str) -> str:
+        if not _APPLICATION_PATTERN.fullmatch(value):
+            raise ValueError("application_id_invalid")
+        return value
 
     @field_validator("workspace_id")
     @classmethod

@@ -5,6 +5,12 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
 
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import (
+    ApplicationNotRegisteredError,
+    ApplicationRegistry,
+    application_registry_for,
+)
 from personal_ai.auth.scope import STANDALONE_APPLICATION_ID, RequestScope
 from personal_ai.context import ContextAssembler
 from personal_ai.context.contracts import ConversationSummaryRepository
@@ -43,6 +49,30 @@ def get_request_scope(request: Request) -> RequestScope:
     if scope is None:
         raise HTTPException(status_code=401, detail="authentication_required")
     return scope
+
+
+def get_application_registry(request: Request) -> ApplicationRegistry:
+    """Return the registry installed on this app or the built-in manifest registry."""
+    return application_registry_for(request)
+
+
+def get_application_context(
+    scope: Annotated[RequestScope, Depends(get_request_scope)],
+    registry: Annotated[ApplicationRegistry, Depends(get_application_registry)],
+) -> ApplicationContextRequest:
+    """Resolve app metadata independently of orchestration or domain-name branches."""
+    try:
+        definition = registry.get(scope.application_id)
+    except ApplicationNotRegisteredError as error:
+        raise HTTPException(status_code=404, detail=error.code) from error
+    if definition.workspace_kind == "unsupported" and scope.workspace_id is not None:
+        raise HTTPException(status_code=400, detail="application_workspace_unsupported")
+    if definition.workspace_kind == "required" and scope.workspace_id is None:
+        raise HTTPException(status_code=400, detail="application_workspace_required")
+    try:
+        return ApplicationContextRequest(definition=definition, scope=scope)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="application_context_invalid") from error
 
 
 def require_standalone_application_scope(
@@ -95,9 +125,12 @@ def get_conversation_service(
     conversations: Annotated[ConversationRepository, Depends(get_conversation_repository)],
     messages: Annotated[MessageRepository, Depends(get_message_repository)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
+    application_context: Annotated[ApplicationContextRequest, Depends(get_application_context)],
 ) -> ConversationService:
     """Compose the conversation use cases from injectable boundaries."""
-    return ConversationService(conversations, messages, owner_id=owner_id)
+    return ConversationService(
+        conversations, messages, owner_id=owner_id, application_context=application_context
+    )
 
 
 def get_llm_client(
@@ -153,6 +186,7 @@ def get_chat_turn_service(
     llm: Annotated[LLMClient, Depends(get_llm_client)],
     settings: Annotated[Settings, Depends(get_settings)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
+    application_context: Annotated[ApplicationContextRequest, Depends(get_application_context)],
     context: Annotated[ContextAssembler, Depends(get_context_assembler)],
     memory_repository: Annotated[object, Depends(get_memory_repository)],
     memory_adapter: Annotated[object, Depends(get_memory_adapter)],
@@ -182,6 +216,7 @@ def get_chat_turn_service(
         messages,
         llm,
         owner_id=owner_id,
+        application_context=application_context,
         context_assembler=context,
         memory_retriever=retriever,
         memory_extraction=None if lifecycle_coordinator is not None else extraction,

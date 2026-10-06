@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.entities import Conversation, Message
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
 
@@ -20,10 +21,12 @@ class ConversationService:
         messages: MessageRepository,
         *,
         owner_id: str,
+        application_context: ApplicationContextRequest | None = None,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
         self._owner_id = owner_id
+        self._application_context = application_context
 
     def inspect_memories(
         self, settings, repository, memory_ids, lifecycle_repository=None

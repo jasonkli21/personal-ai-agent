@@ -1,6 +1,6 @@
 # Personal AI — Final Integrated Next-Scope Handoff
 
-Status: Phase 0 reconciled; next-scope Phase 1 application/workspace identity implemented and verified locally
+Status: Phase 0 reconciled; next-scope Phases 1–2 application/workspace identity and application registry implemented and verified locally
 Date: 2026-10-05
 
 ## Purpose
@@ -285,6 +285,9 @@ All domains use narrow authorized context. Travel booking and Shopping budget/pr
    [implementation evidence](phase-1-implementation-evidence-2026-10-05.md)
    - request and persisted scope contracts,
    - legacy compatibility and local verification,
+10. [Phase 2 implementation guide](phase-2-implementation-guide.md) and
+    [implementation evidence](phase-2-implementation-evidence-2026-10-05.md)
+   - application definitions, capability registry, initial stubs, and local checks,
    - external gates that remain pending.
 
 
@@ -311,4 +314,4 @@ Start with the [comprehensive Phase 0 review](09-phase-0-reconciliation.md), whi
 
 The source-of-truth order is actual code/tests/accepted ADRs for existing behavior, then reconciled product/architecture intent, then detailed execution guidance. `source/` retains compatibility paths as links to these canonical documents; it is no longer a second editable snapshot. Target interfaces are future contracts until implemented. Existing Phases 1–9 and next-scope numbering are distinct.
 
-Next-scope Phase 1 application/workspace identity is implemented and verified locally; see its [guide](phase-1-implementation-guide.md) and [evidence](phase-1-implementation-evidence-2026-10-05.md). Later next-scope phases remain unimplemented. Existing account deletion/migration, provider-data, strict-$0 deployment and external operational gates remain open. ChatGPT distribution, plan-only billing and transport require separate verification. Phase 0 was documentation-only.
+Next-scope Phases 1–2 are implemented and verified locally; see the [Phase 1 guide and evidence](phase-1-implementation-guide.md), plus the [Phase 2 guide and evidence](phase-2-implementation-guide.md). Domain context providers/actions, cross-app grants, workspace membership, provider routing, and later next-scope phases remain unimplemented. Existing account deletion/migration, provider-data, strict-$0 deployment and external operational gates remain open. ChatGPT distribution, plan-only billing and transport require separate verification. Phase 0 was documentation-only.
