@@ -169,6 +169,6 @@ open acceptance criteria in its [task plan](phase-9-implementation-plan.md) and
 
 **Outcome:** a private, maintainable personal AI system that can support real experiments.
 
-## Reconciled next-scope handoff — 2026-10-05
+## Chapter 2 next-scope handoff — 2026-10-06
 
-The [comprehensive Phase 0 reconciliation](personal-ai-next-scope-chatgpt-integrated-v2/09-phase-0-reconciliation.md) verifies the additive application/context, provider/routing, Firestore/GCS and ChatGPT/domain handoff against revision `ad1dea5912af81eda0c9c5d6a41180ce186a07a5`. Its next-scope Phases 0–28 are separate from the existing implementation history. Phase 0 changes documentation only; next-scope Phase 1 has not been implemented. Existing Phase 9 physical deletion, full owner migration and provider/cloud operational gates remain open. The target is incremental and preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.
+The [Chapter 2 Phase 0 reconciliation](personal-ai-chapter-2/09-phase-0-reconciliation.md) records the original Phase 0 review against code revision `ad1dea5912af81eda0c9c5d6a41180ce186a07a5` and the 2026-10-06 amendment that adds Phase 10 to migrate planned persistence from Firestore to DynamoDB + Neon Postgres/pgvector. Chapter 2 remains separate from the original repository phase history: next-scope Phases 0–2 are complete, Phase 10 is next, and former next-scope Phases 3–28 are preserved under the [numbering map](personal-ai-chapter-2/NUMBERING-MAP.md). Existing Phase 9 physical deletion, full owner migration and provider/cloud operational gates remain open. The target is incremental and preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.

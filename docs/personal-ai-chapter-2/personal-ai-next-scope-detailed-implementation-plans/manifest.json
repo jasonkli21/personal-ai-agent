@@ -1,0 +1,372 @@
+[
+  {
+    "phase": "0",
+    "title": "Repository, architecture and planning reconciliation",
+    "file": "plans/phase-0-implementation-plan.md",
+    "bytes": 3035,
+    "prerequisites": []
+  },
+  {
+    "phase": "1",
+    "title": "Application and workspace identity",
+    "file": "plans/phase-1-implementation-plan.md",
+    "bytes": 5288,
+    "prerequisites": [
+      "0"
+    ]
+  },
+  {
+    "phase": "2",
+    "title": "Application registry and manifest model",
+    "file": "plans/phase-2-implementation-plan.md",
+    "bytes": 3879,
+    "prerequisites": [
+      "1"
+    ]
+  },
+  {
+    "phase": "10",
+    "title": "Polyglot persistence foundation and Firestore migration",
+    "file": "plans/phase-10-implementation-plan.md",
+    "bytes": 19366,
+    "prerequisites": [
+      "1",
+      "2"
+    ]
+  },
+  {
+    "phase": "11",
+    "title": "Context source and provider abstraction",
+    "file": "plans/phase-11-implementation-plan.md",
+    "bytes": 8622,
+    "prerequisites": [
+      "1",
+      "2",
+      "10"
+    ]
+  },
+  {
+    "phase": "12",
+    "title": "Context builder refactor",
+    "file": "plans/phase-12-implementation-plan.md",
+    "bytes": 8080,
+    "prerequisites": [
+      "11",
+      "10"
+    ]
+  },
+  {
+    "phase": "13",
+    "title": "Deterministic context planner",
+    "file": "plans/phase-13-implementation-plan.md",
+    "bytes": 7176,
+    "prerequisites": [
+      "12",
+      "10"
+    ]
+  },
+  {
+    "phase": "14",
+    "title": "Provenance and context inspection",
+    "file": "plans/phase-14-implementation-plan.md",
+    "bytes": 7018,
+    "prerequisites": [
+      "13",
+      "10"
+    ]
+  },
+  {
+    "phase": "15",
+    "title": "Permissions and sensitivity policy",
+    "file": "plans/phase-15-implementation-plan.md",
+    "bytes": 7378,
+    "prerequisites": [
+      "11",
+      "13",
+      "14",
+      "10"
+    ]
+  },
+  {
+    "phase": "16",
+    "title": "Provider-neutral inference and embedding contracts",
+    "file": "plans/phase-16-implementation-plan.md",
+    "bytes": 8711,
+    "prerequisites": [
+      "12",
+      "15",
+      "10"
+    ]
+  },
+  {
+    "phase": "17",
+    "title": "Concrete provider adapters: Gemini, Groq, Cloudflare",
+    "file": "plans/phase-17-implementation-plan.md",
+    "bytes": 6457,
+    "prerequisites": [
+      "16",
+      "10"
+    ]
+  },
+  {
+    "phase": "18",
+    "title": "Provider/model registry and strict-free eligibility",
+    "file": "plans/phase-18-implementation-plan.md",
+    "bytes": 4740,
+    "prerequisites": [
+      "15",
+      "17",
+      "10"
+    ]
+  },
+  {
+    "phase": "19",
+    "title": "Provider usage accounting and quota ledger",
+    "file": "plans/phase-19-implementation-plan.md",
+    "bytes": 4802,
+    "prerequisites": [
+      "18",
+      "10"
+    ]
+  },
+  {
+    "phase": "20",
+    "title": "Cloud Storage artifact tier and retention",
+    "file": "plans/phase-20-implementation-plan.md",
+    "bytes": 6018,
+    "prerequisites": [
+      "1",
+      "10",
+      "14",
+      "19"
+    ]
+  },
+  {
+    "phase": "21",
+    "title": "Deterministic task-aware routing",
+    "file": "plans/phase-21-implementation-plan.md",
+    "bytes": 4010,
+    "prerequisites": [
+      "16",
+      "18",
+      "19",
+      "10"
+    ]
+  },
+  {
+    "phase": "22",
+    "title": "Cross-provider task evaluation matrix",
+    "file": "plans/phase-22-implementation-plan.md",
+    "bytes": 4080,
+    "prerequisites": [
+      "20",
+      "21",
+      "10"
+    ]
+  },
+  {
+    "phase": "23",
+    "title": "Quota-aware routing",
+    "file": "plans/phase-23-implementation-plan.md",
+    "bytes": 3561,
+    "prerequisites": [
+      "22",
+      "10"
+    ]
+  },
+  {
+    "phase": "24",
+    "title": "Bounded cascades and deterministic validation",
+    "file": "plans/phase-24-implementation-plan.md",
+    "bytes": 3547,
+    "prerequisites": [
+      "23",
+      "10"
+    ]
+  },
+  {
+    "phase": "25.1",
+    "title": "ChatGPT authentication and local bridge",
+    "file": "plans/phase-25-1-implementation-plan.md",
+    "bytes": 8536,
+    "prerequisites": [
+      "16",
+      "18",
+      "10"
+    ]
+  },
+  {
+    "phase": "25.2",
+    "title": "ChatGPT provider/runtime integration, policy, and usage handling",
+    "file": "plans/phase-25-2-implementation-plan.md",
+    "bytes": 6713,
+    "prerequisites": [
+      "19",
+      "21",
+      "25.1",
+      "10"
+    ]
+  },
+  {
+    "phase": "25.3",
+    "title": "Shared AI sidecar UI",
+    "file": "plans/phase-25-3-implementation-plan.md",
+    "bytes": 5890,
+    "prerequisites": [
+      "14",
+      "25.2",
+      "10"
+    ]
+  },
+  {
+    "phase": "25.4",
+    "title": "ChatGPT domain integration contract",
+    "file": "plans/phase-25-4-implementation-plan.md",
+    "bytes": 4936,
+    "prerequisites": [
+      "25.3",
+      "10"
+    ]
+  },
+  {
+    "phase": "26",
+    "title": "Travel integration",
+    "file": "plans/phase-26-implementation-plan.md",
+    "bytes": 4878,
+    "prerequisites": [
+      "15",
+      "21",
+      "24",
+      "10"
+    ]
+  },
+  {
+    "phase": "27",
+    "title": "Shopping integration",
+    "file": "plans/phase-27-implementation-plan.md",
+    "bytes": 4518,
+    "prerequisites": [
+      "15",
+      "21",
+      "24",
+      "10"
+    ]
+  },
+  {
+    "phase": "28",
+    "title": "Finance integration",
+    "file": "plans/phase-28-implementation-plan.md",
+    "bytes": 4492,
+    "prerequisites": [
+      "15",
+      "21",
+      "24",
+      "10"
+    ]
+  },
+  {
+    "phase": "29",
+    "title": "Health integration",
+    "file": "plans/phase-29-implementation-plan.md",
+    "bytes": 4660,
+    "prerequisites": [
+      "15",
+      "21",
+      "24",
+      "10"
+    ]
+  },
+  {
+    "phase": "30",
+    "title": "Cross-app context federation",
+    "file": "plans/phase-30-implementation-plan.md",
+    "bytes": 4357,
+    "prerequisites": [
+      "15",
+      "26",
+      "27",
+      "28",
+      "29",
+      "10"
+    ]
+  },
+  {
+    "phase": "31",
+    "title": "Mutation proposal framework",
+    "file": "plans/phase-31-implementation-plan.md",
+    "bytes": 4474,
+    "prerequisites": [
+      "15",
+      "26",
+      "27",
+      "28",
+      "29",
+      "10"
+    ]
+  },
+  {
+    "phase": "32",
+    "title": "Smarter context planning",
+    "file": "plans/phase-32-implementation-plan.md",
+    "bytes": 3936,
+    "prerequisites": [
+      "22",
+      "30",
+      "10"
+    ]
+  },
+  {
+    "phase": "33",
+    "title": "Search and evidence retrieval optimization",
+    "file": "plans/phase-33-implementation-plan.md",
+    "bytes": 4332,
+    "prerequisites": [
+      "19",
+      "20",
+      "22",
+      "10"
+    ]
+  },
+  {
+    "phase": "34",
+    "title": "Memory retrieval optimization",
+    "file": "plans/phase-34-implementation-plan.md",
+    "bytes": 4466,
+    "prerequisites": [
+      "1",
+      "10",
+      "12",
+      "16",
+      "22"
+    ]
+  },
+  {
+    "phase": "35",
+    "title": "Adaptive routing experiments",
+    "file": "plans/phase-35-implementation-plan.md",
+    "bytes": 3811,
+    "prerequisites": [
+      "22",
+      "23",
+      "24",
+      "10"
+    ]
+  },
+  {
+    "phase": "36",
+    "title": "Integrated evaluation and hardening",
+    "file": "plans/phase-36-implementation-plan.md",
+    "bytes": 6989,
+    "prerequisites": [
+      "20",
+      "25.4",
+      "30",
+      "31",
+      "32",
+      "33",
+      "34",
+      "35",
+      "10"
+    ]
+  }
+]

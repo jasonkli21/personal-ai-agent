@@ -45,4 +45,8 @@ does not introduce billing analytics or automatic provider fallback.
 
 ## Next-scope extension boundary — 2026-10-05
 
-This accepted decision still governs current Gemini preparation. The [reconciled inference design](../personal-ai-next-scope-chatgpt-integrated-v2/03-free-tier-inference-and-routing.md) assigns provider-aware counting/serialization and the direct memory-extraction preparation gap to next-scope Phase 8. Counting is an external disclosure subject to provider eligibility. Non-Gemini counters must document their own guarantees and any conservative bounds before enablement; estimates must not claim Gemini/provider-authoritative equivalence. No runtime behavior or accepted counting guarantee changes in Phase 0.
+This accepted decision still governs current Gemini preparation. The [reconciled inference design](../personal-ai-chapter-2/03-free-tier-inference-and-routing.md) assigns provider-aware counting/serialization and the direct memory-extraction preparation gap to next-scope Phase 8. Counting is an external disclosure subject to provider eligibility. Non-Gemini counters must document their own guarantees and any conservative bounds before enablement; estimates must not claim Gemini/provider-authoritative equivalence. No runtime behavior or accepted counting guarantee changes in Phase 0.
+
+## Chapter 2 numbering/storage amendment — 2026-10-06
+
+The current forward-looking plan is [Personal AI Chapter 2](../personal-ai-chapter-2/README.md). The 2026-10-05 extension paragraph above is historical; its former next-scope Phase 8 is now Chapter 2 Phase 16. Phase 10 first migrates durable persistence to DynamoDB + Neon Postgres/pgvector. The accepted token-budget/counting guarantee itself is unchanged by this renumbering/storage amendment.
