@@ -1,6 +1,6 @@
 # Next-scope Phase 1 implementation guide — Application and workspace identity
 
-Status: locally implemented; Firestore compatibility-query and deployed verification remain pending
+Status: locally patched and offline-verified; storage-level legacy isolation, the complete scope matrix, and deployed verification remain pending
 
 Date: 2026-10-05
 
@@ -67,8 +67,12 @@ cap; it fails closed after 5,000 records or the request deadline. This preserves
 legacy recall, but Firestore still reads foreign-scope documents during that
 compatibility scan. A zero-foreign-read legacy query requires a separate legacy
 data discriminator or storage partition and remains an open isolation item;
-no legacy backfill was authorized. Export pages owner records through the same
-scope check and resolves legacy ownerless evaluation/claim-extension rows only
+no legacy backfill was authorized. Decision entity, alias, and claim lookups,
+memory lifecycle candidate/dependency discovery, and booking-extraction expiry
+now page through bounded result windows and apply scope before filling their
+requested limits. These compatibility scans stop after 5,000 documents or the
+request's remaining time. Export pages owner records through the same scope
+check and resolves legacy ownerless evaluation/claim-extension rows only
 through owner- and scope-checked parent records. Export fails closed at a
 100,000-record scan bound.
 
