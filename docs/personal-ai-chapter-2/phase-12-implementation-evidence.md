@@ -54,3 +54,42 @@ claimed for this backend change.
   and cloud behavior still need their separately configured acceptance checks.
 - The inspector estimates the current view and cannot prove the exact historical
   prompt for an earlier generation.
+
+## Independent review follow-up
+
+Date: 2026-10-07 (America/Los_Angeles)
+
+Review: [Phase 12 independent review](../phase-12-independent-review-2026-10-07.md).
+Implementation tested at revision `d37bd883aafc883b32ce7dc0103f1b561917b15a`;
+documentation updates in this follow-up are recorded after that code commit.
+
+All nine review findings were addressed with focused fixes and regression tests:
+
+- Conversation provider selection now excludes invalid turns and preserves each
+  complete turn through result limits and token fitting. Counter cleanup spans
+  standalone preparation, and nested deadlines forward the shortest remaining
+  timeout.
+- Memory retrieval limits apply after eligibility and fit decisions, allowing
+  fitting consolidated backups to be used. Required items are fitted before
+  optional inputs, and required status follows the selected provider operation.
+- Expiry is checked again at final assembly, including for standalone research
+  and proposal evidence. Final manifests are emitted by the owning preparation
+  boundary and retain message/summary attribution, operation/provider failures,
+  and source versions while omitting content. Booking preparation fit failures
+  return the existing `context_too_large` result.
+
+Verification against the implementation revision:
+
+- `./.venv/bin/python -m pytest`: **672 passed, 26 skipped**. Skips remain the
+  opt-in local Postgres/DynamoDB, cloud smoke, and manual provider/context cases.
+- `./.venv/bin/python -m ruff check .`: **passed**.
+- `make context-eval`, `make memory-eval`, `make research-eval`, and
+  `make itinerary-proposal-eval`: **passed**, using deterministic synthetic
+  fixtures only.
+- `git diff --check`: **passed**.
+
+These checks establish local behavior and offline contracts only. Provider
+token-count accuracy, live source integrations, Postgres/DynamoDB behavior,
+cloud/IAM, deployment, and production security remain unverified. The inspector
+still estimates the current view and cannot reconstruct the exact prompt from a
+past generation. Phase 13 automatic source planning remains out of scope.
