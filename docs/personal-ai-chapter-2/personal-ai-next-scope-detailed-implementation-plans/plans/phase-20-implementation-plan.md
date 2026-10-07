@@ -32,6 +32,10 @@ Renumbered from former Phase 12 with **all former sensitivity, retention, export
 ## Current state and reuse
 Bounded account-export patterns and repository abstractions are reusable. `ArtifactStore`, `ArtifactRef`, GCS and cross-store retention/deletion are genuinely missing. Build on Phase 10's canonical-store map and idempotent cross-store rules.
 
+## Phase 10 storage dependency
+
+Postgres remains canonical for compact artifact metadata; GCS owns immutable bodies/generations. Reuse Phase 10 scoped references, readiness/recovery and declared export snapshot coverage. Required export failure stays explicit; no DynamoDB metadata mirror or credential retention is added. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites and work ordering
 Required phases: 1, 14, 19 and 10. (Former prerequisites 1, 6, 11 map to 1, 14, 19.)
 

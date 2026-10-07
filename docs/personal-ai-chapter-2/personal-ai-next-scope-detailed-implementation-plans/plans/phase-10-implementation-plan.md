@@ -2,6 +2,10 @@
 
 Status: planned immediate next phase after completed next-scope Phases 0–2. Phases 3–9 are intentionally unused in this renumbered chapter so Phase 10 is the explicit architectural boundary before the preserved former Phase 3 roadmap resumes at Phase 11.
 
+P10.0 documentation decisions completed 2026-10-06 against repository revision `e17ebd76afd1feb90fe47d959c43ab23eb553499`. P10.1–P10.6 are not started; Firestore remains the implemented canonical database. Local-engine, migration and cloud acceptance remain unverified.
+
+Read [ADR 0021](../../../decisions/0021-polyglot-persistence-foundation.md), the [storage ownership/access-pattern contract](../../phase-10-storage-ownership-and-access-patterns.md) and [migration/cutover/verification plan](../../phase-10-migration-cutover-and-verification-plan.md). These Phase 10-specific documents contain the exhaustive inventory, keys, constraints, minimal recovery protocol and release mechanics; this plan remains authoritative for scope.
+
 This phase is additive infrastructure work. It must not delete or weaken any previously planned product, security, provenance, export/deletion, evaluation, provider, domain, or ChatGPT scope.
 
 ## Scope boundary
@@ -25,11 +29,12 @@ Initial canonical ownership:
 - branchable messages and active-branch ordering;
 - working summaries;
 - persisted model/tool/runtime events where retained;
-- request/idempotency records where retained;
-- workflow/checkpoint/job state where append/key/range access patterns justify it;
+- request/idempotency records belonging to DynamoDB-owned aggregates, not all replay records;
+- workflow/checkpoint/job state where append/key/range access patterns justify it, not all workflow events;
 - memory-lifecycle execution jobs/checkpoints, while durable memory records themselves remain Postgres-owned.
+- current account-wide request-window counters.
 
-Design from named access patterns, not from relational table translation. Prefer a small number of tables and sparse justified GSIs. A likely conversation shape is `PK=CONV#<id>` plus ordered sort keys for metadata/messages/events, with a GSI for owner/application/workspace/recent-conversation listing. Preserve current message IDs, parent/branch relationships, timestamps, owner/app/workspace scope, summary coverage, replay semantics, and safe foreign-ID behavior.
+Use one initial runtime table with collision-safe scoped keys, strong base-table recent-conversation directories and one sparse job-publication GSI. No LSI or normal-path Scan is required. The access-pattern contract defines pagination, ordering, conditional writes, branch revisions, chunked summary provenance and byte bounds. Preserve current message IDs, parent/branch relationships, timestamps, owner/app/workspace scope, summary coverage, replay semantics, and safe foreign-ID behavior.
 
 ### Neon Postgres + pgvector — interpreted/query-rich state
 
@@ -45,6 +50,8 @@ Initial canonical ownership:
 - compact usage/quota aggregates, evaluation summaries, and artifact references introduced by later phases;
 - any durable state whose normal access requires joins, ad-hoc filtering, aggregation, constraints, or vector + metadata retrieval.
 
+Transaction-bound exceptions are explicit: research sessions/runs, embedded events/budget ledger and their request keys; lifecycle events/state/application receipts; domain lookup replay/results; account lifecycle/identity/audit; daily usage budgets and provider-wide throttling remain Postgres-owned. Execution jobs are DynamoDB-owned; effect receipts are Postgres-owned. Future profile/registry/grant/evaluation/artifact assignments do not authorize their implementation in Phase 10.
+
 Use ordinary versioned schema migrations and `pgvector`. Stable semantics should use typed columns/relations; evolving provider/domain metadata may use bounded JSONB where appropriate. Never flatten authoritative domain-application data into Personal AI.
 
 ### GCS — bulky artifact bodies, later
@@ -57,6 +64,9 @@ Phase 20 remains responsible for the `ArtifactStore` and private GCS implementat
 - Cross-store references use stable opaque IDs and preserve owner/application/workspace scope.
 - There is no distributed transaction across DynamoDB, Postgres, and GCS.
 - Cross-store projections/retries are idempotent and recoverable.
+- Preserve existing atomic source/job validation for memory writes with the narrow guard/receipt protocol in the storage contract. Receipt arbitration and effects share a Postgres transaction; an unknown effect cannot be released merely because a guard expired or a receipt read returned absent.
+- Keep single-store transaction groups within their canonical store; no generic saga/outbox or mirrored job authority.
+- Export original embedding values and declare per-store snapshot/revision coverage; neither precision loss nor an unsupported distributed snapshot is acceptable.
 - Do not introduce a permanent dual-write architecture.
 - Do not mirror entire authoritative records merely for convenience.
 - Account export/deletion inventory must cover every canonical store.
@@ -114,7 +124,7 @@ Create a polyglot-persistence ADR that supersedes the old Firestore-native ADR f
 - workflow/runtime state moves to DynamoDB only where key/range access patterns justify it;
 - no authoritative domain-app state is copied into either database.
 
-**Acceptance:** every migrated/current durable record class has one canonical target and every cross-store reference direction is explicit.
+**Acceptance:** all 34 current literal Firestore collections, embedded aggregate records and planned durable families have one canonical target. Required reads/writes, scope, growth/retention, indexes, references, export/deletion and transaction exceptions are specified. ADR, access-pattern and migration contracts resolve cross-store correctness and storage/compute tradeoffs without implementing P10.1+ or rewriting historical evidence.
 
 ### P10.1 — Local persistence stack
 
@@ -132,7 +142,7 @@ Local development must require neither AWS nor Neon credentials. Unit tests may 
 
 ### P10.2 — Postgres schema, migrations, repositories, and pgvector
 
-Introduce an async-compatible Postgres connection/session boundary underneath repository interfaces plus explicit versioned migrations. Migrate the query-rich state assigned in P10.0, including memories, vector metadata, provenance/lifecycle, research/evidence/entity/claim state, decisions, global profile/account metadata, and later extensible metadata categories as applicable.
+Introduce an async-compatible Postgres connection/session boundary underneath repository interfaces plus explicit versioned migrations. Migrate existing query-rich state assigned in P10.0: memories, vector metadata, provenance/lifecycle/receipts, research/evidence/entity/claim state and replay groups, decisions/domain results, account/control metadata and safeguards. Use typed scoped relations, null-safe workspace identity, constraints and named indexes; bounded JSONB holds evolving snapshots. Preserve existing same-store atomic groups. Global profile creation belongs to Phase 11; other future categories remain assigned ownership rather than new CRUD scope here.
 
 Vector invariants:
 
@@ -142,6 +152,9 @@ Vector invariants:
 - preserve lifecycle/source/scope filters before or alongside semantic ranking;
 - preserve existing source attribution and v1/v2 logical compatibility through migration;
 - keep deterministic fake/non-vector paths for offline tests where already required.
+- store one lossless `double precision[]` embedding, using a transient pgvector cast for compatible exact cosine search; no redundant persisted vector column or default ANN index;
+- preserve current 2,048d compatibility and original-value reads/exports; verify float32 cast distance threshold/band/tie parity against original values, with bounded boundary reranking or existing advisory failure when parity cannot be established;
+- measure table/TOAST bytes and query compute/latency; the storage saving is a CPU tradeoff, not proof of Neon free-plan fit. Detailed numeric/index decisions live in the storage contract.
 
 **Acceptance:** backend-neutral repository contracts pass against local Postgres; existing memory/research/decision semantics remain equivalent; vector incompatibility is explicit.
 
@@ -157,6 +170,8 @@ Enumerate named access patterns before creating tables/indexes. At minimum suppo
 - runtime/checkpoint lookup for record classes assigned to DynamoDB.
 
 Prefer one initial runtime table if it satisfies reviewed access patterns without opaque overloading. Keep GSIs sparse and justified by named reads. Avoid `Scan` in normal request paths. Use the official AWS SDK below repository boundaries; if it is synchronous, reuse bounded async/offload patterns rather than blocking the FastAPI event loop.
+
+Implement the reviewed strong directories, paginated revision-stable branch reads, bounded root cuts and manifest/chunk publication for summary coverage. The sole initial GSI is eventual job publication, with strong canonical rereads/claims; required recovery/export uses base keys. Preserve account-wide counter scope. Implement the minimal memory source/job guard protocol together with P10.2 receipts and test apply/abort/late-worker races; preparation-token expiry alone is insufficient for an in-doubt knowledge effect.
 
 Production capacity configuration must be strict-$0-compatible and verified at deployment time; current provider allowance numbers must not become business-logic constants.
 
@@ -179,6 +194,8 @@ Build an idempotent migration command/script with:
 
 Do not add a permanent live dual-write path. Prefer a bounded personal-system cutover: backfill while Firestore is canonical, pause writes briefly, apply final delta/reconciliation, switch configured repositories, then resume writes.
 
+Follow the Phase 10 migration contract: migration epoch and source update versions/hashes; checkpoint acknowledgement after target commit; logical rather than physical counts; complete final existence/version manifest covering deletes and embedded changes. Inventory global/shared/ownerless records and attribute active hashed counters explicitly. Keep storage migration separate from legacy owner reassignment. Freeze every API/callback/worker/maintenance/cleanup/TTL writer, not only new chat requests.
+
 **Acceptance:** a synthetic/full migration can be rerun safely and produces repository-visible parity across all mapped record families.
 
 ### P10.5 — Cloud adapters, IAM, cross-cloud networking, and strict-$0 deployment
@@ -187,6 +204,8 @@ Add cloud configuration for Neon Postgres and AWS DynamoDB while retaining GCP C
 
 Add release-time checks/observability for current Neon storage/compute/connection behavior, DynamoDB capacity/storage/index configuration, GCP-to-external network use, and existing Cloud Run/GCS/Artifact Registry/Secret Manager resources. These are operational facts, not constants in application logic.
 
+Review fixed provisioned Standard table/GSI capacity against actual account/region allocations; on-demand/autoscaling and paid extras are not implicit free paths. Bound pooled connections across API/worker instance maxima, use separate migration privileges, verify service-account federation and cross-cloud TLS, and budget migration/recovery/directory/index/embedding amplification and network use. Unknown eligibility blocks activation; alerts alone do not cap spending. Detailed release gates belong in the Phase 10 verification plan.
+
 **Acceptance:** opt-in cloud smoke tests prove CRUD/query/vector paths against Neon and AWS without silently enabling an unreviewed paid path.
 
 ### P10.6 — Cutover, rollback window, Firestore retirement, and documentation closeout
@@ -194,6 +213,8 @@ Add release-time checks/observability for current Neon storage/compute/connectio
 Before cutover, run repository/evaluation regressions, reconcile source/target invariants, verify account export/deletion inventory, verify no cross-owner/app/workspace leakage, and validate Cloud Run/strict-$0 configuration.
 
 Cut over with a short write freeze/final delta rather than indefinite dual writes. Keep Firestore data/read access only for a bounded rollback/verification window. A rollback after new writes must include an explicit replay/export plan; do not describe a config flip that loses post-cutover writes as lossless.
+
+Cut over all API, worker, auth/safeguard, provider-throttling, maintenance and cleanup factories as one compatible bundle; fence old revisions/consumers. Reverse replay must cover cuts, knowledge effects, jobs/replay, audit, counters and deletion/tombstones, or use forward repair. Retirement requires no normal Firestore constructor/import/settings dependency or fallback, reconciled source dispositions and explicit legacy access/window policy. Open Phase 9 physical deletion, full owner migration, accounting and release obligations remain independent.
 
 After acceptance:
 

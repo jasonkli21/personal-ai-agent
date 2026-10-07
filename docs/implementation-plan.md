@@ -11,6 +11,8 @@ For task-level dependencies, requirements, and acceptance criteria, see the
 [Phase 0–1 implementation plan](phase-1-implementation-plan.md) and the
 [Phase 2 implementation plan](phase-2-implementation-plan.md).
 
+P10.0 now records the future [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). Firestore remains implemented; P10.1–P10.6 and local/cloud cutover acceptance remain unverified. Current setup, deployment and runtime claims change only after implementation.
+
 ## Phase 0 — Define the learning baseline
 
 1. Write short architecture decisions: initial LLM provider, storage choice, deployment target, and privacy boundaries.

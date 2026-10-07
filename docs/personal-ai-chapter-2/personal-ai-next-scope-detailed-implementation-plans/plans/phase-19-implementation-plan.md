@@ -26,6 +26,10 @@ Renumbered from former Phase 11 with scope preserved. Phase 10 persistence chang
 ## Current state and reuse
 HTTP estimated reservations, iterative run ledgers and shared lookup throttles are partial reusable patterns. Full per-operation accounting/quota ledger is missing.
 
+## Phase 10 storage dependency
+
+Postgres owns canonical invocation reservations/settlements and compact ledger aggregates; DynamoDB owns separately retained operational events. A lifecycle execution checkpoint is not a usage ledger. Unknown provider outcomes remain uncertain under the original invocation identity. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites and work ordering
 Required phase: 18, plus Phase 10 persistence foundation.
 

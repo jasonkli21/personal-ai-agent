@@ -61,6 +61,8 @@ Rules:
 7. Local Postgres/pgvector and DynamoDB Local implement the same repository contracts used by cloud deployments.
 8. Firestore is a migration/rollback source, not target architecture.
 
+The [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md) fixes record-level ownership and scoped references. Research transaction groups and knowledge-effect receipts stay Postgres-owned even when execution jobs/timelines are DynamoDB-owned. Local/cloud migration and recovery acceptance live in the [Phase 10 verification plan](../../phase-10-migration-cutover-and-verification-plan.md); these targets are not current runtime claims.
+
 ## 4. Request envelope
 
 Conceptually carries authenticated owner plus `application_id`, optional `workspace_id`, conversation/request identity, bounded capabilities, and bounded non-authoritative client context. Owner authority is server-derived; application/workspace labels do not replace authentication/membership checks.

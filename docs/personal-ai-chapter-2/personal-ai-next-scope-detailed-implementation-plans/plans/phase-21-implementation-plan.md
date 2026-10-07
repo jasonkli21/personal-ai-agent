@@ -27,6 +27,10 @@ Renumbered from former Phase 13 with scope preserved.
 ## Current state and reuse
 Current dependency injection selects one Gemini client. Task routing, rejection traces and actual per-turn producing-model metadata need extension.
 
+## Phase 10 storage dependency
+
+DynamoDB turn/runtime records hold actual producing-model attribution and compact actual-build manifests; Postgres owns versioned policy/registry and usage controls. Reference exact versions without duplicating canonical control records. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites and work ordering
 Required phases: 16, 18, 19, plus Phase 10 persistence foundation.
 

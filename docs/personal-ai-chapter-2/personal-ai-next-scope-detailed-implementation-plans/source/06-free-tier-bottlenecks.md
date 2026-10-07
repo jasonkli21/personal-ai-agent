@@ -39,6 +39,8 @@ Phase 10 deployment validation includes Neon + DynamoDB + network use. Later pha
 
 Do not choose DynamoDB solely because its current free storage allowance is larger, and do not choose Postgres solely for consistency with other projects. Phase 10 uses both because their access patterns differ. The inference bottleneck reduces the value of extreme request capacity, but long-term event/history accumulation still benefits from operational storage headroom.
 
+Phase 10 reviews actual account/region allocations for fixed provisioned Standard DynamoDB capacity, including its publication GSI and transactional directory amplification. Neon table/TOAST/index bytes, cast/query compute, pooled connections and migration/recovery network work all count toward the budget. The lossless-array baseline avoids duplicate vector storage but spends query CPU; neither storage arithmetic nor alerts establish a hard free limit. Detailed activation gates belong in the [Phase 10 verification plan](../../phase-10-migration-cutover-and-verification-plan.md).
+
 ## Embeddings
 
 Memory embedding migration is never implicit. Phase 10 carries current vectors into Postgres/pgvector with provider/model/dimension/task-space metadata. Phase 34 may optimize retrieval but cannot silently change vector space; a provider/model migration requires explicit re-embedding/reindex planning and resource checks.

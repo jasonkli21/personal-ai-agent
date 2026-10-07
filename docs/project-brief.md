@@ -2,6 +2,8 @@
 
 Read this document before making implementation decisions. It carries the product intent and guardrails that sit behind the architecture and implementation plan.
 
+P10.0 now records the future [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). Firestore remains implemented; P10.1–P10.6 and local/cloud cutover acceptance remain unverified. Current setup, deployment and runtime claims change only after implementation.
+
 ## Purpose
 
 This is a **personal learning and research project**, not an attempt to host or reproduce a frontier model. The goal is to learn the systems around an LLM—streaming chat, persistence, context management, retrieval, memory, search, evidence, ranking, and evaluation—and eventually use the system to experiment with AI memory architectures.

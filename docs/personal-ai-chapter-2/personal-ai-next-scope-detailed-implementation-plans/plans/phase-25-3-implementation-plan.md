@@ -33,6 +33,10 @@ Renumbered on 2026-10-06 from former next-scope Phase 17.3 with its full UI/cont
 
 Reuse existing chat state/SSE/proxy/auth helpers, the Phase 25.2 external-turn prepare/finalize path, and the shared context planner/policy/builder. The sidecar, context selector, and paired local bridge browser client are new.
 
+## Phase 10 storage dependency
+
+Consume shared DynamoDB turn/finalization and Postgres safe control metadata rather than creating sidecar persistence. Local bridge registration/reusable credentials stay user-local and are excluded from managed artifacts and exports. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites
 
 Required phases: 14 and 25.2. Phase 10 is a standing storage boundary.

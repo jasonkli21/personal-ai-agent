@@ -26,6 +26,10 @@ Renumbered from former Phase 14 with scope preserved. Raw retained outputs use G
 ## Current state and reuse
 Deterministic domain/task fixtures and evaluation runners are reusable. Cross-provider quality matrix and versioned measured profiles are missing.
 
+## Phase 10 storage dependency
+
+Queryable evaluation profiles/summaries belong in Postgres; retained raw bodies belong in Phase 20 GCS. This assignment neither implements extra evaluation features nor permits prompts/secrets in compact runtime events. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites and work ordering
 Required phases: 20 and 21, plus Phase 10 persistence foundation.
 

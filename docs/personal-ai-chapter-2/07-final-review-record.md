@@ -65,3 +65,51 @@ Before applying/committing this package:
 - no active future plan reintroduces Firestore as canonical target storage;
 - completed Phase 0–2 history remains represented;
 - external living-doc links point at the replacement package.
+
+## P10.0 repository architecture review — 2026-10-06
+
+Reviewed revision: `e17ebd76afd1feb90fe47d959c43ab23eb553499`, with completed
+next-scope Phase 1–2 evidence and the existing persistence/export/lifecycle paths.
+The earlier package review above remains historical. This later review resolves
+implementation details before P10.1+, without weakening existing phase scope.
+
+- [ADR 0021](../decisions/0021-polyglot-persistence-foundation.md) and the
+  [storage contract](phase-10-storage-ownership-and-access-patterns.md) assign all
+  34 current collections and future families exactly one canonical target.
+  Research/replay and knowledge-effect transaction groups stay Postgres-owned;
+  execution jobs and branch timelines stay DynamoDB-owned.
+- Strong scoped DynamoDB directories preserve immediate listings; one sparse
+  publication GSI serves eventual notifications. Detailed keys/size/branch
+  mechanics remain in the Phase 10 contract.
+- Sanity check limits coordination to existing atomic memory source/job validation,
+  reusing conversation/job guards and a Postgres applied/aborted effect receipt.
+  There is no general saga/outbox or mirrored job authority. Unknown effects
+  remain fenced until serialized receipt recovery determines their outcome.
+- Sanity check chooses one lossless embedding array plus a transient exact-search
+  pgvector cast, rather than two stored representations. This saves Neon storage
+  while preserving original-value reads; numeric boundary parity and query CPU
+  require P10.2/local and later Neon verification. No default ANN or re-embedding.
+- The [migration/verification plan](phase-10-migration-cutover-and-verification-plan.md)
+  fixes logical reconciliation, final update/existence delta, all-writer freeze,
+  post-write rollback limits, retirement and local/cloud/strict-$0 gates.
+- Downstream Phases 12–16 prerequisite text is corrected to the already-correct
+  manifest graph; affected storage dependencies are clarified without removing
+  work packages, invariants, acceptance or verification requirements.
+- Sanity check keeps detailed keys/recovery/migration mechanics in Phase 10 docs;
+  shared architecture/strategy/execution docs contain short rules and links.
+
+P10.0 changes documentation only. Root README runtime claims, application code,
+infrastructure, cloud resources, completed evidence and original historical
+records remain intact. No P10.1+ implementation or persistence/cloud test is
+claimed. Open Phase 9 obligations remain independently open.
+
+### Documentation verification
+
+Validation on 2026-10-06 used reviewed HEAD plus the P10.0 documentation working
+tree. `python3 /tmp/validate_p10_docs.py` passed: all 33 manifest entries/files/byte
+sizes and the unchanged acyclic prerequisite graph, corrected Phase 11–16
+prerequisite text, all 34 literal collection mappings, normalized source-copy
+synchronization, Markdown file/anchor links and changed-file whitespace.
+`git diff --check` passed. Protected root README, implementation/infrastructure
+files, completed evidence and original historical content were unchanged.
+No application, local-engine, migration, provider or cloud checks were run.

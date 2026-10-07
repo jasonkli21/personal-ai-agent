@@ -21,6 +21,10 @@ Relevance improves without false-memory, attribution, authority, sensitivity, or
 
 Reuse validated fixed/scored/consolidated memory retrieval and lifecycle experiments. Phase 10 migrates canonical memory/vector state to Postgres/pgvector while preserving logical source/lifecycle semantics. This phase optimizes retrieval; it does not redo migration or extraction semantics.
 
+## Phase 10 storage dependency
+
+Benchmark the Phase 10 exact pgvector search over lossless arrays, including query-time casting and original-value numerical boundaries. An expression/ANN index is an evaluated optimization with storage/compute/recall evidence, not a default migration step; preserve 2,048d compatibility, with no truncation, half-precision conversion or silent re-embedding. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites
 
 Required phases: 1, 10, 12, 16, and 22.

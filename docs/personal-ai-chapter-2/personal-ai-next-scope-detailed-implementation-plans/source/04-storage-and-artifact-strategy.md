@@ -27,6 +27,8 @@ Use Neon Postgres for state that benefits from relationships, constraints, ad-ho
 
 Use typed relational columns for stable semantics and bounded JSONB where evolution is genuinely useful. Preserve embedding model/dimension/normalization/task-space metadata and reject incompatible spaces.
 
+The [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md) is the exhaustive family/access-pattern authority. Research runs/sessions/replay keys and lifecycle events/state/effect receipts stay in Postgres to preserve their transaction boundaries; execution jobs stay in DynamoDB. Embeddings use one lossless array with transient pgvector exact-search casts, avoiding a second stored projection while retaining original-value reads. Numeric parity, CPU and storage fit require implementation verification; detailed tradeoffs remain in that contract.
+
 ## Artifact tier
 
 Phase 20 adds `ArtifactStore`/`ArtifactRef` and private GCS for allowed large immutable outputs: detailed traces, raw evaluation results, exports, replay/debug artifacts, and permitted retained research artifacts. Compact queryable references live in Postgres. Optional artifact failure is advisory; required export failure is explicit.
@@ -38,7 +40,7 @@ Sensitive Finance/Health verbose artifacts default to minimal/no retention. Sour
 - One canonical store per record class.
 - Stable opaque IDs connect stores.
 - No distributed transaction assumption.
-- Use idempotency, conditional writes, pending/ready/reconciliation states, and replayable operations.
+- Use idempotency and conditional writes; narrowly coordinate memory source/job validation through the Phase 10 guard/receipt contract, rather than a general cross-store workflow platform.
 - No permanent Firestore/Postgres/DynamoDB dual-write architecture.
 - Account export/deletion inventory spans every canonical store and object tier.
 

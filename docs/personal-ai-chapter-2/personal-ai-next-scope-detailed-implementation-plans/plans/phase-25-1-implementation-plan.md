@@ -41,6 +41,10 @@ Renumbered on 2026-10-06 from former next-scope Phase 17.1. This file preserves 
 
 The ChatGPT credential runtime, OAuth flow, local bridge transport, and account-specific discovery are new. This is not the existing Google browser authentication flow and it is not a managed Cloud Run provider credential. Reuse Phase 16 inference/error/fake boundaries, Phase 18 provider metadata concepts, and the post-Phase-10 repository ownership rules only for safe non-secret attribution/state; reusable credentials never enter managed persistence.
 
+## Phase 10 storage dependency
+
+Reusable credentials and local bridge registration remain in protected user-local storage. Only safe managed connection/attribution metadata may use Postgres; Phase 10 storage does not broaden the existing credential/export exclusions. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites and work ordering
 
 Required phases: 16 and 18. Phase 10 is the standing persistence/security foundation. Work packages run in order.

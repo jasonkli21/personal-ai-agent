@@ -28,6 +28,10 @@ Renumbered on 2026-10-06 from former next-scope Phase 17.4; domain-ownership and
 
 Phase 25.2/25.3 supply shared sidecar/context/external-turn contracts. Domain launch adapters and sensitivity/action hooks are new integration contracts only.
 
+## Phase 10 storage dependency
+
+Domain host adapters consume the shared DynamoDB conversation and Postgres policy/control contracts. They must not persist reusable credentials or local bridge registration in managed stores, nor copy authoritative domain records into AI storage. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites
 
 Required phase: 25.3. Phase 10 remains the persistence boundary.

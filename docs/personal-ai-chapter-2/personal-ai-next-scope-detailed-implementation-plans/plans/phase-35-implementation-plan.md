@@ -21,6 +21,10 @@ No production promotion without measurable benefit and deterministic rollback.
 
 No learned router exists. Reuse measured baselines from Phases 22–24 and safe compact evaluation/usage metadata; ChatGPT remains explicit-only and excluded from automatic learning candidates.
 
+## Phase 10 storage dependency
+
+Postgres owns compact evaluation profiles/summaries and Phase 20 GCS owns permitted raw artifacts. Preserve existing hypothesis, provenance, sensitivity and evaluation gates; storage assignment adds no experiment scope. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites
 
 Required phases: 22, 23, and 24.

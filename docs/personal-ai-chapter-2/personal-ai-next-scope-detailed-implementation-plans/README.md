@@ -5,8 +5,10 @@ This directory contains 33 implementation plans for the regenerated chapter. `ma
 ## Status
 
 - Phases 0–2: completed history.
-- Phase 10: immediate next implementation phase.
+- Phase 10: P10.0 documentation decisions complete; P10.1–P10.6 remain unimplemented. Firestore remains current.
 - Phases 11–36: future work under the preserved-scope numbering map.
+
+See [ADR 0021](../../decisions/0021-polyglot-persistence-foundation.md), the [Phase 10 storage contract](../phase-10-storage-ownership-and-access-patterns.md) and [migration/verification plan](../phase-10-migration-cutover-and-verification-plan.md) for the reviewed foundation.
 
 ## Scope-preservation contract
 

@@ -9,7 +9,7 @@ This package supersedes the deleted `docs/personal-ai-next-scope-chatgpt-integra
 - Next-scope Phase 0 reconciliation: complete.
 - Next-scope Phase 1 application/workspace identity: implemented and locally verified, with the previously recorded external/deployed gaps still open.
 - Next-scope Phase 2 application registry/manifest model: implemented and locally verified, with the previously recorded external/deployed gaps still open.
-- **Next implementation phase: Phase 10 — Polyglot persistence foundation and Firestore migration.**
+- **Next implementation phase: Phase 10 — Polyglot persistence foundation and Firestore migration.** P10.0 documentation decisions are complete; P10.1–P10.6 remain unimplemented and externally unverified.
 - Phases 3–9 are intentionally unused in this chapter. This keeps Phase 10 as the clear architecture boundary without renumbering the completed Phases 0–2.
 - Former Phases 3–16 are preserved as Phases 11–24.
 - Former ChatGPT Phases 17.1–17.4 are preserved as Phases 25.1–25.4.
@@ -80,6 +80,10 @@ Phase 10 is explicitly required to update the root README after its storage migr
 - [07-final-review-record.md](07-final-review-record.md)
 - [08-chatgpt-plan-and-ai-sidecar.md](08-chatgpt-plan-and-ai-sidecar.md)
 - [09-phase-0-reconciliation.md](09-phase-0-reconciliation.md)
+- [Phase 10 storage ownership/access-pattern contract](phase-10-storage-ownership-and-access-patterns.md)
+- [Phase 10 migration/cutover/verification plan](phase-10-migration-cutover-and-verification-plan.md)
+- [ADR 0021 — polyglot persistence](../decisions/0021-polyglot-persistence-foundation.md)
+
 - [NUMBERING-MAP.md](NUMBERING-MAP.md)
 - [COMPATIBILITY.md](COMPATIBILITY.md)
 - [personal-ai-next-scope-detailed-implementation-plans/](personal-ai-next-scope-detailed-implementation-plans/README.md)

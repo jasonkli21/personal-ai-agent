@@ -21,6 +21,8 @@ After Phase 10:
 - no cross-store atomic transaction is assumed;
 - cross-store operations are idempotent/recoverable.
 
+Research run/session/replay groups and knowledge lifecycle events/state/effect receipts remain Postgres-owned; execution jobs remain DynamoDB-owned. Preserve existing atomic source/job validation through the narrow [Phase 10 storage contract](../phase-10-storage-ownership-and-access-patterns.md), without assuming guard expiry resolves an unknown effect. Export original embedding values and declare snapshot coverage; detailed recovery and cutover rules belong in the [Phase 10 verification plan](../phase-10-migration-cutover-and-verification-plan.md).
+
 Do not reintroduce Firestore as canonical target storage after Phase 10 unless a separately approved architecture decision changes the roadmap.
 
 ## Security and scope

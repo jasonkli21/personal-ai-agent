@@ -32,6 +32,10 @@ Renumbered on 2026-10-06 from former next-scope Phase 17.2 with all former scope
 
 Phase 16/21 provide neutral inference and automatic-provider attribution; Phase 25.1 provides the local bridge/credential boundary. Completed conversations/messages are DynamoDB-owned after Phase 10; query-rich provider/control metadata may be Postgres-owned, but no reusable ChatGPT credential may be persisted in either.
 
+## Phase 10 storage dependency
+
+External-turn preparation/finalization/replay uses the DynamoDB conversation/branch boundary, with versioned Postgres policy/registry/ledger references. Phase 10 source validation and uncertain-effect rules apply; reusable credentials and interrupted output retain their existing exclusions. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites
 
 Required phases: 19, 21, and 25.1. Phase 10 remains the storage/security foundation.

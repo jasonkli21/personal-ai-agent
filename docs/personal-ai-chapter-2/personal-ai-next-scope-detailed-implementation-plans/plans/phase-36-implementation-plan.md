@@ -38,6 +38,10 @@ new domain/product features, new provider families, major architecture rewrites,
 
 Reuse established deterministic evaluation suites, account inventory/lifecycle safeguards, provider/runtime tests, and Phase 10 persistence contract/migration evidence. Existing historical Phase 9 release obligations remain owned by their original evidence/checklists and must be closed truthfully rather than duplicated or declared complete by renumbering.
 
+## Phase 10 storage dependency
+
+Consume the Phase 10 local/cloud, numerical parity, guard/receipt race, logical reconciliation and retirement evidence separately. No fake/local result closes cloud gates or the original Phase 9 physical deletion, full owner migration, provider accounting and release obligations. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites
 
 Required phases: 20, 25.4, 30, 31, 32, 33, 34, and 35, plus the standing Phase 10 foundation.

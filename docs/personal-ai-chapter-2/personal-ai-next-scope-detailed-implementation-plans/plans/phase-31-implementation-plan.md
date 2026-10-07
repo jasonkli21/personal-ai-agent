@@ -23,6 +23,10 @@ No arbitrary direct writes; domain validation is mandatory; mutation trace is au
 
 Reuse existing narrow itinerary-proposal opaque-handle/fenced-replay patterns without turning them into generic direct writes. Durable proposal/evaluation metadata is Postgres-owned after Phase 10; domain state stays external/authoritative.
 
+## Phase 10 storage dependency
+
+Postgres owns proposal/evaluation/result/reconciliation metadata; domain APIs remain authoritative for mutations. Reuse stable identities and uncertain-outcome fencing without treating a runtime checkpoint as proof of an external domain commit. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites
 
 Required phases: 15, 26, 27, 28, 29. Sidecar Apply consumes Phase 25.4.

@@ -48,7 +48,7 @@ Frontend integration, where needed, extends `frontend/src/lib/api.ts`, `frontend
 
 ## Prerequisites and work ordering
 
-Required phases: 3, 10. Each must deliver the contracts this plan consumes; a similarly named existing phase is not a substitute. Recommended numerical order is recorded in the roadmap. Within this plan, work packages run in order; each consumes prior packages' delivered contracts, then closes verification below.
+Required phases: 11, 10. Each must deliver the contracts this plan consumes; a similarly named existing phase is not a substitute. Recommended numerical order is recorded in the roadmap. Within this plan, work packages run in order; each consumes prior packages' delivered contracts, then closes verification below.
 
 ## Phase-specific invariants
 

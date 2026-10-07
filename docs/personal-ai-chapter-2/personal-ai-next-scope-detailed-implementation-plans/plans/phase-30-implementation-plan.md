@@ -21,6 +21,10 @@ Cross-app access is narrow/auditable, revocation blocks future retrieval/reuse, 
 
 Cross-app grants/federation are new. Phase 15 policy dependencies plus the domain providers in Phases 26–29 are prerequisites; same-owner identity alone never grants sharing. Durable grant/policy metadata is query-rich Postgres state after Phase 10.
 
+## Phase 10 storage dependency
+
+Postgres owns versioned grants/revocation metadata. Their dependent DynamoDB history/summaries/runtime refs, Postgres memory/evidence and later GCS artifacts all retain authorization and deletion propagation; same-owner identity alone grants nothing. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites
 
 Required phases: 15, 26, 27, 28, 29. Sidecar visibility additionally consumes Phase 25.4.

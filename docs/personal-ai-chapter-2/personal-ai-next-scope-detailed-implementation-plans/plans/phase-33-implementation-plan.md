@@ -22,6 +22,10 @@ End-answer/evidence quality measurably improves and provenance remains exact.
 
 Reuse deterministic constraint-preserving query planning, snippets, freshness/dedupe, literal grounded synthesis, and bounded research budgets. Basic search admission remains Phase 19 responsibility.
 
+## Phase 10 storage dependency
+
+Compact evaluation profiles/summaries are Postgres-owned; permitted retained raw outputs use Phase 20 GCS. Preserve source attribution, sensitivity and declared export consistency without adding a duplicate runtime ledger. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+
 ## Prerequisites
 
 Required phases: 19, 20, 22. Phase 10 supplies the data-plane ownership: queryable summaries/metadata in Postgres, bulky artifacts in GCS.
