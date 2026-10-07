@@ -8,6 +8,8 @@ verification gates; this roadmap records scope and sequencing, not evidence.
 
 This roadmap preserves the full former integrated scope, adds the Postgres/DynamoDB migration as Phase 10, and keeps completed next-scope Phases 0–2 unchanged. Phases 3–9 are intentionally unused. Detailed plans are authoritative for work packages and acceptance criteria.
 
+The 2026-10-07 extensibility reconciliation is additive within existing phases. The [target architecture](02-target-architecture.md#application-integration-contract) owns the integration model and [inference strategy](03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes) owns execution/cost semantics. The phase-local additions below preserve every prior scope commitment; no new major phase or prerequisite is introduced.
+
 ### Completed checkpoint
 
 - Phase 0 — reconciliation: complete.
@@ -49,6 +51,8 @@ Prerequisites: 1, 2, 10.
 
 Scope is preserved from former Phase 3; see the detailed plan for the restored work packages and acceptance criteria.
 
+Establish the first runtime Application Integration Contract seam from scope, application definition, and registered typed providers; prove synthetic-app preparation without generic orchestration edits.
+
 ### Phase 12 — Context builder refactor
 
 Prerequisites: 11, 10.
@@ -73,11 +77,15 @@ Prerequisites: 11, 13, 14, 10.
 
 Scope is preserved from former Phase 7; see the detailed plan for the restored work packages and acceptance criteria.
 
+Extend the same integration contract with typed sensitivity/disclosure policy, allowing stricter applications without preparation/runtime forks.
+
 ### Phase 16 — Provider-neutral inference and embedding contracts
 
 Prerequisites: 12, 15, 10.
 
 Scope is preserved from former Phase 8; see the detailed plan for the restored work packages and acceptance criteria.
+
+Validate neutral capability contracts with a synthetic provider and preserve explicit embedding-space identity/current vector compatibility.
 
 ### Phase 17 — Concrete provider adapters: Gemini, Groq, Cloudflare
 
@@ -85,17 +93,23 @@ Prerequisites: 16, 10.
 
 Scope is preserved from former Phase 9; see the detailed plan for the restored work packages and acceptance criteria.
 
+Implement Gemini/Groq/Cloudflare as reference adapters; additional live provider families remain outside this phase.
+
 ### Phase 18 — Provider/model registry and strict-free eligibility
 
 Prerequisites: 15, 17, 10.
 
 Scope is preserved from former Phase 10; see the detailed plan for the restored work packages and acceptance criteria.
 
+Separate endpoint/model, credential/account, cost, and selection eligibility; represent explicit-only BYOK profiles without secrets or live BYOK execution.
+
 ### Phase 19 — Provider usage accounting and quota ledger
 
 Prerequisites: 18, 10.
 
 Scope is preserved from former Phase 11; see the detailed plan for the restored work packages and acceptance criteria.
+
+Attribute account/credential/execution/cost scope and typed quota units without becoming a billing system.
 
 ### Phase 20 — Cloud Storage artifact tier and retention
 
@@ -109,11 +123,15 @@ Prerequisites: 16, 18, 19, 10.
 
 Scope is preserved from former Phase 13; see the detailed plan for the restored work packages and acceptance criteria.
 
+Route from registered endpoint facts and typed task requirements/policy rather than provider/task-name branches.
+
 ### Phase 22 — Cross-provider task evaluation matrix
 
 Prerequisites: 20, 21, 10.
 
 Scope is preserved from former Phase 14; see the detailed plan for the restored work packages and acceptance criteria.
+
+Evaluate registered eligible endpoint/task profiles with versioned identity; keep the initial live comparison to the three reference adapters.
 
 ### Phase 23 — Quota-aware routing
 
@@ -121,11 +139,15 @@ Prerequisites: 22, 10.
 
 Scope is preserved from former Phase 15; see the detailed plan for the restored work packages and acceptance criteria.
 
+Consume typed quota buckets with qualified unit/window/reset/source/confidence; scarcity never opens paid/BYOK overflow.
+
 ### Phase 24 — Bounded cascades and deterministic validation
 
 Prerequisites: 23, 10.
 
 Scope is preserved from former Phase 16; see the detailed plan for the restored work packages and acceptance criteria.
+
+Execute registered task/domain validators inside bounded free-only cascades.
 
 ### Phase 25.1 — ChatGPT authentication and local bridge
 
@@ -150,6 +172,8 @@ Scope is preserved from former Phase 17.3; ChatGPT integration remains additive 
 Prerequisites: 25.3, 10.
 
 Scope is preserved from former Phase 17.4; ChatGPT integration remains additive and explicit-user controlled.
+
+Extend the Application Integration Contract with shared host/sidecar hooks instead of creating a separate domain framework.
 
 ### Phase 26 — Travel integration
 
@@ -181,11 +205,15 @@ Prerequisites: 15, 26, 27, 28, 29, 10.
 
 Scope is preserved from former Phase 22; storage references are updated only where Phase 10 supersedes Firestore.
 
+Add optional generic export/federation declarations while enabling only the four existing allowlisted cases.
+
 ### Phase 31 — Mutation proposal framework
 
 Prerequisites: 15, 26, 27, 28, 29, 10.
 
 Scope is preserved from former Phase 23; storage references are updated only where Phase 10 supersedes Firestore.
+
+Add optional registered typed mutation capabilities; domains retain authorization, validation, writes, and authoritative post-state.
 
 ### Phase 32 — Smarter context planning
 
@@ -217,6 +245,8 @@ Prerequisites: 20, 25.4, 30, 31, 32, 33, 34, 35, 10.
 
 Scope is preserved from former Phase 28; storage references are updated only where Phase 10 supersedes Firestore.
 
+Validate the already implemented seams with a synthetic fifth app and synthetic provider/task/validator conformance; no new live app/provider family is introduced.
+
 ## Execution order
 
 `0 [done] -> 1 [done] -> 2 [done] -> 10 -> 11 -> 12 -> ... -> 24 -> 25.1 -> 25.2 -> 25.3 -> 25.4 -> 26 -> ... -> 36`
@@ -234,3 +264,5 @@ DynamoDB is intentionally limited to named operational key/range access patterns
 ## Scope preservation
 
 No former normative requirement may disappear merely because of renumbering. If a future reconciliation intentionally changes scope, it must identify the former requirement and rationale explicitly rather than silently shortening the plan.
+
+Phases 26–29 remain complete Travel/Shopping/Finance/Health reference integrations, progressively testing the shared model. Domain capability registration is the expected implementation path; shared abstraction repairs must remain synthetic-app compatible. Search substitution remains local to its provider seam (Phases 19/33), and memory experimentation retains natural versioned seams (Phase 34); neither adds a speculative framework, provider, or vector migration.

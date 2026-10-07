@@ -37,7 +37,11 @@ Required phase: 23.
 ### P24.0 — Task-specific bounded cascade
 Define attempt/depth/token/time/quota limits and eligible escalation order for tasks with meaningful deterministic validation. Reuse schema/span/citation/hard-constraint validators rather than a generic model self-grade. Each attempt has invocation identity and usage settlement; unknown outcomes remain fenced.
 
+Implement registered deterministic `TaskValidator` capabilities as defined in the [target seam](../../02-target-architecture.md#task-validator-and-evaluation-extension-seams). Typed task/domain configuration associates validator ID/version and input/output contracts for schema, citations, required fields, source spans, hard constraints, and domain-specific checks. Generic cascade control flow invokes registered validators; itinerary and Shopping semantics stay in domain validators rather than task-name branches. Missing required validators fail closed.
+
 **Acceptance:** Attempt/depth/time/token/quota ceilings are finite and enforced with existing validators.
+
+**Extension acceptance:** A synthetic task/domain validator can register and govern escalation without generic cascade changes. Unsupported/missing validation cannot expose buffered output or relax free-only, source, sensitivity, or attempt bounds.
 
 ### P24.1 — Validate before exposure
 Buffer bounded internal task output, validate against exact prepared sources and only then expose success or escalate to a stronger eligible free endpoint. Reassemble/recount from the same permitted source set for each endpoint; no privacy widening, hidden evidence changes or paid path. User-visible chat after a first delta cannot restart/concatenate another model.

@@ -1,6 +1,6 @@
 # Phase 36 implementation plan — Integrated evaluation and hardening
 
-Renumbered from former Phase 28. Its release/operational scope is preserved and expanded only where Phase 10 changes the data plane from Firestore/GCS to DynamoDB + Postgres/pgvector + GCS.
+Renumbered from former Phase 28. Its release/operational scope is preserved with Phase 10 data-plane hardening and 2026-10-07 conformance clarifications for the abstractions implemented by earlier phases.
 
 ## Scope boundary
 
@@ -70,9 +70,19 @@ Test credential absence, bridge caller authorization, auth/account changes, miss
 
 **Acceptance:** ChatGPT/domain clients cannot be promoted with failed eligibility, billing, caller, privacy, mutation, or persistence-isolation checks.
 
+### P36.3 — Application and provider conformance
+
+Validate the completed [Application Integration Contract](../../02-target-architecture.md#application-integration-contract) with a synthetic fifth application: register a definition and workspace semantics, at least two domain-typed providers, sensitivity policy, and shared sidecar launch; exercise the shared planner/builder. Optional fixtures declare one cross-app export category and one safe versioned mutation operation through existing grants/proposal contracts. Permission denial/revocation, exact confirmation, authoritative post-state, and idempotency remain binding when those capabilities are included.
+
+The fifth app needs no application-specific changes to planner, builder, inference runtime, authentication, shared sidecar, storage architecture, or generic mutation orchestration. Conformance validates earlier extensibility rather than deferring its implementation to hardening; it creates no fifth live domain product.
+
+Reuse Phase 16 synthetic-provider conformance and Phase 18/21/22 profile/task extension fixtures to test an additional synthetic provider/endpoint through neutral operations, registry eligibility, deterministic routing, accounting, evaluation, and registered validators without provider-name branches. Vary account/credential/cost identity for the same provider/model and exhaust free capacity: paid/unknown-cost/explicit-only variants must not enter automatic routing, evaluations, or cascades. BYOK remains representable and explicit-only; these fixtures add no live BYOK implementation or provider family.
+
+**Acceptance:** Synthetic app/provider/task/validator additions use registration, adapters, profiles, fixtures, and configuration without the forbidden generic changes. Offline conformance never claims live provider, domain, engine, cloud, billing, or deployment acceptance.
+
 ## Requirement coverage
 
-All former Phase 28 commitments remain normative. Phase 10 adds the explicit three-store/cross-cloud/Firestore-retirement hardening requirements above; it does not replace any former evaluation or release requirement.
+All former Phase 28 commitments remain normative. Phase 10 adds the explicit three-store/cross-cloud/Firestore-retirement hardening requirements above; P36.3 validates the earlier integration/provider seams. Neither replaces any former evaluation or release requirement.
 
 ## README maintenance
 

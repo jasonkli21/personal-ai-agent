@@ -12,6 +12,8 @@ See [ADR 0021](../../decisions/0021-polyglot-persistence-foundation.md), the [Ph
 
 Former Phase 3–28 detailed plans are authoritative for substantive scope. Renumbering changes only phase/prerequisite identifiers, persistence references invalidated by Phase 10, and README-maintenance obligations. Do not replace specific work packages or acceptance criteria with generic summaries.
 
+The 2026-10-07 reconciliation adds extensibility constraints and conformance criteria without removing those commitments or changing phase order/prerequisites. Read the [Application Integration Contract](../02-target-architecture.md#application-integration-contract) and [execution identity/cost modes](../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes) before the affected phase plan; detailed semantics are not repeated in this index. Source copies retain their historical planning snapshot rather than mirroring the clarified active plans. Manifest byte metadata tracks edited plans; phase identities, titles, and graph remain unchanged.
+
 ## Shared closeout rule
 
 Every phase must review the repository-root README for factual accuracy. Change it only for user/developer-visible current-state facts; implementation details remain in subsystem docs. Phase 10's required README architecture/setup/deployment reconciliation is recorded as complete in its implementation evidence.

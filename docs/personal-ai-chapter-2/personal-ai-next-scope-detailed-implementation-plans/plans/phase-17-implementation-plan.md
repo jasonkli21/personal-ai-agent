@@ -1,6 +1,6 @@
 # Phase 17 implementation plan — Concrete provider adapters: Gemini, Groq, Cloudflare
 
-Renumbered on 2026-10-06 from former next-scope Phase 9. This file preserves the former detailed-plan scope and only changes numbering, prerequisites, persistence references made obsolete by Phase 10, and README-maintenance requirements. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
+Renumbered on 2026-10-06 from former next-scope Phase 9. This file preserves the former detailed-plan scope; the 2026-10-07 reconciliation clarifies reference-adapter extensibility alongside numbering, prerequisites, persistence, and README updates. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
 
 ## Scope boundary
 
@@ -43,6 +43,7 @@ Required phase: 16 (former Phase 8). Phase 10 is also a standing persistence pre
 - Capture usage/rate-limit metadata when provided, but do not build selection policy yet.
 - Cloudflare models requiring Workers Paid are ineligible in strict-free configuration.
 - Real-provider checks are opt-in and must not be represented as passed when credentials/network are unavailable.
+- Gemini/Groq/Cloudflare are reference adapters validating the [neutral seam](../../02-target-architecture.md#9-provider-runtime), not privileged identities. Concrete scope remains these three; OpenAI, Anthropic, and other future live adapters are not added here.
 
 ## Work packages
 
@@ -63,6 +64,8 @@ Add generation/structured-output operations actually needed by tasks, with suppo
 All new live paths default off. Require model/account free-tier and privacy compatibility checks before opt-in dispatch, even before Phase 18 centralizes registry policy. Cloudflare paid-only models are excluded. Record strict-$0 deployment incompatibilities before enablement. Missing credentials/provider environment skips external checks only.
 
 **Acceptance:** New live providers remain disabled until independent eligible-account/privacy/preflight checks are recorded.
+
+Document the same adapter/profile/contract-test/preflight/evaluation/configuration path for a future provider. Configuration and safe trace identity may contain provider names; higher-level context/domain/routing control flow must not require them. Phase 16 synthetic conformance remains the extension check, not a fourth live adapter.
 
 ## Requirement coverage
 

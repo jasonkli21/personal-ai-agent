@@ -4,7 +4,7 @@ Renumbered on 2026-10-06 from former next-scope Phase 17.4; domain-ownership and
 
 ## Scope boundary
 
-**Goal:** Define one reusable contract for Travel, Shopping, Finance, and Health so ChatGPT-specific UI/auth/provider logic is not duplicated per application.
+**Goal:** Extend the [Application Integration Contract](../../02-target-architecture.md#application-integration-contract) with shared sidecar/host hooks, validated by Travel, Shopping, Finance, and Health reference integrations, so ChatGPT-specific UI/auth/provider logic is not duplicated per application.
 
 ### Normative commitments
 
@@ -48,6 +48,8 @@ Required phase: 25.3. Phase 10 remains the persistence boundary.
 
 Define versioned launch metadata for app/workspace/entity/view/conversation plus bounded advisory client context. Domain-owned adapters supply authorized typed source refs and consume the shared package; core never directly queries domain databases. Keep Personal AI workspace separate from ChatGPT account registration. Supply fake integration examples for all four apps without claiming real external app files.
 
+Compose existing scope, definition/workspace semantics, provider registrations, typed policy, planner, builder, provenance, and authority boundaries. This is an optional host extension of the same integration model, not a separate ChatGPT-domain framework or a mandatory client SDK. ChatGPT remains a distinct explicit subscription lane under shared disclosure policy.
+
 **Acceptance:** four fake domain launches compose with one shared package/turn contract and no core domain-DB access.
 
 ### P25_4.1 — Sensitivity and action hooks
@@ -61,6 +63,8 @@ Expose narrow allowed context categories and policy-approved Copy/draft Insert. 
 Document domain-owned read/mutation API responsibilities and required repository/revision/transport verification before each live integration. Standardize post-completion callbacks without duplicating prepare/finalize. Prove a synthetic domain adds no core app-name branch, app-specific provider auth, or authoritative state in Personal AI.
 
 **Acceptance:** integration boundaries preserve shared attribution/completion and domain authority.
+
+**Extension acceptance:** A synthetic application launches through registered host/provider/policy hooks without changes to the shared sidecar, preparation pipeline, or authentication. The four reference launches remain required examples, not the only supported application identities.
 
 ## Requirement coverage
 

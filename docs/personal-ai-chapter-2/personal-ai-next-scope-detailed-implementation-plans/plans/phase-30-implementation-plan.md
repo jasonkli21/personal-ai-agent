@@ -39,11 +39,15 @@ Destination apps cannot directly query another domain DB; revocation never mutat
 
 Define scoped category/field/entity/purpose grants with source/destination app/workspace, expiry, version, and revocation identity. User permission and source-domain policy must both allow selection before any provider call. Persist only bounded grant metadata in Postgres; do not create a global profile dump.
 
+Extend the [Application Integration Contract](../../02-target-architecture.md#application-integration-contract) with optional typed export/federation declarations. The mechanism is generic over source/destination application, workspace, category, field/entity scope, purpose, expiry, version, revocation, sensitivity, and authorization dependencies. Registered export categories advertise support only; explicit allowlisting plus current source policy/grant remains mandatory even for the same owner.
+
 **Acceptance:** a valid scoped grant plus source policy is required before cross-app retrieval.
 
 ### P30.1 — Four bounded broker cases
 
 Implement only the four named initial cases. Broker narrow domain-owned responses through registered providers, preserving source refs/authority and most restrictive sensitivity. Destination may not re-delegate beyond the grant. Stale membership/grant denies before source calls.
+
+The four cases are the initial feature allowlist, not domain-name branches in the broker. A synthetic category/provider can exercise the same grant and revocation mechanism in conformance fixtures without enabling a fifth production sharing case.
 
 **Acceptance:** exactly the initial cases preserve narrow source identity/sensitivity with no over-fetch.
 

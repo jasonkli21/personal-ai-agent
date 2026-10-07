@@ -47,6 +47,8 @@ Authorize category before offering/fetching it. Apply field/window/result limits
 
 **Acceptance:** sensitive categories are denied before calls and verbose retention stays minimal/off by default.
 
+**Reference integration acceptance:** Health validates flexible domain-typed records, bounded time-series access, and field sensitivity through the [Application Integration Contract](../../02-target-architecture.md#application-integration-contract). Implement/register domain capabilities and policy rather than app-name branches or planner/builder/runtime/sidecar forks. Any shared deficiency repair remains synthetic-app compatible; all Health read, memory, artifact, proposal, and mobile gates remain binding.
+
 ### P29.2 — Sidecar and proposal hooks
 
 After Phase 25.4, show only authorized human-readable categories with narrowing controls. Copy/permitted drafts only. Medication/condition/clinical edits require a typed Phase 31 proposal plus Health validation/confirmation and may remain forbidden. Verify native-mobile SIWC mechanics before native credentials; a blocked optional lane must not block baseline Health read architecture.

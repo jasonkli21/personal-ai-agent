@@ -40,6 +40,8 @@ Explicit constraints/negation/units/numbers/allowlists survive rewriting; all ex
 
 Benchmark current planner/snippet path before rewrite/hybrid/source-specific alternatives. Preserve all literal constraints and domain allowlists; new sources require existing source-policy/rights gates. Stay within search/source/time/usage budgets and Phase 19 admission; no unbounded crawl or proprietary-grounding-only dependency.
 
+Keep substitution local to the existing search-adapter seam, evolving applicable search/lookup/fetch capabilities, safe usage, source-rights metadata, and failure semantics described in the [target architecture](../../02-target-architecture.md#11-other-semantic-seams-and-deferred-abstractions). Research must not require Brave-specific control flow. Preserve Brave's account/source-policy guards as adapter/profile facts; do not add another live search provider solely to prove the seam or merge it with the inference contract.
+
 **Acceptance:** rewritten/retrieved queries preserve constraints and admitted budgets.
 
 ### P33.1 — Evidence identity, freshness, reranking, packing

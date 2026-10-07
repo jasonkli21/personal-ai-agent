@@ -41,6 +41,8 @@ Domain validates/authorizes after proposal creation and before write; confirmati
 
 Define target app/workspace/entity, versioned domain operation/patch, rationale/source refs, producing-provider provenance, expected domain version, validation/confirmation state, expiry, and idempotency identity. Preserve opaque handles/exact evidence. Unsupported operations fail explicitly; extraction candidates are not confirmed mutations.
 
+Mutation support is an optional typed [Application Integration Contract](../../02-target-architecture.md#application-integration-contract) capability. Generic orchestration owns proposal identity, target scope, operation ID/version, typed payload, expected version, provenance, validation/confirmation/idempotency, and reconciliation state. Domain capabilities own authorization, business validation, authoritative write, and authoritative post-state. Domain operation names belong in registration/adapters/validators, not generic mutation control-flow branches.
+
 **Acceptance:** only supported typed operations with source/version/idempotency metadata become proposals.
 
 ### P31.1 — Domain validate, confirm, execute
@@ -48,6 +50,8 @@ Define target app/workspace/entity, versioned domain operation/patch, rationale/
 Domain validates current authorization/business rules/version and preview. User confirms the exact validated proposal. Execute only through authoritative domain API and return authoritative post-state/ref. Distinguish rejected/applied/uncertain and reconcile unknown outcome under original idempotency key rather than blindly resending.
 
 **Acceptance:** validation and exact confirmation precede write; uncertain apply reconciles safely.
+
+**Extension acceptance:** A synthetic safe versioned operation uses registered domain validation/execution/reconciliation through the same proposal controller without domain-specific orchestration edits. Exact confirmation, authorization, idempotency, and uncertain-outcome fencing remain mandatory.
 
 ### P31.2 — Shared sidecar Apply and adapters
 

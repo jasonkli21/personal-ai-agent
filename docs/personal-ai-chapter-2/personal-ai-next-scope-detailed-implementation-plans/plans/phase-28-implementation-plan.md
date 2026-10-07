@@ -47,6 +47,8 @@ Register strict field disclosure rules, narrow windows/entity scope, and eligibl
 
 **Acceptance:** ineligible primary or auxiliary disclosures and implicit whole-portfolio context are denied.
 
+**Reference integration acceptance:** Finance validates strong sensitivity, narrow read-only defaults, and semantic value labels through typed [Application Integration Contract](../../02-target-architecture.md#application-integration-contract) capabilities/policy. Stricter behavior must not fork the planner, builder, inference runtime, or sidecar. Any shared deficiency repair remains synthetic-app compatible; complete Finance scope and domain authority remain binding.
+
 ### P28.2 — Read-only sidecar
 
 After Phase 25.4, launch with narrow defaults and visible explicit broader inclusion. Preserve semantic labels in packages. Copy/save-as-draft/research-note only on non-authoritative approved surfaces; authoritative persisted actions require Phase 31. No trade/transfer/transaction endpoint is reachable.

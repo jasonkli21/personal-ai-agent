@@ -45,10 +45,14 @@ Add one bounded invocation/reservation identity per external operation: generati
 
 **Acceptance:** All external operation families reserve once before dispatch and settle known/unknown outcomes safely.
 
+Attribution consumes [distinct execution identities](../../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes): provider, endpoint/profile version, account/project/tier, safe credential scope/class, execution/cost class, app/workspace/task, quota bucket, usage, status, and latency. Separate credential/account scopes for the same provider/model must not merge quota or billing attribution. Store references/classification only, never secrets. Representing explicit BYOK attribution adds no BYOK dispatch, invoices, monthly billing, cost dashboard, or automatic spending budgets.
+
 ### P19.1 — Quota windows and health
 Represent unit/window/reset/source/confidence separately for each quota bucket; do not mix requests/day with tokens/minute or Cloudflare neurons. Account-level quota is shared across users/apps; track attributable local usage separately and conservative unobserved external use. Record latency, success, 429/5xx/retries, cooldown and exact/derived/configured/unknown observations. Basic search admission/zero-overflow checks belong here; Brave requires verified prepaid/no-auto-reload/no-paid-balance configuration and source rights, with postpaid overflow excluded. Scarcity scoring waits for Phase 23.
 
 **Acceptance:** Shared-account windows and header units/reset confidence remain distinct under concurrent owner usage.
+
+**Provider extension acceptance:** Synthetic request/token/neuron/other-unit buckets use the same accounting operations without provider-name branches; compatible shared-account scopes aggregate correctly while distinct account/credential buckets remain separate. Existing Brave checks stay adapter/account-specific admission facts; they do not bind research to one search provider.
 
 ### P19.2 — Bounded persistence and developer summary
 Store compact safe aggregates in Postgres and, where justified by Phase 10, high-volume append-only operational events in DynamoDB. Extend account inventory/export/deletion rules, documenting retained tombstones separately. Do not rely on paid TTL behavior for strict-$0 cleanup. Developer summaries never expose prompts, secrets or fabricated remaining quota. Account deletion/lifecycle closure remains an existing release obligation.

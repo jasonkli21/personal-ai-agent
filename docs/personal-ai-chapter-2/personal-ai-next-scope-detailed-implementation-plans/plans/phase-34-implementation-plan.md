@@ -39,6 +39,8 @@ Existing lifecycle exclusions/supersession/forgetting remain binding; owner/app/
 
 Compare existing validated retrieval behavior against hybrid/entity-aware candidate selection on source-attributed held-out fixtures. Measure missed/irrelevant/stale/false memories, tokens/latency, and downstream answer support. Require owner/app/workspace scope, embedding model/dimension/normalization/task compatibility, active-source/lifecycle state, and provenance filters before candidate ranking.
 
+Retain the existing repository/retriever/ranker/extractor/lifecycle-policy seams for later measured approaches without a memory-plugin framework. Comparison metadata identifies strategy/version, embedding-space provider/model/dimensions/normalization/task semantics/version, provenance, lifecycle state, and retrieval/ranking decisions. A new space needs a separately authorized migration; current Gemini compatibility is unchanged and this phase still optimizes retrieval rather than extraction/lifecycle semantics.
+
 **Acceptance:** held-out fixtures quantify baseline relevance/staleness while proving scope/source integrity.
 
 ### P34.1 — Task budgets and extractive packing

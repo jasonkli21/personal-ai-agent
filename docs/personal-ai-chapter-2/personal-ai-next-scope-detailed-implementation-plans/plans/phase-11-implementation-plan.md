@@ -1,6 +1,6 @@
 # Phase 11 implementation plan — Context source and provider abstraction
 
-Renumbered on 2026-10-06 from former next-scope Phase 3. This plan preserves the former detailed plan’s normative commitments, work packages, invariants, acceptance criteria, and verification scope. Only phase numbering/prerequisites, persistence references superseded by Phase 10, and README-maintenance requirements are changed. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
+Renumbered on 2026-10-06 from former next-scope Phase 3. This plan preserves the former detailed plan’s normative commitments, work packages, invariants, acceptance criteria, and verification scope. The 2026-10-07 reconciliation adds integration-seam clarifications to the numbering/persistence/README updates. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
 
 ## Scope boundary
 
@@ -26,6 +26,7 @@ Renumbered on 2026-10-06 from former next-scope Phase 3. This plan preserves the
 - context planning policy
 - model selection
 - direct core access to domain databases
+- sidecar implementation, cross-app federation, mutation framework, and generic SDK/plugin framework
 
 ## Current state and reuse
 
@@ -56,6 +57,7 @@ Required phases: 1, 2, 10. Each must deliver the contracts this plan consumes; a
 - Distinguish authoritative domain state, AI memory, external evidence, conversation, and client context.
 - Do not flatten domain schemas into a universal untyped blob.
 - Provider contracts must be independently testable with fakes.
+- Extend the [Application Integration Contract](../../02-target-architecture.md#application-integration-contract) through registered capabilities; shared preparation must not branch on application names.
 
 ## Work packages
 
@@ -73,6 +75,8 @@ Define source classes, bounded selection and normalized response/item records in
 
 Define only operations needed by the roadmap (profile/current/entity/history/search), advertised per provider; unsupported operations fail explicitly. Validate allowed fields/time window/entity scope/result and byte bounds before any provider call. Apply owner/app isolation and deny cross-app retrieval by default now; Phase 15 completes sensitivity policy. Timeout/unavailable optional sources return bounded reasons; required-source failure stops preparation rather than retrieving unrelated data.
 
+Compose existing `RequestScope` and `ApplicationDefinition` with registered typed `ContextProvider` capabilities as the first runtime integration seam. Extend existing registration rather than building a separate application framework. Later policy, host, federation, and mutation capabilities evolve through their own phases.
+
 **Acceptance:** Denied selections produce zero source calls; bounds and required/optional errors are explicit.
 
 ### P11.2 — Existing-source wrappers and fixtures
@@ -82,6 +86,8 @@ Define only operations needed by the roadmap (profile/current/entity/history/sea
 Wrap validated Postgres-backed memory retrieval and immutable research/evidence records without recreating their persistence or freshness logic. Conversation/summary adapters use only the active branch through the DynamoDB-backed conversation/runtime repository established by Phase 10. Add synthetic domain providers; no core domain DB client or real Health/Finance retrieval. Implement the small AI-owned global profile (units, locale, response preferences, application-independent defaults) as a bounded versioned Postgres repository provider beside the existing context/memory seams, with explicit user-set provenance and permitted field sharing. It participates in the Postgres-backed account export/deletion inventory established after Phase 10. It is distinct from inferred memory and domain profiles; absent values remain absent. Its read/update contract is owner-authenticated and participates in export/deletion. No domain data is automatically copied into it. Add typed TOOL_RESULT/client-context wrappers only for registered, bounded read capabilities; side effects still require Phase 31. Fake providers record precisely what was requested and disclosed.
 
 **Acceptance:** Existing memory/evidence checks are reused; bounded global-profile and tool/client wrappers work with fakes and export/deletion inventory.
+
+**Integration acceptance:** A synthetic application registers its definition/workspace semantics and typed providers, then participates in shared context preparation without modification to generic orchestration. Fixtures retain domain payload types, exact source references, scope, permission dependencies, bounds, and predictable failures; registration alone authorizes no read.
 
 ## Requirement coverage
 

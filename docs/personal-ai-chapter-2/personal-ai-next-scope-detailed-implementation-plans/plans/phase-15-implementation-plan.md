@@ -1,6 +1,6 @@
 # Phase 15 implementation plan — Permissions and sensitivity policy
 
-Renumbered on 2026-10-06 from former next-scope Phase 7. This plan preserves the former detailed plan’s normative commitments, work packages, invariants, acceptance criteria, and verification scope. Only phase numbering/prerequisites, persistence references superseded by Phase 10, and README-maintenance requirements are changed. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
+Renumbered on 2026-10-06 from former next-scope Phase 7. This plan preserves the former detailed plan’s normative commitments, work packages, invariants, acceptance criteria, and verification scope. The 2026-10-07 reconciliation adds typed application-policy extension constraints to the numbering/persistence/README updates. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
 
 ## Scope boundary
 
@@ -59,7 +59,11 @@ Required phases: 11, 13, 14, 10. Each must deliver the contracts this plan consu
 
 Define server-owned app/provider/field/operation policy and a sensitivity join that supports multiple restrictions. App/workspace membership comes from verified/domain authority, not client labels. Unknown policy denies sensitive disclosure. Separate source access from external model eligibility; explicit provider choice cannot override either.
 
+Extend the [Application Integration Contract](../../02-target-architecture.md#application-integration-contract) with typed policy/capability configuration. Finance and Health can declare stricter disclosure/sensitivity through this configuration without application-name branches or custom planner, builder, or inference forks. Registration advertises capabilities and does not grant permission.
+
 **Acceptance:** Server policy decisions deny unknown-sensitive and forged client permissions.
+
+**Extension acceptance:** A synthetic application's stricter field policy uses the same preparation/disclosure path and denies before source or auxiliary calls, without generic orchestration changes.
 
 ### P15.1 — Enforce before retrieval and disclosure
 

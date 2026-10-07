@@ -55,6 +55,8 @@ Register providers through `ApplicationDefinition`, prepare via shared planner/p
 
 **Acceptance:** synthetic traces preserve source freshness/privacy and never write itinerary state through generic output.
 
+**Reference integration acceptance:** Travel validates broad workspace/entity context, private bookings versus public evidence, and shared sidecar integration through the [Application Integration Contract](../../02-target-architecture.md#application-integration-contract). Work primarily implements/registers domain providers, policies, adapters, and validators. Any generic orchestration change must repair a demonstrated shared deficiency, remain application-agnostic, and retain synthetic-app compatibility; the complete Travel scope above remains required.
+
 ### P26.2 — Additive shared-sidecar hooks
 
 After Phase 25.4, attach the shared sidecar to trip/day/place views with relevant trip/day/entity/preferences/research categories visible and narrowable. Copy and non-authoritative draft insertion only. No duplicated sign-in or app-specific core branch.

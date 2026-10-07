@@ -1,6 +1,6 @@
 # Phase 16 implementation plan — Provider-neutral inference and embedding contracts
 
-Renumbered on 2026-10-06 from former next-scope Phase 8. This plan preserves the former detailed plan’s normative commitments, work packages, invariants, acceptance criteria, and verification scope. Only phase numbering/prerequisites, persistence references superseded by Phase 10, and README-maintenance requirements are changed. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
+Renumbered on 2026-10-06 from former next-scope Phase 8. This plan preserves the former detailed plan’s normative commitments, work packages, invariants, acceptance criteria, and verification scope. The 2026-10-07 reconciliation clarifies the neutral extension seam and embedding-space identity in addition to numbering/persistence/README updates. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
 
 ## Scope boundary
 
@@ -26,6 +26,7 @@ Renumbered on 2026-10-06 from former next-scope Phase 8. This plan preserves the
 - new provider selection
 - quota optimization
 - embedding re-index migration
+- BYOK selection/execution or hosted secret storage
 
 ## Current state and reuse
 
@@ -67,7 +68,11 @@ Required phases: 12, 15, 10. Each must deliver the contracts this plan consumes;
 
 Extend the stream-only boundary with the actual stream, bounded generation and structured-result needs of current tasks. Define terminal success/incomplete/failure, actual provider/model, safe errors and usage confidence/source. Keep task schemas/validation in services. Preserve SSE compatibility via a narrow facade if needed; fakes support terminal events, bounds and cancellation rather than pretending iterator exhaustion proves every provider succeeded.
 
+Treat these neutral capability declarations as the [provider extension seam](../../02-target-architecture.md#9-provider-runtime), including supported counting/embedding operations, safe failures, and cancellation. Higher layers consume contracts; protocol/SDK/serialization remains adapter-owned.
+
 **Acceptance:** Fake and Gemini operations report explicit terminal/usage/error metadata while existing SSE callers remain compatible.
+
+**Extension acceptance:** A synthetic provider with a distinct identity passes supported neutral stream/bounded/structured/usage/error/cancellation contract fixtures, explicitly rejects unsupported capabilities, and needs no context/domain/runtime provider-name branch. Offline conformance does not establish live compatibility or eligibility.
 
 ### P16.1 — Provider-aware fit and embedding metadata
 
@@ -76,6 +81,8 @@ Extend the stream-only boundary with the actual stream, bounded generation and s
 Use separate counter and embedding capabilities. Final assembly uses the selected endpoint serializer, context limits and an approved counter; planning estimates stay labelled. Gemini preserves its authoritative REST count transport. Document supported conservative local count bounds before using another endpoint; do not call an ineligible Gemini counter. Embedding results include provider/model/dimensions/normalization/task semantics; adapt existing Embedder and preserve normalized 768-dimensional Gemini vector spaces/index semantics and immutable v1/v2 records. No re-index migration.
 
 **Acceptance:** Endpoint-specific fit/count is policy-safe; migrated vectors and v1/v2 logical records remain readable with equivalent semantics.
+
+Embedding-space identity also includes an explicit version with provider/model/dimensions/normalization/task semantics. A future migration creates a new identity, never mixes incompatible vectors, and requires separately authorized re-embedding/re-index acceptance. Current Gemini spaces and original vector values remain compatible.
 
 ### P16.2 — Migrate all disclosure paths incrementally
 

@@ -47,6 +47,8 @@ Feed structured requirements into bounded product research. Unknown/conflicting/
 
 **Acceptance:** hard constraints/rejections/current evidence remain authoritative through routed fixtures.
 
+**Reference integration acceptance:** Shopping validates deterministic constraints, evidence-heavy comparisons, and saved/rejected project state through the [Application Integration Contract](../../02-target-architecture.md#application-integration-contract). Work primarily implements/registers domain capabilities and validators. Generic orchestration changes must repair a demonstrated shared deficiency without app-name branches and retain synthetic-app compatibility; all existing research/routing/sidecar scope remains required.
+
 ### P27.2 — Additive sidecar hooks
 
 After Phase 25.4, attach shared sidecar to project/search/comparison/product views with selected products and active requirements visible before send. Enable Copy/permitted non-authoritative drafts only; authoritative shortlist/requirement writes wait for Phase 31.

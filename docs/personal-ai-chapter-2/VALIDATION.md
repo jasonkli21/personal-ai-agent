@@ -36,3 +36,12 @@ location-correct links, not stale byte-identical relative paths.
 `git diff --check` passed. The validation script is session-local verification
 material, not a new application/package tool. No P10.1+ implementation, archive
 regeneration or local-engine/provider/cloud/migration acceptance is claimed.
+
+## Chapter 2 extensibility documentation review — 2026-10-07
+
+Reviewed revision: `3d49afca6d4e3ebe8c4e22aff223b3c99b93a5b5` plus the documentation working tree. This dated record covers planning consistency only, not implementation or release acceptance.
+
+- Session-local `python3 /tmp/validate_ch2_extensibility.py`: passed local Markdown file/anchor links in changed documents; all 33 manifest plan files and byte sizes; unchanged phase identities, titles, prerequisites, and acyclic graph; unchanged roadmap numbering/order; literal retention of every original work-package paragraph, normative bullet, acceptance paragraph, invariant bullet, and exclusion in the 20 edited plans.
+- Content/diff review: prior security/privacy, scope, provenance, memory/evidence, artifacts, export/deletion, eligibility/quota, exact confirmation, idempotency, embedding compatibility, and bounded-cascade requirements remain. Changes stay in Chapter 2 active planning, navigation, metadata, and this dated validation record; source copies, prior evidence, root/current-state/operating docs, and runtime code are unchanged.
+- Manifest refresh changes byte metadata only, including a pre-existing stale Phase 10 size; Phase 10 plan content is unchanged.
+- `git diff --check`: passed. No provider, engine, emulator, cloud, deployment/IAM, migration-source/no-source, recovery, or account-specific strict-$0 check was run. Existing external gates remain unresolved, and Phase 11 remains future unimplemented work.

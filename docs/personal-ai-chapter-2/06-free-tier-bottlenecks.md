@@ -19,8 +19,8 @@ Model/search quotas are resettable flow limits. Durable databases/object storage
 
 Track each resource independently with source/confidence and refresh date rather than hard-coding volatile allowances:
 
-- provider/model request/token/usage buckets;
-- search requests;
+- provider/endpoint request/token/neuron/other-unit buckets by account/project/tier and safe credential scope, with cost/execution class and window/reset/source/confidence;
+- search-provider requests and applicable lookup/fetch units, preserving source-rights and zero-overflow admission;
 - Cloud Run CPU/memory/network;
 - Neon database bytes, vector/index bytes, compute time, connections;
 - DynamoDB table/index bytes, read/write capacity mode/consumption, throttles/hot keys;
@@ -35,6 +35,8 @@ Admission must fail before a known billable path where practical. Unknown provid
 
 Phase 10 deployment validation includes Neon + DynamoDB + network use. Later phases extend the same ledger rather than creating separate billing logic.
 
+The [execution-mode boundary](03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes) keeps explicit BYOK and ChatGPT-plan capacity outside automatic scarcity/fallback. A free bucket's exhaustion never authorizes user-billed dispatch, even for the same provider/model. Different quota units are not interchangeable; unobserved account use and unknown resets/remaining capacity stay qualified. Hosted keys and automatic paid budgets remain deferred.
+
 ## Capacity design implications
 
 Do not choose DynamoDB solely because its current free storage allowance is larger, and do not choose Postgres solely for consistency with other projects. Phase 10 uses both because their access patterns differ. The inference bottleneck reduces the value of extreme request capacity, but long-term event/history accumulation still benefits from operational storage headroom.
@@ -44,3 +46,5 @@ Phase 10 reviews actual account/region allocations for fixed provisioned Standar
 ## Embeddings
 
 Memory embedding migration is never implicit. Phase 10 carries current vectors into Postgres/pgvector with provider/model/dimension/task-space metadata. Phase 34 may optimize retrieval but cannot silently change vector space; a provider/model migration requires explicit re-embedding/reindex planning and resource checks.
+
+Future embedding-space identity includes provider, model, dimensions, normalization, task semantics, and version. A migration creates a distinct identity rather than mixing incompatible vectors; current Gemini compatibility remains binding. No new provider or vector migration is authorized here.

@@ -42,10 +42,16 @@ Required phases: 15 and 17 (former 7 and 9), plus standing Phase 10 persistence 
 ### P18.0 — Versioned capability profiles
 Add neutral endpoint profiles for enabled state, provider/model/serializer/counter, supported tasks/stream/structured/tools/vision as implemented, context/output limits, embedding compatibility, credential runtime/selection mode, account-tier identity, privacy/data-use, quota units/windows/reset provenance and fact freshness. Quotas/model lists remain configuration/operational observations, not hard-coded business constants.
 
+Consume the [execution identity and cost modes](../../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes): distinguish provider, endpoint/model, credential source/reference/ownership, opaque account/project/tier, cost/billing-owner class, and automatic/explicit selection permission. Represent BYOK-compatible profiles without secrets or live BYOK execution. User-billed capacity is explicit-only initially; unknown cost cannot be verified free. No hosted vault is added.
+
 **Acceptance:** Profiles encode versions, capabilities, count/embedding compatibility and account-scoped facts without secrets.
+
+**Identity acceptance:** Two profiles for the same provider/model but different credential/account/cost scopes retain separate quotas, privacy facts, and eligibility. A configured BYOK profile is excluded from automatic candidates and cannot be enabled merely by free quota exhaustion.
 
 ### P18.1 — Strict-free admission
 Filter by model AND account/tier and by required sensitivity/capability before dispatch. Verified zero-cost eligible Gemini/Groq/Workers Free paths only; unknown eligibility or possible automatic paid overflow denies. Unknown quota remains unknown but cannot justify a billable path. No credentials in profile IDs. Embeddings/count/search auxiliaries receive independent eligibility admission.
+
+The configured three are initial profiles, not an allowlist baked into generic admission. An additional synthetic verified-free endpoint passes the same fact-based guard; paid, unknown-cost, and explicit-only variants fail. Future live enablement still requires independent preflight and evidence.
 
 **Acceptance:** Paid/unknown-eligibility and sensitivity-ineligible paths cannot enter candidates or dispatch.
 

@@ -10,6 +10,8 @@ ChatGPT-plan use is an **explicit user-controlled execution lane** backed by a l
 
 Credential exclusion covers Postgres, DynamoDB, GCS, Secret Manager, browser storage, managed logs/traces, analytics, and exports.
 
+`CHATGPT_PLAN` is distinct from `EXPLICIT_BYOK` provider API capacity under the [execution-mode boundary](03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes). A ChatGPT subscription does not supply OpenAI API billing capacity. Neither lane is an automatic free-quota fallback; explicit selection preserves all shared authorization/privacy/sensitivity checks. BYOK credential-reference options do not relax the ChatGPT exclusions above.
+
 ## Phase 25.1 — authentication/local bridge
 
 Revalidate current supported Sign in with ChatGPT requirements before implementation. Implement supported OAuth/OIDC/PKCE, protected local credential lifecycle, account-specific model discovery, direct supported Responses streaming, explicit terminal/error handling, a fake bridge, and a secure paired browser-to-local transport where supported. Native mobile remains a capability gate rather than an assumed desktop-loopback copy.
@@ -25,6 +27,8 @@ One reusable sidecar/drawer/bottom-sheet uses the shared context planner/provide
 ## Phase 25.4 — domain contract
 
 Travel, Shopping, Finance, and Health integrate through the same launch/context/action hooks. Apps do not implement their own ChatGPT authentication. Domain-specific policies may narrow fields/actions without forking the sidecar. Authoritative Apply remains disabled until Phase 31.
+
+These are reference integrations of the [Application Integration Contract](02-target-architecture.md#application-integration-contract). Phase 25.4 extends that contract with optional host/sidecar hooks using existing scope, definition, provider registration, policy, planner, builder, provenance, and authority boundaries; it does not introduce a second ChatGPT-domain framework. A synthetic app must integrate through the same registered hooks without core app-name branches or a required shared client SDK.
 
 ## Domain authority
 

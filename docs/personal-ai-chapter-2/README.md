@@ -25,3 +25,7 @@ The regenerated plans preserve the substantive scope of their source planning pa
 - [Compatibility](COMPATIBILITY.md)
 
 Read the detailed plan for the specifically authorized phase. Offline/fake checks do not prove provider, emulator, cloud, IAM, or cost behavior. Keep skipped external acceptance open in release evidence.
+
+## Extensibility planning route
+
+The 2026-10-07 additive reconciliation defines the [Application Integration Contract](02-target-architecture.md#application-integration-contract), [task/validator/evaluation seams](02-target-architecture.md#task-validator-and-evaluation-extension-seams), and [execution identity/cost modes](03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes). Product decisions state the principles; the target architecture owns detailed semantics; affected phase plans own implementation constraints and acceptance. Existing numbering, scope, and prerequisites remain intact. Preserved source copies and dated records remain historical; these future targets do not establish delivery or authorize Phase 11 implementation.

@@ -39,6 +39,8 @@ Required phase: 22, with Phase 19 ledger and Phase 10 persistence transitively a
 ### P23.0 — Deterministic scarcity formula
 Extend Phase 21 router with versioned configurable penalties based on qualified remaining-capacity estimates, window-specific reset horizon, cooldown and reliability. Compare only eligible substitutes meeting Phase 22 task floors. Preserve stronger scarce routes when safe; reducing penalty near reset uses known reset facts, not guessed timestamps.
 
+Consume typed quota buckets, preserving unit, window, observed/remaining state, reset, source, and confidence. Request/token/neuron/other units use declared semantics rather than provider-name branches or direct comparison of incompatible units. [Execution-mode eligibility](../../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes) remains a hard gate; BYOK is never a scarcity fallback.
+
 **Acceptance:** Scarcity penalties are reproducible from qualified bucket/reset facts and eligible measured substitutes.
 
 ### P23.1 — Ledger and dispatch integration
@@ -50,6 +52,8 @@ Read a consistent ledger/profile snapshot and reserve selected operation before 
 Replay recorded synthetic demand/window scenarios against fixed-routing baseline. Measure task quality, conservation, exhaustion, latency and uncertainty outcomes. Promote only with configured thresholds and deterministic rollback; no learned policy or ChatGPT spillover.
 
 **Acceptance:** Paired demand fixtures demonstrate conservation while satisfying quality thresholds and rollback.
+
+**Extension acceptance:** Synthetic endpoint buckets with distinct units/windows run through the same policy with explicit uncertainty. Exhausting every free bucket yields exhaustion/unavailability, never paid/BYOK or subscription overflow.
 
 ## Requirement coverage
 Former R15.1–R15.6 are preserved as R23.1–R23.6.

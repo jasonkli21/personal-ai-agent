@@ -47,12 +47,18 @@ Extend fixture/run formats to record task/model/config/serializer/counter/policy
 ### P22.1 — Bounded provider runs and artifacts
 Run identical synthetic task inputs through enabled eligible Gemini/Groq/Cloudflare profiles with Phase 19 admission and bounded attempts/concurrency. Offline fakes validate harness mechanics; live output is separate evidence. Store retained raw outputs in Phase 20 GCS and compact searchable summaries in Postgres; no private fixtures or unlicensed retained provider evidence.
 
+These three remain the initial live comparison. The harness iterates registered eligible endpoint profiles and task fixtures/profiles, without three provider-specific paths. Add a synthetic additional provider/endpoint and task to prove fixture/profile-based extension without harness redesign; this neither adds a fourth live integration nor establishes measured live quality. Strict-free admission excludes paid/unknown-cost and explicit-only lanes before evaluation dispatch.
+
 **Acceptance:** Bounded eligible runs store permitted raw artifacts separately from compact summaries; skipped live models have no quality score.
 
 ### P22.2 — Versioned quality profiles and promotion
 Define task quality floors, confidence/sample coverage and profile invalidation when model/config changes. Unrun/skipped endpoints have no measured quality. Require reproducible benefit and no hard-boundary regression; export/publish only permitted artifacts. Domain phases later extend fixtures with their implemented read contracts before optimization consumes those results.
 
+Bind quality identity to provider, endpoint/model, serializer/configuration, task/profile, policy version, and tested revision, plus counter/seed where applicable. Freeze safe profile/account/execution metadata needed to reproduce eligibility without secrets. Relevant changes invalidate evidence rather than inheriting another credential/account/profile's eligibility or an obsolete configuration's score.
+
 **Acceptance:** Versioned profiles include coverage/config evidence and cannot promote stale or unrun models.
+
+**Extension acceptance:** Synthetic profiles use the same run/scoring/artifact paths; changed endpoint/task/policy/configuration identities cannot silently reuse old quality evidence. Skipped live checks remain unmeasured.
 
 ## Requirement coverage
 Former R14.1–R14.5 are preserved as R22.1–R22.5 and map to P22.0–P22.2 without scope reduction.
