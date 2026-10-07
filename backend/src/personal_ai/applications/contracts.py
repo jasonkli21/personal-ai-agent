@@ -123,6 +123,9 @@ class CapabilityRegistration(BaseModel):
     available: bool = False
     feature_gate: Literal["memory_enabled"] | None = None
     unavailable_reason: str | None = Field(default=None, min_length=1, max_length=160)
+    read_only_context: bool = False
+    result_fields: tuple[str, ...] = Field(default=(), max_length=32)
+    max_result_bytes: int | None = Field(default=None, ge=1, le=65_536)
 
     @model_validator(mode="after")
     def availability_is_consistent(self) -> "CapabilityRegistration":
@@ -130,6 +133,17 @@ class CapabilityRegistration(BaseModel):
             raise ValueError("available_capability_has_unavailable_reason")
         if not self.available and self.unavailable_reason is None:
             raise ValueError("unavailable_capability_requires_reason")
+        if self.kind == "context_provider" and (
+            self.read_only_context or self.result_fields or self.max_result_bytes is not None
+        ):
+            raise ValueError("context_provider_has_tool_result_metadata")
+        if self.kind == "tool":
+            if self.read_only_context and (not self.result_fields or self.max_result_bytes is None):
+                raise ValueError("read_context_tool_requires_bounded_result_contract")
+            if not self.read_only_context and (self.result_fields or self.max_result_bytes is not None):
+                raise ValueError("non_read_context_tool_has_result_contract")
+            if len(self.result_fields) != len(set(self.result_fields)):
+                raise ValueError("tool_result_fields_must_be_unique")
         return self
 
     def is_enabled(self, feature_flags: dict[str, bool] | None = None) -> bool:
@@ -148,6 +162,10 @@ class ApplicationContextRequest(BaseModel):
 
     definition: ApplicationDefinition
     scope: RequestScope
+    context_provider_capabilities: tuple[CapabilityRegistration, ...] = Field(
+        default=(), max_length=32
+    )
+    tool_capabilities: tuple[CapabilityRegistration, ...] = Field(default=(), max_length=32)
 
     @model_validator(mode="after")
     def manifest_matches_scope(self) -> "ApplicationContextRequest":
@@ -157,4 +175,12 @@ class ApplicationContextRequest(BaseModel):
             raise ValueError("application_workspace_unsupported")
         if self.definition.workspace_kind == "required" and self.scope.workspace_id is None:
             raise ValueError("application_workspace_required")
+        if any(item.kind != "context_provider" for item in self.context_provider_capabilities):
+            raise ValueError("application_context_provider_kind_invalid")
+        if any(item.kind != "tool" for item in self.tool_capabilities):
+            raise ValueError("application_tool_capability_kind_invalid")
+        for capabilities in (self.context_provider_capabilities, self.tool_capabilities):
+            ids = [item.capability_id for item in capabilities]
+            if len(ids) != len(set(ids)):
+                raise ValueError("application_context_capability_duplicate")
         return self

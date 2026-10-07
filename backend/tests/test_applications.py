@@ -44,7 +44,11 @@ def test_default_registry_registers_initial_manifests_and_unavailable_stubs() ->
     assert registry.get("personal_ai").context_provider_ids == ()
     shared = registry.registration("personal_ai").context_providers
     assert tuple(provider.capability_id for provider in shared) == (
-        "conversation_history", "ai_memory"
+        "conversation_history",
+        "ai_memory",
+        "external_research",
+        "global_profile",
+        "client_context",
     )
     assert registry.capability(
         "personal_ai", "conversation_history", kind="context_provider"
@@ -64,7 +68,13 @@ def test_default_registry_registers_initial_manifests_and_unavailable_stubs() ->
         assert all(
             not provider.available
             for provider in registration.context_providers
-            if provider.capability_id not in {"conversation_history", "ai_memory"}
+            if provider.capability_id not in {
+                "conversation_history",
+                "ai_memory",
+                "external_research",
+                "global_profile",
+                "client_context",
+            }
         )
         assert all(not tool.available for tool in registration.tools)
     assert registry.registration("travel").comparison_modules[0].registration.domain_id == "travel"

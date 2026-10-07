@@ -13,7 +13,15 @@ from personal_ai.applications.registry import (
 )
 from personal_ai.auth.scope import STANDALONE_APPLICATION_ID, RequestScope
 from personal_ai.context import ContextAssembler
+from personal_ai.context.adapters import (
+    ClientContextProviderFactory,
+    ConversationContextProviderFactory,
+    MemoryContextProviderFactory,
+    ResearchEvidenceContextProviderFactory,
+)
 from personal_ai.context.contracts import ConversationSummaryRepository
+from personal_ai.context.profile import GlobalProfileContextProviderFactory
+from personal_ai.context.providers import ContextProviderCoordinator
 from personal_ai.llm import GeminiLLMClient, LLMClient
 from personal_ai.llm.context import GeminiConversationSummarizer, GeminiTokenCounter
 from personal_ai.llm.memory import GeminiMemoryAdapter
@@ -67,7 +75,13 @@ def get_application_context(
     if definition.workspace_kind == "required" and scope.workspace_id is None:
         raise HTTPException(status_code=400, detail="application_workspace_required")
     try:
-        return ApplicationContextRequest(definition=definition, scope=scope)
+        registration = registry.registration(scope.application_id)
+        return ApplicationContextRequest(
+            definition=definition,
+            scope=scope,
+            context_provider_capabilities=registration.context_providers,
+            tool_capabilities=registration.tools,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail="application_context_invalid") from error
 
@@ -137,12 +151,33 @@ def get_summary_repository(
     return persistence_factory(settings).summary_repository()
 
 
+def get_global_profile_repository(
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    return persistence_factory(settings).global_profile_repository()
+
+
 def get_context_assembler(
     settings: Annotated[Settings, Depends(get_settings)],
     summaries: Annotated[ConversationSummaryRepository, Depends(get_summary_repository)],
+    profile_repository: Annotated[object, Depends(get_global_profile_repository)],
 ) -> ContextAssembler:
+    providers = ContextProviderCoordinator(
+        {
+            "ai_memory": MemoryContextProviderFactory(),
+            "client_context": ClientContextProviderFactory(),
+            "conversation_history": ConversationContextProviderFactory(),
+            "external_research": ResearchEvidenceContextProviderFactory(),
+            "global_profile": GlobalProfileContextProviderFactory(profile_repository),
+        },
+        feature_flags={"memory_enabled": settings.memory_enabled},
+    )
     return ContextAssembler(
-        settings, GeminiTokenCounter(settings), summaries, GeminiConversationSummarizer(settings),
+        settings,
+        GeminiTokenCounter(settings),
+        summaries,
+        GeminiConversationSummarizer(settings),
+        context_provider_coordinator=providers,
     )
 
 

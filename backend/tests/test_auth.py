@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from personal_ai.api.dependencies import (
     get_conversation_repository,
+    get_global_profile_repository,
     get_message_repository,
     get_settings,
 )
@@ -20,6 +21,7 @@ from personal_ai.auth.verification import (
     InvalidIdentityToken,
     principal_from_google_token,
 )
+from personal_ai.context.profile import InMemoryGlobalProfileRepository
 from personal_ai.main import app
 from personal_ai.settings import Settings
 from personal_ai.storage.fake import InMemoryConversationRepository, InMemoryMessageRepository
@@ -252,6 +254,56 @@ def test_identity_mapping_is_created_idempotently_and_can_be_revoked(
     revoked = client.post("/v1/conversations", headers=headers, json={})
     assert revoked.status_code == 403
     assert revoked.json()["error"]["code"] == "access_denied"
+
+
+def test_global_profile_api_requires_authenticated_owner_and_personal_ai_scope(
+    oidc_client, monkeypatch
+) -> None:
+    client, _ = oidc_client
+    repository = InMemoryGlobalProfileRepository()
+    app.dependency_overrides[get_global_profile_repository] = lambda: repository
+    principal = AuthenticatedPrincipal(
+        issuer="https://accounts.google.com",
+        subject="profile-owner",
+        owner_id="usr_profile-owner",
+        email="owner@example.com",
+        issued_at=int(time.time()),
+        authenticated=True,
+    )
+    monkeypatch.setattr(
+        "personal_ai.auth.middleware.principal_from_google_token",
+        lambda _token, _settings: principal,
+    )
+    headers = {"Authorization": "Bearer signed"}
+
+    unauthenticated = client.get("/v1/profile")
+    assert unauthenticated.status_code == 401
+    initial = client.get("/v1/profile", headers=headers)
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["fields"] == []
+    updated = client.put(
+        "/v1/profile",
+        headers=headers,
+        json={
+            "fields": [
+                {
+                    "field": "preferred_units",
+                    "value": "metric",
+                    "shared_with_applications": ["travel"],
+                }
+            ]
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["fields"][0]["set_by"] == "user"
+    assert updated.json()["fields"][0]["shared_with_applications"] == ["travel"]
+
+    foreign_application = client.get(
+        "/v1/profile", headers={**headers, "X-Application-ID": "travel"}
+    )
+    assert foreign_application.status_code == 404
+    assert foreign_application.json()["error"]["code"] == "not_found"
+    app.dependency_overrides.pop(get_global_profile_repository, None)
 
 
 def test_cors_uses_an_exact_origin_allowlist() -> None:

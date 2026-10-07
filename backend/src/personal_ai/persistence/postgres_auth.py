@@ -231,7 +231,7 @@ class PostgresAccountLifecycleRepository:
             "decision_evidence_snapshots", "candidate_evaluations",
             "domain_claim_extensions", "provider_observations", "domain_comparison_views",
             "domain_lookup_idempotency", "account_lifecycle_requests", "audit_events",
-            "identity_mappings",
+            "identity_mappings", "global_profiles",
         )
         try:
             with self.database.connection(snapshot=True) as connection:

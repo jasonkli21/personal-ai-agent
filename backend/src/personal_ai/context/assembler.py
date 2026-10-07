@@ -18,6 +18,12 @@ from personal_ai.context.contracts import (
     complete_turns,
     fingerprint,
 )
+from personal_ai.context.providers import (
+    ContextPreparationError,
+    ContextProviderCoordinator,
+    ContextProviderInputs,
+    ContextSelection,
+)
 from personal_ai.entities import Message, MessageRole, MessageStatus
 from personal_ai.llm.client import ChatMessage
 from personal_ai.llm.errors import LLMError
@@ -57,11 +63,13 @@ class ContextAssembler:
         counter: TokenCounter,
         summaries: ConversationSummaryRepository | None = None,
         summarizer: ConversationSummarizer | None = None,
+        context_provider_coordinator: ContextProviderCoordinator | None = None,
     ) -> None:
         self.settings = settings
         self.counter = counter
         self.summaries = summaries
         self.summarizer = summarizer
+        self.context_provider_coordinator = context_provider_coordinator
 
     def input_budget(self, output_reserve: int | None = None) -> int:
         reserve = self.settings.max_response_tokens if output_reserve is None else output_reserve
@@ -81,6 +89,9 @@ class ContextAssembler:
         deadline: float | None = None,
         retrieval=None,
         application_context: ApplicationContextRequest | None = None,
+        context_selections: Sequence[ContextSelection] = (),
+        evidence_records: Sequence[object] = (),
+        tool_results: dict[str, object] | None = None,
     ) -> AssembledContext:
         from personal_ai.context.deadline import DeadlineCounter, DeadlineSummarizer
 
@@ -94,15 +105,39 @@ class ContextAssembler:
                 for message in messages
             ):
                 raise ContextError("application_context_scope_mismatch")
+        elif context_selections:
+            raise ContextPreparationError("application_context_required")
 
         scoped = ContextAssembler(
             self.settings,
             DeadlineCounter(self.counter, deadline),
             self.summaries,
             DeadlineSummarizer(self.summarizer, deadline) if self.summarizer else None,
+            self.context_provider_coordinator,
         )
         try:
             result = scoped._assemble(active_messages, pending_user_message, refresh=refresh)
+            if context_selections:
+                if scoped.context_provider_coordinator is None or application_context is None:
+                    raise ContextPreparationError("context_provider_unavailable")
+                source_result = scoped.context_provider_coordinator.prepare(
+                    application_context,
+                    context_selections,
+                    ContextProviderInputs(
+                        scope=application_context.scope,
+                        application_context=application_context,
+                        active_messages=tuple(active_messages),
+                        summary=result.summary,
+                        retrieval=retrieval,
+                        evidence_records=tuple(evidence_records),
+                        tool_results=tool_results,
+                    ),
+                )
+                result = replace(
+                    result,
+                    source_items=source_result.items,
+                    source_failures=source_result.failures,
+                )
             if retrieval is None:
                 return result
             if not self.settings.memory_enabled:

@@ -13,7 +13,13 @@ from personal_ai.applications.contracts import (
     CapabilityRegistration,
 )
 
-SHARED_CONTEXT_PROVIDER_IDS = ("conversation_history", "ai_memory")
+SHARED_CONTEXT_PROVIDER_IDS = (
+    "conversation_history",
+    "ai_memory",
+    "external_research",
+    "global_profile",
+    "client_context",
+)
 
 
 class _ComparisonModule(Protocol):
@@ -72,6 +78,30 @@ class ApplicationRegistry:
                     kind="context_provider",
                     available=True,
                     feature_gate="memory_enabled",
+                )
+            )
+        if "global_profile" not in registered_ids:
+            capability_values.append(
+                CapabilityRegistration(
+                    capability_id="global_profile",
+                    kind="context_provider",
+                    available=True,
+                )
+            )
+        if "external_research" not in registered_ids:
+            capability_values.append(
+                CapabilityRegistration(
+                    capability_id="external_research",
+                    kind="context_provider",
+                    available=True,
+                )
+            )
+        if "client_context" not in registered_ids:
+            capability_values.append(
+                CapabilityRegistration(
+                    capability_id="client_context",
+                    kind="context_provider",
+                    available=True,
                 )
             )
 
@@ -220,6 +250,9 @@ def default_application_registry() -> ApplicationRegistry:
             available=True,
             feature_gate="memory_enabled",
         ),
+        _capability("global_profile", "context_provider", available=True),
+        _capability("client_context", "context_provider", available=True),
+        _capability("external_research", "context_provider", available=True),
         _capability("travel.trip_context", "context_provider"),
         _capability("travel.research_context", "context_provider"),
         _capability("travel.itinerary_action", "tool", reason="travel_actions_unavailable"),

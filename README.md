@@ -15,6 +15,7 @@ Core capabilities include:
 - streamed conversational chat;
 - persistent conversation history;
 - token-budgeted context management and working summaries;
+- typed, bounded context-source preparation and an owner-managed AI profile with explicit per-field application sharing;
 - attributable long-term memory with retrieval;
 - bounded memory lifecycle experiments;
 - source-grounded research with persisted evidence;

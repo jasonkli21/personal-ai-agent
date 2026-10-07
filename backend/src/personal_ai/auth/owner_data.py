@@ -32,4 +32,5 @@ OWNER_DATA_COLLECTIONS = (
     "identity_mappings",
     "audit_events",
     "usage_budgets",
+    "global_profiles",
 )

@@ -13,6 +13,7 @@ from personal_ai.api.decisions import router as decisions_router
 from personal_ai.api.domains import router as domains_router
 from personal_ai.api.iterative_research import router as iterative_research_router
 from personal_ai.api.itinerary_proposals import router as itinerary_proposals_router
+from personal_ai.api.profile import router as profile_router
 from personal_ai.api.research import router as research_router
 from personal_ai.api.routes import router as conversations_router
 from personal_ai.applications.registry import default_application_registry
@@ -20,6 +21,7 @@ from personal_ai.auth.account_data import AccountDataUnavailable
 from personal_ai.auth.middleware import AuthenticationMiddleware
 from personal_ai.booking_extractions.repositories import ExtractionError
 from personal_ai.context import ContextError
+from personal_ai.context.providers import ContextPreparationError
 from personal_ai.decisions.repositories import DecisionError
 from personal_ai.domains.contracts import DomainContractError
 from personal_ai.domains.providers import DomainProviderError
@@ -51,6 +53,7 @@ app.include_router(booking_extractions_router)
 app.include_router(decisions_router)
 app.include_router(domains_router)
 app.include_router(account_router)
+app.include_router(profile_router)
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
@@ -128,6 +131,12 @@ async def context_error(_: Request, error: ContextError) -> JSONResponse:
         else "The context budget is invalid."
     )
     return _error_response(422, error.code, message)
+
+
+@app.exception_handler(ContextPreparationError)
+async def context_preparation_error(_: Request, error: ContextPreparationError) -> JSONResponse:
+    status = 422 if error.code.startswith("context_") else 503
+    return _error_response(status, error.code, "Context preparation could not complete.")
 
 
 @app.exception_handler(LLMError)

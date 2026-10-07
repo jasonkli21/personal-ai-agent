@@ -32,3 +32,5 @@ def test_account_export_inventory_covers_private_families_and_control_records():
     assert set(OWNER_DATA_COLLECTIONS) <= set(EXPORT_COLLECTIONS)
     assert "audit_events" in EXPORT_COLLECTIONS
     assert "account_lifecycle_requests" in EXPORT_COLLECTIONS
+    assert "global_profiles" in OWNER_DATA_COLLECTIONS
+    assert "global_profiles" in EXPORT_COLLECTIONS

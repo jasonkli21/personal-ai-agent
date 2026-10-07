@@ -1,4 +1,4 @@
-# API contract (Phases 1–9 local implementation)
+# API contract (Phases 1–11 local implementation)
 
 This document defines the implemented HTTP boundary. All `/v1` routes require an application principal. Staging/production verify
 Google OIDC and resolve an opaque owner from issuer and stable subject; client
@@ -22,6 +22,8 @@ web-to-API boundary. See the [authorization matrix](phase-9-authorization-matrix
 | Method | Route | Request body | Response |
 | --- | --- | --- | --- |
 | `GET` | `/health` | — | Existing readiness response: `{"status":"ok","service":"api"}` |
+| `GET` | `/v1/profile` | — | Sparse owner-wide `GlobalProfile` |
+| `PUT` | `/v1/profile` | `GlobalProfileUpdate` with explicit values and per-field application sharing | Updated sparse owner-wide `GlobalProfile` |
 | `POST` | `/v1/conversations` | Optional `title` | A `Conversation` |
 | `GET` | `/v1/conversations` | — | `{"conversations": [Conversation]}` |
 | `GET` | `/v1/conversations/{conversation_id}` | — | `{"conversation": Conversation, "messages": [Message]}` |
@@ -29,6 +31,29 @@ web-to-API boundary. See the [authorization matrix](phase-9-authorization-matrix
 | `POST` | `/v1/conversations/{conversation_id}/messages` | `{"content": "..."}` | SSE stream |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/regenerate` | — | SSE stream replacing a completed assistant message |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/edit-and-retry` | `{"content": "..."}` | SSE stream after replacing a user message |
+
+## Phase 11 owner profile and context-source preparation
+
+`/v1/profile` is owner-scoped through the application principal and requires
+the standalone `personal_ai` application scope with no workspace. Deployed
+requests use the verified owner principal; local/test requests use the fixed
+development owner. Other application scopes receive 404. The profile is sparse
+and AI-owned; it accepts only explicit
+user-set fields: `preferred_units` (`metric` or `imperial`), `locale`,
+`response_style` (`concise`, `balanced`, or `detailed`), and `answer_length`
+(`short`, `standard`, or `expanded`). Each update field has a
+`shared_with_applications` list; omitted values remain absent. `remove_fields`
+removes selected fields. Responses include field-level `set_by: "user"` and
+`set_at` provenance plus a monotonically increasing profile revision.
+
+The `global_profile` context provider returns only fields selected by the
+caller and explicitly shared with the current application. The typed context
+provider interfaces also expose bounded selections and normalized items for
+conversation, memory, external evidence, client context, and registered
+read-only tool results. This phase does not automatically select sources or
+insert these prepared source items into model messages; Phase 12 owns that
+builder integration. See the [Phase 11 guide](personal-ai-chapter-2/phase-11-implementation-guide.md)
+and [evidence](personal-ai-chapter-2/phase-11-implementation-evidence.md).
 
 ### Proposed upstream itinerary proposal (pending independent review)
 

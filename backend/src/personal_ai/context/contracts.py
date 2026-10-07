@@ -11,6 +11,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
 
+from personal_ai.context.providers import ContextItem, ContextProviderFailure
 from personal_ai.entities import Message
 from personal_ai.entities.conversation import TimestampedRecord
 from personal_ai.llm.client import ChatMessage
@@ -166,3 +167,5 @@ class AssembledContext:
     selected_memory_ids: tuple[UUID, ...] = ()
     excluded_memories: tuple[tuple[UUID, str], ...] = ()
     memory_tokens: int = 0
+    source_items: tuple[ContextItem, ...] = ()
+    source_failures: tuple[ContextProviderFailure, ...] = ()
