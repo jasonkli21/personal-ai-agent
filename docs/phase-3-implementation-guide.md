@@ -1,10 +1,14 @@
 # Phase 3 implementation guide
 
-Phase 3 simple memory is implemented locally. The [plan](phase-3-implementation-plan.md)
-remains the scope reference; [ADR 0009](decisions/0009-simple-attributable-memory.md)
-records decisions and clarifications. Gates remain disabled by default. Real
-Gemini extraction/embeddings, emulator memory persistence, Firestore vector index
-readiness and deployed behavior are unverified. Phase 4 is now implemented locally; see its [guide](phase-4-implementation-guide.md).
+> This guide records the Phase 3 implementation period. Its Firestore adapter,
+> emulator, and index setup details were superseded by P10.6; current storage
+> facts are in [current state](current-state.md) and the [storage README](../backend/src/personal_ai/storage/README.md).
+
+Phase 3 simple memory was implemented locally. The [plan](phase-3-implementation-plan.md)
+records its scope; [ADR 0009](decisions/0009-simple-attributable-memory.md)
+records decisions and clarifications. Gates remain disabled by default. The
+original release checks are in [release evidence](releases/phase-3-simple-memory.md);
+current persistence gates are in [current state](current-state.md).
 
 ## Plan-to-code map
 
@@ -12,7 +16,7 @@ readiness and deployed behavior are unverified. Phase 4 is now implemented local
 | --- | --- | --- |
 | P3.0 | `evaluation/memory-fixtures.json`, `evaluation/memory.py` | Fourteen named synthetic cases; separate-conversation Phase 2 baseline, deterministic identities/vectors/order, safe failure results |
 | P3.1 | ADR 0009, `memory/contracts.py`, settings | Four types, strict candidates/records, UTC/source/vector/config validation |
-| P3.2 | `memory/repositories.py`, `firestore.indexes.json` | Fake owner isolation, duplicates, active-only KNN; mocked Firestore transaction/source and SDK-vector serialization checks |
+| P3.2 | `memory/repositories.py`, historical Firestore index manifest | Fake owner isolation, duplicates, active-only KNN; mocked Firestore transaction/source and SDK-vector serialization checks |
 | P3.3 | `llm/memory.py`, `memory/fake.py` | Locked SDK with mocked HTTP: batching/order, task types, configured dimensions, malformed responses and safe errors |
 | P3.4 | `memory/policy.py`, `memory/services.py` | Exact user excerpts, all four types, confidence, dates, sensitive/external denial, source rewrite, duplicate, provider/storage failure |
 | P3.5 | `MemoryRetriever` | Threshold, bounded candidates, owner/status/model/dimension/source revalidation, correction/time ordering, no-match and failure fallback |
@@ -96,39 +100,23 @@ All settings are in [backend examples](../backend/.env.example). Defaults:
 | `MEMORY_TIMEOUT_SECONDS` | 5 |
 | `MEMORY_SENSITIVE_TERMS` | empty JSON array |
 
-Dimensions must be 1–2048 for Firestore; provider-specific supported dimensions
-also need manual verification. Retrieval and optional memory counting each use
+At Phase 3 delivery, configured dimensions had to fit Firestore's 1–2048 limit;
+provider-specific supported dimensions also required manual verification.
+Retrieval and optional memory counting each use
 at most one quarter of remaining Phase 2 preparation time, capped by the memory
 timeout. Extraction uses its own total deadline. Provider RPCs disable retries;
 memory/provenance storage RPCs use remaining timeouts. A Firestore commit with a
-lost acknowledgement can still have succeeded; deterministic identities make a
-later retry safe. No automatic embedding migration is supported.
+lost acknowledgement could still have succeeded; deterministic identities made
+a later retry safe. No automatic embedding migration is supported.
 
-## Provision vector indexes before enabling retrieval
+## Historical Firestore index deployment note
 
-The [index manifest](../firestore.indexes.json) describes the default 768-dimensional
-composite vector index. The bootstrap deploy script deliberately leaves all gates
-off and provisions only Phase 1/2 indexes. For an intentional memory deployment,
-create the memory index using the configured dimension and wait until it is READY
-before changing gates (the model/dimension metadata fields are index prefilters):
-
-```sh
-gcloud firestore indexes composite create \
-  --database='(default)' --collection-group=memories --query-scope=COLLECTION \
-  --field-config=field-path=owner_id,order=ascending \
-  --field-config=field-path=status,order=ascending \
-  --field-config=field-path=embedding_model,order=ascending \
-  --field-config=field-path=embedding_dimensions,order=ascending \
-  --field-config='field-path=embedding,vector-config={"dimension":"768","flat":"{}"}'
-
-gcloud firestore indexes composite list --database='(default)' --format=json
-```
-
-Select the deliberate test project first; record index readiness without credentials
-or raw memory content. If using another dimension, update the vector index as well
-as environment configuration. Missing/unsupported indexes produce non-fatal empty
-retrieval with `retrieval_failed`; no scan fallback is attempted. The emulator
-check below only asserts persistence, not production KNN/index behavior.
+Phase 3 originally used Firestore vector indexes and an index manifest. P10.6
+removed the Firestore runtime, manifest, and migration tooling. The deployment
+commands from that implementation are intentionally retired; use the current
+[storage boundary](../backend/src/personal_ai/storage/README.md) and
+[P10.6 verification evidence](personal-ai-chapter-2/phase-10-p10.6-implementation-evidence.md)
+for persistence setup and acceptance.
 
 ## Read-only development inspection
 

@@ -1,10 +1,15 @@
 # Target architecture
 
-Status: target after Phase 10 unless explicitly marked current
+Status: target for future Chapter 2 work. The Phase 10 Postgres/DynamoDB
+runtime wiring is implemented locally; see [current state](../current-state.md)
+for code status and unverified acceptance gates.
 
-## 1. Current repository baseline before Phase 10
+## 1. Pre-Phase-10 repository baseline (historical)
 
-The current implementation is still Firestore-based. This document distinguishes that factual baseline from the target so planning does not make the root README or historical evidence prematurely claim the migration is complete.
+When this target was prepared, the implementation was Firestore-based. P10.6
+later changed normal API/worker runtime wiring and removed Firestore runtime
+dependencies; no real data migration or cloud cutover is claimed. This section
+preserves the pre-P10 baseline for context rather than describing current code.
 
 Completed next-scope Phases 1–2 add application/workspace identity and an application registry on top of the existing system.
 
@@ -61,7 +66,7 @@ Rules:
 7. Local Postgres/pgvector and DynamoDB Local implement the same repository contracts used by cloud deployments.
 8. Firestore is a migration/rollback source, not target architecture.
 
-The [Phase 10 storage contract](phase-10-storage-ownership-and-access-patterns.md) fixes record-level ownership and scoped references. Research transaction groups and knowledge-effect receipts stay Postgres-owned even when execution jobs/timelines are DynamoDB-owned. Local/cloud migration and recovery acceptance live in the [Phase 10 verification plan](phase-10-migration-cutover-and-verification-plan.md); these targets are not current runtime claims.
+The [Phase 10 storage contract](phase-10-storage-ownership-and-access-patterns.md) fixes record-level ownership and scoped references. Research transaction groups and knowledge-effect receipts stay Postgres-owned even when execution jobs/timelines are DynamoDB-owned. P10.6 implemented the local runtime ownership split; target-engine, cloud, migration-source, and recovery acceptance are tracked in the [Phase 10 verification plan](phase-10-migration-cutover-and-verification-plan.md). The remaining context/provider architecture in this document is a future target, not a claim that those layers are implemented.
 
 ## 4. Request envelope
 

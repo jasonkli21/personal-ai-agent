@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Apply Chapter 2 documentation link/status corrections to a personal-ai-system checkout.
+"""Historical one-time helper; do not run against the current repository.
 
-Run from the repository root after copying this chapter to docs/personal-ai-chapter-2.
-The script intentionally does not change root README architecture: Phase 10 does that
-only after the persistence migration is implemented.
+It applied the Chapter 2 package updates before P10.6. Its README/storage
+instructions are stale. See docs/current-state.md and docs/README.md instead.
 """
 from pathlib import Path
 

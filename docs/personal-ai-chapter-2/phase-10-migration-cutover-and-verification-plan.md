@@ -109,12 +109,12 @@ First determine which branch applies:
   Firestore source reader/command and migration-only schema/code if no future
   import use case is retained.
 
-Both branches require an application runtime cutover: switch the complete API,
-worker, safeguard, provider-throttling, maintenance and cleanup bundle from the
-currently selected Firestore repositories to Postgres/DynamoDB, fence any old
-runtime consumers, run target-store parity and isolation checks, and record the
-recovery path. A no-source data disposition does not establish cloud connectivity
-or strict-$0 eligibility.
+At the time this plan was written, both branches required a runtime cutover from
+Firestore to Postgres/DynamoDB. P10.6 has implemented that local code/runtime
+switch and fenced old construction paths. Complete target-store parity and
+isolation checks against the final tree and record the recovery path before
+release activation. A no-source data disposition does not establish cloud
+connectivity or strict-$0 eligibility.
 
 ### If a Firestore source exists
 

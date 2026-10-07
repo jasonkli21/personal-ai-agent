@@ -1,4 +1,9 @@
-# Repository updates when installing this chapter
+# Historical repository-update notes
+
+> This checklist recorded the one-time application of the Chapter 2 package.
+> Those updates have been applied; the imperatives below are historical, not a
+> current handoff. For present status use [current state](../../current-state.md)
+> and the [documentation router](../../README.md).
 
 The review found that deleting the old planning package while leaving inbound links/status text unchanged created broken/stale documentation. These changes are part of applying the regenerated package.
 

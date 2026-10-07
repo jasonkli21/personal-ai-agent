@@ -1,74 +1,34 @@
 # Development instructions
 
-## Start here
+This repository is a personal learning and research project for building a reusable AI substrate around chat, context, memory, retrieval, evidence, and evaluation. Read [the documentation router](docs/README.md) for task-specific context and [current state](docs/current-state.md) for the implemented boundary; do not treat future plans as evidence of delivery.
 
-- Read `docs/project-brief.md`, `docs/architecture.md`, and
-  `docs/phase-1-implementation-guide.md`, then the plan relevant to the task.
-- Phases 1–8 are implemented locally with experimental gates disabled by default.
-  Read the relevant phase guides/plans for context, memory, research, decisions,
-  domains and iterative-research contracts. Phase 9 authentication and operational
-  safeguards are partially implemented; read `docs/phase-9-implementation-plan.md`
-  and `docs/phase-9-implementation-evidence.md`. Physical deletion, full legacy
-  owner migration, provider accounting and operational release gates remain open.
-  Provider/emulator/deployment closeout is unverified. Follow explicit user
-  instructions when advancing scope; do not add product features incidentally.
-- Inspect `git status` before editing and preserve existing user changes.
+## Authority and scope
 
-## Boundaries
+When sources disagree, use this order: (1) code, executable contracts, migrations, and tests; (2) release/review/verification evidence; (3) accepted ADRs; (4) architecture and product intent; (5) active plans, which authorize sequencing but do not prove delivery; (6) historical documents. Security and privacy constraints take precedence. Chapter 2 documents describe future work unless current code and evidence show it has been implemented.
 
-- Keep routes and UI thin; backend services own chat behavior. Browser calls
-  go through the Next.js API proxy.
-- Keep provider SDKs inside `backend/src/personal_ai/llm`; services depend on
-  `LLMClient`. Keep Firestore details behind repository contracts.
+Before editing, inspect `git status` and preserve existing user changes. Keep this file durable; update it only when operating rules or authority boundaries change. Update status/evidence docs when behavior or verification changes, and record date, tested revision, checks, results, and remaining gaps when acceptance evidence changes. Keep one living implementation status in `docs/current-state.md`. Do not expand product scope merely because a later plan exists.
+
+## Durable boundaries
+
+- Keep routes and UI thin. Services and domain modules own behavior; browser calls use the Next.js API proxy.
+- Keep provider SDKs inside `backend/src/personal_ai/llm` and provider adapters. Services depend on neutral contracts.
 - Route every model turn through the shared token-budgeted context assembler.
-  Summaries are lossy, branch-scoped working context, not long-term memory.
-- Preserve parent/supersedes links and superseded message records. Regenerate
-  and edit/retry must use only the active branch as model context.
-- The fixed `local` owner is a local/test development identity. Deployed requests
-  require verified Google user/service tokens and private API IAM; local code
-  and fake tests do not establish production security or private-data readiness.
-- Keep durable user memory separate from time-sensitive external evidence;
-  enforce hard constraints in code. Future domain modules reuse shared layers.
-- Avoid large orchestration frameworks unless the task explicitly calls for
-  one. Keep experiments isolated until evaluated against a baseline.
+- Treat summaries as lossy, branch-scoped working context, not long-term memory.
+- Preserve parent/supersedes links and superseded messages. Regenerate and edit/retry use only the active branch as model context.
+- Keep durable user memory separate from time-sensitive external evidence. Preserve source, observation time, and freshness; enforce hard constraints in code before preference ranking.
+- Domain applications own their authoritative records, rules, and rich UI. Shared modules provide reusable AI-side capabilities.
+- Keep experiments gated until evaluated against a baseline. Fakes and offline checks do not establish provider, emulator, cloud, deployment, or production-security behavior.
 
-## Setup and checks
+## Identity and data handling
 
-Follow the root README for installation. Use Python 3.11+ with the backend
-virtual environment activated, uv 0.11.13, Node 22 on `PATH`, and pnpm 11.19.0. Install
-backend dependencies with the README's locked uv sync steps. Install
-frontend dependencies with `pnpm install --frozen-lockfile`.
+The fixed `local` owner is only a local/test development identity. Deployed requests require verified Google user/service identity and private API invocation; local code does not establish readiness for personal data. Do not commit credentials, personal chats, or private data. Keep credentials in untracked environment files or Secret Manager.
 
-From the repo root:
+## Task routing and checks
 
-```sh
-make backend-test
-make backend-lint
-make context-eval
-make memory-eval
-make memory-lifecycle-eval
-make frontend-test
-make frontend-lint
-make frontend-typecheck
-```
+| Task | Start here |
+| --- | --- |
+| Any implementation or documentation task | [docs/README.md](docs/README.md), then its task-specific route |
+| Current architecture or release readiness | [docs/current-state.md](docs/current-state.md) |
+| Local setup and developer commands | [README.md](README.md) and `Makefile` |
 
-Run checks relevant to the change; run all five for changes spanning both
-applications. For dependency or build changes also run `make backend-build`
-and/or `make frontend-build`, plus the affected Docker build when Docker is
-available. CI checks backend packaging on Python 3.11/3.12 and both images.
-See `docs/dependency-management.md` for lockfile maintenance.
-For deployment-script edits also run
-`bash -n infrastructure/gcp/deploy.sh`. Finish with `git diff --check`.
-Documentation-only edits need link/content review and `git diff --check`.
-
-Automated tests use fake repositories and a fake LLM and require no credentials,
-emulator, or network. Keep real Firestore/Gemini checks opt-in. Do not turn a
-missing manual-test environment into a requirement for offline tests.
-
-## Handoff and evidence
-
-- Update docs when behavior, phase status, setup, or acceptance evidence changes.
-  Record the date, tested revision, results, and remaining verification gaps.
-- Never claim cloud, emulator, or provider checks passed based on fake tests.
-- Keep credentials in untracked environment files or Secret Manager. Do not
-  commit keys, personal chats, or private data in fixtures, logs, or reports.
+Follow the root README for setup. Run the existing checks relevant to changed code; use the Makefile for backend/frontend tests, lint, type checks, evaluations, and builds. Keep provider/emulator checks opt-in; do not make offline tests require an unavailable manual environment. For documentation-only changes, review links/content and run `git diff --check`. Never report cloud, emulator, or provider checks as passed based on fakes.

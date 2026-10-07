@@ -1,5 +1,9 @@
 # Final review record — regenerated renumbered package
 
+> Dated review record from 2026-10-06. References below to Phase 10 being
+> “next” describe the review-time plan and predate P10.6 implementation. See
+> [current state](../current-state.md) for present delivery status.
+
 Date: 2026-10-06
 
 ## Review findings addressed

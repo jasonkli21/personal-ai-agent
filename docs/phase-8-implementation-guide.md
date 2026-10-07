@@ -1,5 +1,9 @@
 # Phase 8 implementation guide
 
+> This guide records Phase 8 behavior as originally implemented. Its Firestore
+> transaction details are historical after P10.6; current persistence boundaries
+> are in [current state](current-state.md) and the [storage README](../backend/src/personal_ai/storage/README.md).
+
 Phase 8 adds bounded iterative research over the Phase 5 evidence pipeline and
 Phase 6 decision service. It is implemented locally after explicit
 authorization. Research, iteration, and progress gates remain disabled by

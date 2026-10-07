@@ -1,6 +1,8 @@
 # Phased implementation plan
 
-Status: integrated renumbered next-scope plan, regenerated 2026-10-06
+Status: integrated renumbered next-scope plan, regenerated 2026-10-06. See
+[repository current state](../current-state.md) for delivery status and open
+verification gates; this roadmap records scope and sequencing, not evidence.
 
 ## Overview
 
@@ -12,11 +14,14 @@ This roadmap preserves the full former integrated scope, adds the Postgres/Dynam
 - Phase 1 — application/workspace identity: implemented and locally verified; recorded external gaps remain open.
 - Phase 2 — application registry/manifest model: implemented and locally verified; real domain providers/actions remain later scope.
 
-### Immediate next phase
+### Phase 10 implementation and acceptance
 
-**Phase 10 — Polyglot persistence foundation and Firestore migration.** It establishes local Postgres/pgvector + DynamoDB Local, cloud Neon Postgres + AWS DynamoDB, canonical store ownership, migration/reconciliation, bounded cutover/rollback, and Firestore retirement before the former Phase 3 roadmap resumes.
-
-P10.0–P10.6 runtime implementation is recorded locally; source migration was not run because the user reports that no Firestore source exists. Docker Compose/real-engine execution, live cloud acceptance, strict-$0 proof, and independent cloud source inventory remain open. See the [P10.6 evidence](phase-10-p10.6-implementation-evidence.md), [storage contract](phase-10-storage-ownership-and-access-patterns.md), and [migration/verification plan](phase-10-migration-cutover-and-verification-plan.md).
+**Phase 10 — Polyglot persistence foundation and Firestore retirement.** The
+runtime code work and README reconciliation are implemented. The [P10.6
+evidence](phase-10-p10.6-implementation-evidence.md) records open local-engine,
+source-inventory, cloud, and strict-$0 acceptance; it does not claim data
+migration or live cloud cutover. See also the [storage contract](phase-10-storage-ownership-and-access-patterns.md)
+and [migration/verification plan](phase-10-migration-cutover-and-verification-plan.md).
 
 ## Roadmap
 
@@ -36,7 +41,7 @@ Prerequisites: 1.
 
 Prerequisites: 1, 2.
 
-Goal: migrate durable AI-owned persistence to the DynamoDB/Postgres split without reducing existing product scope; local equivalents are required and the root README must be updated after implementation to describe the new architecture.
+Goal: migrate durable AI-owned persistence to the DynamoDB/Postgres split without reducing existing product scope. The local runtime and root README were updated at P10.6 closeout.
 
 ### Phase 11 — Context source and provider abstraction
 

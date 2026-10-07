@@ -1,183 +1,43 @@
-# Architecture notes
+# Architecture
+
+This document describes durable system boundaries. For implemented behavior and verification status, see [current-state.md](current-state.md); for task-specific implementation guides, use the [documentation router](README.md).
 
 ## System shape
 
 ```text
-Browser -> public Next.js sign-in/UI -> /api proxy -> private FastAPI API
-           in-memory Google ID token    service IAM + user-token verification
-                                                |-- chat SSE -> shared context -> LLM
-                                                |               |-> optional memory
-                                                |-- research SSE -> search -> evidence
-                                                |                   |-> shared context -> LLM
-                                                '--> Neon/Postgres: memory, research, decisions
-                                                '--> DynamoDB: conversations, messages, summaries, jobs
+Browser -> public Next.js sign-in/UI -> same-origin API proxy -> private FastAPI API
+                                                            |-- chat -> context -> LLM
+                                                            |-- research -> search -> evidence
+                                                            |                    '--> context -> LLM
+                                                            |-- optional memory
+                                                            |-- Postgres/pgvector: durable knowledge and research
+                                                            '--> DynamoDB: conversations and runtime state
 
-Gated Phase 4 post-terminal work -> durable memory job -> Pub/Sub
-                                                     -> private Cloud Run worker
+Gated lifecycle work -> Pub/Sub -> private Cloud Run worker
 
-Future separate domain applications -> explicit core API (after an auth boundary)
-  domain apps own authoritative records, business rules, and rich UI
-  Phase 6 adds reusable research entities, constraints, and ranking. Phase 7
-  travel/shopping modules extend those shared contracts; neither becomes
-  authoritative domain-app state.
+External domain applications -> explicit core API
+  external applications own authoritative domain records, rules, and rich UI
 ```
 
-The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the API and worker. The deployment target is Cloud Run. Neon/Postgres with pgvector owns query-rich durable records and embeddings; DynamoDB owns conversations and operational runtime state. Pub/Sub carries gated durable memory work, and Secret Manager holds configured credentials. Repository contracts hide storage details from services; `llm` hides model-provider details. See [GCP deployment](gcp-deployment.md) for the runtime topology and remaining verification gaps.
+The web application uses Next.js, React, and TypeScript. FastAPI and Uvicorn power the API and worker; Cloud Run is the deployment target. Repository contracts hide persistence details from services, and `llm` hides model-provider details. The current persistence composition and its verification limits are summarized in [current state](current-state.md) and the [root README](../README.md).
 
-P10.0–P10.6 runtime implementation is recorded. P10.6 switched normal API/worker persistence to Neon/Postgres + DynamoDB, removed Firestore runtime and migration dependencies, and documented the user-reported no-source disposition. See the [P10.6 evidence](personal-ai-chapter-2/phase-10-p10.6-implementation-evidence.md). Docker Compose and real-engine regression execution, live cloud acceptance, actual source inventory, and strict-$0 eligibility remain unverified; no real data migration occurred.
-
-## Core boundaries
+## Ownership boundaries
 
 - `services` owns conversation and durable chat-turn behavior.
-- `agents/research` coordinates single-pass and iterative research without owning provider-specific logic.
-- `auth` verifies Google user/service identity, resolves owner mappings, and owns
-  request safeguards and account-data controls. API routes take their owner only
-  from the verified principal; local/test development uses the explicit `local` seam.
-- `context` selects token-budgeted active conversation turns and
-  compatible working summaries for a model call. Phase 3 added optional labelled
-  personal memory within the same total budget; Phase 5 standalone research counts whole evidence blocks through this same assembler.
-  Summaries are not memory.
-- `memory` owns durable user knowledge: preferences, episodic observations, semantic summaries, consolidation, and forgetting.
-- `search` plans queries, fetches sources through adapters, extracts content, deduplicates it, and selects candidate evidence.
-- `evidence` records what an external source stated, where it came from, when it was observed, and when it expires.
-- `entities` contains chat records and owner-scoped canonical research identities with immutable, evidence-backed claims.
-- `decisions` owns evidence snapshots, candidate evaluations, and read-only inspection contracts.
-- `ranking` applies deterministic freshness/conflict handling and hard constraints before explainable soft ranking.
-- `domains` registers thin travel and shopping schemas, provider mappings,
-  hard-constraint additions, ranking features, and comparison views on top of
-  shared Phase 5–6 services. Place/catalog adapters and domain gates are
-  independently configurable; these modules do not own authoritative trip or
-  purchase records.
-- `evaluation` measures behavior across memory, research, and domain recommendation cases before experiments are promoted.
+- `agents/research` coordinates bounded single-pass and iterative research. Search adapters and the `llm` package own provider-specific calls.
+- `auth` verifies deployed identity, resolves owner mappings, and owns request safeguards and account-data controls. API routes derive owners from verified principals; `local` is an explicit development seam.
+- `context` selects token-budgeted active conversation turns, compatible working summaries, and optional labeled memory. Summaries are lossy branch-scoped working context, not long-term memory.
+- `memory` owns attributable durable user knowledge and its lifecycle. `evidence` owns external observations with source, observation time, and freshness.
+- `search` plans and fetches source material through adapters; `entities` represents canonical research identities and evidence-backed claims.
+- `decisions` retains evidence snapshots and candidate evaluations. `ranking` applies freshness/conflict rules and hard constraints before soft preferences.
+- `domains` adds bounded travel and shopping schemas, provider mappings, constraints, ranking features, and comparison views over shared services. It does not own authoritative trips, bookings, or purchases.
+- `applications` registers app manifests and capability metadata; registration does not itself grant cross-application data access.
+- `evaluation` measures memory, research, and domain behavior before experimental behavior is promoted.
 
-## Data-lifetime rule
+## Data-lifetime and persistence rules
 
-Memory and evidence are deliberately different. A user preference can last months or years. Prices, inventory, flight availability, and opening hours must be stored as observations with a freshness policy and expiration. Conclusions should point back to their supporting evidence instead of being retained as facts.
+Memory and external evidence are different data classes. User preferences may remain useful over time; prices, inventory, availability, and opening hours are observations and require an explicit freshness policy. Recommendations retain their source evidence and policy rather than becoming facts.
 
-## Persistence boundary
+The current runtime assigns conversation/message timelines and operational state to DynamoDB, and query-rich durable records and vectors to Postgres/pgvector. These stores remain behind repository contracts. Cross-store writes must preserve their correctness and recovery boundaries; details belong in [ADR 0021](decisions/0021-polyglot-persistence-foundation.md) and the [storage contract](personal-ai-chapter-2/phase-10-storage-ownership-and-access-patterns.md).
 
-Repository contracts cover conversations, messages, memories, bounded research-session aggregates, canonical entities/aliases/claims, and immutable decision/evidence snapshots with candidate evaluations. DynamoDB owns conversations, messages, summaries, job/guard state, and idempotency records. Neon/Postgres owns memory and lifecycle state, research aggregates, canonical entities/claims, decisions, account controls, and provider throttles; pgvector supports memory retrieval. These records remain separate from an external application's authoritative trip, booking, or purchase state.
-
-
-## Delivered Phase 2 request boundary
-
-Chat services reserve and persist the user/branch mutation, then invoke the
-provider-neutral context assembler before creating a streaming assistant.
-`context` owns budget allocation, complete-turn selection, summary provenance,
-and read-only inspection. Gemini counting and bounded summary-generation SDK
-calls stay inside `llm`; DynamoDB summary records stay behind repository
-contracts. The worker/Pub/Sub path remains idle. See
-[Phase 2 implementation](phase-2-implementation-guide.md).
-
-## Delivered Phase 3 memory boundary
-
-After user/branch persistence, chat retrieves bounded owner-scoped vector candidates
-through the memory repository and provider-neutral embedder. It revalidates active
-user-source provenance, then the shared assembler counts whole optional historical
-records without displacing Phase 2 context. Retrieval/counting failure falls back to
-Phase 2. After successful durable assistant completion and the terminal SSE frame,
-bounded extraction validates exact user excerpts before embedding and atomic storage.
-Memory and inspection gates default off. No worker lifecycle is added. See
-[Phase 3 implementation](phase-3-implementation-guide.md) and
-[ADR 0009](decisions/0009-simple-attributable-memory.md).
-
-## Delivered Phase 4 lifecycle boundary
-
-`memory` now owns versioned deterministic scoring, separate derived-record provenance,
-append-only lifecycle events, projections and bounded jobs. All variants retain the
-shared assembler's allocation and source validation rules. The retained post-terminal
-task accounts for actual injected IDs and persists optional jobs before notification.
-A separate private worker app processes Pub/Sub delivery using fenced leases and
-atomic source/state checks. Explicit bounded recovery republishes durable pending
-notifications; no general scheduler is introduced. Defaults remain fixed with all
-mutation gates off. See [Phase 4 implementation](phase-4-implementation-guide.md).
-
-## Delivered Phase 5 research boundary
-
-`agents/research` coordinates one gated request-owned pass with fenced execution.
-`search` owns the deterministic planner, provider-neutral protocols, literal
-snippet extractor and fixed-endpoint Brave integration. `evidence` owns expiring
-observations, conservative dedupe, explained selection and strict excerpt/citation
-validation. The shared context assembler counts the entire research request.
-Storage retains typed immutable provenance in a bounded owner-scoped session
-aggregate with an atomic request-key mapping. API/UI/proxy remain thin; normal
-chat and memory are independent. No publisher-page fetches, research worker jobs,
-entities, recommendations or iterative planning are introduced. See the
-[Phase 5 guide](phase-5-implementation-guide.md).
-
-## Delivered Phase 6 decision boundary
-
-`entities` keeps canonical research identity separate from time-sensitive
-claims. `decisions` validates either selected Phase 5 session evidence or
-explicitly supplied evidence with owner, URL, excerpt-fingerprint, and expiry
-checks. `ranking` abstains on ambiguous identity, stale/conflicting/missing
-required claims, or unsupported conversions; deterministic hard constraints
-run before preferences. Persisted snapshots retain exact source references and
-policy versions. The result view links claims back to their sources, and a
-separate inspection gate exposes policy and candidate diagnostics without raw
-memory or hidden model reasoning. All decision gates default off. See the
-[Phase 6 guide](phase-6-implementation-guide.md), [ADR 0012](decisions/0012-evidence-grounded-decision-support.md),
-and [release evidence](releases/phase-6-decision-support.md).
-
-## Delivered Phase 7 domain boundary
-
-`domains` maps registered travel and shopping facts into the same evidence,
-entity, claim, constraint, and decision contracts. A domain adds typed display
-fields and ranking features only after the shared evaluator filters hard
-requirements. Immutable domain claim extensions and provider observations
-retain claim/evidence IDs, source policy, attribution, adapter version, and
-expiry in a bounded Postgres transaction. Comparison snapshots include
-visible constraints and policy versions. The browser proxy and pages require
-both the shared decision gate and an independent domain gate; comparison
-inspection has another gate. Nominatim is limited to submitted place searches,
-and Open Food Facts is limited to exact barcode identity lookup. Neither
-provider supplies current stays/offers in this implementation. See the
-[Phase 7 guide](phase-7-implementation-guide.md),
-[provider ADRs](decisions/0013-nominatim-travel-place-source.md), and
-[release evidence](releases/phase-7-travel-shopping.md).
-
-## Delivered Phase 8 iterative-research boundary
-
-`agents/research` persists a versioned run over the existing Phase 5
-owner-scoped research session. Its finite-state transitions, safe progress
-events, budget ledger, cancellation fence, and recovery lease are written
-through repository contracts; Postgres run/session commits are transactional.
-The deterministic assessor emits named gaps, and a schema-validated template
-planner can only request bounded follow-up work tied to one gap and its frozen
-allowed-domain set. Query execution, extraction, evidence selection, context
-assembly and citation validation stay on their Phase 5 paths. Optional
-candidate/constraint intents are re-evaluated by the shared Phase 6 decision
-service; search output does not create verified claims or relax requirements.
-Single-pass remains the default and all Phase 8 gates are off. No background
-worker, open-ended autonomy, or Phase 9 operation is introduced. See the
-[Phase 8 guide](phase-8-implementation-guide.md), [ADRs](decisions/0016-bounded-iterative-research.md),
-and [release evidence](releases/phase-8-iterative-research.md).
-
-## Partial Phase 9 operational boundary
-
-Google OIDC verifies the browser principal, and Cloud Run IAM separately
-verifies web-to-API invocation. The private worker verifies independently
-configured Pub/Sub and Scheduler identities. Local/test development bypass is
-rejected in staging/production. Browser identity stays in memory and passes
-only through same-origin proxies.
-
-Durable DynamoDB request limits and Postgres usage estimates precede
-provider-backed API operations. These estimates do not account for every
-counting/embedding/worker RPC or settle actual usage. A bounded scheduled
-handler marks expired research sessions ineligible and republishes durable
-memory jobs; its schedule remains paused by default. Account export is bounded
-and owner-scoped. Confirmed deletion stops at operator review and performs no
-physical deletion. Full legacy-owner migration remains unsupported for records
-with embedded ownership or derived owner keys.
-
-See the [Phase 9 plan](phase-9-implementation-plan.md),
-[authorization matrix](phase-9-authorization-matrix.md),
-[operations runbook](phase-9-operations-runbook.md), and
-[repository review](repository-review-2026-10-03.md). These local code paths do
-not establish cloud IAM, recovery, provider-policy, or production readiness.
-
-## Chapter 2 next-scope handoff — 2026-10-06
-
-The [Chapter 2 Phase 0 reconciliation](personal-ai-chapter-2/09-phase-0-reconciliation.md) records the original Phase 0 review and the 2026-10-06 amendment that adds Phase 10 for the DynamoDB + Neon Postgres/pgvector runtime. Chapter 2 remains separate from the original repository phase history: next-scope Phases 0–2 are complete, Phase 10 runtime cutover is implemented locally, and former next-scope Phases 3–28 are preserved under the [numbering map](personal-ai-chapter-2/NUMBERING-MAP.md). Next-scope Phases 1–2 application/workspace identity and manifest registration are implemented locally; see the [Phase 1 guide/evidence](personal-ai-chapter-2/phase-1-implementation-guide.md) and [Phase 2 guide/evidence](personal-ai-chapter-2/phase-2-implementation-guide.md). Phase 2 resolves request metadata from the application registry and carries it through conversation context preparation; registered domain providers/actions remain unavailable stubs, and registration grants no data access. Workspace membership, deployed IAM/proxy behavior, target-engine/cloud acceptance, and existing Phase 9 physical deletion and owner migration remain unverified or open. The user reports no Firestore source exists; this has not been checked against a cloud account. The target preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.
-
-The current budget guarantee applies to chat/evidence/proposal/extraction preparation. Structured memory extraction still calls Gemini directly with character/output bounds; Chapter 2 Phase 16 must route it through shared preparation. Existing Gemini remote token counting is a disclosure, and future provider fallback needs an eligible endpoint-specific counter rather than sending all prompts to Gemini. The current context inspector reports estimated reconstructed context, not an exact historical dispatch.
+External domain applications own authoritative trips, bookings, purchases, and other domain records. The shared substrate may hold source-attributed preferences and evidence, but it does not silently replace that authority.

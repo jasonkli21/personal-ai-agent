@@ -1,6 +1,6 @@
 # ADR 0021: Polyglot persistence foundation
 
-- Status: accepted for P10.0 planning; runtime implementation remains Firestore
+- Status: accepted; P10.6 runtime code cutover implemented locally; external acceptance remains open (status updated 2026-10-07)
 - Date: 2026-10-06
 - Reviewed repository revision: `e17ebd76afd1feb90fe47d959c43ab23eb553499`
 - Supersedes: [ADR 0002](0002-firestore-native-persistence.md) for future target architecture after Phase 10 cutover
@@ -12,10 +12,11 @@ is authoritative. Completed next-scope Phases 1–2 and the original phase histo
 remain intact. This decision changes persistence beneath existing contracts;
 it does not deliver new product behavior or establish cloud readiness.
 
-The current repository names 34 Firestore collections. Several transactions
-join records that broad labels such as "events" or "idempotency" would otherwise
-assign to different stores. Store selection must preserve those correctness
-boundaries and owner/application/workspace isolation.
+At the time this decision was reviewed, the repository named 34 Firestore
+collections. Several transactions join records that broad labels such as
+"events" or "idempotency" would otherwise assign to different stores. Store
+selection must preserve those correctness boundaries and
+owner/application/workspace isolation.
 
 ## Decision
 
@@ -76,8 +77,10 @@ boundaries and owner/application/workspace isolation.
   Optional memory retains its existing advisory failure behavior for chat.
 - Export consistency and deletion inventory span stores; this decision does not
   complete existing physical deletion, owner migration or deletion-aware restore.
-- Firestore remains canonical until verified cutover, then a bounded legacy
-  rollback source. Historical ADRs/evidence are not rewritten.
+- The P10.6 local runtime no longer uses Firestore. If a Firestore dataset is
+  later identified, treat it as a potential legacy source and follow the
+  conditional inventory/cutover contract; no real data migration is claimed.
+  Historical ADRs/evidence retain their original meaning.
 
 ## Implementation and verification references
 
@@ -85,6 +88,16 @@ Detailed keys, schema tradeoffs and the minimal recovery protocol belong in the
 [Phase 10 storage contract](../personal-ai-chapter-2/phase-10-storage-ownership-and-access-patterns.md).
 Migration, local/cloud checks, rollback and retirement belong in the
 [Phase 10 verification plan](../personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md).
-These are planned requirements; no database, provider, emulator or cloud checks
-are claimed by accepting this ADR. Root README runtime claims change only after
-implementation/cutover. P10.1+ is not started by this documentation decision.
+At decision acceptance, these were planned requirements; no database, provider,
+emulator or cloud checks were claimed by accepting the ADR, and P10.1+ had not
+started. That is historical acceptance context; see the dated implementation
+status below. The root README now reflects the locally implemented runtime.
+
+## Implementation status update — 2026-10-07
+
+P10.6 switched normal local API/worker wiring to Postgres/DynamoDB and removed
+Firestore runtime and migration dependencies. This updates implementation
+status only; it does not revise this decision's original acceptance date or
+claim real data migration, live cloud cutover, target-engine verification, or
+strict-$0 eligibility. See [current state](../current-state.md) and
+[P10.6 evidence](../personal-ai-chapter-2/phase-10-p10.6-implementation-evidence.md).

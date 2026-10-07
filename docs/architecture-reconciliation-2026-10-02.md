@@ -1,5 +1,10 @@
 # Architecture reconciliation — 2026-10-02
 
+> Historical record of the repository and decisions on 2026-10-02. Its Firestore
+> runtime and phase-authorization statements predate Chapter 2 and P10.6. Use
+> [current state](current-state.md), the [documentation router](README.md), and
+> current code/evidence for present behavior.
+
 Status: documentation reconciliation after the Phase 5 local implementation.
 Reviewed repository revision: `66a0f65` (before these documentation edits).
 This record summarizes the documentation changes; it does not claim Phase 6

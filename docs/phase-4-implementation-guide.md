@@ -1,10 +1,14 @@
 # Phase 4 experimental memory implementation guide
 
+> This guide records Phase 4 as originally implemented. Its Firestore transaction,
+> index, and emulator details are historical after P10.6; use [current state](current-state.md)
+> and the [storage README](../backend/src/personal_ai/storage/README.md) for current persistence.
+
 Phase 4 is implemented locally with fixed retrieval as the default and all
 lifecycle mutation and inspection gates disabled. The [plan](phase-4-implementation-plan.md)
 and [ADR 0010](decisions/0010-experimental-memory-lifecycle.md) define scope.
-The [release record](releases/phase-4-experimental-memory.md) distinguishes offline
-verification from outstanding emulator, provider, Pub/Sub and deployed checks.
+The [release record](releases/phase-4-experimental-memory.md) records the original
+offline and external verification results; current persistence gates are in current state.
 
 ## Plan-to-code map
 
@@ -120,7 +124,7 @@ active leases and retryable outcomes return 503 for redelivery. Terminal durable
 records retain safe reasons after bounded attempts; there is no separate dead-letter
 queue or always-running scheduler. The worker does not republish unrelated jobs
 on every delivery. Recover notifications explicitly from a configured runtime
-identity with Firestore access and topic publisher permission:
+identity with access to the currently configured stores and topic publisher permission:
 
 ```sh
 cd backend
@@ -145,16 +149,12 @@ variant/policy, lifecycle state/events, source IDs, score components, fit/exclus
 and null relevance with `similarity_unavailable_in_inspector`; they do not embed,
 query a vector index, call an LLM, enqueue, rebuild state or increment frequency.
 
-Provision and wait for all matching indexes in [the manifest](../firestore.indexes.json)
-before deliberate cloud enablement. Besides Phase 3 KNN, Phase 4 needs derived KNN,
-typed original-memory KNN for clustering, owner/type/effective-time maintenance
-queries, owner/memory/event-sequence indexes in both directions, owner/source reverse
-links and pending/retry job queries. Use the configured embedding dimension (default
-768) for both original and derived vector indexes. The bootstrap deploy script
-continues to provision Phase 1–2 indexes only and leaves all memory gates off;
-there is no collection-scan fallback. Missing indexes remain non-fatal chat-memory
-failures or retryable worker storage failures. Emulator checks assert persistence,
-not production KNN or IAM.
+At Phase 4 delivery, these operations depended on Firestore composite/vector
+indexes and emulator checks. P10.6 removed that adapter and its index manifest;
+the old Firestore provisioning procedure is retired. Lifecycle gates remain off
+by default. Use the [current storage boundary](../backend/src/personal_ai/storage/README.md)
+and [P10.6 evidence](personal-ai-chapter-2/phase-10-p10.6-implementation-evidence.md)
+for active persistence setup and acceptance.
 
 ## Verification and promotion
 

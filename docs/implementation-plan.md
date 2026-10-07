@@ -1,22 +1,16 @@
-# Implementation plan
+# Original repository implementation plan
+
+> Historical sequencing and scope for the original repository Phases 0–9.
+> It contains phase-era status and provider/storage notes; it is not the living
+> status source or the active Chapter 2 roadmap. See [current state](current-state.md),
+> the [documentation router](README.md), and the [Chapter 2 plan index](personal-ai-chapter-2/personal-ai-next-scope-detailed-implementation-plans/README.md).
 
 This plan builds a usable personal chat system first, then progressively turns it into a memory and research-agent platform. Each phase should be evaluated before the next one adds complexity.
-
-Phases 1–8 are implemented locally. Phases 6–8 were explicitly authorized.
-Decision, domain, and iterative gates remain disabled by default. External
-provider, emulator, and deployed verification gaps are recorded separately from
-implementation status in the phase guides and release records.
 
 For task-level dependencies, requirements, and acceptance criteria, see the
 [Phase 0–1 implementation plan](phase-1-implementation-plan.md) and the
 [Phase 2 implementation plan](phase-2-implementation-plan.md).
 
-P10.0–P10.6 runtime code changes are implemented locally. P10.6 records the
-user-reported no-source disposition and removes Firestore from the runtime;
-there was no data migration or independent cloud inventory. See the [P10.6
-evidence](personal-ai-chapter-2/phase-10-p10.6-implementation-evidence.md).
-Docker Compose/real-engine execution, cloud acceptance, and strict-$0 proof
-remain unverified.
 
 ## Phase 0 — Define the learning baseline
 
@@ -145,8 +139,9 @@ and specialized UI while consuming the shared research and decision contracts.
 Implemented locally under explicit authorization. See the [Phase 8 task
 plan](phase-8-implementation-plan.md), [guide](phase-8-implementation-guide.md),
 [accepted state/budget ADRs](decisions/0016-bounded-iterative-research.md),
-and [release evidence](releases/phase-8-iterative-research.md). Real provider,
-Firestore emulator/index and deployed verification remain open.
+and [release evidence](releases/phase-8-iterative-research.md). The Phase 8
+evidence records checks from that implementation period; current persistence
+verification is tracked in [current state](current-state.md).
 
 1. Make the research agent assess whether evidence is sufficient.
 2. Identify missing facts, conflicts, stale evidence, or weak entity matches.
@@ -176,6 +171,8 @@ open acceptance criteria in its [task plan](phase-9-implementation-plan.md) and
 
 **Outcome:** a private, maintainable personal AI system that can support real experiments.
 
-## Chapter 2 next-scope handoff — 2026-10-06
+## Chapter 2 roadmap
 
-The [Chapter 2 Phase 0 reconciliation](personal-ai-chapter-2/09-phase-0-reconciliation.md) records the original Phase 0 review against code revision `ad1dea5912af81eda0c9c5d6a41180ce186a07a5` and the 2026-10-06 amendment that adds Phase 10 to migrate planned persistence from Firestore to DynamoDB + Neon Postgres/pgvector. Chapter 2 remains separate from the original repository phase history: next-scope Phases 0–2 are complete, Phase 10 is next, and former next-scope Phases 3–28 are preserved under the [numbering map](personal-ai-chapter-2/NUMBERING-MAP.md). Existing Phase 9 physical deletion, full owner migration and provider/cloud operational gates remain open. The target is incremental and preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.
+Chapter 2 is a separate next-scope plan, not an extension of this original
+phase numbering. See the [Chapter 2 overview](personal-ai-chapter-2/README.md),
+[numbering map](personal-ai-chapter-2/NUMBERING-MAP.md), and [current state](current-state.md).

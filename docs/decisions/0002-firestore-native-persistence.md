@@ -21,7 +21,14 @@ Use Firestore in Native mode for deployed persistence. Automated local tests use
 ## Future architecture supersession — 2026-10-06
 
 [ADR 0021](0021-polyglot-persistence-foundation.md) supersedes this decision for
-the target architecture after Phase 10 cutover. Firestore remains the current
-implemented canonical store until that migration is verified. The original
-decision and evidence above are retained; P10.0 documentation does not claim
-that Postgres/DynamoDB is implemented or that Firestore has been retired.
+the target architecture. This paragraph records the original supersession
+decision before P10.6 code cutover; its current-runtime statement is historical.
+
+### Runtime supersession — 2026-10-07
+
+P10.6 has since removed Firestore from the active runtime and switched local
+normal API/worker wiring to Postgres/DynamoDB. No real data migration or cloud
+cutover is claimed, and the user-reported no-source disposition has not been
+independently verified. See [current state](../current-state.md) and
+[P10.6 evidence](../personal-ai-chapter-2/phase-10-p10.6-implementation-evidence.md).
+The original accepted decision and evidence above remain historical context.

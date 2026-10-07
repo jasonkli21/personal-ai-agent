@@ -4,6 +4,8 @@ A personal AI platform and research environment focused on the systems around la
 
 The project is intentionally not a model-training or local-model-hosting project. It uses hosted model/provider APIs behind replaceable interfaces and concentrates on the surrounding architecture: memory, retrieval, evidence, routing, constraints, persistence, observability, and cost-aware orchestration.
 
+For concise implementation status and open verification gates, see [docs/current-state.md](docs/current-state.md). Use the [documentation router](docs/README.md) to find task-specific plans, contracts, and evidence.
+
 ## What it does
 
 The system provides reusable AI capabilities that can be used directly through its web UI or consumed by domain applications such as travel and shopping.

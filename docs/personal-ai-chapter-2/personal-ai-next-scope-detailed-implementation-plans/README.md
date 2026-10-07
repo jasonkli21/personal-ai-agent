@@ -2,11 +2,9 @@
 
 This directory contains 33 implementation plans for the regenerated chapter. `manifest.json` is the machine-readable index and prerequisite graph.
 
-## Status
+## Plan authority
 
-- Phases 0–2: completed history.
-- Phase 10: P10.0–P10.6 runtime code changes are implemented locally. The reported no-source disposition was recorded without a live inventory or data migration; Docker Compose/real-engine checks, cloud acceptance, and strict-$0 proof remain open. See the [P10.6 evidence](../phase-10-p10.6-implementation-evidence.md).
-- Phases 11–36: future work under the preserved-scope numbering map.
+This is an index of plans, not a living implementation-status record. See [current state](../../current-state.md) for delivered work and remaining acceptance gates. Phases 11–36 are future work under the preserved-scope [numbering map](../NUMBERING-MAP.md); reading a plan does not authorize implementation.
 
 See [ADR 0021](../../decisions/0021-polyglot-persistence-foundation.md), the [Phase 10 storage contract](../phase-10-storage-ownership-and-access-patterns.md) and [migration/verification plan](../phase-10-migration-cutover-and-verification-plan.md) for the reviewed foundation.
 
@@ -16,7 +14,9 @@ Former Phase 3–28 detailed plans are authoritative for substantive scope. Renu
 
 ## Shared closeout rule
 
-Every phase must review the repository-root README for factual accuracy. Change it only for user/developer-visible current-state facts; implementation details remain here. Phase 10 has a mandatory README architecture/tech-stack/setup/deployment reconciliation after cutover.
+Every phase must review the repository-root README for factual accuracy. Change it only for user/developer-visible current-state facts; implementation details remain in subsystem docs. Phase 10's required README architecture/setup/deployment reconciliation is recorded as complete in its implementation evidence.
+
+The `source/` directory preserves input planning documents for provenance. Their phase/status language describes the earlier planning snapshot and is not current implementation authority.
 
 ## Plans
 

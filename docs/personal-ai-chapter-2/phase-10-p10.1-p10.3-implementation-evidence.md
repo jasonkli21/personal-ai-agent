@@ -1,5 +1,10 @@
 # Phase 10 P10.1–P10.3 implementation evidence
 
+> Historical pre-cutover evidence. Runtime statements below describe the P10.1–P10.3
+> worktree; P10.6 later changed active runtime wiring and removed Firestore code.
+> See [P10.6 evidence](phase-10-p10.6-implementation-evidence.md) and
+> [current state](../current-state.md) for present implementation and open gates.
+
 Date: 2026-10-06
 
 Tested source: review-fix working tree based on commit `c7b14b3` (`Implement local polyglot persistence foundation`). The review fixes and this evidence update are the separate follow-up change.

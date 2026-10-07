@@ -1,4 +1,8 @@
-# Phase 0 reconciliation — current handoff status
+# Phase 0 reconciliation — historical handoff record
+
+> This is the dated Phase 0/Chapter 2 reconciliation, not the current project
+> status. Its Phase 10 “next” statements predate P10.6 implementation. See
+> [repository current state](../current-state.md) and [P10.6 evidence](phase-10-p10.6-implementation-evidence.md).
 
 This is the replacement package’s compatibility reconciliation record. It preserves the completed Phase 0 conclusion from the 2026-10-05 review and records the subsequent completed Phase 1–2 state plus the 2026-10-06 persistence/renumbering amendment.
 
