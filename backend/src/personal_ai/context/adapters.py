@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from personal_ai.applications.contracts import CapabilityRegistration
-from personal_ai.auth.scope import RequestScope
+from personal_ai.auth.scope import RequestScope, current_request_scope
 from personal_ai.context.providers import (
     ContextItem,
     ContextOperationSpec,
@@ -532,6 +533,44 @@ class MemoryContextProviderFactory:
 
     def create(self, inputs: ContextProviderInputs) -> MemoryContextProvider:
         return MemoryContextProvider(inputs, self.settings)
+
+
+class BuiltInContextPermissionRevalidator:
+    """Recheck built-in memory and explicit profile-share permissions."""
+
+    def __init__(self, settings, profile_repository=None) -> None:
+        self.settings = settings
+        self.profile_repository = profile_repository
+
+    def is_current(self, dependency) -> bool:
+        if (
+            dependency.permission_id == "ai_memory_read"
+            and dependency.version == "memory-v1"
+        ):
+            return bool(self.settings.memory_enabled)
+        parts = dependency.permission_id.split(":")
+        if (
+            dependency.version != "global-profile-v1"
+            or len(parts) != 3
+            or parts[0] != "global_profile_share"
+            or self.profile_repository is None
+        ):
+            return False
+        scope = current_request_scope()
+        field, application_id = parts[1:]
+        if scope is None or scope.application_id != application_id:
+            return False
+        try:
+            return bool(
+                self.profile_repository.shared_fields(
+                    scope.owner_id,
+                    application_id,
+                    (field,),
+                    deadline=monotonic() + 0.25,
+                )
+            )
+        except Exception:  # noqa: BLE001 - a failed current-share check fails closed
+            return False
 
 
 class ResearchEvidenceContextProviderFactory:

@@ -14,6 +14,7 @@ from personal_ai.applications.registry import (
 from personal_ai.auth.scope import STANDALONE_APPLICATION_ID, RequestScope
 from personal_ai.context import ContextAssembler
 from personal_ai.context.adapters import (
+    BuiltInContextPermissionRevalidator,
     ClientContextProviderFactory,
     ConversationContextProviderFactory,
     MemoryContextProviderFactory,
@@ -178,6 +179,9 @@ def get_context_assembler(
         summaries,
         GeminiConversationSummarizer(settings),
         context_provider_coordinator=providers,
+        permission_revalidator=BuiltInContextPermissionRevalidator(
+            settings, profile_repository
+        ),
     )
 
 

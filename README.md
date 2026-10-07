@@ -14,7 +14,7 @@ Core capabilities include:
 
 - streamed conversational chat;
 - persistent conversation history;
-- token-budgeted context building across conversation, memory, and explicitly selected typed sources, with provenance and sensitivity manifests;
+- token-budgeted context building across conversation, memory, and deterministically planned eligible sources, with provenance and sensitivity manifests;
 - an owner-managed AI profile with explicit per-field application sharing;
 - attributable long-term memory with retrieval;
 - bounded memory lifecycle experiments;
@@ -251,6 +251,7 @@ The repository also includes deterministic evaluation suites:
 
 ```bash
 make context-eval
+make context-plan-eval
 make memory-eval
 make memory-lifecycle-eval
 make research-eval

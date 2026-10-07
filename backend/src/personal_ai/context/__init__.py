@@ -9,6 +9,13 @@ from personal_ai.context.builder import (
     ContextBuildSourceMetadata,
 )
 from personal_ai.context.contracts import ContextError
+from personal_ai.context.planner import (
+    ContextPlan,
+    ContextPlanDecision,
+    ContextPlanner,
+    ContextPlanningCapability,
+    ContextPlanningRule,
+)
 from personal_ai.context.providers import (
     ContextItem,
     ContextOperationSpec,
@@ -31,6 +38,11 @@ __all__ = [
     "ContextError",
     "ContextItem",
     "ContextOperationSpec",
+    "ContextPlan",
+    "ContextPlanDecision",
+    "ContextPlanner",
+    "ContextPlanningCapability",
+    "ContextPlanningRule",
     "ContextPreparationError",
     "ContextProviderCoordinator",
     "ContextProviderFailure",

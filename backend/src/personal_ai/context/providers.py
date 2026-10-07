@@ -197,6 +197,7 @@ class ContextSelection(BaseModel):
     window_end: datetime | None = None
     max_results: int = Field(default=10, ge=1, le=50)
     max_bytes: int = Field(default=16_384, ge=1, le=65_536)
+    max_tokens: int | None = Field(default=None, ge=1, le=128_000)
     timeout_seconds: float = Field(default=2.0, gt=0, le=10)
     required: bool = False
     target_scope: ApplicationScope | None = None
@@ -414,6 +415,37 @@ class ContextProviderCoordinator:
 
     def _factory(self, provider_id: str):
         return self._providers.get(provider_id)
+
+    def planning_capability(self, context: ApplicationContextRequest, provider_id: str):
+        """Describe whether a registered provider can be planned for this request.
+
+        The returned state is advisory. ``prepare`` repeats registration,
+        availability, scope, operation, and bound checks before retrieval.
+        """
+        from personal_ai.context.planner import ContextPlanningCapability
+
+        capability = next(
+            (
+                item
+                for item in context.context_provider_capabilities
+                if item.capability_id == provider_id
+            ),
+            None,
+        )
+        if capability is None or capability.kind != "context_provider":
+            return ContextPlanningCapability(status="not_registered")
+        factory = self._factory(provider_id)
+        if factory is None:
+            return ContextPlanningCapability(status="unavailable")
+        if not capability.is_enabled(self._feature_flags):
+            return ContextPlanningCapability(status="disabled")
+        try:
+            spec = ContextProviderSpec.model_validate(factory.spec.model_dump())
+        except ValidationError:
+            return ContextPlanningCapability(status="unavailable")
+        if spec.capability_kind != "context_provider":
+            return ContextPlanningCapability(status="unavailable")
+        return ContextPlanningCapability(status="available", spec=spec)
 
     @staticmethod
     def _preflight_failure(selection: ContextSelection, error: Exception) -> str:

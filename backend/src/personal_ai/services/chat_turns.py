@@ -223,8 +223,21 @@ class ChatTurnService:
             post_active = self._messages.list_active(
                 owner_id=self._owner_id, conversation_id=user.conversation_id,
             )
+            context_plan = None
+            use_planned_memory = False
+            if self._application_context is not None:
+                context_plan = self._context.plan_context(
+                    user.content, self._application_context
+                )
+                use_planned_memory = any(
+                    selection.provider_id == "ai_memory"
+                    and selection.operation == "search"
+                    for selection in context_plan.selections
+                )
             retrieval = None
-            if self._memory_retriever is not None:
+            if self._memory_retriever is not None and (
+                self._application_context is None or use_planned_memory
+            ):
                 retrieval = self._memory_retriever.retrieve(
                     self._owner_id, user.content, post_active,
                     timeout=min(self._context.settings.memory_timeout_seconds,
@@ -233,6 +246,7 @@ class ChatTurnService:
             assembled = self._context.assemble(
                 post_active[:-1], post_active[-1], deadline=deadline, retrieval=retrieval,
                 application_context=self._application_context,
+                context_plan=context_plan,
             )
             remaining(deadline)
             assistant = self._new_message(

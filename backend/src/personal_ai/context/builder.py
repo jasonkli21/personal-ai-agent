@@ -268,6 +268,8 @@ class ContextBuildManifest(BaseModel):
     items: tuple[ContextBuildItemReport, ...] = ()
     diagnostics: tuple[str, ...] = ()
     source_failures: tuple[ContextBuildSourceFailureReport, ...] = ()
+    planner_version: str | None = Field(default=None, max_length=100)
+    planning_decisions: tuple[str, ...] = Field(default=(), max_length=64)
 
     @property
     def injected_item_ids(self) -> tuple[str, ...]:

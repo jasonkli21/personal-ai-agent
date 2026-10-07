@@ -28,6 +28,7 @@ from personal_ai.context.contracts import (
     complete_turns,
     fingerprint,
 )
+from personal_ai.context.planner import ContextPlan, ContextPlanner
 from personal_ai.context.providers import (
     ContextPreparationError,
     ContextProviderCoordinator,
@@ -78,6 +79,7 @@ class ContextAssembler:
         summarizer: ConversationSummarizer | None = None,
         context_provider_coordinator: ContextProviderCoordinator | None = None,
         permission_revalidator: ContextPermissionRevalidator | None = None,
+        context_planner: ContextPlanner | None = None,
     ) -> None:
         self.settings = settings
         self.counter = counter
@@ -85,6 +87,39 @@ class ContextAssembler:
         self.summarizer = summarizer
         self.context_provider_coordinator = context_provider_coordinator
         self.permission_revalidator = permission_revalidator
+        self.context_planner = context_planner or ContextPlanner()
+
+    def plan_context(
+        self,
+        intent: str,
+        application_context: ApplicationContextRequest,
+        *,
+        candidate_entities=(),
+        now: datetime | None = None,
+    ) -> ContextPlan:
+        """Plan bounded source operations before any request-specific retrieval."""
+        capabilities = {}
+        if self.context_provider_coordinator is not None:
+            provider_ids = {
+                rule.provider_id
+                for rule in self.context_planner.rules
+                if not rule.application_ids
+                or application_context.scope.application_id in rule.application_ids
+            }
+            capabilities = {
+                provider_id: self.context_provider_coordinator.planning_capability(
+                    application_context, provider_id
+                )
+                for provider_id in provider_ids
+            }
+        return self.context_planner.plan(
+            intent,
+            application_context,
+            capabilities,
+            input_token_budget=self.input_budget(),
+            candidate_entities=candidate_entities,
+            now=now,
+        )
 
     def input_budget(self, output_reserve: int | None = None) -> int:
         reserve = self.settings.max_response_tokens if output_reserve is None else output_reserve
@@ -105,6 +140,7 @@ class ContextAssembler:
         retrieval=None,
         application_context: ApplicationContextRequest | None = None,
         context_selections: Sequence[ContextSelection] = (),
+        context_plan: ContextPlan | None = None,
         evidence_records: Sequence[object] = (),
         tool_results: dict[str, object] | None = None,
         manifest_view_kind: str = "actual_build",
@@ -123,8 +159,23 @@ class ContextAssembler:
                 for message in messages
             ):
                 raise ContextError("application_context_scope_mismatch")
-        elif context_selections:
+        elif context_selections or context_plan is not None:
             raise ContextPreparationError("application_context_required")
+
+        if context_plan is not None:
+            if context_selections:
+                raise ContextPreparationError("context_plan_and_selections_conflict")
+            assert application_context is not None
+            if (
+                context_plan.application_id != application_context.scope.application_id
+                or context_plan.workspace_id != application_context.scope.workspace_id
+                or context_plan.scope_fingerprint
+                != ContextPlan.fingerprint_scope(application_context.scope)
+            ):
+                raise ContextPreparationError("context_plan_scope_mismatch")
+            effective_selections = context_plan.selections
+        else:
+            effective_selections = tuple(context_selections)
 
         scoped = ContextAssembler(
             self.settings,
@@ -133,15 +184,16 @@ class ContextAssembler:
             DeadlineSummarizer(self.summarizer, deadline) if self.summarizer else None,
             self.context_provider_coordinator,
             self.permission_revalidator,
+            self.context_planner,
         )
         try:
             result = scoped._assemble(active_messages, pending_user_message, refresh=refresh)
-            if context_selections:
+            if effective_selections:
                 if scoped.context_provider_coordinator is None or application_context is None:
                     raise ContextPreparationError("context_provider_unavailable")
                 source_result = scoped.context_provider_coordinator.prepare(
                     application_context,
-                    context_selections,
+                    effective_selections,
                     ContextProviderInputs(
                         scope=application_context.scope,
                         application_context=application_context,
@@ -164,7 +216,8 @@ class ContextAssembler:
                 pending_user_message,
                 retrieval=retrieval,
                 application_context=application_context,
-                context_selections=context_selections,
+                context_selections=effective_selections,
+                context_plan=context_plan,
                 deadline=deadline,
                 manifest_view_kind=manifest_view_kind,
                 clock=clock,
@@ -184,6 +237,7 @@ class ContextAssembler:
         retrieval,
         application_context: ApplicationContextRequest | None,
         context_selections: Sequence[ContextSelection],
+        context_plan: ContextPlan | None,
         deadline: float | None,
         manifest_view_kind: str,
         clock=None,
@@ -194,14 +248,22 @@ class ContextAssembler:
         entries: list[ContextBuildItem] = []
         excluded_memories = list(retrieval.excluded) if retrieval is not None else []
         diagnostics = list(result.diagnostics)
+        planned_memory = any(
+            selection.provider_id == "ai_memory" and selection.operation == "search"
+            for selection in context_selections
+        )
         if retrieval is not None:
             diagnostics.extend(retrieval.diagnostics)
             if not self.settings.memory_enabled:
                 excluded_memories.extend((item.memory.id, "disabled") for item in retrieval.selected)
-            else:
+            elif context_plan is None and not planned_memory:
                 memory_entries, memory_exclusions = self._memory_entries(retrieval, pending)
                 entries.extend(memory_entries)
                 excluded_memories.extend(memory_exclusions)
+            elif not planned_memory:
+                excluded_memories.extend(
+                    (item.memory.id, "not_selected_by_plan") for item in retrieval.selected
+                )
 
         scope = application_context.scope if application_context is not None else None
         required_selections = {
@@ -252,6 +314,11 @@ class ContextAssembler:
             else "personal"
         )
         policy = ContextBuildPolicy.for_settings(self.settings, result.budget.input_budget)
+        if context_plan is not None and context_plan.source_token_budgets:
+            limits = dict(policy.source_max_tokens)
+            for source_class, planned_tokens in context_plan.source_token_budgets:
+                limits[source_class] = min(limits[source_class], planned_tokens)
+            policy = policy.model_copy(update={"source_max_tokens": limits})
         built = ContextBuilder(
             self.counter,
             permission_revalidator=self.permission_revalidator,
@@ -270,16 +337,27 @@ class ContextAssembler:
         memory_reports = tuple(
             item
             for item in built.manifest.items
-            if item.source_class == "ai_memory" and item.provider_id == "memory.retrieval"
+            if item.source_class == "ai_memory"
+            and item.provider_id in {"memory.retrieval", "ai_memory"}
         )
+        memory_ids = {}
+        for item in memory_reports:
+            try:
+                memory_ids[item.item_id] = UUID(item.item_id)
+            except ValueError:
+                # Synthetic/custom providers may use stable non-UUID item IDs;
+                # lifecycle callbacks only accept canonical AI-memory UUIDs.
+                continue
         selected_memory_ids = tuple(
-            UUID(item.item_id) for item in memory_reports if item.injected
+            memory_ids[item.item_id]
+            for item in memory_reports
+            if item.injected and item.item_id in memory_ids
         )
         for item in memory_reports:
-            if not item.injected:
+            if not item.injected and item.item_id in memory_ids:
                 excluded_memories.append(
                     (
-                        UUID(item.item_id),
+                        memory_ids[item.item_id],
                         "budget"
                         if item.omission_reason in {"budget", "source_budget"}
                         else item.omission_reason or "excluded",
@@ -302,6 +380,12 @@ class ContextAssembler:
                     )
                     for failure in result.source_failures
                 ),
+                "planner_version": (
+                    context_plan.planner_version if context_plan is not None else None
+                ),
+                "planning_decisions": (
+                    context_plan.explanation_codes if context_plan is not None else ()
+                ),
             }
         )
         assembled = replace(
@@ -318,6 +402,7 @@ class ContextAssembler:
                 source_tokens=built.source_tokens,
             ),
             diagnostics=tuple(dict.fromkeys((*diagnostics, *built.diagnostics))),
+            context_plan=context_plan,
             manifest=manifest,
         )
         if emit_manifest:
