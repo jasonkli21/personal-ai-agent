@@ -643,7 +643,16 @@ def test_postgres_dynamodb_portable_export_preserves_logical_records_and_coverag
             policy_version="score-v1", policy_snapshot={},
             idempotency_key="portable-export-job", created_at=now, updated_at=now,
         )
-        DynamoDBMemoryJobRepository(dynamodb_table).create_job(job)
+        jobs = DynamoDBMemoryJobRepository(dynamodb_table)
+        jobs.create_job(job)
+        claimed_job = jobs.claim_job(
+            owner_id=owner_id, job_id=job_id,
+            now=now + timedelta(seconds=5), lease_seconds=30,
+        )
+        assert claimed_job is not None
+        assert jobs.complete_job(
+            claimed_job, token=claimed_job.lease_token, now=now + timedelta(seconds=6)
+        )
         source_fp = fingerprint((user,))
         memory = _memory(
             (0.123456789012345, 0.987654321098765), owner_id, user.content,
@@ -653,6 +662,9 @@ def test_postgres_dynamodb_portable_export_preserves_logical_records_and_coverag
         memory, _ = PostgresMemoryRepository(
             postgres_database, _SourceGuard(owner_id)
         ).create(memory)
+        PostgresDailyBudgetRepository(postgres_database).reserve_daily(
+            owner_id, calls=2, tokens=321, call_limit=10, token_limit=1000
+        )
         exported = PostgresAccountLifecycleRepository(
             postgres_database, dynamodb_table
         ).export_owner(owner_id, max_records=100, max_bytes=1_000_000)
@@ -669,6 +681,11 @@ def test_postgres_dynamodb_portable_export_preserves_logical_records_and_coverag
     }
     assert exported["collections"]["conversation_summaries"][0]["document_id"] == str(summary.id)
     assert exported["collections"]["memory_lifecycle_jobs"][0]["document_id"] == str(job.id)
+    assert exported["collections"]["memory_lifecycle_jobs"][0]["data"]["status"] == "completed"
+    usage_data = exported["collections"]["usage_budgets"][0]["data"]
+    assert usage_data["provider_calls"] == 2
+    assert usage_data["input_tokens"] == 321
+    assert usage_data["budget_day"] == datetime.now(UTC).date().isoformat()
     with application_scope_context(scope), pytest.raises(ExportTooLarge):
         PostgresAccountLifecycleRepository(
             postgres_database, dynamodb_table
@@ -1258,6 +1275,25 @@ def test_account_wide_safeguards_use_dynamodb_windows_and_postgres_daily_budgets
         ).fetchone()
     assert (calls, tokens) == (2, 20)
     assert expires_at > datetime.now(UTC) + timedelta(days=89)
+
+
+def test_expired_daily_usage_budgets_are_purged_within_the_batch_limit(postgres_database):
+    owner_id = f"expired-budget-{uuid4()}"
+    budgets = PostgresDailyBudgetRepository(postgres_database)
+    budgets.reserve_daily(owner_id, 1, 5, call_limit=2, token_limit=10)
+    now = datetime.now(UTC)
+    with postgres_database.transaction() as connection:
+        connection.execute(
+            "UPDATE usage_budgets SET expires_at=%s WHERE owner_id=%s",
+            (now - timedelta(seconds=1), owner_id),
+        )
+
+    assert budgets.purge_expired(now, limit=1) == 1
+    with postgres_database.connection() as connection:
+        remaining = connection.execute(
+            "SELECT count(*) FROM usage_budgets WHERE owner_id=%s", (owner_id,)
+        ).fetchone()[0]
+    assert remaining == 0
 
 
 def test_job_effect_guard_pins_lease_and_source_until_receipt_recovery(

@@ -2,8 +2,8 @@
 
 This runbook is for one privately operated personal deployment. It is not an
 incident-response service or a compliance claim. Keep synthetic staging and
-production in separate projects, service accounts, Firestore databases, and
-Secret Manager secrets.
+production in separate GCP projects, service accounts, Neon databases, AWS
+roles/tables, and Secret Manager secrets.
 
 ## Identity and access
 
@@ -26,13 +26,16 @@ Secret Manager secrets.
   model/search/domain provider operations. Set `CHAT_KILL_SWITCH_ENABLED` or
   `RESEARCH_KILL_SWITCH_ENABLED` to stop those capabilities independently.
 - The API reserves a request-level estimate per provider-backed API operation
-  against a per-owner UTC-day Firestore budget before the operation. A denied
+  against a per-owner UTC-day Postgres budget before the operation. A denied
   reservation returns 429 with a retry time. These estimates do not cover every context-counting, summary, extraction,
   embedding or worker call and do not guarantee an account spend ceiling.
   Reservations count as used even when a later provider call fails; `settled` is zero because usage metering is
   not yet reconciled from provider responses.
-- Request rate limits and usage counters are in Firestore so Cloud Run
-  instances share the same limit. If Firestore counters are unavailable,
+- Request rate windows are in DynamoDB and daily usage budgets are in Postgres
+  so Cloud Run instances share the same limits. DynamoDB request windows expire
+  through table TTL using numeric epoch-second values. Expired Postgres budget
+  rows are removed in bounded batches by scheduled maintenance after their
+  90-day retention. If either counter store is unavailable,
   protected requests fail closed with 503. Review request/error logs by route,
   request ID, status, duration, and error class; never enable request-body or
   authorization-header logging.
@@ -58,18 +61,18 @@ Secret Manager secrets.
   with the worker service URL as audience. Invalid payloads are acknowledged
   without logging payload bytes; transient storage/provider failures return
   503 so Pub/Sub retries.
-- Maintenance has a different invoker identity, is bounded by a batch limit,
-  and only marks expired research sessions ineligible or republishes durable
-  pending memory job IDs. It does not physically delete records.
+- Maintenance has a different invoker identity and is bounded by a batch limit.
+  It removes expired usage-budget rows, marks expired research sessions
+  ineligible, and republishes durable pending memory job IDs. It does not
+  physically delete user data.
 - The bootstrap creates the 15-minute Cloud Scheduler job paused and leaves
   `MAINTENANCE_ENABLED=false`. Enable both only after a synthetic staging
   rehearsal proves duplicate, delayed, failed, and paused execution behavior.
   Dead-letter replay still requires an operator decision.
-- `BACKUP_ENABLED=true` creates a daily Firestore backup schedule with 30-day
-  retention only when the database has no schedule. Existing schedules are
-  left unchanged and must be inspected before use. Creating a schedule is not
-  a restore test; run recovery in an isolated project and reapply TTL policies
-  after restore.
+- This repository does not provision backups or restore workflows for the
+  current Neon/Postgres and DynamoDB stores. Verify account-specific backup
+  coverage and complete an isolated restore rehearsal before storing personal
+  data; no target-store restore test is recorded.
 
 ## Rollback and recovery
 
@@ -79,11 +82,11 @@ Secret Manager secrets.
   traffic to the previously approved revision using `gcloud run services
   update-traffic` for the affected service. Verify the API health and a
   synthetic authenticated request after rollback.
-- Restore Firestore only from a tested backup in a separate recovery project
-  first. Compare counts and owner mappings before switching traffic. A restore
-  may reintroduce data that was deleted from the primary database; the current
-  deployment has no deletion-aware backup ledger, so production restore is not
-  approved until that behavior is implemented and rehearsed.
+- Restore target stores only from tested backups in an isolated recovery
+  environment first. Compare record counts and owner mappings before switching
+  traffic. A restore may reintroduce data deleted from the primary stores; the
+  current deployment has no deletion-aware backup ledger, so production restore
+  is not approved until that behavior is implemented and rehearsed.
 - The `/account` page exposes export and deletion controls only when their
   runtime flags are enabled. Export is a bounded, no-store JSON download.
   Deletion requests are audited
@@ -99,5 +102,5 @@ Before production use, complete the [Phase 9 release checklist](phase-9-release-
 including staging login/chat/research/worker tests, provider policy review,
 rate/budget probes, rollback, backup restore, export fidelity, deletion
 propagation, evaluation comparison, and explicit operator approval. Current
-automated checks do not prove Google IAM, Cloud Run, Firestore, Pub/Sub, Secret
-Manager, or provider behavior.
+automated checks do not prove Google IAM, Cloud Run, Neon, DynamoDB, Pub/Sub,
+Secret Manager, or provider behavior.

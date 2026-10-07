@@ -111,6 +111,20 @@ def test_deployed_factory_uses_neon_and_federated_dynamodb(monkeypatch):
     assert calls[1][1].role_arn.endswith(":role/personal-ai-runtime")
 
 
+def test_postgres_auth_adapters_construct_with_current_identity_contract():
+    factory = PostgresDynamoPersistenceFactory(object(), object())
+
+    from personal_ai.auth.directory import MIGRATION_VERSION
+    from personal_ai.persistence.postgres_auth import (
+        PostgresAccountLifecycleRepository,
+        PostgresPrincipalDirectory,
+    )
+
+    assert MIGRATION_VERSION == "phase9-owner-v1"
+    assert isinstance(factory.principal_directory(), PostgresPrincipalDirectory)
+    assert isinstance(factory.account_data_repository(), PostgresAccountLifecycleRepository)
+
+
 @pytest.mark.parametrize(
     ("environment", "configured", "message"),
     [

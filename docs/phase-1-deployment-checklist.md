@@ -1,9 +1,13 @@
 # Phase 1 deployment checklist
 
-Use this baseline chat checklist with the current authenticated deployment
-and the [Phase 9 release checklist](phase-9-release-checklist.md). Record only URLs,
-timestamps, commit IDs, and pass/fail results; never record model keys, chat
-content, or other personal data.
+> Historical Firestore procedure. This checklist describes a retired storage
+> configuration and is not current deployment guidance. Use the
+> [GCP deployment guide](gcp-deployment.md), [Phase 9 release checklist](phase-9-release-checklist.md),
+> and [Phase 10 verification plan](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md)
+> for current deployments.
+
+This checklist records the historical baseline chat deployment procedure.
+Record no new evidence here; current release instructions are linked above.
 
 ## Before deployment
 

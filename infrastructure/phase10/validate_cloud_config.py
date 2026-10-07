@@ -18,7 +18,9 @@ def validate() -> list[str]:
     migration_actions = set(migration["Statement"][0]["Action"])
     bootstrap_actions = set(bootstrap["Statement"][0]["Action"])
     if runtime_actions != {
-        "dynamodb:GetItem", "dynamodb:Query", "dynamodb:TransactWriteItems", "dynamodb:UpdateItem"
+        "dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem",
+        "dynamodb:PutItem", "dynamodb:Query", "dynamodb:TransactWriteItems",
+        "dynamodb:UpdateItem",
     }:
         failures.append("runtime_dynamodb_actions_not_minimal")
     if not {"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
@@ -57,6 +59,12 @@ def validate() -> list[str]:
             failures.append(f"dynamodb_capacity_not_explicit:{capacity}")
     if "PAY_PER_REQUEST" in template or "AWS::ApplicationAutoScaling" in template:
         failures.append("dynamodb_paid_or_autoscaling_mode_present")
+    if (
+        "TimeToLiveSpecification:" not in template
+        or "AttributeName: expires_at" not in template
+        or "Enabled: true" not in template.split("TimeToLiveSpecification:", 1)[-1]
+    ):
+        failures.append("dynamodb_request_window_ttl_missing")
     if any(token in template for token in (
         "PointInTimeRecoverySpecification", "AWS::DynamoDB::GlobalTable", "BackupPolicy"
     )):
@@ -68,11 +76,17 @@ def validate() -> list[str]:
         failures.append("neon_runtime_role_has_migration_access")
     if "legacy_memory_lifecycle_operations" in runtime_section:
         failures.append("neon_runtime_legacy_operation_grant_too_broad")
+    retired_relations = (
+        "legacy_memory_lifecycle_operations", "storage_migration_epochs",
+        "storage_migration_checkpoints", "storage_migration_records",
+    )
+    if any(relation in grants for relation in retired_relations):
+        failures.append("neon_grants_reference_retired_relations")
     migration_section = grants.split("TO p10_storage_migration;", 1)[-1]
     if "schema_migrations" not in migration_section:
         failures.append("neon_migration_schema_version_read_missing")
-    if "storage_migration_epochs" not in grants or "p10_storage_migration" not in grants:
-        failures.append("neon_migration_role_control_access_missing")
+    if "p10_storage_migration" not in grants:
+        failures.append("neon_migration_role_grants_missing")
     if "GRANT CREATE" in grants or "GRANT ALL" in grants:
         failures.append("neon_runtime_or_migration_ddl_grant_present")
     return sorted(set(failures))

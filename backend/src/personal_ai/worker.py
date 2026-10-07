@@ -178,10 +178,22 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         return Response(status_code=204)
 
     try:
-        directory = persistence_factory(settings).principal_directory()
+        factory = persistence_factory(settings)
+        safeguards = factory.safeguard_store()
+        expired_budgets = await anyio.to_thread.run_sync(
+            partial(
+                safeguards.purge_expired,
+                datetime.now(UTC),
+                limit=settings.maintenance_batch_size,
+            )
+        )
+        directory = factory.principal_directory()
         owner_ids = await anyio.to_thread.run_sync(partial(directory.active_owner_ids, limit=2))
         if not owner_ids:
-            logger.info("Scheduled maintenance completed reason=no_active_owner")
+            logger.info(
+                "Scheduled maintenance completed reason=no_active_owner expired_budgets=%d",
+                expired_budgets,
+            )
             return Response(status_code=204)
         if len(owner_ids) != 1:
             logger.error("Scheduled maintenance rejected reason=multiple_active_owners")
@@ -194,7 +206,7 @@ async def run_scheduled_maintenance(request: Request) -> Response:
                 owner_id=owner_ids[0],
             )
         )
-        research = persistence_factory(settings).research_repository()
+        research = factory.research_repository()
         expired = await anyio.to_thread.run_sync(
             partial(
                 research.expire_due_for_owner,
@@ -208,9 +220,14 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         logger.info("Scheduled maintenance failed error_class=%s", type(error).__name__)
         return Response(status_code=503)
     logger.info(
-        "Scheduled maintenance completed republished=%d expired_sessions=%d", published, expired
+        "Scheduled maintenance completed republished=%d expired_sessions=%d expired_budgets=%d",
+        published, expired, expired_budgets,
     )
     return Response(
-        content=json.dumps({"republished_jobs": published, "expired_sessions": expired}),
+        content=json.dumps({
+            "republished_jobs": published,
+            "expired_sessions": expired,
+            "expired_usage_budgets": expired_budgets,
+        }),
         media_type="application/json",
     )

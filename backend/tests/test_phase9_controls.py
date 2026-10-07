@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Iterator
 from uuid import uuid4
@@ -25,6 +26,7 @@ from personal_ai.main import app
 from personal_ai.settings import Settings
 from personal_ai.storage.fake import InMemoryConversationRepository, InMemoryMessageRepository
 from personal_ai.worker import app as worker_app
+from personal_ai.worker import run_scheduled_maintenance
 
 
 def settings(**updates) -> Settings:
@@ -87,6 +89,65 @@ def test_daily_budget_and_request_limits_fail_closed() -> None:
         store.reserve_daily("usr_budget", 1, 0, 1, 12)
     with pytest.raises(SafeguardDenied, match="daily_budget_exceeded"):
         store.reserve_daily("usr_budget", 0, 1, 1, 12)
+
+
+def test_scheduled_maintenance_runs_bounded_usage_budget_cleanup(monkeypatch) -> None:
+    calls = []
+
+    class Safeguards:
+        def purge_expired(self, now, *, limit):
+            assert now.tzinfo is not None
+            calls.append(("purge", limit))
+            return 4
+
+    class Directory:
+        def active_owner_ids(self, *, limit):
+            assert limit == 2
+            return ("owner",)
+
+    class Research:
+        def expire_due_for_owner(self, owner_id, *, now, correlation_id, limit):
+            assert owner_id == "owner" and now.tzinfo is not None and correlation_id
+            calls.append(("research", limit))
+            return 2
+
+    class Republisher:
+        def republish_pending(self, *, limit, owner_id):
+            assert owner_id == "owner"
+            calls.append(("republish", limit))
+            return 1
+
+    class Factory:
+        def safeguard_store(self):
+            return Safeguards()
+
+        def principal_directory(self):
+            return Directory()
+
+        def research_repository(self):
+            return Research()
+
+    configured = settings(maintenance_enabled=True, maintenance_batch_size=3)
+    monkeypatch.setattr("personal_ai.worker.get_settings", lambda: configured)
+    monkeypatch.setattr("personal_ai.worker.persistence_factory", lambda _settings: Factory())
+    monkeypatch.setattr(
+        "personal_ai.worker._components",
+        lambda _settings: (None, Republisher()),
+    )
+    request = Request({
+        "type": "http", "method": "POST", "scheme": "https",
+        "path": "/tasks/maintenance", "raw_path": b"/tasks/maintenance",
+        "query_string": b"", "headers": [], "server": ("worker", 443),
+        "client": ("test", 1), "root_path": "",
+    })
+
+    response = asyncio.run(run_scheduled_maintenance(request))
+
+    assert response.status_code == 200
+    assert response.body == (
+        b'{"republished_jobs": 1, "expired_sessions": 2, "expired_usage_budgets": 4}'
+    )
+    assert calls == [("purge", 3), ("republish", configured.memory_job_candidate_limit), ("research", 3)]
 
 
 def test_export_encodes_non_finite_numbers_as_portable_values() -> None:

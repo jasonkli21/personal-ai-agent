@@ -1009,13 +1009,15 @@ class DynamoDBMemoryJobRepository:
             removes.extend(["lease_token", "lease_generation", "lease_expires_at"])
         if job_item.get("PUBPK"):
             sets.extend(["PUBPK=:pubpk", "PUBSK=:pubsk", "record_pk=:recordpk",
-                         "record_sk=:recordsk", "publish_after=:after", "job_id=:jobid"])
+                         "record_sk=:recordsk", "publish_after=:after"])
         else:
-            removes.extend(["PUBPK", "PUBSK", "record_pk", "record_sk", "publish_after", "job_id"])
+            removes.extend(["PUBPK", "PUBSK", "record_pk", "record_sk", "publish_after"])
+        sets.append("job_id=:jobid")
+        values[":jobid"] = str(updated.id)
         if job_item.get("PUBPK"):
             values.update({":pubpk": job_item["PUBPK"], ":pubsk": job_item["PUBSK"],
                            ":recordpk": job_item["record_pk"], ":recordsk": job_item["record_sk"],
-                           ":after": job_item["publish_after"], ":jobid": str(updated.id)})
+                           ":after": job_item["publish_after"]})
         expression = "SET " + ",".join(sets)
         if removes:
             expression += " REMOVE " + ",".join(removes)

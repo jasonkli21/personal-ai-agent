@@ -26,6 +26,7 @@ class SafeguardStore(Protocol):
     def reserve_daily(
         self, owner_id: str, calls: int, tokens: int, call_limit: int, token_limit: int
     ) -> int: ...
+    def purge_expired(self, now: datetime, *, limit: int) -> int: ...
 
 
 class InMemorySafeguardStore:
@@ -68,3 +69,26 @@ class InMemorySafeguardStore:
                 raise SafeguardDenied("daily_budget_exceeded", retry_after)
             self._daily[key] = (current_calls + calls, current_tokens + tokens)
         return retry_after
+
+    def purge_expired(self, now: datetime, *, limit: int) -> int:
+        if limit < 1:
+            raise ValueError("safeguard_cleanup_limit_invalid")
+        now = now.astimezone(UTC)
+        with self._lock:
+            request_keys = sorted(
+                key for key in self._requests if (key[1] + 2) * 60 <= now.timestamp()
+            )
+            removed = 0
+            for key in request_keys[:limit]:
+                del self._requests[key]
+                removed += 1
+            remaining = limit - removed
+            if remaining:
+                daily_keys = sorted(
+                    key for key in self._daily
+                    if datetime.combine(key[1] + timedelta(days=91), datetime.min.time(), UTC) <= now
+                )
+                for key in daily_keys[:remaining]:
+                    del self._daily[key]
+                    removed += 1
+        return removed

@@ -72,3 +72,34 @@ Phase 10 code/runtime retirement is implemented locally. Phase 10 release
 acceptance remains open for local-engine and deployed-cloud verification. Phase
 9 physical deletion, full owner migration, provider accounting, and operational
 release gates also remain independently open.
+
+## Review remediation — 2026-10-06
+
+Tested worktree: review fixes based on `98e0faf` (P10.6 runtime cutover).
+
+- Restored the `phase9-owner-v1` identity migration marker so the Postgres
+  principal directory and account repository construct successfully.
+- Added DynamoDB transaction component actions to the runtime role and taught
+  the static validator to require them. Removed Neon grants for relations that
+  migration 013 retires.
+- Kept canonical `job_id` on every memory-job update after publication, claim,
+  and completion, and added export coverage for a completed job.
+- Exported daily usage-budget typed columns, including calls, tokens, dates,
+  and expiry, instead of treating the empty JSON payload as complete data.
+- Enabled DynamoDB TTL with numeric epoch-second expiry for request windows.
+  Added a bounded, indexed Postgres purge for expired usage budgets to scheduled
+  maintenance. The schedule and maintenance gate remain disabled by default.
+- Replaced current deployment guidance that pointed to the historical Phase 1
+  Firestore checklist and marked that checklist historical.
+
+Checks on the review worktree:
+
+- `make backend-test`: **572 passed, 25 skipped**. The skips include the 22
+  local persistence-engine tests (no Postgres/DynamoDB test endpoints), one
+  cloud smoke test, and two manual provider checks.
+- `make backend-lint`: **passed**.
+- `python infrastructure/phase10/validate_cloud_config.py`: **passed**.
+- `git diff --check`: **passed**.
+
+No live IAM, Neon, DynamoDB, target-engine migration, provider, or strict-$0
+acceptance was performed. The external verification gaps above remain open.

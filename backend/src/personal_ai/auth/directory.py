@@ -7,6 +7,8 @@ from typing import Protocol
 
 from personal_ai.auth.contracts import AuthenticatedPrincipal
 
+MIGRATION_VERSION = "phase9-owner-v1"
+
 
 class IdentityMappingConflict(RuntimeError):
     """A verified identity mapping is inactive or conflicts with its stable owner."""

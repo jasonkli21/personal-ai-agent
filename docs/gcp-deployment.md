@@ -112,11 +112,14 @@ This starts local Postgres/pgvector and DynamoDB Local. Run `make persistence-te
 and `make persistence-test` for the isolated integration stack when Docker is
 available. `make persistence-clean` is destructive to local persistence volumes.
 
-After a deployment, use the [Phase 1 deployment checklist](phase-1-deployment-checklist.md)
-for web/API authentication and a streamed turn, then verify target-store
-persistence and worker behavior. A successful `/api/health` response confirms
-only server-side web-to-API reachability; it does not exercise either database
-or the model.
+After a deployment, use the [Phase 9 release checklist](phase-9-release-checklist.md)
+for authentication, safeguards, and account workflows, and the
+[Phase 10 migration/cutover verification plan](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md)
+for target-store persistence, recovery, IAM, and release evidence. The Phase 1
+deployment checklist is a historical Firestore procedure and must not be used
+for current deployments. A successful `/api/health` response confirms only
+server-side web-to-API reachability; it does not exercise either database or
+the model.
 
 Cloud Run can scale to zero, but that does not establish a zero-cost deployment.
 Review current account-specific Neon plan limits, DynamoDB table/GSI capacity,

@@ -231,7 +231,7 @@ class PostgresAccountLifecycleRepository:
             "decision_evidence_snapshots", "candidate_evaluations",
             "domain_claim_extensions", "provider_observations", "domain_comparison_views",
             "domain_lookup_idempotency", "account_lifecycle_requests", "audit_events",
-            "identity_mappings", "usage_budgets",
+            "identity_mappings",
         )
         try:
             with self.database.connection(snapshot=True) as connection:
@@ -256,6 +256,41 @@ class PostgresAccountLifecycleRepository:
                         p_revision_max = max(p_revision_max, int(revision or 0))
                         add(family, record_id, payload)
                         p_count += 1
+                budget_rows = connection.execute(
+                    "SELECT record_id,owner_id,application_id,workspace_id,record_version,status,"
+                    "revision,created_at,expires_at,budget_day,provider_calls,input_tokens "
+                    "FROM usage_budgets WHERE owner_id=%s AND application_id=%s "
+                    "AND workspace_id IS NOT DISTINCT FROM %s ORDER BY record_id LIMIT %s",
+                    (owner_id, scope.application_id, scope.workspace_id,
+                     MAX_EXPORT_SCAN_RECORDS + 1),
+                ).fetchall()
+                if len(budget_rows) > MAX_EXPORT_SCAN_RECORDS:
+                    raise ExportTooLarge
+                p_collection_counts["usage_budgets"] = len(budget_rows)
+                p_revision_coverage["usage_budgets"] = max(
+                    (int(row[6] or 0) for row in budget_rows), default=0
+                )
+                for (
+                    record_id, record_owner, app_id, workspace_id, record_version,
+                    status, revision, created_at, expires_at, budget_day, provider_calls,
+                    input_tokens,
+                ) in budget_rows:
+                    add("usage_budgets", record_id, {
+                        "owner_id": record_owner,
+                        "application_id": app_id,
+                        "workspace_id": workspace_id,
+                        "scope_version": 2,
+                        "record_version": record_version,
+                        "status": status,
+                        "revision": revision,
+                        "created_at": created_at,
+                        "expires_at": expires_at,
+                        "budget_day": budget_day,
+                        "provider_calls": provider_calls,
+                        "input_tokens": input_tokens,
+                    })
+                    p_revision_max = max(p_revision_max, int(revision or 0))
+                    p_count += 1
                 for family in ("memories", "derived_memories"):
                     rows = connection.execute(
                         f"SELECT record_id,payload,embedding FROM {family} "

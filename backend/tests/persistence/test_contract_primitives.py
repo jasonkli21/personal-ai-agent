@@ -1,10 +1,18 @@
 """Backend-neutral persistence invariants that do not require local services."""
 
 
+from datetime import UTC, datetime
+from uuid import uuid4
+
 import pytest
 
 from personal_ai.auth.scope import ApplicationScope
-from personal_ai.persistence.dynamodb import DynamoDBLocalClient, _namespace
+from personal_ai.memory.lifecycle import MemoryJob
+from personal_ai.persistence.dynamodb import (
+    DynamoDBLocalClient,
+    DynamoDBMemoryJobRepository,
+    _namespace,
+)
 from personal_ai.persistence.postgres import PostgresDatabase, PostgresPayloadRepository
 
 
@@ -44,3 +52,34 @@ def test_dynamodb_client_requires_an_explicit_local_endpoint():
     for endpoint in ("", "https://localhost:8000", "http://dynamodb.us-east-1.amazonaws.com:8000"):
         with pytest.raises(ValueError):
             DynamoDBLocalClient(endpoint)
+
+
+def test_job_publication_removal_preserves_canonical_job_id():
+    class CapturingTable:
+        operations = None
+
+        def transact(self, operations):
+            self.operations = operations
+
+    now = datetime.now(UTC)
+    job = MemoryJob(
+        id=uuid4(), owner_id="owner", job_type="maintenance", candidate_memory_ids=(),
+        policy_version="score-v1", policy_snapshot={}, status="completed",
+        publish_pending=False, idempotency_key="job-retention-test",
+        created_at=now, updated_at=now,
+    )
+    table = CapturingTable()
+    repository = DynamoDBMemoryJobRepository(table)
+
+    assert repository._save_job(
+        {"PK": "owner", "SK": "JOB", "owner_id": "owner"},
+        job,
+        4,
+        remove_publication=True,
+    ) == job
+
+    update = table.operations[0]["Update"]
+    expression = update["UpdateExpression"]
+    set_clause, remove_clause = expression.split(" REMOVE ", maxsplit=1)
+    assert "job_id=:jobid" in set_clause
+    assert "job_id" not in remove_clause.split(",")

@@ -66,3 +66,6 @@ Resources:
             WriteCapacityUnits: !Ref JobIndexWriteCapacity
       SSESpecification:
         SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true

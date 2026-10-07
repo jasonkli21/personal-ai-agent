@@ -71,6 +71,22 @@ class PostgresDailyBudgetRepository:
             raise SafeguardDenied("daily_budget_exceeded", retry_after)
         return retry_after
 
+    def purge_expired(self, now: datetime, *, limit: int) -> int:
+        if limit < 1:
+            raise ValueError("usage_budget_cleanup_limit_invalid")
+        with self.database.transaction() as connection:
+            rows = connection.execute(
+                "WITH expired AS ("
+                "SELECT scope_id,record_id FROM usage_budgets "
+                "WHERE expires_at IS NOT NULL AND expires_at<=%s "
+                "ORDER BY expires_at,scope_id,record_id LIMIT %s FOR UPDATE SKIP LOCKED"
+                ") DELETE FROM usage_budgets AS budget USING expired "
+                "WHERE budget.scope_id=expired.scope_id AND budget.record_id=expired.record_id "
+                "RETURNING budget.record_id",
+                (now.astimezone(UTC), limit),
+            ).fetchall()
+        return len(rows)
+
 
 class DynamoDBSafeguardStore:
     """DynamoDB owner-wide request windows plus a Postgres daily budget adapter."""
@@ -100,7 +116,7 @@ class DynamoDBSafeguardStore:
                 },
                 ExpressionAttributeValues=_ddb_marshal({
                     ":start": _minute_timestamp(epoch),
-                    ":expires": _minute_timestamp(epoch + 2),
+                    ":expires": (epoch + 2) * 60,
                     ":policy": "request-rate-v1",
                     ":one": 1,
                     ":limit": limit,
@@ -115,6 +131,10 @@ class DynamoDBSafeguardStore:
 
     def reserve_daily(self, owner_id: str, calls: int, tokens: int, call_limit: int, token_limit: int) -> int:
         return self.daily_budgets.reserve_daily(owner_id, calls, tokens, call_limit, token_limit)
+
+    def purge_expired(self, now: datetime, *, limit: int) -> int:
+        """Purge expired Postgres budgets; DynamoDB removes request windows by TTL."""
+        return self.daily_budgets.purge_expired(now, limit=limit)
 
 
 class PostgresDomainProviderRateLimiter:

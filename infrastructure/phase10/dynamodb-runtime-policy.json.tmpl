@@ -5,7 +5,10 @@
       "Sid": "RuntimeTableAccess",
       "Effect": "Allow",
       "Action": [
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DeleteItem",
         "dynamodb:GetItem",
+        "dynamodb:PutItem",
         "dynamodb:Query",
         "dynamodb:TransactWriteItems",
         "dynamodb:UpdateItem"

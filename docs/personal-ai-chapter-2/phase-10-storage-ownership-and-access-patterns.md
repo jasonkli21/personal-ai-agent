@@ -27,8 +27,9 @@ deployed Firestore dataset was inspected.
 Table shorthand: D = DynamoDB, P = Postgres; scope = authenticated owner,
 application and nullable workspace unless marked account-wide/global. "Retain"
 means preserve current history/eligibility and export/deletion obligations; it
-does not invent indefinite retention or claim physical cleanup is implemented.
-Live inventory must measure actual records/bytes rather than extrapolate quotas.
+does not invent indefinite retention or imply account deletion. Specific expiry
+and purge behavior is listed per row. Live inventory must measure actual
+records/bytes rather than extrapolate quotas.
 
 ## Current collection ownership — exhaustive
 
@@ -38,7 +39,7 @@ Live inventory must measure actual records/bytes rather than extrapolate quotas.
 | `messages` | D | Scoped ID/history/active branch; atomic preparation/root cut/terminal transition; timestamp + ID order | Per turn/replacement; retain superseded records and parent/supersedes links |
 | `conversation_summaries` | D | Append/newest compatible; ordered prefix query, hash-valid manifest/chunks | Per refresh, coverage grows with history; retain source/coverage IDs, fingerprints and model |
 | `memory_lifecycle_jobs` | D | Create/replay/get/claim/fail/complete/republish; live token/generation conditions; sparse publication GSI | Bounded candidate sets/attempts, per job; retain replay/recovery policy; references P memory/effect IDs |
-| `rate_limit_windows` | D | Account-wide owner/window get + conditional increment; no app-split counter | Per owner/minute; existing expiry eligibility, bounded cleanup; legacy owner attribution requires validation |
+| `rate_limit_windows` | D | Account-wide owner/window get + conditional increment; no app-split counter | Per owner/minute; numeric epoch-second TTL expiry; legacy owner attribution requires validation |
 | `memories` | P | Scoped get/compatible cosine search/idempotent create; source guard + unique identity | Per accepted extraction; retain; D conversation/turn/user-source IDs; embedding space |
 | `derived_memories` | P | Scoped get/search/create with original-source/lifecycle validation | Per accepted derivation; retain; 2–4 original memories, exact excerpts/fingerprints |
 | `derived_memory_sources` | P | Dependencies by original/derived ID; atomic relation creation; scoped FKs/indexes | Per derivation source; retain; no dangling or cross-scope relation |
@@ -66,7 +67,7 @@ Live inventory must measure actual records/bytes rather than extrapolate quotas.
 | `identity_mappings` | P | Principal check/bootstrap/deactivate/active owners; unique issuer/subject and bootstrap audit transaction | Per identity; account-wide, preserve owner IDs/status; never tokens |
 | `account_lifecycle_requests` | P | Scoped request/get/confirm/cancel with atomic audit/replay | Per account action; standalone lifecycle restriction stays; confirmed deletion still pending operator |
 | `audit_events` | P | Append/replay/scoped export, transaction with P control changes | Per bounded control action; distinguish account-wide and explicitly scoped events; safe metadata only |
-| `usage_budgets` | P | Account-wide owner/day conditional reserve; atomic compact counter | Per owner/day; current 90d expiry field/policy preserved, no actual settlement fabricated |
+| `usage_budgets` | P | Account-wide owner/day conditional reserve; atomic compact counter | Per owner/day; 90-day expiry and bounded indexed scheduled purge; no actual settlement fabricated |
 | `domain_provider_rate_limits` | P | Provider-wide serialized slot reserve; bounded deadline | One compact shared control per provider; not per-owner/application; no private domain state |
 
 Every private family participates in authorized export/deletion inventory,
