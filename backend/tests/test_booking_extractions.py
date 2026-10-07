@@ -29,6 +29,7 @@ from personal_ai.booking_extractions.repositories import (
 )
 from personal_ai.booking_extractions.service import BookingExtractionService, _model_output
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.contracts import TokenCount
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.main import app
 from personal_ai.settings import Settings
@@ -205,6 +206,72 @@ async def test_service_replays_validated_candidate_and_delete_tombstone():
     )
     with pytest.raises(ExtractionError, match="idempotency_conflict"):
         await service.create(changed)
+
+
+@pytest.mark.anyio
+async def test_context_overflow_is_saved_and_replayed_as_context_too_large():
+    settings = extraction_settings().model_copy(
+        update={"booking_extraction_max_input_tokens": 512}
+    )
+    repo = InMemoryBookingExtractionRepository()
+    llm = FakeBookingExtractionLLMClient()
+    service = BookingExtractionService(
+        settings,
+        repo,
+        ContextAssembler(settings, EstimatedTokenCounter()),
+        llm,
+        owner_id="verified-owner",
+    )
+    submitted = request("Booking detail " + "synthetic reservation data " * 550)
+
+    result = await service.create(submitted)
+    replay = await service.create(submitted)
+
+    assert result.state == "failed"
+    assert result.failure_code == "context_too_large"
+    assert replay == result
+    assert llm.requests == []
+
+
+@pytest.mark.anyio
+async def test_mandatory_instruction_overflow_is_context_too_large_but_provider_errors_stay_distinct():
+    class InstructionOverflowCounter:
+        def count(self, messages):
+            if any("Extract only explicitly supported booking details" in item.content for item in messages):
+                return TokenCount(10_000, "estimated")
+            return EstimatedTokenCounter().count(messages)
+
+    settings = extraction_settings()
+    repo = InMemoryBookingExtractionRepository()
+    llm = FakeBookingExtractionLLMClient()
+    service = BookingExtractionService(
+        settings,
+        repo,
+        ContextAssembler(settings, InstructionOverflowCounter()),
+        llm,
+        owner_id="verified-owner",
+    )
+    submitted = request()
+    result = await service.create(submitted)
+    assert result.failure_code == "context_too_large"
+    assert llm.requests == []
+
+    class FailingLLM:
+        async def stream_bounded(self, *args, **kwargs):
+            del args, kwargs
+            if False:
+                yield ""
+            raise RuntimeError("synthetic provider failure")
+
+    provider_service = BookingExtractionService(
+        settings,
+        InMemoryBookingExtractionRepository(),
+        ContextAssembler(settings, EstimatedTokenCounter()),
+        FailingLLM(),
+        owner_id="verified-owner",
+    )
+    provider_result = await provider_service.create(request())
+    assert provider_result.failure_code == "provider_unavailable"
 
 
 @pytest.mark.anyio

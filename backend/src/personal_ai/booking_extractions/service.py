@@ -22,6 +22,7 @@ from personal_ai.booking_extractions.repositories import (
 )
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.builder import ContextBuildSourceMetadata
+from personal_ai.context.contracts import ContextError
 from personal_ai.entities.conversation import Message, MessageRole, MessageStatus
 from personal_ai.llm.errors import LLMTimeoutError
 from personal_ai.storage.async_io import io_call
@@ -232,6 +233,7 @@ class BookingExtractionService:
                     source_token_limits={
                         "client_context": self.settings.booking_extraction_max_input_tokens,
                     },
+                    clock=self.clock,
                 )
                 if assembled.budget.selected_total > self.settings.booking_extraction_max_input_tokens:
                     raise ValueError("context_too_large")
@@ -265,6 +267,15 @@ class BookingExtractionService:
             if record is None:
                 raise
             result = self._failed(record, "generation_outcome_unknown")
+        except ContextError as error:
+            if record is None:
+                raise
+            code = (
+                "context_too_large"
+                if error.code in {"context_message_too_large", "context_source_unavailable"}
+                else "provider_unavailable"
+            )
+            result = self._failed(record, code)
         except ValueError as error:
             if record is None:
                 raise

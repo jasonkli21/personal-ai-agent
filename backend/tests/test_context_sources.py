@@ -25,6 +25,8 @@ from personal_ai.context.adapters import (
     ToolResultSnapshot,
 )
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.contracts import ContextError
+from personal_ai.context.inspection import ContextInspector
 from personal_ai.context.profile import (
     GlobalProfileContextProviderFactory,
     GlobalProfileFieldUpdate,
@@ -48,6 +50,7 @@ from personal_ai.context.providers import (
     ContextSourceReference,
     StaticContextProviderFactory,
 )
+from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import FakeTokenCounter
 from personal_ai.entities import Message, MessageRole, MessageStatus
 from personal_ai.evidence.contracts import Evidence, SourceObservation
@@ -424,7 +427,8 @@ def test_registered_synthetic_application_uses_shared_preparation_without_app_br
     )
 
 
-def test_assembler_rechecks_grants_and_injects_typed_source_with_actual_manifest():
+def test_assembler_rechecks_grants_and_injects_typed_source_with_actual_manifest(caplog):
+    caplog.set_level("DEBUG", logger="personal_ai.context.assembler")
     context = synthetic_context("synthetic.context")
     provider = SyntheticContextProvider()
     coordinator = ContextProviderCoordinator(
@@ -465,6 +469,96 @@ def test_assembler_rechecks_grants_and_injects_typed_source_with_actual_manifest
     assert [item.item_id for item in injected] == ["stay-1"]
     assert injected[0].authority == "authoritative"
     assert injected[0].source_reference_count == 1
+    assert injected[0].source_version == "fixture-7"
+    assert assembled.manifest.selected_message_ids == (str(pending.id),)
+    assert str(pending.id) in caplog.text
+    assert '"source_version":"fixture-7"' in "\n".join(
+        message.content for message in assembled.messages
+    )
+    assert "Juniper House (synthetic)" not in caplog.text
+
+
+def test_typed_source_expiring_during_counting_is_removed_or_rejected():
+    context = synthetic_context("synthetic.context")
+    expiry = NOW + timedelta(seconds=1)
+
+    class ExpiringProvider(SyntheticContextProvider):
+        def fetch(self, request, scope, *, deadline):
+            del deadline
+            return (
+                ContextItem(
+                    source_class="domain_current",
+                    provider_id=self.spec.provider_id,
+                    source_id="expiring-source",
+                    source_version="expiring-v1",
+                    item_id="typed-expires-during-count",
+                    owner_id=scope.owner_id,
+                    application_id=scope.application_id,
+                    workspace_id=scope.workspace_id,
+                    authority="authoritative",
+                    observed_at=NOW,
+                    expires_at=expiry,
+                    sensitivity="personal",
+                    source_refs=(ContextSourceReference(kind="record", reference_id="expiring-source"),),
+                    payload=SyntheticDomainPayload(name="typed expires during count"),
+                ),
+            )
+
+    class AdvancingCounter(FakeTokenCounter):
+        def __init__(self, clock_value):
+            self.clock_value = clock_value
+
+        def count(self, messages):
+            result = super().count(messages)
+            if any("typed expires during count" in message.content for message in messages):
+                self.clock_value[0] = NOW + timedelta(seconds=2)
+            return result
+
+    pending = Message(
+        id=uuid4(),
+        conversation_id=uuid4(),
+        owner_id=context.scope.owner_id,
+        role=MessageRole.USER,
+        content="Use current context.",
+        status=MessageStatus.COMPLETED,
+        created_at=NOW,
+        application_id="synthetic",
+    )
+    coordinator = ContextProviderCoordinator(
+        {"synthetic.context": StaticContextProviderFactory(ExpiringProvider())}
+    )
+    clock_value = [NOW]
+    assembled = ContextAssembler(
+        Settings(ai_provider="fake", ai_model="fake-model"),
+        AdvancingCounter(clock_value),
+        context_provider_coordinator=coordinator,
+    ).assemble(
+        (),
+        pending,
+        refresh=False,
+        application_context=context,
+        context_selections=(selection(),),
+        clock=lambda: clock_value[0],
+    )
+    report = assembled.manifest.items[0]
+    assert not report.injected
+    assert report.omission_reason == "expired"
+    assert all("typed expires during count" not in message.content for message in assembled.messages)
+
+    clock_value[0] = NOW
+    with pytest.raises(ContextError, match="context_source_unavailable"):
+        ContextAssembler(
+            Settings(ai_provider="fake", ai_model="fake-model"),
+            AdvancingCounter(clock_value),
+            context_provider_coordinator=coordinator,
+        ).assemble(
+            (),
+            pending,
+            refresh=False,
+            application_context=context,
+            context_selections=(selection(required=True),),
+            clock=lambda: clock_value[0],
+        )
 
 
 def test_unknown_authority_and_timestamps_remain_explicit():
@@ -1030,6 +1124,252 @@ def test_provider_failure_identifies_the_operation_that_failed():
     assert result.failures[0].reason == "source_failed"
 
 
+@pytest.mark.parametrize(
+    "optional_issue,expected_reason",
+    [
+        ("expired", "expired"),
+        ("permission", "permission_unverified"),
+        ("budget", "source_budget"),
+    ],
+)
+def test_required_operation_does_not_make_sibling_provider_operations_required(
+    optional_issue, expected_reason
+):
+    context = synthetic_context("synthetic.context")
+    current_spec = SyntheticContextProvider.spec.operation("current")
+    assert current_spec is not None
+    history_spec = ContextOperationSpec(
+        operation="history",
+        allowed_fields=("name",),
+        maximum_results=2,
+        maximum_bytes=8_192,
+        maximum_timeout_seconds=2,
+    )
+    spec = SyntheticContextProvider.spec.model_copy(
+        update={"operations": (current_spec, history_spec), "maximum_items_per_call": 2}
+    )
+
+    class MultiOperationProvider:
+        def __init__(self):
+            self.spec = spec
+
+        def validate_selection(self, request, inputs):
+            del inputs
+            assert request.operation in {"current", "history"}
+
+        def fetch(self, request, scope, *, deadline):
+            del deadline
+            if request.operation == "current":
+                values = (("current-1", "required current value", NOW + timedelta(days=1)),)
+            else:
+                expiry = (
+                    NOW - timedelta(days=1)
+                    if optional_issue == "expired"
+                    else NOW + timedelta(days=1)
+                )
+                name = (
+                    "oversized " * 100 if optional_issue == "budget" else "optional history value"
+                )
+                values = (("history-1", name, expiry),)
+            rows = []
+            for item_id, name, expires_at in values:
+                dependencies = (
+                    (
+                        ContextPermissionDependency(
+                            permission_id="synthetic.optional_history",
+                            version="v1",
+                            purpose="read optional history",
+                        ),
+                    )
+                    if optional_issue == "permission" and request.operation == "history"
+                    else ()
+                )
+                rows.append(
+                    ContextItem(
+                        source_class="domain_current",
+                        provider_id=self.spec.provider_id,
+                        source_id=request.operation,
+                        source_version="multi-operation-v1",
+                        item_id=item_id,
+                        owner_id=scope.owner_id,
+                        application_id=scope.application_id,
+                        workspace_id=scope.workspace_id,
+                        authority="authoritative",
+                        observed_at=NOW - timedelta(days=2) if expires_at < NOW else NOW,
+                        expires_at=expires_at,
+                        sensitivity="personal",
+                        source_refs=(ContextSourceReference(kind="record", reference_id=item_id),),
+                        permission_dependencies=dependencies,
+                        payload=SyntheticDomainPayload(name=name),
+                    )
+                )
+            return tuple(rows)
+
+    settings = Settings(
+        ai_provider="fake",
+        ai_model="fake-model",
+        context_domain_max_tokens=80,
+    )
+    result = ContextAssembler(
+        settings,
+        FakeTokenCounter(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {"synthetic.context": StaticContextProviderFactory(MultiOperationProvider())}
+        ),
+    ).assemble(
+        (),
+        Message(
+            id=uuid4(),
+            conversation_id=uuid4(),
+            owner_id=context.scope.owner_id,
+            role=MessageRole.USER,
+            content="Use the current value.",
+            status=MessageStatus.COMPLETED,
+            created_at=NOW,
+            application_id="synthetic",
+        ),
+        refresh=False,
+        application_context=context,
+        context_selections=(
+            ContextSelection(
+                provider_id="synthetic.context",
+                operation="current",
+                fields=("name",),
+                max_results=2,
+                max_bytes=4_096,
+                timeout_seconds=1,
+                required=True,
+            ),
+            ContextSelection(
+                provider_id="synthetic.context",
+                operation="history",
+                fields=("name",),
+                max_results=1,
+                max_bytes=4_096,
+                timeout_seconds=1,
+                required=False,
+            ),
+        ),
+        clock=lambda: NOW,
+    )
+
+    reports = {item.item_id: item for item in result.manifest.items}
+    assert reports["current-1"].injected
+    assert reports["current-1"].selected_operation == "current"
+    assert not reports["history-1"].injected
+    assert reports["history-1"].selected_operation == "history"
+    assert reports["history-1"].omission_reason == expected_reason
+
+
+def test_multiple_items_from_a_required_provider_operation_remain_required():
+    context = synthetic_context("synthetic.context")
+    current_spec = SyntheticContextProvider.spec.operation("current")
+    assert current_spec is not None
+    spec = SyntheticContextProvider.spec.model_copy(
+        update={"operations": (current_spec,), "maximum_items_per_call": 2}
+    )
+
+    class TwoCurrentItems:
+        def __init__(self):
+            self.spec = spec
+
+        def validate_selection(self, request, inputs):
+            del request, inputs
+
+        def fetch(self, request, scope, *, deadline):
+            del request, deadline
+            return tuple(
+                ContextItem(
+                    source_class="domain_current",
+                    provider_id=self.spec.provider_id,
+                    source_id="current",
+                    source_version="multi-operation-v1",
+                    item_id=f"current-{index}",
+                    owner_id=scope.owner_id,
+                    application_id=scope.application_id,
+                    workspace_id=scope.workspace_id,
+                    authority="authoritative",
+                    observed_at=NOW,
+                    expires_at=NOW + timedelta(days=1),
+                    sensitivity="personal",
+                    source_refs=(ContextSourceReference(kind="record", reference_id=f"current-{index}"),),
+                    payload=SyntheticDomainPayload(name=f"required current {index}"),
+                )
+                for index in (1, 2)
+            )
+
+    result = ContextAssembler(
+        Settings(ai_provider="fake", ai_model="fake-model"),
+        FakeTokenCounter(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {"synthetic.context": StaticContextProviderFactory(TwoCurrentItems())}
+        ),
+    ).assemble(
+        (),
+        Message(
+            id=uuid4(),
+            conversation_id=uuid4(),
+            owner_id=context.scope.owner_id,
+            role=MessageRole.USER,
+            content="Use the required values.",
+            status=MessageStatus.COMPLETED,
+            created_at=NOW,
+            application_id="synthetic",
+        ),
+        refresh=False,
+        application_context=context,
+        context_selections=(
+            ContextSelection(
+                provider_id="synthetic.context",
+                operation="current",
+                fields=("name",),
+                max_results=2,
+                max_bytes=4_096,
+                timeout_seconds=1,
+                required=True,
+            ),
+        ),
+        clock=lambda: NOW,
+    )
+    assert {item.item_id for item in result.manifest.items if item.injected} == {
+        "current-1",
+        "current-2",
+    }
+
+
+def test_optional_provider_failure_is_in_final_manifest_and_log(caplog):
+    caplog.set_level("DEBUG", logger="personal_ai.context.assembler")
+    context = synthetic_context("synthetic.context")
+    provider = SyntheticContextProvider(fail="private provider text")
+    result = ContextAssembler(
+        Settings(ai_provider="fake", ai_model="fake-model"),
+        FakeTokenCounter(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {"synthetic.context": StaticContextProviderFactory(provider)}
+        ),
+    ).assemble(
+        (),
+        Message(
+            id=uuid4(),
+            conversation_id=uuid4(),
+            owner_id=context.scope.owner_id,
+            role=MessageRole.USER,
+            content="Use available context.",
+            status=MessageStatus.COMPLETED,
+            created_at=NOW,
+            application_id="synthetic",
+        ),
+        refresh=False,
+        application_context=context,
+        context_selections=(selection(required=False),),
+    )
+
+    assert result.manifest.source_failures[0].provider_id == "synthetic.context"
+    assert result.manifest.source_failures[0].reason == "unavailable"
+    assert "source_failures" in caplog.text
+    assert "private provider text" not in caplog.text
+
+
 def test_empty_required_source_stops_later_optional_sources():
     context = synthetic_context("synthetic.context", "synthetic.later")
     empty = SyntheticContextProvider()
@@ -1526,15 +1866,7 @@ def test_conversation_wrapper_projects_only_requested_fields_from_active_branch(
         context_provider_capabilities=application.context_providers,
         tool_capabilities=application.tools,
     )
-    message = Message(
-        id=uuid4(),
-        conversation_id=uuid4(),
-        owner_id="local",
-        role=MessageRole.USER,
-        content="private text",
-        status=MessageStatus.COMPLETED,
-        created_at=NOW,
-    )
+    messages, _ = _conversation_history(2)
     coordinator = ContextProviderCoordinator(
         {"conversation_history": ConversationContextProviderFactory()}
     )
@@ -1545,20 +1877,93 @@ def test_conversation_wrapper_projects_only_requested_fields_from_active_branch(
                 provider_id="conversation_history",
                 operation="history",
                 fields=("role", "created_at", "id"),
-                max_results=1,
+                max_results=2,
                 max_bytes=4_096,
                 timeout_seconds=1,
             ),
         ),
-        ContextProviderInputs(scope=scope, application_context=context, active_messages=(message,)),
+        ContextProviderInputs(scope=scope, application_context=context, active_messages=messages),
     )
     assert result.items[0].payload.role == "user"
-    assert result.items[0].payload.id == str(message.id)
+    assert result.items[0].payload.id == str(messages[0].id)
     assert result.items[0].payload.content is None
 
 
-@pytest.mark.parametrize("history_count,expected_count", [(2, 2), (3, 3), (4, 3)])
-def test_conversation_wrapper_bounds_history_without_summary(history_count, expected_count):
+def test_failed_assistant_content_cannot_be_reinjected_by_conversation_provider():
+    registry = default_application_registry()
+    application = registry.registration("personal_ai")
+    scope = RequestScope(owner_id="local", request_id="request-failed-turn", application_id="personal_ai")
+    context = ApplicationContextRequest(
+        definition=application.definition,
+        scope=scope,
+        context_provider_capabilities=application.context_providers,
+        tool_capabilities=application.tools,
+    )
+    conversation_id = uuid4()
+    prior_user = Message(
+        id=uuid4(),
+        conversation_id=conversation_id,
+        owner_id="local",
+        role=MessageRole.USER,
+        content="Please keep this private.",
+        status=MessageStatus.COMPLETED,
+        created_at=NOW,
+        application_id="personal_ai",
+    )
+    failed_assistant = Message(
+        id=uuid4(),
+        conversation_id=conversation_id,
+        owner_id="local",
+        role=MessageRole.ASSISTANT,
+        content="failed partial secret must never reach the model",
+        status=MessageStatus.FAILED,
+        parent_message_id=prior_user.id,
+        created_at=NOW + timedelta(seconds=1),
+        application_id="personal_ai",
+    )
+    pending = Message(
+        id=uuid4(),
+        conversation_id=conversation_id,
+        owner_id="local",
+        role=MessageRole.USER,
+        content="Continue with a new request.",
+        status=MessageStatus.COMPLETED,
+        created_at=NOW + timedelta(seconds=2),
+        application_id="personal_ai",
+    )
+    assembler = ContextAssembler(
+        Settings(ai_provider="fake", ai_model="fake-model"),
+        FakeTokenCounter(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {"conversation_history": ConversationContextProviderFactory()}
+        ),
+    )
+    assembled = assembler.assemble(
+        (prior_user, failed_assistant),
+        pending,
+        refresh=False,
+        application_context=context,
+        context_selections=(
+            ContextSelection(
+                provider_id="conversation_history",
+                operation="history",
+                fields=("id", "role", "content"),
+                max_results=3,
+                max_bytes=16_384,
+                timeout_seconds=1,
+            ),
+        ),
+    )
+
+    assert all(
+        "failed partial secret" not in message.content for message in assembled.messages
+    )
+    assert not assembled.source_items
+    assert (str(failed_assistant.id), "incomplete_turn") in assembled.manifest.excluded_messages
+
+
+@pytest.mark.parametrize("history_count", [2, 3, 4])
+def test_conversation_wrapper_bounds_history_without_summary(history_count):
     active, _ = _conversation_history(history_count)
     scope = RequestScope(owner_id="local", request_id="request-history", application_id="personal_ai")
     records = ConversationContextProvider(
@@ -1575,7 +1980,7 @@ def test_conversation_wrapper_bounds_history_without_summary(history_count, expe
         scope,
         deadline=monotonic() + 1,
     )
-    assert len(records) == expected_count
+    assert len(records) == 2
     assert all(item.payload.kind == "message" for item in records)
 
 
@@ -1637,7 +2042,8 @@ def test_summary_projection_failure_preserves_messages_and_reports_bounded_reaso
         deadline=monotonic() + 1,
     )
     assert result.failures[0].reason == "summary_response_limit"
-    assert len(result.items) == 10
+    assert len(result.items) <= 10
+    assert len(result.items) % 2 == 0
     assert all(item.payload.kind == "message" for item in result.items)
 
 
@@ -1740,6 +2146,169 @@ def test_memory_wrapper_preserves_source_refs_without_disclosing_embeddings():
     assert item.source_refs[0].reference_id == str(source_message_id)
     assert item.payload.content == "I prefer metric units."
     assert "embedding" not in item.payload.model_dump()
+
+
+def test_memory_limit_applies_after_derived_fit_and_backup_fallback():
+    scope = RequestScope(owner_id="local", request_id="request-memory-fit", application_id="personal_ai")
+    first_backup = _memory_record(scope, content="A small original memory backup.").model_copy(
+        update={"id": UUID(int=21)}
+    )
+    second_backup = _memory_record(scope, content="Another small original backup.").model_copy(
+        update={"id": UUID(int=22)}
+    )
+    derived = _derived_memory_record(scope)
+    pending = Message(
+        id=uuid4(),
+        conversation_id=uuid4(),
+        owner_id=scope.owner_id,
+        role=MessageRole.USER,
+        content="Use relevant history.",
+        status=MessageStatus.COMPLETED,
+        created_at=NOW,
+        application_id=scope.application_id,
+    )
+    scores = tuple(
+        ScoredMemory(memory=memory, similarity=0.9 - index * 0.1)
+        for index, memory in enumerate((derived, first_backup, second_backup))
+    )
+
+    fitting_settings = Settings(
+        ai_provider="fake",
+        ai_model="fake-model",
+        memory_enabled=True,
+        memory_retrieval_limit=1,
+    )
+    fitting = ContextAssembler(fitting_settings, FakeTokenCounter()).assemble(
+        (), pending, refresh=False, retrieval=RetrievalResult(selected=scores)
+    )
+    assert fitting.selected_memory_ids == (derived.id,)
+    assert (first_backup.id, "represented_by_derived_memory") in fitting.excluded_memories
+    assert (second_backup.id, "represented_by_derived_memory") in fitting.excluded_memories
+
+    oversized = derived.model_copy(
+        update={"content": "oversized " * 80, "normalized_content": normalize("oversized " * 80)}
+    )
+    fallback_scores = tuple(
+        ScoredMemory(memory=memory, similarity=0.9 - index * 0.1)
+        for index, memory in enumerate((oversized, first_backup, second_backup))
+    )
+    fallback_settings = fitting_settings.model_copy(
+        update={"memory_max_context_tokens": 80}
+    )
+    fallback = ContextAssembler(fallback_settings, FakeTokenCounter()).assemble(
+        (), pending, refresh=False, retrieval=RetrievalResult(selected=fallback_scores)
+    )
+    assert fallback.selected_memory_ids == (first_backup.id,)
+    assert (oversized.id, "budget") in fallback.excluded_memories
+    assert (second_backup.id, "retrieval_limit") in fallback.excluded_memories
+
+
+def test_optional_memory_count_forwards_its_short_deadline_through_assembler():
+    class TimeoutSpy:
+        def __init__(self):
+            self.memory_timeouts = []
+
+        def count_with_timeout(self, messages, timeout_seconds):
+            if len(messages) == 1 and any(
+                "Historical personal memory" in message.content
+                and "MEMORY_MARKER" in message.content
+                for message in messages
+            ):
+                self.memory_timeouts.append(timeout_seconds)
+            return FakeTokenCounter().count(messages)
+
+    scope = RequestScope(owner_id="local", request_id="request-memory-timeout", application_id="personal_ai")
+    memory = _memory_record(scope, content="MEMORY_MARKER: optional user preference")
+    settings = Settings(
+        ai_provider="fake",
+        ai_model="fake-model",
+        memory_enabled=True,
+        memory_timeout_seconds=0.2,
+    )
+    counter = TimeoutSpy()
+    pending = Message(
+        id=uuid4(),
+        conversation_id=uuid4(),
+        owner_id=scope.owner_id,
+        role=MessageRole.USER,
+        content="Use relevant history.",
+        status=MessageStatus.COMPLETED,
+        created_at=NOW,
+        application_id=scope.application_id,
+    )
+    ContextAssembler(settings, counter).assemble(
+        (),
+        pending,
+        refresh=False,
+        deadline=monotonic() + 60,
+        retrieval=RetrievalResult(
+            selected=(ScoredMemory(memory=memory, similarity=0.9),)
+        ),
+    )
+    assert counter.memory_timeouts
+    assert all(0 < timeout <= 0.2 for timeout in counter.memory_timeouts)
+
+
+def test_inspector_logs_manifest_as_an_estimated_view(caplog):
+    caplog.set_level("DEBUG", logger="personal_ai.context.assembler")
+    active, _ = _conversation_history(2)
+    report = ContextInspector(
+        Settings(ai_provider="fake", ai_model="fake-model"),
+        InMemorySummaryRepository(),
+    ).inspect(active)
+
+    assert report["manifest"]["actual_build"] is False
+    assert report["manifest"]["view_kind"] == "estimated_current_view"
+    assert "'view_kind': 'estimated_current_view'" in caplog.text
+    assert "'actual_build': True" not in caplog.text
+
+
+def test_summary_manifest_log_keeps_summary_identity_after_preparation(caplog):
+    from personal_ai.context.contracts import fingerprint
+
+    caplog.set_level("DEBUG", logger="personal_ai.context.assembler")
+    active, summary = _conversation_history(4)
+    active = tuple(
+        message.model_copy(update={"content": f"historical detail {index} " * 80})
+        for index, message in enumerate(active)
+    )
+    summary = summary.model_copy(
+        update={
+            "source_message_ids": tuple(message.id for message in active),
+            "source_fingerprint": fingerprint(active),
+            "coverage_message_ids": tuple(message.id for message in active),
+            "coverage_fingerprint": fingerprint(active, include_state=True),
+            "covers_through_message_id": active[-1].id,
+        }
+    )
+    summaries = InMemorySummaryRepository()
+    summaries.create(summary)
+    pending = Message(
+        id=uuid4(),
+        conversation_id=active[0].conversation_id,
+        owner_id="local",
+        role=MessageRole.USER,
+        content="Current task",
+        status=MessageStatus.COMPLETED,
+        created_at=NOW + timedelta(seconds=10),
+        application_id="personal_ai",
+    )
+    settings = Settings(
+        ai_provider="fake",
+        ai_model="fake-model",
+        max_context_tokens=400,
+        max_response_tokens=64,
+        context_safety_margin_tokens=32,
+        max_summary_tokens=50,
+        summary_trigger_tokens=1,
+    )
+    assembled = ContextAssembler(settings, FakeTokenCounter(), summaries).assemble(
+        active, pending, refresh=False
+    )
+
+    assert assembled.summary is not None
+    assert assembled.manifest.summary_id == str(summary.id)
+    assert f"'summary_id': '{summary.id}'" in caplog.text
 
 
 def test_memory_context_uses_assembler_eligibility_and_does_not_restore_excluded_records():

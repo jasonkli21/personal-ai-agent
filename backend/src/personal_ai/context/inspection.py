@@ -49,7 +49,13 @@ class ContextInspector:
             }
 
         try:
-            result = assembler.assemble(active[:index], pending, refresh=False, retrieval=retrieval)
+            result = assembler.assemble(
+                active[:index],
+                pending,
+                refresh=False,
+                retrieval=retrieval,
+                manifest_view_kind="estimated_current_view",
+            )
         except ContextError as error:
             count = counter.count((ChatMessage(pending.role, pending.content),))
             report.update(

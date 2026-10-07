@@ -1,5 +1,6 @@
 """Bounded complete-turn selection and synchronous branch-safe summary refresh."""
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from personal_ai.context.builder import (
     ContextBuilder,
     ContextBuildItem,
     ContextBuildPolicy,
+    ContextBuildSourceFailureReport,
     ContextBuildSourceMetadata,
     ContextPermissionRevalidator,
 )
@@ -38,6 +40,8 @@ from personal_ai.llm.client import ChatMessage
 from personal_ai.llm.errors import LLMError
 from personal_ai.settings import Settings
 from personal_ai.storage.errors import StorageError
+
+logger = logging.getLogger(__name__)
 
 SUMMARY_INSTRUCTION = (
     "Create a concise working summary of historical conversation context, not user memory. "
@@ -103,6 +107,9 @@ class ContextAssembler:
         context_selections: Sequence[ContextSelection] = (),
         evidence_records: Sequence[object] = (),
         tool_results: dict[str, object] | None = None,
+        manifest_view_kind: str = "actual_build",
+        clock=None,
+        emit_manifest: bool = True,
     ) -> AssembledContext:
         from personal_ai.context.deadline import DeadlineCounter, DeadlineSummarizer
 
@@ -153,11 +160,15 @@ class ContextAssembler:
                                  source_failures=source_result.failures)
             return scoped._build_sources(
                 result,
+                active_messages,
                 pending_user_message,
                 retrieval=retrieval,
                 application_context=application_context,
                 context_selections=context_selections,
                 deadline=deadline,
+                manifest_view_kind=manifest_view_kind,
+                clock=clock,
+                emit_manifest=emit_manifest,
             )
         finally:
             close = getattr(self.counter, "close", None)
@@ -167,12 +178,16 @@ class ContextAssembler:
     def _build_sources(
         self,
         result: AssembledContext,
+        active_messages: Sequence[Message],
         pending: Message,
         *,
         retrieval,
         application_context: ApplicationContextRequest | None,
         context_selections: Sequence[ContextSelection],
         deadline: float | None,
+        manifest_view_kind: str,
+        clock=None,
+        emit_manifest: bool,
     ) -> AssembledContext:
         from personal_ai.context.deadline import DeadlineCounter, remaining
 
@@ -189,8 +204,15 @@ class ContextAssembler:
                 excluded_memories.extend(memory_exclusions)
 
         scope = application_context.scope if application_context is not None else None
-        required_providers = {
-            selection.provider_id for selection in context_selections if selection.required
+        required_selections = {
+            (selection.provider_id, selection.operation)
+            for selection in context_selections
+            if selection.required
+        }
+        conversation_group_by_message = {
+            str(message.id): str(user.id)
+            for user, assistant in complete_turns(active_messages)
+            for message in (user, assistant)
         }
         for order, item in enumerate(result.source_items):
             if scope is None or (
@@ -203,7 +225,13 @@ class ContextAssembler:
                 ContextBuildItem.from_context_item(
                     item,
                     order=order,
-                    required=item.provider_id in required_providers,
+                    required=(item.provider_id, item.selected_operation) in required_selections,
+                    atomic_group_id=(
+                        f"conversation:{conversation_group_by_message[item.item_id]}"
+                        if item.provider_id == "conversation_history"
+                        and item.item_id in conversation_group_by_message
+                        else None
+                    ),
                 )
             )
 
@@ -227,12 +255,14 @@ class ContextAssembler:
         built = ContextBuilder(
             self.counter,
             permission_revalidator=self.permission_revalidator,
+            clock=clock,
         ).build(
             result.messages,
             entries,
             policy,
             base_sensitivity=base_sensitivity,
             source_counters=source_counters,
+            source_item_limits={"ai_memory": self.settings.memory_retrieval_limit},
             base_token_count=TokenCount(
                 result.budget.selected_total, result.budget.counter_kind
             ),
@@ -255,7 +285,26 @@ class ContextAssembler:
                         else item.omission_reason or "excluded",
                     )
                 )
-        return replace(
+        manifest = built.manifest.model_copy(
+            update={
+                "view_kind": manifest_view_kind,
+                "actual_build": manifest_view_kind == "actual_build",
+                "selected_message_ids": tuple(str(item) for item in result.selected_message_ids),
+                "excluded_messages": tuple(
+                    (str(identifier), reason) for identifier, reason in result.excluded
+                ),
+                "summary_id": str(result.summary.id) if result.summary else None,
+                "source_failures": tuple(
+                    ContextBuildSourceFailureReport(
+                        provider_id=failure.provider_id,
+                        operation=failure.operation,
+                        reason=failure.reason,
+                    )
+                    for failure in result.source_failures
+                ),
+            }
+        )
+        assembled = replace(
             result,
             messages=built.messages,
             selected_memory_ids=selected_memory_ids,
@@ -269,16 +318,11 @@ class ContextAssembler:
                 source_tokens=built.source_tokens,
             ),
             diagnostics=tuple(dict.fromkeys((*diagnostics, *built.diagnostics))),
-            manifest=built.manifest.model_copy(
-                update={
-                    "selected_message_ids": tuple(str(item) for item in result.selected_message_ids),
-                    "excluded_messages": tuple(
-                        (str(identifier), reason) for identifier, reason in result.excluded
-                    ),
-                    "summary_id": str(result.summary.id) if result.summary else None,
-                }
-            ),
+            manifest=manifest,
         )
+        if emit_manifest:
+            logger.debug("Context input build manifest=%s", manifest.model_dump(mode="json"))
+        return assembled
 
     def _memory_entries(self, retrieval, pending):
         from personal_ai.context.builder import ContextBuildItem
@@ -287,9 +331,6 @@ class ContextAssembler:
         entries, excluded = [], []
         for index, scored in enumerate(retrieval.selected):
             memory = scored.memory
-            if len(entries) >= self.settings.memory_retrieval_limit:
-                excluded.append((memory.id, "retrieval_limit"))
-                continue
             if (
                 memory.owner_id != pending.owner_id
                 or getattr(memory, "status", "active") != "active"
@@ -538,11 +579,46 @@ class ContextAssembler:
         required_source_ids: Sequence[str] = (),
         source_metadata: Mapping[str, ContextBuildSourceMetadata] | None = None,
         source_token_limits: Mapping[str, int] | None = None,
+        clock=None,
+    ) -> AssembledContext:
+        try:
+            return self._assemble_research_context(
+                pending,
+                evidence_blocks,
+                instruction,
+                deadline=deadline,
+                now=now,
+                input_token_limit=input_token_limit,
+                required_source_ids=required_source_ids,
+                source_metadata=source_metadata,
+                source_token_limits=source_token_limits,
+                clock=clock,
+            )
+        finally:
+            close = getattr(self.counter, "close", None)
+            if close:
+                close()
+
+    def _assemble_research_context(
+        self,
+        pending,
+        evidence_blocks,
+        instruction,
+        *,
+        deadline=None,
+        now: datetime | None = None,
+        input_token_limit: int | None = None,
+        required_source_ids: Sequence[str] = (),
+        source_metadata: Mapping[str, ContextBuildSourceMetadata] | None = None,
+        source_token_limits: Mapping[str, int] | None = None,
+        clock=None,
     ) -> AssembledContext:
         """Build standalone evidence input through the shared source-budget seam."""
         from personal_ai.context.deadline import DeadlineCounter
 
-        base = self.assemble((), pending, refresh=False, deadline=deadline)
+        base = self.assemble(
+            (), pending, refresh=False, deadline=deadline, emit_manifest=False
+        )
         input_budget = self.input_budget()
         if input_token_limit is not None:
             if input_token_limit <= 0:
@@ -575,6 +651,7 @@ class ContextAssembler:
                 source_refs=(
                     ContextSourceReference(kind="evidence", reference_id=str(source_id)),
                 ),
+                expires_at=(source_metadata or {}).get(str(source_id), default_metadata).expires_at,
                 required=str(source_id) in required,
                 order=index,
             )
@@ -591,17 +668,23 @@ class ContextAssembler:
                 source_max_tokens=limits,
                 source_priorities=dict(policy.source_priorities),
             )
-        built = ContextBuilder(
-            DeadlineCounter(self.counter, deadline),
-            clock=(lambda: now) if now is not None else None,
-        ).build(
+        built = ContextBuilder(DeadlineCounter(self.counter, deadline), clock=clock).build(
             base.messages,
             entries,
             policy,
             prefix_messages=(ChatMessage("system", instruction),),
             base_sensitivity="personal",
         )
-        return replace(
+        manifest = built.manifest.model_copy(
+            update={
+                "selected_message_ids": tuple(str(item) for item in base.selected_message_ids),
+                "excluded_messages": tuple(
+                    (str(identifier), reason) for identifier, reason in base.excluded
+                ),
+                "summary_id": str(base.summary.id) if base.summary else None,
+            }
+        )
+        assembled = replace(
             base,
             messages=built.messages,
             budget=replace(
@@ -612,16 +695,10 @@ class ContextAssembler:
                 source_tokens=built.source_tokens,
             ),
             diagnostics=tuple(dict.fromkeys((*base.diagnostics, *built.diagnostics))),
-            manifest=built.manifest.model_copy(
-                update={
-                    "selected_message_ids": tuple(str(item) for item in base.selected_message_ids),
-                    "excluded_messages": tuple(
-                        (str(identifier), reason) for identifier, reason in base.excluded
-                    ),
-                    "summary_id": str(base.summary.id) if base.summary else None,
-                }
-            ),
+            manifest=manifest,
         )
+        logger.debug("Context input build manifest=%s", manifest.model_dump(mode="json"))
+        return assembled
 
     def assemble_research(self, pending, evidence_blocks, instruction, *, deadline=None):
         """Compatibility tuple wrapper around the structured shared builder result."""

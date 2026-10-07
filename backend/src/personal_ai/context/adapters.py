@@ -64,7 +64,7 @@ class ConversationContextProvider:
 
     def fetch(self, selection: ContextSelection, scope: RequestScope, *, deadline: float):
         del deadline
-        from personal_ai.context.contracts import is_compatible
+        from personal_ai.context.contracts import complete_turns, is_compatible
         from personal_ai.entities import Message
 
         messages = self.inputs.active_messages
@@ -95,8 +95,18 @@ class ConversationContextProvider:
                 operation=selection.operation,
                 reason="summary_provenance_limit",
             )
-        message_limit = selection.max_results - 1 if compatible_summary else selection.max_results
-        selected = messages[-message_limit:] if message_limit else ()
+        turns = complete_turns(messages)
+
+        def recent_turns(slot_limit: int):
+            selected_turns = []
+            used = 0
+            for turn in reversed(turns):
+                if used + len(turn) > slot_limit:
+                    continue
+                selected_turns.insert(0, turn)
+                used += len(turn)
+            return selected_turns
+
         def message_item(message):
             return ContextItem(
                 source_class="conversation",
@@ -124,7 +134,16 @@ class ConversationContextProvider:
                 ),
             )
 
-        records = [message_item(message) for message in selected]
+        def records_for(turn_groups):
+            return [message_item(message) for turn in turn_groups for message in turn]
+
+        def response_size(items):
+            return sum(len(item.model_dump_json().encode("utf-8")) for item in items)
+
+        selected_turns = recent_turns(
+            selection.max_results - 1 if compatible_summary else selection.max_results
+        )
+        records = records_for(selected_turns)
         if compatible_summary:
             summary_record = ContextItem(
                 source_class="conversation",
@@ -156,12 +175,10 @@ class ConversationContextProvider:
                     ),
                 ),
             )
-            def response_size(items):
-                return sum(len(item.model_dump_json().encode("utf-8")) for item in items)
-
             candidate = (summary_record, *records)
-            while response_size(candidate) > selection.max_bytes and records:
-                records.pop(0)
+            while response_size(candidate) > selection.max_bytes and selected_turns:
+                selected_turns.pop(0)
+                records = records_for(selected_turns)
                 candidate = (summary_record, *records)
             if response_size(candidate) > selection.max_bytes:
                 summary_failure = ContextProviderFailure(
@@ -169,11 +186,17 @@ class ConversationContextProvider:
                     operation=selection.operation,
                     reason="summary_response_limit",
                 )
-                records = [
-                    message_item(message) for message in messages[-selection.max_results :]
-                ]
+                selected_turns = recent_turns(selection.max_results)
+                records = records_for(selected_turns)
+                while response_size(records) > selection.max_bytes and selected_turns:
+                    selected_turns.pop(0)
+                    records = records_for(selected_turns)
             else:
                 records.insert(0, summary_record)
+        else:
+            while response_size(records) > selection.max_bytes and selected_turns:
+                selected_turns.pop(0)
+                records = records_for(selected_turns)
         if summary_failure:
             return ContextProviderResult(items=tuple(records), failures=(summary_failure,))
         return tuple(records)

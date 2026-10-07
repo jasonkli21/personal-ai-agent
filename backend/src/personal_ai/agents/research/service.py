@@ -241,7 +241,13 @@ class ResearchService:
                     evidence_count=len(evidence),
                 )
                 selection, messages = await io_call(
-                    select_evidence, current, self.context, self.clock(), deadline, self.reranker
+                    select_evidence,
+                    current,
+                    self.context,
+                    self.clock(),
+                    deadline,
+                    self.reranker,
+                    clock=self.clock,
                 )
                 await save(selection=selection)
                 yield event(

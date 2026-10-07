@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -15,6 +14,7 @@ from personal_ai.context.contracts import ContextError, TokenCount, TokenCounter
 from personal_ai.context.providers import (
     ContextAuthority,
     ContextItem,
+    ContextOperation,
     ContextPermissionDependency,
     ContextSensitivity,
     ContextSourceClass,
@@ -22,8 +22,6 @@ from personal_ai.context.providers import (
 )
 from personal_ai.llm.client import ChatMessage
 from personal_ai.llm.errors import LLMError
-
-logger = logging.getLogger(__name__)
 
 SOURCE_CLASSES: tuple[ContextSourceClass, ...] = (
     "global_profile",
@@ -108,6 +106,8 @@ class ContextBuildItem(BaseModel):
 
     source_class: ContextSourceClass
     provider_id: str = Field(min_length=1, max_length=81)
+    source_version: str | None = Field(default=None, min_length=1, max_length=100)
+    selected_operation: ContextOperation | None = None
     source_id: str = Field(min_length=1, max_length=200)
     item_id: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1, max_length=262_144)
@@ -119,6 +119,7 @@ class ContextBuildItem(BaseModel):
         default=(), max_length=16
     )
     represented_item_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    atomic_group_id: str | None = Field(default=None, min_length=1, max_length=200)
     required: bool = False
     order: int = Field(default=0, ge=0, le=100_000)
 
@@ -133,12 +134,18 @@ class ContextBuildItem(BaseModel):
 
     @classmethod
     def from_context_item(
-        cls, item: ContextItem, *, order: int = 0, required: bool = False
+        cls,
+        item: ContextItem,
+        *,
+        order: int = 0,
+        required: bool = False,
+        atomic_group_id: str | None = None,
     ) -> ContextBuildItem:
         payload = item.payload.model_dump(mode="json", exclude_none=True)
         value = {
             "source_class": item.source_class,
             "provider_id": item.provider_id,
+            "source_version": item.source_version,
             "source_id": item.source_id,
             "item_id": item.item_id,
             "authority": item.authority,
@@ -158,6 +165,8 @@ class ContextBuildItem(BaseModel):
         return cls(
             source_class=item.source_class,
             provider_id=item.provider_id,
+            source_version=item.source_version,
+            selected_operation=item.selected_operation,
             source_id=item.source_id,
             item_id=item.item_id,
             content=content,
@@ -166,6 +175,7 @@ class ContextBuildItem(BaseModel):
             source_refs=item.source_refs,
             expires_at=item.expires_at,
             permission_dependencies=item.permission_dependencies,
+            atomic_group_id=atomic_group_id,
             required=required,
             order=order,
         )
@@ -177,6 +187,16 @@ class ContextBuildSourceMetadata(BaseModel):
     source_class: ContextSourceClass
     authority: ContextAuthority
     sensitivity: ContextSensitivity
+    expires_at: datetime | None = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def expiry_is_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("context_expiry_timezone_required")
+        return value.astimezone(UTC)
 
     @model_validator(mode="after")
     def enforce_source_trust_ceiling(self) -> ContextBuildSourceMetadata:
@@ -196,6 +216,8 @@ class ContextBuildItemReport(BaseModel):
 
     source_class: ContextSourceClass
     provider_id: str
+    source_version: str | None = None
+    selected_operation: ContextOperation | None = None
     source_id: str
     item_id: str
     authority: ContextAuthority
@@ -218,6 +240,14 @@ class ContextSourceBudgetReport(BaseModel):
     injected_item_ids: tuple[str, ...] = ()
 
 
+class ContextBuildSourceFailureReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider_id: str = Field(min_length=1, max_length=81)
+    operation: ContextOperation
+    reason: str = Field(min_length=1, max_length=64)
+
+
 class ContextBuildManifest(BaseModel):
     """Safe metadata about the messages built for one generation preparation."""
 
@@ -237,6 +267,7 @@ class ContextBuildManifest(BaseModel):
     sources: tuple[ContextSourceBudgetReport, ...] = ()
     items: tuple[ContextBuildItemReport, ...] = ()
     diagnostics: tuple[str, ...] = ()
+    source_failures: tuple[ContextBuildSourceFailureReport, ...] = ()
 
     @property
     def injected_item_ids(self) -> tuple[str, ...]:
@@ -282,6 +313,7 @@ class ContextBuilder:
         prefix_messages: Sequence[ChatMessage] = (),
         base_sensitivity: ContextSensitivity = "personal",
         source_counters: Mapping[ContextSourceClass, TokenCounter] | None = None,
+        source_item_limits: Mapping[ContextSourceClass, int] | None = None,
         base_token_count: TokenCount | None = None,
     ) -> ContextBuildResult:
         prefix = tuple(prefix_messages)
@@ -301,6 +333,29 @@ class ContextBuilder:
                 item.item_id,
             ),
         )
+        grouped: dict[tuple[str, str, str], list[ContextBuildItem]] = {}
+        group_order: list[tuple[str, str, str]] = []
+        for index, item in enumerate(ordered):
+            key = (
+                ("atomic", item.source_class, item.atomic_group_id)
+                if item.atomic_group_id is not None
+                else ("single", item.source_class, str(index))
+            )
+            if key not in grouped:
+                grouped[key] = []
+                group_order.append(key)
+            grouped[key].append(item)
+        groups = [tuple(grouped[key]) for key in group_order]
+        groups.sort(
+            key=lambda group: (
+                not any(item.required for item in group),
+                policy.source_priorities[group[0].source_class],
+                min(item.order for item in group),
+                group[0].provider_id,
+                group[0].source_id,
+                group[0].item_id,
+            )
+        )
         included: list[tuple[ContextBuildItem, ChatMessage, int]] = []
         reports: list[ContextBuildItemReport] = []
         exclusions: list[tuple[str, str]] = []
@@ -311,86 +366,104 @@ class ContextBuilder:
         represented_memory_ids: set[str] = set()
         now = self.clock().astimezone(UTC)
 
-        def omit(item: ContextBuildItem, reason: str, token_count: int | None = None) -> None:
-            if item.required:
+        def omit_group(
+            group: Sequence[ContextBuildItem], reason: str, token_count: int | None = None
+        ) -> None:
+            if any(item.required for item in group):
                 raise ContextError("context_source_unavailable")
-            reports.append(
-                ContextBuildItemReport(
-                    source_class=item.source_class,
-                    provider_id=item.provider_id,
-                    source_id=item.source_id,
-                    item_id=item.item_id,
-                    authority=item.authority,
-                    sensitivity=item.sensitivity,
-                    source_reference_count=len(item.source_refs),
-                    injected=False,
-                    token_count=token_count,
-                    omission_reason=reason,
-                )
-            )
-            exclusions.append((item.item_id, reason))
-
-        for item in ordered:
-            if item.source_class == "ai_memory" and item.item_id in represented_memory_ids:
-                omit(item, "represented_by_derived_memory")
-                continue
-            if item.expires_at is not None and item.expires_at <= now:
-                omit(item, "expired")
-                continue
-            if item.permission_dependencies:
-                if self.permission_revalidator is None:
-                    omit(item, "permission_unverified")
-                    continue
-                try:
-                    permissions_current = all(
-                        self.permission_revalidator.is_current(dependency)
-                        for dependency in item.permission_dependencies
+            for item in group:
+                reports.append(
+                    ContextBuildItemReport(
+                        source_class=item.source_class,
+                        provider_id=item.provider_id,
+                        source_version=item.source_version,
+                        selected_operation=item.selected_operation,
+                        source_id=item.source_id,
+                        item_id=item.item_id,
+                        authority=item.authority,
+                        sensitivity=item.sensitivity,
+                        source_reference_count=len(item.source_refs),
+                        injected=False,
+                        token_count=token_count,
+                        omission_reason=reason,
                     )
-                except Exception:  # noqa: BLE001 - permission recheck fails closed
-                    permissions_current = False
-                if not permissions_current:
-                    omit(item, "permission_revoked")
-                    continue
+                )
+                exclusions.append((item.item_id, reason))
 
-            item_counter = (source_counters or {}).get(item.source_class, self.counter)
+        for group in groups:
+            source_class = group[0].source_class
+            reason = None
+            for item in group:
+                if item.source_class == "ai_memory" and item.item_id in represented_memory_ids:
+                    reason = "represented_by_derived_memory"
+                    break
+                if item.expires_at is not None and item.expires_at <= now:
+                    reason = "expired"
+                    break
+                if item.permission_dependencies:
+                    if self.permission_revalidator is None:
+                        reason = "permission_unverified"
+                        break
+                    try:
+                        permissions_current = all(
+                            self.permission_revalidator.is_current(dependency)
+                            for dependency in item.permission_dependencies
+                        )
+                    except Exception:  # noqa: BLE001 - permission recheck fails closed
+                        permissions_current = False
+                    if not permissions_current:
+                        reason = "permission_revoked"
+                        break
+            if reason:
+                omit_group(group, reason)
+                continue
+
+            item_counter = (source_counters or {}).get(source_class, self.counter)
             try:
-                proposed_source_items = (*class_items[item.source_class], item)
-                source_message = self._source_message(item.source_class, proposed_source_items)
+                proposed_source_items = (*class_items[source_class], *group)
+                source_message = self._source_message(source_class, proposed_source_items)
                 source_count = item_counter.count((source_message,)).tokens
-                if source_count > policy.source_max_tokens[item.source_class]:
-                    omit(item, "source_budget", source_count)
+                if source_count > policy.source_max_tokens[source_class]:
+                    omit_group(group, "source_budget", source_count)
                     continue
-                proposed = (*included, (item, source_message, source_count))
+                proposed = (*included, *((item, source_message, source_count) for item in group))
                 candidate_messages = prefix + self._source_messages(proposed, policy) + base
                 total = item_counter.count(candidate_messages)
             except (LLMError, ContextError, ValueError):
-                if item.source_class != "ai_memory":
+                if source_class != "ai_memory":
                     raise
                 memory_count_failed = True
                 diagnostics.append("memory_count_failed")
-                omit(item, "count_failed")
+                omit_group(group, "count_failed")
                 continue
             if total.tokens > policy.global_input_tokens:
-                omit(item, "budget", source_count)
+                omit_group(group, "budget", source_count)
                 continue
-            included.append((item, source_message, source_count))
-            class_items[item.source_class].append(item)
-            class_counts[item.source_class] = source_count
-            if item.source_class == "ai_memory":
-                represented_memory_ids.update(item.represented_item_ids)
-            reports.append(
-                ContextBuildItemReport(
-                    source_class=item.source_class,
-                    provider_id=item.provider_id,
-                    source_id=item.source_id,
-                    item_id=item.item_id,
-                    authority=item.authority,
-                    sensitivity=item.sensitivity,
-                    source_reference_count=len(item.source_refs),
-                    injected=True,
-                    token_count=None,
+            item_limit = (source_item_limits or {}).get(source_class)
+            if item_limit is not None and len(class_items[source_class]) + len(group) > item_limit:
+                omit_group(group, "retrieval_limit")
+                continue
+            included.extend((item, source_message, source_count) for item in group)
+            class_items[source_class].extend(group)
+            class_counts[source_class] = source_count
+            for item in group:
+                if source_class == "ai_memory":
+                    represented_memory_ids.update(item.represented_item_ids)
+                reports.append(
+                    ContextBuildItemReport(
+                        source_class=item.source_class,
+                        provider_id=item.provider_id,
+                        source_version=item.source_version,
+                        selected_operation=item.selected_operation,
+                        source_id=item.source_id,
+                        item_id=item.item_id,
+                        authority=item.authority,
+                        sensitivity=item.sensitivity,
+                        source_reference_count=len(item.source_refs),
+                        injected=True,
+                        token_count=None,
+                    )
                 )
-            )
 
         if memory_count_failed:
             # A failed memory count never permits partial disclosure from the same retrieval.
@@ -421,6 +494,78 @@ class ContextBuilder:
             ]
             class_items.pop("ai_memory", None)
             class_counts.pop("ai_memory", None)
+
+        # Provider counting can take long enough for an admitted source to expire.
+        # Revalidate once at the assembly boundary and recount the affected source
+        # blocks after removing optional stale items.
+        final_now = self.clock().astimezone(UTC)
+        included_groups: dict[tuple[str, str], list[ContextBuildItem]] = {}
+        for index, (item, _, _) in enumerate(included):
+            key = (
+                (item.source_class, item.atomic_group_id)
+                if item.atomic_group_id is not None
+                else (item.source_class, f"item:{index}")
+            )
+            included_groups.setdefault(key, []).append(item)
+        expired_ids: set[int] = set()
+        for group in included_groups.values():
+            if any(item.expires_at is not None and item.expires_at <= final_now for item in group):
+                if any(item.required for item in group):
+                    raise ContextError("context_source_unavailable")
+                expired_ids.update(id(item) for item in group)
+        if expired_ids:
+            removed = [item for item, _, _ in included if id(item) in expired_ids]
+            included = [row for row in included if id(row[0]) not in expired_ids]
+            affected_classes = {item.source_class for item in removed}
+            removed_keys = {
+                (item.source_class, item.provider_id, item.item_id) for item in removed
+            }
+            reports = [
+                report.model_copy(update={"injected": False, "omission_reason": "expired"})
+                if (report.source_class, report.provider_id, report.item_id) in removed_keys
+                else report
+                for report in reports
+            ]
+            exclusions.extend((item.item_id, "expired") for item in removed)
+            class_items.clear()
+            for item, _, _ in included:
+                class_items[item.source_class].append(item)
+            for source_class in affected_classes:
+                remaining_items = class_items.get(source_class, [])
+                if not remaining_items:
+                    class_counts.pop(source_class, None)
+                    continue
+                count_counter = (source_counters or {}).get(source_class, self.counter)
+                source_message = self._source_message(source_class, remaining_items)
+                try:
+                    class_counts[source_class] = count_counter.count((source_message,)).tokens
+                except (LLMError, ContextError, ValueError):
+                    if source_class != "ai_memory":
+                        raise
+                    diagnostics.append("memory_count_failed")
+                    memory_ids = {
+                        item.item_id
+                        for item in included
+                        if item.source_class == "ai_memory"
+                    }
+                    included = [
+                        row for row in included if row[0].source_class != "ai_memory"
+                    ]
+                    reports = [
+                        report.model_copy(
+                            update={
+                                "injected": False,
+                                "omission_reason": "count_failed",
+                                "token_count": None,
+                            }
+                        )
+                        if report.source_class == "ai_memory" and report.injected
+                        else report
+                        for report in reports
+                    ]
+                    exclusions.extend((item_id, "count_failed") for item_id in memory_ids)
+                    class_items.pop("ai_memory", None)
+                    class_counts.pop("ai_memory", None)
 
         final_messages = prefix + self._source_messages(included, policy) + base
         final_count = (
@@ -474,6 +619,71 @@ class ContextBuilder:
                     0, final_count.tokens - without_memory_count.tokens
                 )
 
+        # The final request and memory marginal counts are also provider calls.
+        # Recheck once after them so their latency cannot leave stale optional
+        # content in the returned prompt.
+        last_now = self.clock().astimezone(UTC)
+        late_groups: dict[tuple[str, str], list[ContextBuildItem]] = {}
+        for index, (item, _, _) in enumerate(included):
+            key = (
+                (item.source_class, item.atomic_group_id)
+                if item.atomic_group_id is not None
+                else (item.source_class, f"item:{index}")
+            )
+            late_groups.setdefault(key, []).append(item)
+        late_expired_ids: set[int] = set()
+        for group in late_groups.values():
+            if any(item.expires_at is not None and item.expires_at <= last_now for item in group):
+                if any(item.required for item in group):
+                    raise ContextError("context_source_unavailable")
+                late_expired_ids.update(id(item) for item in group)
+        if late_expired_ids:
+            late_removed = [item for item, _, _ in included if id(item) in late_expired_ids]
+            included = [row for row in included if id(row[0]) not in late_expired_ids]
+            removed_keys = {
+                (item.source_class, item.provider_id, item.item_id) for item in late_removed
+            }
+            reports = [
+                report.model_copy(update={"injected": False, "omission_reason": "expired"})
+                if (report.source_class, report.provider_id, report.item_id) in removed_keys
+                else report
+                for report in reports
+            ]
+            exclusions.extend((item.item_id, "expired") for item in late_removed)
+            affected_classes = {item.source_class for item in late_removed}
+            class_items.clear()
+            for item, _, _ in included:
+                class_items[item.source_class].append(item)
+            for source_class in affected_classes:
+                remaining_items = class_items.get(source_class, [])
+                if not remaining_items:
+                    class_counts.pop(source_class, None)
+                    continue
+                count_counter = (source_counters or {}).get(source_class, self.counter)
+                source_message = self._source_message(source_class, remaining_items)
+                class_counts[source_class] = count_counter.count((source_message,)).tokens
+            final_messages = prefix + self._source_messages(included, policy) + base
+            final_count = (
+                base_count if not prefix and not included else self.counter.count(final_messages)
+            )
+            if final_count.tokens > policy.global_input_tokens:
+                raise ContextError("context_budget_invalid")
+            memory_marginal_tokens = 0
+            if class_items.get("ai_memory"):
+                without_memory = prefix + self._source_messages(
+                    [row for row in included if row[0].source_class != "ai_memory"], policy
+                ) + base
+                without_memory_count = (
+                    base_count
+                    if not prefix and not any(
+                        row[0].source_class != "ai_memory" for row in included
+                    )
+                    else self.counter.count(without_memory)
+                )
+                memory_marginal_tokens = max(
+                    0, final_count.tokens - without_memory_count.tokens
+                )
+
         effective = base_sensitivity
         for item, _, _ in included:
             if SENSITIVITY_RANK[item.sensitivity] > SENSITIVITY_RANK[effective]:
@@ -516,7 +726,6 @@ class ContextBuilder:
             items=tuple(reports),
             diagnostics=tuple(dict.fromkeys(diagnostics)),
         )
-        logger.debug("Context input build manifest=%s", manifest.model_dump(mode="json"))
         memory_tokens = class_counts.get("ai_memory", 0)
         return ContextBuildResult(
             messages=final_messages,

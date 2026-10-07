@@ -425,6 +425,20 @@ class ItineraryProposalService:
             )
         ]
         blocks.extend((item.handle, item.context_json()) for item in evidence.blocks)
+        source_metadata = {
+            item.handle: ContextBuildSourceMetadata(
+                source_class="external_research",
+                authority="external",
+                sensitivity="public",
+                expires_at=item.citation.expires_at,
+            )
+            for item in evidence.blocks
+        }
+        source_metadata["travel-context"] = ContextBuildSourceMetadata(
+            source_class="domain_current",
+            authority="authoritative",
+            sensitivity="sensitive",
+        )
         pending = Message(
             id=uuid4(),
             conversation_id=uuid4(),
@@ -443,13 +457,8 @@ class ItineraryProposalService:
             now=now,
             input_token_limit=self.settings.itinerary_proposal_max_input_tokens,
             required_source_ids=("travel-context",),
-            source_metadata={
-                "travel-context": ContextBuildSourceMetadata(
-                    source_class="domain_current",
-                    authority="authoritative",
-                    sensitivity="sensitive",
-                )
-            },
+            source_metadata=source_metadata,
+            clock=self.clock,
         )
         item_reports = assembled.manifest.items if assembled.manifest else ()
         selected = tuple(item.item_id for item in item_reports if item.injected)

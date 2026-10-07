@@ -957,7 +957,13 @@ class IterativeResearchService:
 
     async def _select(self, session, deadline):
         selection, messages = await self._io(
-            select_evidence, session, self.context, self.clock(), deadline, self.reranker
+            select_evidence,
+            session,
+            self.context,
+            self.clock(),
+            deadline,
+            self.reranker,
+            clock=self.clock,
         )
         return selection, messages
 

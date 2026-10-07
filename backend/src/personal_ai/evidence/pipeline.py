@@ -108,7 +108,7 @@ def extract_evidence(session, results, attempt, extractor, now, settings):
     return tuple(observations), tuple(evidence)
 
 
-def select_evidence(session, context, now, deadline, reranker=None):
+def select_evidence(session, context, now, deadline, reranker=None, clock=None):
     excluded, scores, eligible = {}, {}, []
     words = set(re.findall(r"\w+", session.request.question.lower()))
     sources = {s.id: s for s in session.observations}
@@ -193,8 +193,25 @@ def select_evidence(session, context, now, deadline, reranker=None):
         status=MessageStatus.COMPLETED,
         created_at=now,
     )
+    from personal_ai.context.builder import ContextBuildSourceMetadata
+
+    source_metadata = {
+        str(item.id): ContextBuildSourceMetadata(
+            source_class="external_research",
+            authority="external",
+            sensitivity="public",
+            expires_at=item.expires_at,
+        )
+        for item in eligible
+    }
     assembled = context.assemble_research_context(
-        pending, blocks, SYNTHESIS_INSTRUCTION, deadline=deadline, now=now
+        pending,
+        blocks,
+        SYNTHESIS_INSTRUCTION,
+        deadline=deadline,
+        now=now,
+        source_metadata=source_metadata,
+        clock=clock,
     )
     item_reports = assembled.manifest.items if assembled.manifest else ()
     ids = tuple(UUID(item.item_id) for item in item_reports if item.injected)

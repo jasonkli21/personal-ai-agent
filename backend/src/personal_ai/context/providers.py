@@ -111,6 +111,7 @@ class ContextItem(BaseModel, Generic[PayloadT]):
     permission_dependencies: tuple[ContextPermissionDependency, ...] = Field(
         default=(), max_length=16
     )
+    selected_operation: ContextOperation | None = Field(default=None, exclude=True)
     field_sensitivity: tuple[ContextFieldSensitivity, ...] = Field(default=(), max_length=32)
     payload: PayloadT
 
@@ -681,7 +682,10 @@ class ContextProviderCoordinator:
                         else "required_context_source_failed"
                     )
                     raise ContextPreparationError(code)
-                items.extend(records)
+                items.extend(
+                    item.model_copy(update={"selected_operation": selection.operation})
+                    for item in records
+                )
                 failures.extend(provider_failures)
                 if not records and not provider_failures:
                     if selection.required:

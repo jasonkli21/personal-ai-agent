@@ -20,10 +20,21 @@ class DeadlineCounter:
         self.deadline = deadline
 
     def count(self, messages):
-        seconds = remaining(self.deadline)
+        return self.count_with_timeout(messages, None)
+
+    def count_with_timeout(self, messages, timeout_seconds: float | None):
+        call_deadline = self.deadline
+        if timeout_seconds is not None:
+            requested_deadline = monotonic() + max(0.0, timeout_seconds)
+            call_deadline = (
+                requested_deadline
+                if call_deadline is None
+                else min(call_deadline, requested_deadline)
+            )
+        seconds = remaining(call_deadline)
         timed = getattr(self.counter, "count_with_timeout", None)
         result = timed(messages, seconds) if timed else self.counter.count(messages)
-        remaining(self.deadline)
+        remaining(call_deadline)
         return result
 
 
