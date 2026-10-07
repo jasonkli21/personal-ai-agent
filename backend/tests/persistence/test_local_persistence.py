@@ -1423,3 +1423,119 @@ def test_job_effect_guard_pins_lease_and_source_until_receipt_recovery(
             effect=lambda connection: late_effects.append(True) or {},
         )
     assert late_effects == []
+
+
+class _MigrationSource:
+    project_id = "p10-local-contract"
+
+    def __init__(self, families):
+        self.families = families
+
+    def scan_page(self, family, after, limit):
+        records = self.families.get(family, {})
+        ids = sorted(identifier for identifier in records if after is None or identifier > after)[:limit]
+        return [records[identifier] for identifier in ids]
+
+    def get(self, family, document_id):
+        return self.families.get(family, {}).get(document_id)
+
+
+def test_firestore_migration_local_targets_rerun_and_reconcile_deletions(
+    postgres_database, dynamodb_table
+):
+    from personal_ai.persistence.firestore_migration import (
+        DynamoDBMigrationTarget,
+        PostgresMigrationControl,
+        PostgresMigrationTarget,
+        SourceRecord,
+        run_migration,
+    )
+
+    now = datetime.now(UTC)
+    owner_id = f"p10-migration-{uuid4()}"
+    conversation_id, message_id = uuid4(), uuid4()
+    conversation = SourceRecord(str(conversation_id), now, {
+        "id": str(conversation_id), "owner_id": owner_id, "title": "Migration smoke",
+        "created_at": now, "updated_at": now,
+    })
+    message = SourceRecord(str(message_id), now, {
+        "id": str(message_id), "conversation_id": str(conversation_id), "owner_id": owner_id,
+        "role": "user", "content": "preserve this branch root", "status": "completed",
+        "created_at": now,
+    })
+    audit = SourceRecord("audit-smoke", now, {
+        "id": "audit-smoke", "owner_id": owner_id, "application_id": "personal_ai",
+        "workspace_id": None, "created_at": now, "event_sequence": 1, "action": "smoke",
+    })
+    memory = _memory((0.25, 0.75), owner_id, "preserve vector metadata")
+    memory_source = SourceRecord(str(memory.id), now, memory.model_dump(mode="json"))
+    source = _MigrationSource({
+        "conversations": {conversation.document_id: conversation},
+        "messages": {message.document_id: message},
+        "memories": {memory_source.document_id: memory_source},
+        "audit_events": {audit.document_id: audit},
+    })
+    epoch = f"p10-local-{uuid4()}"
+    control = PostgresMigrationControl(postgres_database)
+    postgres_target = PostgresMigrationTarget(postgres_database, control)
+    dynamodb_target = DynamoDBMigrationTarget(dynamodb_table)
+    scope = ApplicationScope(application_id="personal_ai", workspace_id=None)
+
+    first = run_migration(
+        source=source, control=control, postgres_target=postgres_target,
+        dynamodb_target=dynamodb_target, epoch_id=epoch, batch_size=2,
+    )
+    repeated = run_migration(
+        source=source, control=control, postgres_target=postgres_target,
+        dynamodb_target=dynamodb_target, epoch_id=epoch, batch_size=2,
+    )
+    assert not first.rejected and not first.conflicts
+    assert not repeated.rejected and not repeated.conflicts
+    assert repeated.counts["messages"]["unchanged"] == 1
+    assert postgres_target.logical_hash("audit_events", "audit-smoke", owner_id, scope) == audit_hash(
+        audit.data
+    )
+    assert postgres_target.logical_hash("memories", str(memory.id), owner_id, scope) == audit_hash(
+        memory.model_dump(mode="json")
+    )
+
+    source.families["messages"].clear()
+    source.families["memories"].clear()
+    source.families["audit_events"].clear()
+    final = run_migration(
+        source=source, control=control, postgres_target=postgres_target,
+        dynamodb_target=dynamodb_target, epoch_id=epoch, batch_size=2,
+        final_delta=True, writers_frozen=True,
+    )
+    assert final.final_delta_ready
+    assert final.counts["messages"]["source_deleted"] == 1
+    assert final.counts["memories"]["source_deleted"] == 1
+    assert final.counts["audit_events"]["source_deleted"] == 1
+    assert dynamodb_target.logical_hash(
+        "messages", str(message_id), owner_id, scope, message.data
+    ) is None
+    assert postgres_target.logical_hash("audit_events", "audit-smoke", owner_id, scope) is None
+    assert dynamodb_target.logical_hash(
+        "conversations", str(conversation_id), owner_id, scope
+    ) is not None
+
+    source.families["conversations"].clear()
+    final_empty = run_migration(
+        source=source, control=control, postgres_target=postgres_target,
+        dynamodb_target=dynamodb_target, epoch_id=epoch, batch_size=2,
+        final_delta=True, writers_frozen=True,
+    )
+    assert final_empty.final_delta_ready
+    assert dynamodb_target.logical_hash(
+        "conversations", str(conversation_id), owner_id, scope
+    ) is None
+    with postgres_database.transaction() as connection:
+        connection.execute("DELETE FROM storage_migration_records WHERE epoch_id=%s", (epoch,))
+        connection.execute("DELETE FROM storage_migration_checkpoints WHERE epoch_id=%s", (epoch,))
+        connection.execute("DELETE FROM storage_migration_epochs WHERE epoch_id=%s", (epoch,))
+
+
+def audit_hash(payload):
+    from personal_ai.persistence.firestore_migration import digest
+
+    return digest(payload)

@@ -27,7 +27,9 @@ This keeps chat and bounded research in the direct request path. Pub/Sub is used
 for gated durable Phase 4 memory-lifecycle notifications with fencing and
 recovery. Other asynchronous work needs its own concrete requirement.
 
-P10.0 records the [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). P10.1–P10.3 now have a targeted local implementation and evidence ([status](personal-ai-chapter-2/phase-10-p10.1-p10.3-implementation-evidence.md)); Firestore remains selected at runtime. P10.4–P10.6, Docker Compose execution, and cloud/cutover acceptance remain unverified.
+P10.0 records the [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). P10.1–P10.3 have targeted local implementation evidence; P10.4 migration and P10.5 cloud-control tooling now have synthetic/static evidence ([P10.4–P10.5 status](personal-ai-chapter-2/phase-10-p10.4-p10.5-implementation-evidence.md)). Firestore remains selected at runtime. Real-engine migration, Docker Compose execution, live cloud acceptance and P10.6 cutover remain unverified or not started.
+
+The P10.5 target connectivity, IAM, migration commands and strict-$0 review boundary are documented in the [P10.4–P10.5 operator guide](personal-ai-chapter-2/phase-10-p10.4-p10.5-operator-guide.md). This target is not the deployed runtime architecture.
 
 ## Components
 

@@ -5,7 +5,7 @@ This directory contains 33 implementation plans for the regenerated chapter. `ma
 ## Status
 
 - Phases 0–2: completed history.
-- Phase 10: P10.0 decisions and P10.1–P10.3 local implementation are recorded; Firestore remains selected at runtime. P10.4–P10.6 and cloud/cutover acceptance remain open. See the [implementation evidence](../phase-10-p10.1-p10.3-implementation-evidence.md).
+- Phase 10: P10.0 decisions and P10.1–P10.3 local implementation are recorded; P10.4 migration and P10.5 cloud-control tooling have targeted synthetic/static evidence. Firestore remains selected at runtime; real-engine migration, cloud acceptance and P10.6 cutover remain open. See the [P10.1–P10.3 evidence](../phase-10-p10.1-p10.3-implementation-evidence.md) and [P10.4–P10.5 evidence](../phase-10-p10.4-p10.5-implementation-evidence.md).
 - Phases 11–36: future work under the preserved-scope numbering map.
 
 See [ADR 0021](../../decisions/0021-polyglot-persistence-foundation.md), the [Phase 10 storage contract](../phase-10-storage-ownership-and-access-patterns.md) and [migration/verification plan](../phase-10-migration-cutover-and-verification-plan.md) for the reviewed foundation.

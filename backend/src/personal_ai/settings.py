@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     firestore_project_id: str | None = None
     firestore_emulator_host: str | None = None
     app_environment: str = Field(default="local", pattern=r"^(local|test|staging|production)$")
+    # Opt-in connection material for P10 cloud adapter validation/smoke only.
+    # These fields do not select or activate a new runtime persistence backend.
+    p10_cloud_adapters_configured: bool = False
+    p10_neon_runtime_dsn: SecretStr = Field(default=SecretStr(""))
+    p10_neon_pool_max_size: int = Field(default=4, ge=1, le=4)
+    p10_dynamodb_region: str = Field(default="us-east-1", min_length=1, max_length=32)
+    p10_dynamodb_table_name: str = Field(default="personal-ai-runtime-v1", min_length=3, max_length=255)
+    p10_dynamodb_role_arn: str = Field(default="", max_length=600)
+    p10_dynamodb_identity_token_audience: str = Field(default="", max_length=500)
     auth_mode: str = Field(default="development", pattern=r"^(development|google_oidc)$")
     auth_required: bool = False
     auth_issuer: str = Field(default="https://accounts.google.com", min_length=1, max_length=200)
@@ -202,6 +211,23 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
+        if self.p10_cloud_adapters_configured:
+            if self.app_environment not in {"staging", "production"}:
+                raise ValueError("p10_cloud_adapters_require_deployed_environment")
+            from personal_ai.persistence.dynamodb_cloud import FederatedDynamoDBConfig
+            from personal_ai.persistence.neon import NeonRuntimeDatabase
+
+            dsn = self.p10_neon_runtime_dsn.get_secret_value()
+            NeonRuntimeDatabase(
+                dsn, environment=self.app_environment,
+                max_size=self.p10_neon_pool_max_size,
+            )
+            FederatedDynamoDBConfig(
+                region=self.p10_dynamodb_region,
+                table_name=self.p10_dynamodb_table_name,
+                role_arn=self.p10_dynamodb_role_arn,
+                identity_token_audience=self.p10_dynamodb_identity_token_audience,
+            ).validate()
         available = (
             self.max_context_tokens - self.max_response_tokens - self.context_safety_margin_tokens
         )

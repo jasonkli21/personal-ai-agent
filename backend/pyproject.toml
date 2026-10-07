@@ -41,4 +41,7 @@ target-version = "py311"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-markers = ["persistence_integration: requires local Postgres/pgvector and DynamoDB Local"]
+markers = [
+  "persistence_integration: requires local Postgres/pgvector and DynamoDB Local",
+  "cloud_smoke: explicit opt-in against already-provisioned cloud resources",
+]

@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime
 from importlib.resources import files
 from time import monotonic
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from personal_ai.auth.scope import ApplicationScope
 
@@ -116,9 +117,14 @@ class PostgresDatabase:
         statement_timeout_ms: int = 5_000,
         lock_timeout_ms: int = 2_000,
         pool_timeout: float = 5,
+        prepare_threshold: int | None = 5,
     ) -> None:
         if not dsn.strip():
             raise ValueError("postgres_dsn_required")
+        if not 0 <= min_size <= max_size <= 16 or max_size < 1:
+            raise ValueError("postgres_pool_bounds_invalid")
+        if not 1 <= connect_timeout <= 30 or not 1 <= statement_timeout_ms <= 120_000:
+            raise ValueError("postgres_timeout_bounds_invalid")
         self._dsn = dsn
         self._environment = environment
         self._min_size, self._max_size = min_size, max_size
@@ -126,13 +132,12 @@ class PostgresDatabase:
         self._statement_timeout_ms = statement_timeout_ms
         self._lock_timeout_ms = lock_timeout_ms
         self._pool_timeout = pool_timeout
+        self._prepare_threshold = prepare_threshold
         self._pool = None
         self._async_pool = None
         self._validate_endpoint()
 
     def _validate_endpoint(self) -> None:
-        from urllib.parse import urlsplit
-
         parsed = urlsplit(self._dsn)
         if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
             raise ValueError("postgres_dsn_invalid")
@@ -142,6 +147,10 @@ class PostgresDatabase:
             raise ValueError("local_postgres_endpoint_forbidden")
         if self._environment in {"local", "test"} and host not in local_hosts:
             raise ValueError("cloud_postgres_endpoint_forbidden")
+        if self._environment in {"staging", "production"}:
+            query = parse_qs(parsed.query)
+            if query.get("sslmode") != ["verify-full"]:
+                raise ValueError("postgres_tls_verification_required")
 
     def open(self) -> None:
         if self._pool is not None:
@@ -166,6 +175,7 @@ class PostgresDatabase:
             min_size=self._min_size,
             max_size=self._max_size,
             timeout=self._pool_timeout,
+            kwargs={"prepare_threshold": self._prepare_threshold},
             open=True,
         )
 
@@ -192,6 +202,7 @@ class PostgresDatabase:
             min_size=self._min_size,
             max_size=self._max_size,
             timeout=self._pool_timeout,
+            kwargs={"prepare_threshold": self._prepare_threshold},
             open=False,
         )
         await self._async_pool.open()

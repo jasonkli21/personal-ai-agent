@@ -1,0 +1,42 @@
+-- Run as the Neon schema/bootstrap administrator. Create login roles through
+-- the approved secret-management workflow; do not place passwords in this file.
+GRANT CONNECT ON DATABASE ${DATABASE_NAME} TO p10_runtime, p10_storage_migration;
+GRANT USAGE ON SCHEMA public TO p10_runtime, p10_storage_migration;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+    scope_namespaces,
+    memories, derived_memories, derived_memory_sources, memory_lifecycle_operations,
+    memory_lifecycle_states, memory_lifecycle_events,
+    research_sessions, research_request_keys, iterative_research_runs,
+    iterative_research_request_keys,
+    canonical_entities, entity_aliases, entity_claims, entity_claim_evidence,
+    entity_matches, decision_snapshots, decision_evidence_snapshots, candidate_evaluations,
+    domain_claim_extensions, provider_observations, domain_comparison_views,
+    domain_lookup_idempotency, itinerary_proposals, booking_document_extractions,
+    identity_mappings, account_lifecycle_requests, audit_events, usage_budgets,
+    domain_registrations, domain_provider_rate_limits
+TO p10_runtime;
+
+GRANT SELECT ON TABLE legacy_memory_lifecycle_operations TO p10_runtime;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+    scope_namespaces,
+    memories, derived_memories, derived_memory_sources, memory_lifecycle_operations,
+    legacy_memory_lifecycle_operations,
+    memory_lifecycle_states, memory_lifecycle_events,
+    research_sessions, research_request_keys, iterative_research_runs,
+    iterative_research_request_keys,
+    canonical_entities, entity_aliases, entity_claims, entity_claim_evidence,
+    entity_matches, decision_snapshots, decision_evidence_snapshots, candidate_evaluations,
+    domain_claim_extensions, provider_observations, domain_comparison_views,
+    domain_lookup_idempotency, itinerary_proposals, booking_document_extractions,
+    identity_mappings, account_lifecycle_requests, audit_events, usage_budgets,
+    domain_registrations, domain_provider_rate_limits,
+    storage_migration_epochs, storage_migration_checkpoints, storage_migration_records
+TO p10_storage_migration;
+
+GRANT SELECT ON TABLE schema_migrations TO p10_storage_migration;
+
+-- p10_runtime receives no schema_migrations or storage_migration_* access.
+-- p10_storage_migration receives no DDL, role-management, extension, or table-bootstrap rights.
+-- Grant role membership to secret-backed login roles in a separately reviewed step.

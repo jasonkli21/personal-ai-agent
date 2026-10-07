@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GoogleCloudRunServiceAccountOnly",
+      "Effect": "Allow",
+      "Principal": {"Federated": "accounts.google.com"},
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "accounts.google.com:aud": "${GOOGLE_AZP_OR_AUD}",
+          "accounts.google.com:oaud": "${GOOGLE_OAUD}",
+          "accounts.google.com:sub": "${GOOGLE_SERVICE_ACCOUNT_NUMERIC_SUBJECT}"
+        }
+      }
+    }
+  ]
+}

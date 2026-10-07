@@ -1,14 +1,16 @@
 # Phase 10 migration, cutover and verification plan
 
-Status: P10.0 documentation only, 2026-10-06. Reviewed repository revision:
-`e17ebd76afd1feb90fe47d959c43ab23eb553499`. No migration, local database stack,
-cloud provisioning or persistence tests have run for this plan.
+Status: normative migration/cutover contract, reviewed 2026-10-06 against
+repository revision `e17ebd76afd1feb90fe47d959c43ab23eb553499`. P10.4–P10.5
+implementation evidence is recorded in the [handoff](phase-10-p10.4-p10.5-implementation-evidence.md): synthetic migration and static configuration checks ran; real Firestore/target-engine migration, cloud provisioning/connectivity and cutover have not been verified. P10.6 has not started.
 
 Read the authoritative [Phase 10 plan](personal-ai-next-scope-detailed-implementation-plans/plans/phase-10-implementation-plan.md),
 [ADR 0021](../decisions/0021-polyglot-persistence-foundation.md) and
 [ownership/access-pattern contract](phase-10-storage-ownership-and-access-patterns.md).
-This document specifies later implementation work; commands/tools named by their
-purpose below are requirements, not executable commands that already exist.
+This document remains the normative acceptance contract. Implemented P10.4–P10.5
+operator commands and their present verification limits are listed in the
+[operator guide](phase-10-p10.4-p10.5-operator-guide.md) and [implementation
+evidence](phase-10-p10.4-p10.5-implementation-evidence.md).
 
 ## Migration contract
 

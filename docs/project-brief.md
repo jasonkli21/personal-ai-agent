@@ -2,7 +2,7 @@
 
 Read this document before making implementation decisions. It carries the product intent and guardrails that sit behind the architecture and implementation plan.
 
-P10.0 records the [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). P10.1–P10.3 now have a targeted local implementation and evidence ([status](personal-ai-chapter-2/phase-10-p10.1-p10.3-implementation-evidence.md)); Firestore remains selected at runtime. P10.4–P10.6, Docker Compose execution, and cloud/cutover acceptance remain unverified.
+P10.0 records the [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). P10.1–P10.3 have targeted local implementation evidence; P10.4 migration and P10.5 cloud-control tooling now have synthetic/static evidence ([P10.4–P10.5 status](personal-ai-chapter-2/phase-10-p10.4-p10.5-implementation-evidence.md)). Firestore remains selected at runtime. Real-engine migration, cloud acceptance, Docker Compose execution and P10.6 cutover remain unverified or not started.
 
 ## Purpose
 

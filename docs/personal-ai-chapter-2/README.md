@@ -9,7 +9,7 @@ This package supersedes the deleted `docs/personal-ai-next-scope-chatgpt-integra
 - Next-scope Phase 0 reconciliation: complete.
 - Next-scope Phase 1 application/workspace identity: implemented and locally verified, with the previously recorded external/deployed gaps still open.
 - Next-scope Phase 2 application registry/manifest model: implemented and locally verified, with the previously recorded external/deployed gaps still open.
-- **Current implementation phase: Phase 10 — Polyglot persistence foundation and Firestore migration.** P10.0 decisions and P10.1–P10.3 local implementation are recorded; Firestore remains selected at runtime. P10.4–P10.6 and cloud/cutover acceptance remain open. See the [P10.1–P10.3 evidence](phase-10-p10.1-p10.3-implementation-evidence.md).
+- **Current implementation phase: Phase 10 — Polyglot persistence foundation and Firestore migration.** P10.0 decisions and P10.1–P10.3 local implementation are recorded; P10.4 migration and P10.5 cloud-control tooling are implemented with targeted synthetic/static checks. Firestore remains selected at runtime; real-engine migration, live cloud acceptance, and P10.6 cutover remain open. See the [P10.4–P10.5 evidence](phase-10-p10.4-p10.5-implementation-evidence.md).
 - Phases 3–9 are intentionally unused in this chapter. This keeps Phase 10 as the clear architecture boundary without renumbering the completed Phases 0–2.
 - Former Phases 3–16 are preserved as Phases 11–24.
 - Former ChatGPT Phases 17.1–17.4 are preserved as Phases 25.1–25.4.

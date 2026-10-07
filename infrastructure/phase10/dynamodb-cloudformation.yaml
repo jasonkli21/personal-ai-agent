@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Personal AI P10 runtime timeline table. Provisioned Standard capacity is explicit.
+Parameters:
+  TableName:
+    Type: String
+    MinLength: 3
+    MaxLength: 255
+  RuntimeReadCapacity:
+    Type: Number
+    MinValue: 1
+    MaxValue: 1000
+  RuntimeWriteCapacity:
+    Type: Number
+    MinValue: 1
+    MaxValue: 1000
+  JobIndexReadCapacity:
+    Type: Number
+    MinValue: 1
+    MaxValue: 1000
+  JobIndexWriteCapacity:
+    Type: Number
+    MinValue: 1
+    MaxValue: 1000
+Resources:
+  RuntimeTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PROVISIONED
+      TableClass: STANDARD
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: PUBPK
+          AttributeType: S
+        - AttributeName: PUBSK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: !Ref RuntimeReadCapacity
+        WriteCapacityUnits: !Ref RuntimeWriteCapacity
+      GlobalSecondaryIndexes:
+        - IndexName: job-publication-v1
+          KeySchema:
+            - AttributeName: PUBPK
+              KeyType: HASH
+            - AttributeName: PUBSK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - record_pk
+              - record_sk
+              - revision
+              - created_at
+              - publish_after
+              - job_id
+          ProvisionedThroughput:
+            ReadCapacityUnits: !Ref JobIndexReadCapacity
+            WriteCapacityUnits: !Ref JobIndexWriteCapacity
+      SSESpecification:
+        SSEEnabled: true
