@@ -1,10 +1,12 @@
 # Phase 11 implementation evidence — Context source and provider abstraction
 
 Date: 2026-10-07 (America/Los_Angeles)
-Tested source tree: Phase 11 implementation based on clean repository revision
-`bab6c429e2f7531cce70fec0493943b29107cfe0`. Backend checks used the repository
-Python 3.11.15 virtual environment. The implementation commit includes the
-source and documentation changes described here.
+Original implementation source: Phase 11 implementation based on clean
+repository revision `bab6c429e2f7531cce70fec0493943b29107cfe0`.
+Independent-review fixes were first tested in the review-fix working tree
+based on `a00324fbfb51f432c7c8fe216c9a64e4f6e727b9`, then rerun on committed
+revision `f574a8d1a52d4e86a6efe80fb1e9b177589ce305`, using the repository
+Python 3.11.15 virtual environment. The exact-commit rerun is recorded below.
 
 ## Delivered
 
@@ -24,10 +26,45 @@ source and documentation changes described here.
   sharing; `GET`/`PUT /v1/profile` require the owner principal and standalone
   `personal_ai` scope. A Postgres repository and migration persist the profile,
   and the record family is in account export/deletion inventory.
-- Reviewed the root README and updated it to reflect the new user-visible
-  profile and context-preparation capability.
+- Reviewed the root README for the original Phase 11 change and updated it to
+  reflect the then-new user-visible profile and context-preparation capability.
+
+## Independent review remediation
+
+The 2026-10-07 independent review's twelve findings are addressed in the
+existing provider, assembler, wrapper, and profile-repository seams:
+
+- Research attribution now validates evidence/observation owner, application,
+  workspace, session, accepted status, missing IDs, and duplicate IDs before
+  projecting source URLs or fingerprints. Evidence expiry remains unchanged.
+- Memory source preparation requires the typed retrieval result and reapplies
+  the existing rejected-status and content policy before projection. Lifecycle
+  and source validation remain with the retriever.
+- Universal target and entity scope is checked across the complete plan before
+  missing, disabled, or unsupported providers can become optional failures.
+- The assembler deadline reaches the coordinator, caps each source deadline,
+  and is checked before later source work and before successful return.
+- Empty required output raises a stable preparation error and prevents later
+  optional reads. Optional empty output remains a bounded advisory failure.
+- Profile and client-context projections preserve requested order and honor
+  result limits. Conversation summaries reserve a result slot, preserve exact
+  provenance up to 200 references, and cannot discard valid history when a
+  summary exceeds provenance or response-byte bounds.
+- Runtime boundaries reject untyped payloads and authoritative claims from
+  external research or client context. Field-sensitivity metadata is bounded,
+  tied to payload fields, defaults to the item-level classification, and
+  cannot understate the aggregate.
+- Optional factory/validator timeout and dependency errors map to safe bounded
+  failures; explicit preparation denials and identity invariants remain
+  fail-closed.
+- Opt-in Postgres profile repository tests now cover migration-backed CRUD,
+  owner-wide storage and isolation, selective sharing/revocation, in-memory
+  parity, concurrent initial and disjoint updates, revisions, deadlines, and
+  exported user-set provenance.
 
 ## Checks
+
+Original Phase 11 implementation checks:
 
 - `backend/.venv/bin/python -m pytest`: **590 passed, 25 skipped**. Skips were
   22 local Postgres/DynamoDB integration cases, one cloud smoke case, and two
@@ -64,3 +101,25 @@ external provider behavior.
 
 Phase 11 typed provider preparation and synthetic acceptance are implemented
 locally. Database and deployment acceptance remain unverified.
+
+## Independent review verification
+
+- Exact tested source revision: `f574a8d1a52d4e86a6efe80fb1e9b177589ce305`.
+- `make backend-test backend-lint`: **635 passed, 26 skipped; Ruff passed**.
+  Skips include 23 Postgres/DynamoDB local-persistence cases, one cloud smoke
+  case, and two manual provider/context cases.
+- `make context-eval memory-eval research-eval domain-eval`: **passed** with
+  deterministic offline/synthetic fixtures only.
+- Focused context-source and local-persistence test files: **61 passed,
+  23 skipped**.
+- The root README was reviewed; the remediation changes validation and bounds
+  without changing the user-visible capability, so no new README edit was
+  needed.
+- The Postgres profile contract tests are present but were skipped because
+  `PERSISTENCE_TEST_POSTGRES_DSN` and DynamoDB Local were not configured.
+- No Postgres migration/repository execution, cloud, provider, deployment, or
+  browser acceptance is claimed. Fakes and offline evaluations do not establish
+  those external behaviors.
+
+The source fixes and local regression coverage are implemented and offline
+verified. Local-engine and deployment acceptance remain open.

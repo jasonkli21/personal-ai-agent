@@ -11,10 +11,19 @@ for tested revision and verification status.
 - [`context/providers.py`](../../backend/src/personal_ai/context/providers.py)
   defines source classes, typed context items, provider operations, selections,
   results, bounded failures, and the coordinator. The coordinator resolves
-  registered capabilities and validates the full selection set before any
-  provider fetch. Owner/app/workspace scope, operation fields, time windows,
-  result count, response bytes, timeout allowance, and read-only tool
-  registration are checked at admission.
+  registered capabilities and validates universal target/entity scope for the
+  complete selection set before optional availability or unsupported-operation
+  handling. It validates operation fields, time windows, result count, response
+  bytes, timeout allowance, and read-only tool registration before provider
+  fetch. The assembler's absolute request deadline caps every source deadline
+  and is checked between sources and before preparation returns. Empty required
+  sources fail preparation and stop later optional reads.
+- Payloads must be typed Pydantic models at construction and at the shared
+  result boundary. External-research and client-context items cannot claim
+  authoritative authority. Normalized items carry bounded field-sensitivity
+  labels for their disclosed typed-payload fields; omitted labels inherit the
+  conservative item-level classification, and the aggregate cannot be less
+  restrictive than an explicit field label.
 - [`applications/contracts.py`](../../backend/src/personal_ai/applications/contracts.py)
   and [`applications/registry.py`](../../backend/src/personal_ai/applications/registry.py)
   compose provider/tool registration metadata with `ApplicationDefinition` and
@@ -34,11 +43,23 @@ provides typed projections over existing request snapshots:
 - conversation history uses only the active branch supplied to the wrapper and
   includes a summary only when it is compatible with that branch;
 - memory returns selected active memory projections without exposing vectors or
-  lifecycle internals;
-- research evidence preserves observation IDs, URLs, fingerprints, and expiry;
+  lifecycle internals, and reapplies the existing rejected-status and
+  content-sensitivity checks at this disclosure seam. Lifecycle and source
+  validation remain the retriever's responsibility;
+- research evidence validates every referenced observation's owner, app,
+  workspace, session, and accepted status before projecting its URL or
+  fingerprint, and preserves evidence expiry;
 - client context is non-authoritative and limited to selected request fields;
 - tool results require an explicitly registered read-only capability with
   bounded fields and bytes, and remain read-only context.
+
+Profile and client-context adapters preserve requested field order and emit no
+more items than max_results. Conversation history reserves an item for a
+compatible summary when it fits. Summary provenance is retained exactly up to
+the bounded 200-reference contract; oversized provenance is skipped with a
+bounded reason while valid recent history remains available. If the summary
+and recent history exceed the response-byte allowance, the adapter trims older
+history first and omits only a summary that cannot fit by itself.
 
 These wrappers do not create domain database clients. Synthetic domain
 providers in `backend/tests/test_context_sources.py` exercise the registration
@@ -60,7 +81,9 @@ stores it in the canonical owner-wide `personal_ai` Postgres namespace with
 revisioned updates and filtered sharing reads. Migration
 [`015_global_profile.sql`](../../backend/src/personal_ai/persistence/migrations/015_global_profile.sql)
 creates the bounded record family. The family is included in the shared
-Postgres account export and deletion inventory.
+Postgres account export and deletion inventory. The provider returns shared
+fields in request order and honors max_results; unshared and absent fields
+remain absent.
 
 ## Scope limits
 

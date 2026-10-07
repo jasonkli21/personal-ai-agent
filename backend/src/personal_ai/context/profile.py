@@ -229,6 +229,12 @@ class GlobalProfileContextProvider:
             tuple(selection.fields),
             deadline=deadline,
         )
+        by_field = {item.field: (revision, item) for revision, item in fields}
+        bounded = tuple(
+            by_field[name]
+            for name in selection.fields
+            if name in by_field
+        )[: selection.max_results]
         return tuple(
             ContextItem(
                 source_class="global_profile",
@@ -261,7 +267,7 @@ class GlobalProfileContextProvider:
                     set_at=item.set_at,
                 ),
             )
-            for revision, item in fields
+            for revision, item in bounded
         )
 
 

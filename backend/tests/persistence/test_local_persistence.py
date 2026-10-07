@@ -7,7 +7,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from math import sqrt
-from threading import Event, Thread
+from threading import Barrier, Event, Thread
 from time import monotonic
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -16,6 +16,11 @@ import pytest
 from personal_ai.auth.safeguards import SafeguardDenied
 from personal_ai.auth.scope import ApplicationScope, application_scope_context
 from personal_ai.context.contracts import ConversationSummary, fingerprint
+from personal_ai.context.profile import (
+    GlobalProfileFieldUpdate,
+    GlobalProfileUpdate,
+    InMemoryGlobalProfileRepository,
+)
 from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
 from personal_ai.memory.contracts import (
     DerivedMemory,
@@ -51,6 +56,7 @@ from personal_ai.persistence.postgres_capabilities import (
     PostgresBookingExtractionRepository,
     PostgresItineraryProposalRepository,
 )
+from personal_ai.persistence.postgres_context import PostgresGlobalProfileRepository
 from personal_ai.persistence.postgres_decisions import PostgresDecisionRepository
 from personal_ai.persistence.postgres_domains import PostgresDomainRepository
 from personal_ai.persistence.postgres_lifecycle import PostgresMemoryLifecycleRepository
@@ -662,6 +668,18 @@ def test_postgres_dynamodb_portable_export_preserves_logical_records_and_coverag
         memory, _ = PostgresMemoryRepository(
             postgres_database, _SourceGuard(owner_id)
         ).create(memory)
+        PostgresGlobalProfileRepository(postgres_database).update(
+            owner_id,
+            GlobalProfileUpdate(
+                fields=(
+                    GlobalProfileFieldUpdate(
+                        field="preferred_units",
+                        value="metric",
+                        shared_with_applications=("travel",),
+                    ),
+                )
+            ),
+        )
         PostgresDailyBudgetRepository(postgres_database).reserve_daily(
             owner_id, calls=2, tokens=321, call_limit=10, token_limit=1000
         )
@@ -682,6 +700,10 @@ def test_postgres_dynamodb_portable_export_preserves_logical_records_and_coverag
     assert exported["collections"]["conversation_summaries"][0]["document_id"] == str(summary.id)
     assert exported["collections"]["memory_lifecycle_jobs"][0]["document_id"] == str(job.id)
     assert exported["collections"]["memory_lifecycle_jobs"][0]["data"]["status"] == "completed"
+    profile_data = exported["collections"]["global_profiles"][0]["data"]
+    assert profile_data["owner_id"] == owner_id
+    assert profile_data["fields"][0]["set_by"] == "user"
+    assert profile_data["fields"][0]["value"] == "metric"
     usage_data = exported["collections"]["usage_budgets"][0]["data"]
     assert usage_data["provider_calls"] == 2
     assert usage_data["input_tokens"] == 321
@@ -690,6 +712,165 @@ def test_postgres_dynamodb_portable_export_preserves_logical_records_and_coverag
         PostgresAccountLifecycleRepository(
             postgres_database, dynamodb_table
         ).export_owner(owner_id, max_records=1, max_bytes=1_000_000)
+
+
+def test_postgres_global_profile_repository_contract_and_concurrency(postgres_database):
+    owner_id = f"profile-contract-{uuid4()}"
+    repository = PostgresGlobalProfileRepository(postgres_database)
+    memory_repository = InMemoryGlobalProfileRepository(clock=lambda: datetime.now(UTC))
+    assert repository.get(owner_id).revision == 0
+    assert repository.get(owner_id).fields == ()
+
+    first_update = GlobalProfileUpdate(
+        fields=(
+            GlobalProfileFieldUpdate(
+                field="preferred_units",
+                value="metric",
+                shared_with_applications=("travel",),
+            ),
+            GlobalProfileFieldUpdate(field="locale", value="en-GB"),
+        )
+    )
+    with application_scope_context(
+        ApplicationScope(application_id="travel", workspace_id="team-a")
+    ):
+        first = repository.update(owner_id, first_update)
+    memory_repository.update(owner_id, first_update)
+    assert first.revision == 1
+    assert first.owner_id == owner_id
+
+    # The repository is canonical owner-wide storage, independent of a
+    # request's application and workspace namespace.
+    with application_scope_context(
+        ApplicationScope(application_id="shopping", workspace_id="team-b")
+    ):
+        assert repository.get(owner_id).revision == 1
+        second = repository.update(
+            owner_id,
+            GlobalProfileUpdate(
+                fields=(
+                    GlobalProfileFieldUpdate(
+                        field="response_style",
+                        value="concise",
+                        shared_with_applications=("travel", "shopping"),
+                    ),
+                )
+            ),
+        )
+    memory_repository.update(
+        owner_id,
+        GlobalProfileUpdate(
+            fields=(
+                GlobalProfileFieldUpdate(
+                    field="response_style",
+                    value="concise",
+                    shared_with_applications=("travel", "shopping"),
+                ),
+            )
+        ),
+    )
+    assert second.revision == 2
+    assert repository.get(f"other-{owner_id}").fields == ()
+    pg_shared = repository.shared_fields(
+        owner_id, "travel", ("preferred_units", "locale", "response_style")
+    )
+    memory_shared = memory_repository.shared_fields(
+        owner_id, "travel", ("preferred_units", "locale", "response_style")
+    )
+    projection = lambda records: tuple(
+        (item.field, item.value, item.shared_with_applications) for _, item in records
+    )
+    assert projection(pg_shared) == projection(memory_shared)
+    assert [item.field for _, item in pg_shared] == ["preferred_units", "response_style"]
+    assert repository.shared_fields(owner_id, "shopping", ("preferred_units",)) == ()
+
+    revoked = repository.update(
+        owner_id,
+        GlobalProfileUpdate(
+            fields=(
+                GlobalProfileFieldUpdate(field="preferred_units", value="imperial"),
+            )
+        ),
+    )
+    assert revoked.revision == 3
+    assert repository.shared_fields(owner_id, "travel", ("preferred_units",)) == ()
+    assert repository.get(owner_id).fields[0].set_by == "user"
+    removed = repository.update(
+        owner_id, GlobalProfileUpdate(remove_fields=("locale",))
+    )
+    assert removed.revision == 4
+    assert {item.field for item in removed.fields} == {"preferred_units", "response_style"}
+
+    concurrent_owner = f"profile-concurrent-{uuid4()}"
+    barrier = Barrier(3)
+    results = []
+    failures = []
+
+    def concurrent_update(update):
+        try:
+            barrier.wait()
+            results.append(repository.update(concurrent_owner, update))
+        except Exception as error:  # noqa: BLE001 - surface failures in the asserting thread
+            failures.append(error)
+
+    initial_updates = (
+        GlobalProfileUpdate(
+            fields=(
+                GlobalProfileFieldUpdate(
+                    field="preferred_units",
+                    value="metric",
+                    shared_with_applications=("travel",),
+                ),
+            )
+        ),
+        GlobalProfileUpdate(
+            fields=(
+                GlobalProfileFieldUpdate(field="locale", value="en-GB"),
+            )
+        ),
+    )
+    threads = [Thread(target=concurrent_update, args=(update,)) for update in initial_updates]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert all(not thread.is_alive() for thread in threads)
+    assert failures == []
+    assert sorted(item.revision for item in results) == [1, 2]
+    current = repository.get(concurrent_owner)
+    assert current.revision == 2
+    assert {item.field for item in current.fields} == {"preferred_units", "locale"}
+
+    barrier = Barrier(3)
+    results.clear()
+    updates = (
+        GlobalProfileUpdate(
+            fields=(GlobalProfileFieldUpdate(field="response_style", value="detailed"),)
+        ),
+        GlobalProfileUpdate(
+            fields=(GlobalProfileFieldUpdate(field="answer_length", value="expanded"),)
+        ),
+    )
+    threads = [Thread(target=concurrent_update, args=(update,)) for update in updates]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert all(not thread.is_alive() for thread in threads)
+    assert failures == []
+    assert sorted(item.revision for item in results) == [3, 4]
+    current = repository.get(concurrent_owner)
+    assert current.revision == 4
+    assert {item.field for item in current.fields} == {
+        "preferred_units", "locale", "response_style", "answer_length"
+    }
+
+    with pytest.raises(TimeoutError, match="postgres operation deadline exceeded"):
+        repository.shared_fields(
+            owner_id, "travel", ("preferred_units",), deadline=monotonic() - 1
+        )
 
 def test_derived_memory_keeps_original_sources_and_excludes_inactive_dependencies(
     postgres_database,

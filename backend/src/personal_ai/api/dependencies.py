@@ -164,7 +164,7 @@ def get_context_assembler(
 ) -> ContextAssembler:
     providers = ContextProviderCoordinator(
         {
-            "ai_memory": MemoryContextProviderFactory(),
+            "ai_memory": MemoryContextProviderFactory(settings),
             "client_context": ClientContextProviderFactory(),
             "conversation_history": ConversationContextProviderFactory(),
             "external_research": ResearchEvidenceContextProviderFactory(),

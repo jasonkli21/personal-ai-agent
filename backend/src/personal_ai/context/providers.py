@@ -20,6 +20,7 @@ from personal_ai.applications.contracts import (
     CapabilityRegistration,
 )
 from personal_ai.auth.scope import ApplicationScope, RequestScope
+from personal_ai.memory.contracts import RetrievalResult
 
 ContextSourceClass = Literal[
     "global_profile",
@@ -74,6 +75,15 @@ class ContextPermissionDependency(BaseModel):
     purpose: str = Field(min_length=1, max_length=160)
 
 
+class ContextFieldSensitivity(BaseModel):
+    """Sensitivity assigned to one field in the disclosed typed payload."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
+    sensitivity: ContextSensitivity
+
+
 class ContextItem(BaseModel, Generic[PayloadT]):
     """Normalized metadata around a domain-typed payload.
 
@@ -97,11 +107,19 @@ class ContextItem(BaseModel, Generic[PayloadT]):
     effective_at: datetime | None = None
     expires_at: datetime | None = None
     sensitivity: ContextSensitivity = "unknown"
-    source_refs: tuple[ContextSourceReference, ...] = Field(default=(), max_length=32)
+    source_refs: tuple[ContextSourceReference, ...] = Field(default=(), max_length=200)
     permission_dependencies: tuple[ContextPermissionDependency, ...] = Field(
         default=(), max_length=16
     )
+    field_sensitivity: tuple[ContextFieldSensitivity, ...] = Field(default=(), max_length=32)
     payload: PayloadT
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def payload_is_typed(cls, value: Any) -> Any:
+        if not isinstance(value, BaseModel):
+            raise TypeError("context_payload_must_be_typed")
+        return value
 
     @field_validator("observed_at", "effective_at", "expires_at")
     @classmethod
@@ -124,6 +142,42 @@ class ContextItem(BaseModel, Generic[PayloadT]):
             raise ValueError("context_source_refs_must_be_unique")
         if len(set(self.entity_refs)) != len(self.entity_refs):
             raise ValueError("context_entity_refs_must_be_unique")
+        if self.source_class in {"external_research", "client_context"} and (
+            self.authority == "authoritative"
+        ):
+            raise ValueError("context_source_authority_ceiling")
+        fields = [item.field for item in self.field_sensitivity]
+        if len(fields) != len(set(fields)):
+            raise ValueError("context_field_sensitivity_must_be_unique")
+        payload_fields = set(type(self.payload).model_fields)
+        if set(fields) - payload_fields:
+            raise ValueError("context_field_sensitivity_outside_payload")
+        disclosed_fields = set(self.payload.model_dump(exclude_none=True))
+        if disclosed_fields - payload_fields:
+            raise ValueError("context_payload_projection_invalid")
+        missing_labels = disclosed_fields - set(fields)
+        if missing_labels:
+            # Field labels default to the conservative item-level classification;
+            # providers can be more precise for mixed-sensitivity projections.
+            expanded = (*self.field_sensitivity, *(
+                ContextFieldSensitivity(field=name, sensitivity=self.sensitivity)
+                for name in sorted(missing_labels)
+            ))
+            if len(expanded) > 32:
+                raise ValueError("context_field_sensitivity_limit_exceeded")
+            object.__setattr__(self, "field_sensitivity", expanded)
+            fields.extend(sorted(missing_labels))
+        sensitivity_rank = {
+            "public": 0,
+            "personal": 1,
+            "sensitive": 2,
+            "restricted": 3,
+            "unknown": 4,
+        }
+        if self.field_sensitivity and sensitivity_rank[self.sensitivity] < max(
+            sensitivity_rank[item.sensitivity] for item in self.field_sensitivity
+        ):
+            raise ValueError("context_aggregate_sensitivity_understated")
         return self
 
 
@@ -232,7 +286,8 @@ class ContextProviderFailure(BaseModel):
 
     provider_id: str
     reason: Literal[
-        "unavailable", "timeout", "unsupported_operation", "source_failed", "empty"
+        "unavailable", "timeout", "unsupported_operation", "source_failed", "empty",
+        "summary_provenance_limit", "summary_response_limit",
     ]
 
 
@@ -269,7 +324,7 @@ class ContextProviderInputs:
     application_context: ApplicationContextRequest | None = None
     active_messages: tuple[Any, ...] = ()
     summary: Any | None = None
-    retrieval: Any | None = None
+    retrieval: RetrievalResult | None = None
     evidence_records: tuple[Any, ...] = ()
     tool_results: Mapping[str, Any] | None = None
 
@@ -285,7 +340,7 @@ class ContextProvider(Protocol):
 
     def fetch(
         self, selection: ContextSelection, scope: RequestScope, *, deadline: float
-    ) -> Sequence[ContextItem[Any]]: ...
+    ) -> Sequence[ContextItem[Any]] | ContextProviderResult: ...
 
 
 class ContextProviderFactory(Protocol):
@@ -331,6 +386,27 @@ class ContextProviderCoordinator:
         return self._providers.get(provider_id)
 
     @staticmethod
+    def _preflight_failure(selection: ContextSelection, error: Exception) -> str:
+        if isinstance(error, ContextPreparationError):
+            raise error
+        if isinstance(error, TimeoutError):
+            reason = "timeout"
+            required_code = "required_context_source_timeout"
+        elif isinstance(error, ContextProviderError):
+            reason = "timeout" if error.code.endswith("timeout") else "unavailable"
+            required_code = (
+                "required_context_source_timeout"
+                if reason == "timeout"
+                else "required_context_source_unavailable"
+            )
+        else:
+            reason = "source_failed"
+            required_code = "required_context_source_failed"
+        if selection.required:
+            raise ContextPreparationError(required_code) from error
+        return reason
+
+    @staticmethod
     def _capability(
         context: ApplicationContextRequest,
         provider_id: str,
@@ -351,17 +427,36 @@ class ContextProviderCoordinator:
         context: ApplicationContextRequest,
         selections: Sequence[ContextSelection],
         inputs: ContextProviderInputs,
+        *,
+        deadline: float | None = None,
     ) -> ContextProviderResult:
         if len(selections) > self.MAX_SELECTIONS:
             raise ContextPreparationError("context_selection_limit_exceeded")
         if inputs.scope != context.scope:
             raise ContextPreparationError("context_provider_scope_mismatch")
 
+        expected_scope = ApplicationScope(
+            application_id=context.scope.application_id,
+            workspace_id=context.scope.workspace_id,
+        )
+        # Scope denial is universal. Resolve it across the full selection set
+        # before optional availability or supported-operation checks.
+        for selection in selections:
+            target_scope = selection.target_scope or expected_scope
+            if target_scope != expected_scope or any(
+                reference.application_id != expected_scope.application_id
+                or reference.workspace_id != expected_scope.workspace_id
+                for reference in selection.entity_refs
+            ):
+                raise ContextPreparationError("context_cross_application_denied")
+
         # Build and validate the entire plan first. A denied selection cannot
         # cause a partial set of unrelated providers to run.
         planned: list[tuple[ContextSelection, ContextProvider | None, str | None]] = []
         seen: set[tuple[str, str]] = set()
         for selection in selections:
+            if deadline is not None and monotonic() >= deadline:
+                raise ContextPreparationError("context_preparation_timeout")
             key = (selection.provider_id, selection.operation)
             if key in seen:
                 raise ContextPreparationError("context_selection_duplicate")
@@ -393,15 +488,6 @@ class ContextProviderCoordinator:
                 )
             ):
                 raise ContextPreparationError("context_tool_result_not_registered_read_only")
-            target_scope = selection.target_scope or ApplicationScope(
-                application_id=context.scope.application_id,
-                workspace_id=context.scope.workspace_id,
-            )
-            if target_scope != ApplicationScope(
-                application_id=context.scope.application_id,
-                workspace_id=context.scope.workspace_id,
-            ):
-                raise ContextPreparationError("context_cross_application_denied")
             if not capability.is_enabled(self._feature_flags):
                 reason = "unavailable"
                 if selection.required:
@@ -423,11 +509,6 @@ class ContextProviderCoordinator:
                 raise ContextPreparationError("context_fields_required")
             if selection.entity_refs and not operation.accepts_entity_refs:
                 raise ContextPreparationError("context_entity_scope_not_supported")
-            for reference in selection.entity_refs:
-                if reference.application_id != context.scope.application_id or (
-                    reference.workspace_id != context.scope.workspace_id
-                ):
-                    raise ContextPreparationError("context_cross_application_denied")
             if operation.requires_time_window and selection.window_start is None:
                 raise ContextPreparationError("context_time_window_required")
             if selection.window_start is not None:
@@ -446,21 +527,31 @@ class ContextProviderCoordinator:
                 raise ContextPreparationError("context_provider_bounds_invalid")
             try:
                 provider = factory.create(inputs) if hasattr(factory, "create") else factory
+            except ContextPreparationError:
+                raise
             except ContextProviderError as error:
-                reason = "timeout" if error.code.endswith("timeout") else "unavailable"
-                if selection.required:
-                    raise ContextPreparationError("required_context_source_unavailable") from error
-                planned.append((selection, None, reason))
+                planned.append((selection, None, self._preflight_failure(selection, error)))
+                continue
+            except TimeoutError as error:
+                planned.append((selection, None, self._preflight_failure(selection, error)))
+                continue
+            except Exception as error:  # noqa: BLE001 - optional dependency failures are bounded
+                planned.append((selection, None, self._preflight_failure(selection, error)))
                 continue
             if provider.spec != spec:
                 raise ContextPreparationError("context_provider_identity_mismatch")
             try:
                 provider.validate_selection(selection, inputs)
+            except ContextPreparationError:
+                raise
             except ContextProviderError as error:
-                reason = "timeout" if error.code.endswith("timeout") else "unavailable"
-                if selection.required:
-                    raise ContextPreparationError("required_context_source_unavailable") from error
-                planned.append((selection, None, reason))
+                planned.append((selection, None, self._preflight_failure(selection, error)))
+                continue
+            except TimeoutError as error:
+                planned.append((selection, None, self._preflight_failure(selection, error)))
+                continue
+            except Exception as error:  # noqa: BLE001 - optional dependency failures are bounded
+                planned.append((selection, None, self._preflight_failure(selection, error)))
                 continue
             planned.append((selection, provider, None))
 
@@ -471,6 +562,8 @@ class ContextProviderCoordinator:
         failures: list[ContextProviderFailure] = []
         total_bytes = 0
         for selection, provider, preflight_failure in planned:
+            if deadline is not None and monotonic() >= deadline:
+                raise ContextPreparationError("context_preparation_timeout")
             if preflight_failure:
                 failures.append(
                     ContextProviderFailure(
@@ -480,15 +573,33 @@ class ContextProviderCoordinator:
                 )
                 continue
             assert provider is not None
-            deadline = monotonic() + selection.timeout_seconds
+            source_deadline = monotonic() + selection.timeout_seconds
+            if deadline is not None:
+                source_deadline = min(source_deadline, deadline)
             try:
-                records = tuple(provider.fetch(selection, context.scope, deadline=deadline))
-                if monotonic() > deadline:
+                fetched = provider.fetch(selection, context.scope, deadline=source_deadline)
+                if isinstance(fetched, ContextProviderResult):
+                    records = fetched.items
+                    provider_failures = fetched.failures
+                    if any(item.provider_id != selection.provider_id for item in provider_failures):
+                        raise ContextPreparationError("context_provider_failure_identity_mismatch")
+                else:
+                    records = tuple(fetched)
+                    provider_failures = ()
+                if monotonic() >= source_deadline:
+                    if deadline is not None and source_deadline == deadline:
+                        raise ContextPreparationError("context_preparation_timeout")
                     raise TimeoutError("context source timed out")
                 if len(records) > min(selection.max_results, provider.spec.maximum_items_per_call):
                     raise ContextPreparationError("context_provider_result_limit_exceeded")
                 call_bytes = 0
                 for item in records:
+                    if not isinstance(item, ContextItem) or not isinstance(item.payload, BaseModel):
+                        raise ContextPreparationError("context_provider_item_invalid")
+                    if item.source_class in {"external_research", "client_context"} and (
+                        item.authority == "authoritative"
+                    ):
+                        raise ContextPreparationError("context_provider_authority_violation")
                     if (
                         item.provider_id != provider.spec.provider_id
                         or item.source_class != provider.spec.source_class
@@ -512,8 +623,19 @@ class ContextProviderCoordinator:
                     raise ContextPreparationError("context_response_item_limit_exceeded")
                 if total_bytes > self.MAX_TOTAL_BYTES:
                     raise ContextPreparationError("context_response_byte_limit_exceeded")
+                if selection.required and provider_failures:
+                    reason = provider_failures[0].reason
+                    code = (
+                        "required_context_source_empty"
+                        if reason == "empty"
+                        else "required_context_source_failed"
+                    )
+                    raise ContextPreparationError(code)
                 items.extend(records)
-                if not records:
+                failures.extend(provider_failures)
+                if not records and not provider_failures:
+                    if selection.required:
+                        raise ContextPreparationError("required_context_source_empty")
                     failures.append(
                         ContextProviderFailure(
                             provider_id=selection.provider_id,
@@ -541,6 +663,8 @@ class ContextProviderCoordinator:
                 failures.append(
                     ContextProviderFailure(provider_id=selection.provider_id, reason="source_failed")
                 )
+        if deadline is not None and monotonic() >= deadline:
+            raise ContextPreparationError("context_preparation_timeout")
         return ContextProviderResult(items=tuple(items), failures=tuple(failures))
 
 

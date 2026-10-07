@@ -16,7 +16,9 @@ from personal_ai.context.providers import (
     ContextOperationSpec,
     ContextPermissionDependency,
     ContextProviderError,
+    ContextProviderFailure,
     ContextProviderInputs,
+    ContextProviderResult,
     ContextProviderSpec,
     ContextSelection,
     ContextSensitivity,
@@ -74,9 +76,26 @@ class ConversationContextProvider:
             for item in messages
         ):
             raise ContextProviderError("context_provider_scope_mismatch")
-        selected = messages[-selection.max_results :]
-        records = [
-            ContextItem(
+        summary = self.inputs.summary
+        compatible_summary = (
+            summary is not None
+            and summary.owner_id == scope.owner_id
+            and summary.application_id == scope.application_id
+            and summary.workspace_id == scope.workspace_id
+            and messages
+            and summary.conversation_id == messages[-1].conversation_id
+            and is_compatible(summary, messages)
+        )
+        summary_failure = None
+        if compatible_summary and len(summary.source_message_ids) > 200:
+            compatible_summary = False
+            summary_failure = ContextProviderFailure(
+                provider_id=self.spec.provider_id, reason="summary_provenance_limit"
+            )
+        message_limit = selection.max_results - 1 if compatible_summary else selection.max_results
+        selected = messages[-message_limit:] if message_limit else ()
+        def message_item(message):
+            return ContextItem(
                 source_class="conversation",
                 provider_id=self.spec.provider_id,
                 source_id=str(message.conversation_id),
@@ -101,50 +120,57 @@ class ConversationContextProvider:
                     created_at=message.created_at if "created_at" in selection.fields else None,
                 ),
             )
-            for message in selected
-        ]
-        summary = self.inputs.summary
-        if (
-            summary is not None
-            and summary.owner_id == scope.owner_id
-            and messages
-            and summary.conversation_id == messages[-1].conversation_id
-            and is_compatible(summary, messages)
-            and len(records) < selection.max_results
-        ):
-            records.insert(
-                0,
-                ContextItem(
-                    source_class="conversation",
-                    provider_id=self.spec.provider_id,
-                    source_id=str(summary.conversation_id),
-                    source_version="active-branch-summary-v1",
-                    item_id=str(summary.id),
-                    owner_id=scope.owner_id,
-                    application_id=scope.application_id,
-                    workspace_id=scope.workspace_id,
-                    authority="derived",
-                    observed_at=summary.created_at,
-                    sensitivity="personal",
-                    source_refs=tuple(
-                        ContextSourceReference(
-                            kind="conversation_message", reference_id=str(message_id)
-                        )
-                        for message_id in summary.source_message_ids
-                    ),
-                    payload=ConversationRecordPayload(
-                        kind="summary",
-                        id=str(summary.id) if "id" in selection.fields else None,
-                        content=summary.content if "content" in selection.fields else None,
-                        created_at=summary.created_at if "created_at" in selection.fields else None,
-                        source_message_ids=(
-                            tuple(str(item) for item in summary.source_message_ids)
-                            if "source_message_ids" in selection.fields
-                            else ()
-                        ),
+
+        records = [message_item(message) for message in selected]
+        if compatible_summary:
+            summary_record = ContextItem(
+                source_class="conversation",
+                provider_id=self.spec.provider_id,
+                source_id=str(summary.conversation_id),
+                source_version="active-branch-summary-v1",
+                item_id=str(summary.id),
+                owner_id=scope.owner_id,
+                application_id=scope.application_id,
+                workspace_id=scope.workspace_id,
+                authority="derived",
+                observed_at=summary.created_at,
+                sensitivity="personal",
+                source_refs=tuple(
+                    ContextSourceReference(
+                        kind="conversation_message", reference_id=str(message_id)
+                    )
+                    for message_id in summary.source_message_ids
+                ),
+                payload=ConversationRecordPayload(
+                    kind="summary",
+                    id=str(summary.id) if "id" in selection.fields else None,
+                    content=summary.content if "content" in selection.fields else None,
+                    created_at=summary.created_at if "created_at" in selection.fields else None,
+                    source_message_ids=(
+                        tuple(str(item) for item in summary.source_message_ids)
+                        if "source_message_ids" in selection.fields
+                        else ()
                     ),
                 ),
             )
+            def response_size(items):
+                return sum(len(item.model_dump_json().encode("utf-8")) for item in items)
+
+            candidate = (summary_record, *records)
+            while response_size(candidate) > selection.max_bytes and records:
+                records.pop(0)
+                candidate = (summary_record, *records)
+            if response_size(candidate) > selection.max_bytes:
+                summary_failure = ContextProviderFailure(
+                    provider_id=self.spec.provider_id, reason="summary_response_limit"
+                )
+                records = [
+                    message_item(message) for message in messages[-selection.max_results :]
+                ]
+            else:
+                records.insert(0, summary_record)
+        if summary_failure:
+            return ContextProviderResult(items=tuple(records), failures=(summary_failure,))
         return tuple(records)
 
 
@@ -174,8 +200,9 @@ class MemoryContextProvider:
         maximum_items_per_call=20,
     )
 
-    def __init__(self, inputs: ContextProviderInputs) -> None:
+    def __init__(self, inputs: ContextProviderInputs, settings) -> None:
         self.inputs = inputs
+        self.settings = settings
 
     def validate_selection(self, selection: ContextSelection, inputs: ContextProviderInputs):
         del selection
@@ -186,9 +213,10 @@ class MemoryContextProvider:
 
     def fetch(self, selection: ContextSelection, scope: RequestScope, *, deadline: float):
         del deadline
-        from personal_ai.memory.contracts import DerivedMemory, Memory
+        from personal_ai.memory.contracts import DerivedMemory, Memory, RetrievalResult
+        from personal_ai.memory.policy import content_reason
 
-        if self.inputs.retrieval is None:
+        if not isinstance(self.inputs.retrieval, RetrievalResult):
             raise ContextProviderError("memory_retrieval_unavailable")
         records = []
         for scored in self.inputs.retrieval.selected[: selection.max_results]:
@@ -201,6 +229,13 @@ class MemoryContextProvider:
                 or memory.workspace_id != scope.workspace_id
             ):
                 raise ContextProviderError("memory_scope_mismatch")
+            if getattr(memory, "status", "active") != "active" or content_reason(
+                memory.content, self.settings
+            ):
+                # Apply the same final content/status gate as the assembler's
+                # memory disclosure path. Lifecycle/source eligibility remains
+                # the retriever's responsibility.
+                continue
             records.append(
                 ContextItem(
                     source_class="ai_memory",
@@ -318,12 +353,27 @@ class ResearchEvidenceContextProvider:
             ):
                 raise ContextProviderError("research_context_scope_mismatch")
             observation_by_id = {item.id: item for item in observations}
+            if len(observation_by_id) != len(observations):
+                raise ContextProviderError("research_context_source_mismatch")
             ordered = tuple(
                 observation_by_id[item_id]
                 for item_id in evidence.source_observation_ids
                 if item_id in observation_by_id
             )
-            if len(ordered) != len(evidence.source_observation_ids):
+            if (
+                evidence.status != "eligible"
+                or len(set(evidence.source_observation_ids))
+                != len(evidence.source_observation_ids)
+                or len(ordered) != len(evidence.source_observation_ids)
+                or any(
+                    observation.status != "accepted"
+                    or observation.owner_id != evidence.owner_id
+                    or observation.application_id != evidence.application_id
+                    or observation.workspace_id != evidence.workspace_id
+                    or observation.session_id != evidence.session_id
+                    for observation in ordered
+                )
+            ):
                 raise ContextProviderError("research_context_source_mismatch")
             output.append(
                 ContextItem(
@@ -428,7 +478,7 @@ class ClientContextProvider:
                 ),
                 payload=ClientContextPayload(key=key, value=scope.client_context[key]),
             )
-            for key in selection.fields
+            for key in selection.fields[: selection.max_results]
         )
 
 
@@ -449,8 +499,11 @@ class ConversationContextProviderFactory:
 class MemoryContextProviderFactory:
     spec = MemoryContextProvider.spec
 
+    def __init__(self, settings) -> None:
+        self.settings = settings
+
     def create(self, inputs: ContextProviderInputs) -> MemoryContextProvider:
-        return MemoryContextProvider(inputs)
+        return MemoryContextProvider(inputs, self.settings)
 
 
 class ResearchEvidenceContextProviderFactory:

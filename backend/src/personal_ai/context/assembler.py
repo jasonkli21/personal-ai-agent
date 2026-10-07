@@ -132,7 +132,11 @@ class ContextAssembler:
                         evidence_records=tuple(evidence_records),
                         tool_results=tool_results,
                     ),
+                    deadline=deadline,
                 )
+                from personal_ai.context.deadline import remaining
+
+                remaining(deadline)
                 result = replace(
                     result,
                     source_items=source_result.items,
