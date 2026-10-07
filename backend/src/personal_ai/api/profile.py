@@ -17,6 +17,8 @@ from personal_ai.context.profile import (
     GlobalProfileRepository,
     GlobalProfileUpdate,
 )
+from personal_ai.persistence.postgres import PersistenceConflict, PersistenceUnavailable
+from personal_ai.storage import StorageUnavailableError
 
 router = APIRouter(prefix="/v1/profile", tags=["profile"])
 
@@ -33,7 +35,10 @@ def read_profile(
     repository: Annotated[GlobalProfileRepository, Depends(get_global_profile_repository)],
 ) -> GlobalProfile:
     _require_profile_owner_scope(scope)
-    return repository.get(owner_id)
+    try:
+        return repository.get(owner_id)
+    except (PersistenceUnavailable, TimeoutError) as error:
+        raise StorageUnavailableError("profile storage unavailable") from error
 
 
 @router.put("", response_model=GlobalProfile)
@@ -51,4 +56,9 @@ def update_profile(
         for application_id in entry.shared_with_applications
     ):
         raise HTTPException(status_code=422, detail="profile_sharing_application_not_registered")
-    return repository.update(owner_id, update)
+    try:
+        return repository.update(owner_id, update)
+    except (PersistenceUnavailable, TimeoutError) as error:
+        raise StorageUnavailableError("profile storage unavailable") from error
+    except PersistenceConflict as error:
+        raise HTTPException(status_code=409, detail="profile_update_conflict") from error

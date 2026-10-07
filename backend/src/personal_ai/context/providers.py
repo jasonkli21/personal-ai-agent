@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Generic, Literal, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from personal_ai.applications.contracts import (
     ApplicationContextRequest,
@@ -132,6 +132,8 @@ class ContextItem(BaseModel, Generic[PayloadT]):
 
     @model_validator(mode="after")
     def references_are_unambiguous(self) -> ContextItem[PayloadT]:
+        if not self.source_refs:
+            raise ValueError("context_source_refs_required")
         if (
             self.observed_at is not None
             and self.expires_at is not None
@@ -273,6 +275,8 @@ class ContextProviderSpec(BaseModel):
         names = [item.operation for item in self.operations]
         if len(names) != len(set(names)):
             raise ValueError("context_provider_operations_must_be_unique")
+        if (self.capability_kind == "tool") != (self.source_class == "tool_result"):
+            raise ValueError("context_provider_tool_source_class_mismatch")
         return self
 
     def operation(self, name: ContextOperation) -> ContextOperationSpec | None:
@@ -285,6 +289,7 @@ class ContextProviderFailure(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider_id: str
+    operation: ContextOperation
     reason: Literal[
         "unavailable", "timeout", "unsupported_operation", "source_failed", "empty",
         "summary_provenance_limit", "summary_response_limit",
@@ -306,6 +311,20 @@ class ContextProviderError(RuntimeError):
     def __init__(self, code: str = "context_provider_unavailable") -> None:
         self.code = code
         super().__init__(code)
+
+
+def tool_result_projection_is_valid(
+    projected: Any, selected_fields: Sequence[str]
+) -> bool:
+    """Return whether a typed tool payload contains only its selected fields."""
+    if not isinstance(projected, BaseModel):
+        return False
+    values = projected.model_dump(mode="python", exclude_none=False)
+    return set(selected_fields).issubset(type(projected).model_fields) and not any(
+        value is not None
+        for field, value in values.items()
+        if field not in selected_fields
+    )
 
 
 class ContextPreparationError(RuntimeError):
@@ -330,7 +349,13 @@ class ContextProviderInputs:
 
 
 class ContextProvider(Protocol):
-    """A single bounded source operation implementation."""
+    """A single bounded source operation implementation.
+
+    ``fetch`` receives an absolute monotonic deadline. Providers must treat it
+    as a cooperative contract and pass the remaining budget to blocking
+    dependencies. The synchronous coordinator cannot cancel a non-cooperative
+    call; it detects and reports an overrun after that call returns.
+    """
 
     spec: ContextProviderSpec
 
@@ -381,6 +406,10 @@ class ContextProviderCoordinator:
         for provider_id, provider in self._providers.items():
             if provider_id != provider.spec.provider_id:
                 raise ValueError("context_provider_identity_mismatch")
+            try:
+                ContextProviderSpec.model_validate(provider.spec.model_dump())
+            except ValidationError as error:
+                raise ValueError("context_provider_spec_invalid") from error
 
     def _factory(self, provider_id: str):
         return self._providers.get(provider_id)
@@ -476,7 +505,10 @@ class ContextProviderCoordinator:
                     raise ContextPreparationError("required_context_source_unavailable")
                 planned.append((selection, None, "unavailable"))
                 continue
-            spec = factory.spec
+            try:
+                spec = ContextProviderSpec.model_validate(factory.spec.model_dump())
+            except ValidationError as error:
+                raise ContextPreparationError("context_provider_spec_invalid") from error
             capability = self._capability(context, selection.provider_id, spec.capability_kind)
             if spec.capability_kind == "tool" and (
                 not capability.read_only_context
@@ -568,6 +600,7 @@ class ContextProviderCoordinator:
                 failures.append(
                     ContextProviderFailure(
                         provider_id=selection.provider_id,
+                        operation=selection.operation,
                         reason=preflight_failure,
                     )
                 )
@@ -581,7 +614,11 @@ class ContextProviderCoordinator:
                 if isinstance(fetched, ContextProviderResult):
                     records = fetched.items
                     provider_failures = fetched.failures
-                    if any(item.provider_id != selection.provider_id for item in provider_failures):
+                    if any(
+                        item.provider_id != selection.provider_id
+                        or item.operation != selection.operation
+                        for item in provider_failures
+                    ):
                         raise ContextPreparationError("context_provider_failure_identity_mismatch")
                 else:
                     records = tuple(fetched)
@@ -596,6 +633,14 @@ class ContextProviderCoordinator:
                 for item in records:
                     if not isinstance(item, ContextItem) or not isinstance(item.payload, BaseModel):
                         raise ContextPreparationError("context_provider_item_invalid")
+                    if not item.source_refs:
+                        raise ContextPreparationError("context_provider_provenance_missing")
+                    if provider.spec.capability_kind == "tool" and not tool_result_projection_is_valid(
+                        getattr(item.payload, "result", None), selection.fields
+                    ):
+                        raise ContextPreparationError(
+                            "context_provider_tool_projection_violation"
+                        )
                     if item.source_class in {"external_research", "client_context"} and (
                         item.authority == "authoritative"
                     ):
@@ -614,6 +659,11 @@ class ContextProviderCoordinator:
                         for reference in item.entity_refs
                     ):
                         raise ContextPreparationError("context_provider_entity_scope_violation")
+                    if selection.entity_refs and any(
+                        reference not in selection.entity_refs
+                        for reference in item.entity_refs
+                    ):
+                        raise ContextPreparationError("context_provider_entity_selection_violation")
                     encoded_size = len(item.model_dump_json().encode("utf-8"))
                     call_bytes += encoded_size
                 if call_bytes > selection.max_bytes:
@@ -639,6 +689,7 @@ class ContextProviderCoordinator:
                     failures.append(
                         ContextProviderFailure(
                             provider_id=selection.provider_id,
+                            operation=selection.operation,
                             reason="empty",
                         )
                     )
@@ -648,20 +699,32 @@ class ContextProviderCoordinator:
                 if selection.required:
                     raise ContextPreparationError("required_context_source_timeout") from error
                 failures.append(
-                    ContextProviderFailure(provider_id=selection.provider_id, reason="timeout")
+                    ContextProviderFailure(
+                        provider_id=selection.provider_id,
+                        operation=selection.operation,
+                        reason="timeout",
+                    )
                 )
             except ContextProviderError as error:
                 if selection.required:
                     raise ContextPreparationError("required_context_source_unavailable") from error
                 reason = "timeout" if error.code.endswith("timeout") else "unavailable"
                 failures.append(
-                    ContextProviderFailure(provider_id=selection.provider_id, reason=reason)
+                    ContextProviderFailure(
+                        provider_id=selection.provider_id,
+                        operation=selection.operation,
+                        reason=reason,
+                    )
                 )
             except Exception as error:
                 if selection.required:
                     raise ContextPreparationError("required_context_source_failed") from error
                 failures.append(
-                    ContextProviderFailure(provider_id=selection.provider_id, reason="source_failed")
+                    ContextProviderFailure(
+                        provider_id=selection.provider_id,
+                        operation=selection.operation,
+                        reason="source_failed",
+                    )
                 )
         if deadline is not None and monotonic() >= deadline:
             raise ContextPreparationError("context_preparation_timeout")

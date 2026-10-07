@@ -76,6 +76,7 @@ async def http_exception(_: Request, error: HTTPException) -> JSONResponse:
         "authentication_required": "Sign in to continue.",
         "reauthentication_required": "Sign in again before this account action.",
         "feature_disabled": "This account action is not available.",
+        "profile_update_conflict": "The profile changed while this update was being saved. Please retry.",
     }.get(code, "The request could not be completed.")
     headers = error.headers or {}
     return JSONResponse(

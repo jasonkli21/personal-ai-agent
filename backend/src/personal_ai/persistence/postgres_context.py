@@ -129,8 +129,10 @@ class PostgresGlobalProfileRepository(GlobalProfileRepository):
                             raise PersistenceConflict("profile revision changed")
                 return candidate
             except Exception as error:
-                if _is_unique_violation(error) and attempt < 2:
-                    continue
+                if _is_unique_violation(error):
+                    if attempt < 2:
+                        continue
+                    raise PersistenceConflict("profile update contention") from error
                 raise
         raise PersistenceConflict("profile update contention")
 

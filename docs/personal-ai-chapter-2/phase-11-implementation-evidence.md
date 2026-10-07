@@ -123,3 +123,49 @@ locally. Database and deployment acceptance remain unverified.
 
 The source fixes and local regression coverage are implemented and offline
 verified. Local-engine and deployment acceptance remain open.
+
+## Supplemental review remediation
+
+The additive findings in the 2026-10-07 supplemental review are addressed in
+the same provider, adapter, profile API, and status-document seams:
+
+- All current source classes require at least one concrete bounded source
+  reference. Construction and coordinator result validation reject missing
+  provenance; no placeholder references are synthesized.
+- Provider specs require tool capabilities to use `tool_result`, and reserve
+  `tool_result` for tool capabilities. When a selection names entity references,
+  returned references must be in that exact requested set.
+- Tool projection validates the selected fields at the adapter and coordinator
+  boundaries. The typed result keeps its schema, while any populated unrequested
+  field is rejected.
+- Provider deadlines are documented and tested as cooperative absolute
+  monotonic deadlines. Blocking providers must propagate the budget; a
+  non-cooperative synchronous call is detected after return and is not claimed
+  to be hard-cancelled.
+- Profile persistence unavailability and timeouts map to the stable storage
+  unavailable response. Postgres statement and lock timeouts normalize to the
+  timeout type at the database boundary. Exhausted profile insert retries and
+  revision conflicts normalize to `PersistenceConflict`, which maps to HTTP 409
+  with the safe `profile_update_conflict` code.
+- Optional provider failures carry the bounded operation name alongside the
+  provider ID and reason, and the coordinator verifies that it matches the
+  selection.
+- The documentation router and product requirements now state that Phase 11 is
+  implemented locally and Phase 12 is next, while local-Postgres and cloud
+  acceptance gates remain open.
+
+### Supplemental review checks
+
+- Tested source: base revision `3c300235cf2b46ea078be87af605b21995451574`
+  plus the supplemental-remediation working-tree changes recorded here. Those
+  changes were not committed when these checks ran.
+- `backend/.venv/bin/python -m pytest`: **644 passed, 26 skipped**. Skips
+  include the opt-in local persistence, cloud, and manual provider cases.
+- `backend/.venv/bin/ruff check .`: **passed**.
+- `backend/.venv/bin/python -m personal_ai.evaluation.context`: **passed**;
+  deterministic offline fixtures only.
+- Focused context-source, auth, and Postgres deadline tests: **85 passed**.
+- `git diff --check`: **passed**.
+- Local Postgres profile integration, cloud, provider, deployment, and browser
+  behavior remain unverified. These checks do not establish those external
+  behaviors.

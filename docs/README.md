@@ -30,7 +30,7 @@ The implemented runtime is the one in the root README, current code, and [curren
 | API or persisted data contracts | [API contract](api-contract.md), then the owning subsystem contract | Contracts describe boundaries; verify implementation in code and tests. |
 | Deployment and GCP | [GCP deployment](gcp-deployment.md), then relevant [Phase 9 operational docs](#authentication-and-operations) | Static configuration is not live deployment evidence. |
 | Evaluations | [Makefile](../Makefile), relevant `docs/releases/*evaluation*` records, and subsystem release notes | Synthetic/fake evaluations cover only their stated fixtures. |
-| Active Chapter 2 planning | [Chapter 2 overview](personal-ai-chapter-2/README.md), [detailed plan index](personal-ai-chapter-2/personal-ai-next-scope-detailed-implementation-plans/README.md), [numbering map](personal-ai-chapter-2/NUMBERING-MAP.md) | Phase 11 onward is planned future work; authorization is still required. |
+| Active Chapter 2 planning | [Chapter 2 overview](personal-ai-chapter-2/README.md), [detailed plan index](personal-ai-chapter-2/personal-ai-next-scope-detailed-implementation-plans/README.md), [numbering map](personal-ai-chapter-2/NUMBERING-MAP.md) | Phase 11 is implemented locally; Phase 12 onward is planned future work and still requires authorization. |
 | Release/review evidence | [Release records](#release-and-review-evidence), [repository review](repository-review-2026-10-03.md) | Evidence is date/revision bounded; do not generalize beyond its checks. |
 | Architectural decisions | [ADRs](#decisions) | Read status and supersession notes; older records may be historical. |
 

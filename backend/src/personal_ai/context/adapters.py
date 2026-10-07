@@ -23,6 +23,7 @@ from personal_ai.context.providers import (
     ContextSelection,
     ContextSensitivity,
     ContextSourceReference,
+    tool_result_projection_is_valid,
 )
 
 
@@ -90,7 +91,9 @@ class ConversationContextProvider:
         if compatible_summary and len(summary.source_message_ids) > 200:
             compatible_summary = False
             summary_failure = ContextProviderFailure(
-                provider_id=self.spec.provider_id, reason="summary_provenance_limit"
+                provider_id=self.spec.provider_id,
+                operation=selection.operation,
+                reason="summary_provenance_limit",
             )
         message_limit = selection.max_results - 1 if compatible_summary else selection.max_results
         selected = messages[-message_limit:] if message_limit else ()
@@ -162,7 +165,9 @@ class ConversationContextProvider:
                 candidate = (summary_record, *records)
             if response_size(candidate) > selection.max_bytes:
                 summary_failure = ContextProviderFailure(
-                    provider_id=self.spec.provider_id, reason="summary_response_limit"
+                    provider_id=self.spec.provider_id,
+                    operation=selection.operation,
+                    reason="summary_response_limit",
                 )
                 records = [
                     message_item(message) for message in messages[-selection.max_results :]
@@ -611,6 +616,8 @@ class ToolResultContextProvider:
             raise ContextProviderError("tool_result_unavailable")
         projected = self._projector(self.snapshot.payload, selection.fields)
         if not isinstance(projected, BaseModel):
+            raise ContextProviderError("tool_result_projection_invalid")
+        if not tool_result_projection_is_valid(projected, selection.fields):
             raise ContextProviderError("tool_result_projection_invalid")
         item = ContextItem(
             source_class="tool_result",

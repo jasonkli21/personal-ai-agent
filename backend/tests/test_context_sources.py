@@ -40,7 +40,9 @@ from personal_ai.context.providers import (
     ContextPreparationError,
     ContextProviderCoordinator,
     ContextProviderError,
+    ContextProviderFailure,
     ContextProviderInputs,
+    ContextProviderResult,
     ContextProviderSpec,
     ContextSelection,
     ContextSourceReference,
@@ -432,6 +434,9 @@ def test_unknown_authority_and_timestamps_remain_explicit():
                     owner_id=scope.owner_id,
                     application_id=scope.application_id,
                     workspace_id=scope.workspace_id,
+                    source_refs=(
+                        ContextSourceReference(kind="record", reference_id="unknown-source-v1"),
+                    ),
                     payload=SyntheticDomainPayload(name="Unknown", availability="unknown"),
                 ),
             )
@@ -502,6 +507,120 @@ def test_context_payload_requires_a_typed_model_at_construction_and_normalizatio
         )
 
 
+def test_context_items_require_real_provenance_at_construction_and_result_boundary():
+    context = synthetic_context("synthetic.context")
+    with pytest.raises(ValidationError, match="context_source_refs_required"):
+        ContextItem(
+            source_class="domain_current",
+            provider_id="synthetic.context",
+            source_id="source-1",
+            source_version="v1",
+            item_id="item-1",
+            owner_id=context.scope.owner_id,
+            application_id=context.scope.application_id,
+            payload=SyntheticDomainPayload(name="fixture"),
+        )
+
+    class ForgedMissingProvenanceProvider(SyntheticContextProvider):
+        def fetch(self, selection, scope, *, deadline):
+            del selection, deadline
+            return (
+                ContextItem.model_construct(
+                    source_class="domain_current",
+                    provider_id=self.spec.provider_id,
+                    source_id="source-1",
+                    source_version="v1",
+                    item_id="item-1",
+                    owner_id=scope.owner_id,
+                    application_id=scope.application_id,
+                    workspace_id=scope.workspace_id,
+                    entity_refs=(),
+                    authority="unknown",
+                    observed_at=None,
+                    effective_at=None,
+                    expires_at=None,
+                    sensitivity="unknown",
+                    source_refs=(),
+                    permission_dependencies=(),
+                    field_sensitivity=(),
+                    payload=SyntheticDomainPayload(name="fixture"),
+                ),
+            )
+
+    with pytest.raises(ContextPreparationError, match="context_provider_provenance_missing"):
+        ContextProviderCoordinator(
+            {"synthetic.context": StaticContextProviderFactory(ForgedMissingProvenanceProvider())}
+        ).prepare(
+            context,
+            (selection(),),
+            ContextProviderInputs(scope=context.scope),
+        )
+
+
+def test_returned_entity_references_must_match_explicit_selection():
+    context = synthetic_context("synthetic.context")
+    requested = ContextEntityReference(
+        entity_type="stay",
+        entity_id="fixture-stay-1",
+        application_id="synthetic",
+    )
+    additional_requested = ContextEntityReference(
+        entity_type="stay",
+        entity_id="fixture-stay-2",
+        application_id="synthetic",
+    )
+    provider = SyntheticContextProvider()
+    coordinator = ContextProviderCoordinator(
+        {"synthetic.context": StaticContextProviderFactory(provider)}
+    )
+    result = coordinator.prepare(
+        context,
+        (selection(entity_refs=(requested, additional_requested)),),
+        ContextProviderInputs(scope=context.scope),
+    )
+    assert result.items[0].entity_refs == (requested,)
+
+    unrelated = ContextEntityReference(
+        entity_type="stay",
+        entity_id="unrelated-stay",
+        application_id="synthetic",
+    )
+
+    class UnrelatedEntityProvider(SyntheticContextProvider):
+        def fetch(self, request, scope, *, deadline):
+            item = super().fetch(request, scope, deadline=deadline)[0]
+            return (item.model_copy(update={"entity_refs": (unrelated,)}),)
+
+    with pytest.raises(
+        ContextPreparationError,
+        match="context_provider_entity_selection_violation",
+    ):
+        ContextProviderCoordinator(
+            {"synthetic.context": StaticContextProviderFactory(UnrelatedEntityProvider())}
+        ).prepare(
+            context,
+            (selection(entity_refs=(requested,), required=True),),
+            ContextProviderInputs(scope=context.scope),
+        )
+
+
+@pytest.mark.parametrize(
+    "source_class,capability_kind",
+    [("domain_current", "tool"), ("tool_result", "context_provider")],
+)
+def test_provider_spec_rejects_contradictory_tool_source_class(
+    source_class, capability_kind
+):
+    with pytest.raises(ValidationError, match="context_provider_tool_source_class_mismatch"):
+        ContextProviderSpec(
+            provider_id="synthetic.invalid",
+            source_class=source_class,
+            source_version="v1",
+            capability_kind=capability_kind,
+            operations=(ContextOperationSpec(operation="current", fields_required=False),),
+        )
+
+
 @pytest.mark.parametrize("source_class", ["external_research", "client_context"])
 def test_untrusted_source_classes_cannot_claim_authoritative_state(source_class):
     provider_id = "synthetic.untrusted"
@@ -533,7 +652,7 @@ def test_untrusted_source_classes_cannot_claim_authoritative_state(source_class)
                     effective_at=None,
                     expires_at=None,
                     sensitivity="unknown",
-                    source_refs=(),
+                    source_refs=(ContextSourceReference(kind="record", reference_id="source-1"),),
                     permission_dependencies=(),
                     field_sensitivity=(),
                     payload=SyntheticDomainPayload(name="fixture"),
@@ -584,6 +703,7 @@ def test_field_sensitivity_tracks_the_disclosed_projection_and_unknowns_are_expl
         owner_id=context.scope.owner_id,
         application_id=context.scope.application_id,
         sensitivity="restricted",
+        source_refs=(ContextSourceReference(kind="record", reference_id="source-mixed"),),
         field_sensitivity=(
             ContextFieldSensitivity(field="public_summary", sensitivity="public"),
             ContextFieldSensitivity(field="personal_name", sensitivity="personal"),
@@ -609,6 +729,7 @@ def test_field_sensitivity_tracks_the_disclosed_projection_and_unknowns_are_expl
         owner_id=context.scope.owner_id,
         application_id=context.scope.application_id,
         sensitivity="unknown",
+        source_refs=(ContextSourceReference(kind="record", reference_id="source-1"),),
         field_sensitivity=(ContextFieldSensitivity(field="name", sensitivity="unknown"),),
         payload=SyntheticDomainPayload(name="fixture"),
     )
@@ -623,6 +744,7 @@ def test_field_sensitivity_tracks_the_disclosed_projection_and_unknowns_are_expl
             owner_id=context.scope.owner_id,
             application_id=context.scope.application_id,
             sensitivity="personal",
+            source_refs=(ContextSourceReference(kind="record", reference_id="source-1"),),
             field_sensitivity=(ContextFieldSensitivity(field="secret", sensitivity="restricted"),),
             payload=SyntheticDomainPayload(name="fixture"),
         )
@@ -638,6 +760,7 @@ def test_field_sensitivity_tracks_the_disclosed_projection_and_unknowns_are_expl
             owner_id=context.scope.owner_id,
             application_id=context.scope.application_id,
             sensitivity="personal",
+            source_refs=(ContextSourceReference(kind="record", reference_id="source-1"),),
             field_sensitivity=(ContextFieldSensitivity(field="name", sensitivity="restricted"),),
             payload=SyntheticDomainPayload(name="fixture"),
         )
@@ -790,6 +913,7 @@ def test_optional_failures_are_bounded_and_required_failure_stops_later_sources(
         ContextProviderInputs(scope=context.scope),
     )
     assert optional.failures[0].reason == "timeout"
+    assert optional.failures[0].operation == "current"
     assert "synthetic timeout" not in str(optional.failures[0])
 
     with pytest.raises(ContextPreparationError, match="required_context_source_unavailable"):
@@ -802,6 +926,57 @@ def test_optional_failures_are_bounded_and_required_failure_stops_later_sources(
             ContextProviderInputs(scope=context.scope),
         )
     assert later.calls == []
+
+
+def test_provider_failure_identifies_the_operation_that_failed():
+    context = synthetic_context("synthetic.context")
+    current = SyntheticContextProvider.spec.operation("current")
+    assert current is not None
+    history = ContextOperationSpec(
+        operation="history",
+        allowed_fields=("name", "availability"),
+        maximum_results=2,
+        maximum_bytes=8_192,
+        maximum_timeout_seconds=2,
+    )
+    spec = SyntheticContextProvider.spec.model_copy(
+        update={"operations": (current, history)}
+    )
+
+    class MultiOperationProvider(SyntheticContextProvider):
+        def __init__(self):
+            super().__init__()
+            self.spec = spec
+
+        def validate_selection(self, request, inputs):
+            del inputs
+            assert request.operation in {"current", "history"}
+
+        def fetch(self, request, scope, *, deadline):
+            if request.operation == "history":
+                return ContextProviderResult(
+                    failures=(
+                        ContextProviderFailure(
+                            provider_id=self.spec.provider_id,
+                            operation="history",
+                            reason="source_failed",
+                        ),
+                    )
+                )
+            return SyntheticContextProvider.fetch(self, request, scope, deadline=deadline)
+
+    result = ContextProviderCoordinator(
+        {"synthetic.context": StaticContextProviderFactory(MultiOperationProvider())}
+    ).prepare(
+        context,
+        (selection(), selection(operation="history")),
+        ContextProviderInputs(scope=context.scope),
+    )
+    assert len(result.items) == 1
+    assert len(result.failures) == 1
+    assert result.failures[0].provider_id == "synthetic.context"
+    assert result.failures[0].operation == "history"
+    assert result.failures[0].reason == "source_failed"
 
 
 def test_empty_required_source_stops_later_optional_sources():
@@ -991,6 +1166,47 @@ def test_shared_deadline_exhausted_during_source_is_a_bounded_failure(monkeypatc
             deadline=0.5,
         )
     assert later_calls == []
+
+
+def test_provider_timeout_is_cooperative_and_overrun_detection_happens_after_return(
+    monkeypatch,
+):
+    import personal_ai.context.providers as providers_module
+
+    context = synthetic_context("synthetic.context")
+    cooperative = SyntheticContextProvider()
+    propagated = []
+
+    def dependency_call(*, deadline):
+        propagated.append(deadline)
+        raise TimeoutError("dependency deadline reached")
+
+    cooperative.fetch = lambda request, scope, *, deadline: dependency_call(deadline=deadline)
+    result = ContextProviderCoordinator(
+        {"synthetic.context": StaticContextProviderFactory(cooperative)}
+    ).prepare(
+        context,
+        (selection(timeout_seconds=0.1),),
+        ContextProviderInputs(scope=context.scope),
+    )
+    assert len(propagated) == 1
+    assert result.failures[0].reason == "timeout"
+
+    non_cooperative = SyntheticContextProvider()
+    # The provider ignores its deadline and returns only after the source limit.
+    # The synchronous coordinator reports the overrun after return; it cannot
+    # interrupt that provider while it is running.
+    readings = iter((0.0, 0.2))
+    monkeypatch.setattr(providers_module, "monotonic", lambda: next(readings))
+    non_cooperative.fetch = lambda request, scope, *, deadline: ()
+    overrun = ContextProviderCoordinator(
+        {"synthetic.context": StaticContextProviderFactory(non_cooperative)}
+    ).prepare(
+        context,
+        (selection(timeout_seconds=0.1),),
+        ContextProviderInputs(scope=context.scope),
+    )
+    assert overrun.failures[0].reason == "timeout"
 
 
 def test_assembler_passes_overall_deadline_to_source_and_profile_caps_sql_deadline():
@@ -1754,15 +1970,15 @@ def test_tool_results_require_registered_bounded_read_only_capability_and_typed_
         kind="tool",
         available=True,
         read_only_context=True,
-        result_fields=("name", "status"),
+        result_fields=("name", "availability"),
         max_result_bytes=4_096,
     )
     context = synthetic_context(tools=(tool,))
     provider = ToolResultProviderFactory(
         tool,
         lambda payload, fields: SyntheticDomainPayload(
-            name=payload.name if "name" in fields else "",
-            availability=payload.availability if "status" in fields else "",
+            name=payload.name if "name" in fields else None,
+            availability=payload.availability if "availability" in fields else None,
         ),
     )
     coordinator = ContextProviderCoordinator({"synthetic.lookup": provider})
@@ -1795,7 +2011,126 @@ def test_tool_results_require_registered_bounded_read_only_capability_and_typed_
     assert result.items[0].source_class == "tool_result"
     assert result.items[0].source_refs[0].reference_id == "call-1"
     assert result.items[0].payload.result.name == "Fixture stay"
-    assert result.items[0].payload.result.availability == ""
+    assert result.items[0].payload.result.availability is None
+
+    both = coordinator.prepare(
+        context,
+        (
+            ContextSelection(
+                provider_id="synthetic.lookup",
+                operation="current",
+                fields=("name", "availability"),
+                max_results=1,
+                max_bytes=2_048,
+                timeout_seconds=0.1,
+            ),
+        ),
+        ContextProviderInputs(
+            scope=context.scope,
+            application_context=context,
+            tool_results={"synthetic.lookup": snapshot},
+        ),
+    )
+    assert both.items[0].payload.result.name == "Fixture stay"
+    assert both.items[0].payload.result.availability == "available"
+
+    overprojecting = ToolResultProviderFactory(
+        tool,
+        lambda payload, fields: SyntheticDomainPayload(
+            name=payload.name if "name" in fields else None,
+            availability=payload.availability,
+        ),
+    )
+    rejected = ContextProviderCoordinator({"synthetic.lookup": overprojecting}).prepare(
+        context,
+        (
+            ContextSelection(
+                provider_id="synthetic.lookup",
+                operation="current",
+                fields=("name",),
+                max_results=1,
+                max_bytes=2_048,
+                timeout_seconds=0.1,
+            ),
+        ),
+        ContextProviderInputs(
+            scope=context.scope,
+            application_context=context,
+            tool_results={"synthetic.lookup": snapshot},
+        ),
+    )
+    assert rejected.items == ()
+    assert rejected.failures[0].reason == "unavailable"
+    assert rejected.failures[0].operation == "current"
+
+    class DirectToolPayload(BaseModel):
+        result: SyntheticDomainPayload
+
+    class ForgedToolProvider:
+        spec = ContextProviderSpec(
+            provider_id="synthetic.lookup",
+            source_class="tool_result",
+            source_version="test-v1",
+            capability_kind="tool",
+            operations=(
+                ContextOperationSpec(
+                    operation="current",
+                    allowed_fields=("name", "availability"),
+                    maximum_results=1,
+                    maximum_bytes=4_096,
+                    maximum_timeout_seconds=0.2,
+                ),
+            ),
+            maximum_items_per_call=1,
+        )
+
+        def validate_selection(self, request, inputs):
+            del request, inputs
+
+        def fetch(self, request, scope, *, deadline):
+            del request, deadline
+            return (
+                ContextItem(
+                    source_class="tool_result",
+                    provider_id=self.spec.provider_id,
+                    source_id="call-2",
+                    source_version="test-v1",
+                    item_id="call-2",
+                    owner_id=scope.owner_id,
+                    application_id=scope.application_id,
+                    workspace_id=scope.workspace_id,
+                    authority="derived",
+                    source_refs=(
+                        ContextSourceReference(kind="tool_invocation", reference_id="call-2"),
+                    ),
+                    payload=DirectToolPayload(
+                        result=SyntheticDomainPayload(
+                            name="Selected stay", availability="unrequested secret"
+                        )
+                    ),
+                ),
+            )
+
+    with pytest.raises(
+        ContextPreparationError,
+        match="context_provider_tool_projection_violation",
+    ):
+        ContextProviderCoordinator(
+            {"synthetic.lookup": StaticContextProviderFactory(ForgedToolProvider())}
+        ).prepare(
+            context,
+            (
+                ContextSelection(
+                    provider_id="synthetic.lookup",
+                    operation="current",
+                    fields=("name",),
+                    max_results=1,
+                    max_bytes=2_048,
+                    timeout_seconds=0.1,
+                ),
+            ),
+            ContextProviderInputs(scope=context.scope),
+        )
 
     non_read = tool.model_copy(
         update={"read_only_context": False, "result_fields": (), "max_result_bytes": None}

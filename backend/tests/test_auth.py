@@ -23,6 +23,7 @@ from personal_ai.auth.verification import (
 )
 from personal_ai.context.profile import InMemoryGlobalProfileRepository
 from personal_ai.main import app
+from personal_ai.persistence.postgres import PersistenceConflict, PersistenceUnavailable
 from personal_ai.settings import Settings
 from personal_ai.storage.fake import InMemoryConversationRepository, InMemoryMessageRepository
 
@@ -303,6 +304,48 @@ def test_global_profile_api_requires_authenticated_owner_and_personal_ai_scope(
     )
     assert foreign_application.status_code == 404
     assert foreign_application.json()["error"]["code"] == "not_found"
+
+    class UnavailableProfileRepository:
+        def get(self, _owner_id):
+            raise PersistenceUnavailable("postgres-private-host SQL details")
+
+        def update(self, _owner_id, _update):
+            raise TimeoutError("postgres-private-host SQL details")
+
+    app.dependency_overrides[get_global_profile_repository] = (
+        lambda: UnavailableProfileRepository()
+    )
+    unavailable_get = client.get("/v1/profile", headers=headers)
+    unavailable_put = client.put(
+        "/v1/profile",
+        headers=headers,
+        json={"fields": [{"field": "locale", "value": "en-GB"}]},
+    )
+    for response in (unavailable_get, unavailable_put):
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "storage_unavailable"
+        assert "postgres-private-host" not in response.text
+        assert "SQL details" not in response.text
+
+    class ConflictingProfileRepository:
+        def get(self, _owner_id):
+            raise AssertionError("GET does not update the profile")
+
+        def update(self, _owner_id, _update):
+            raise PersistenceConflict("revision=9 SQL details")
+
+    app.dependency_overrides[get_global_profile_repository] = (
+        lambda: ConflictingProfileRepository()
+    )
+    conflict = client.put(
+        "/v1/profile",
+        headers=headers,
+        json={"fields": [{"field": "locale", "value": "en-GB"}]},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "profile_update_conflict"
+    assert "revision=9" not in conflict.text
+    assert "SQL details" not in conflict.text
     app.dependency_overrides.pop(get_global_profile_repository, None)
 
 

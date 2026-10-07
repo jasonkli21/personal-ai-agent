@@ -93,8 +93,8 @@ class _DeadlineConnection:
         try:
             return self._connection.execute(query, params, **kwargs)
         except Exception as error:
-            if getattr(error, "sqlstate", None) == "57014" and self._deadline is not None:
-                raise TimeoutError("postgres operation deadline exceeded") from error
+            if getattr(error, "sqlstate", None) in {"57014", "55P03"}:
+                raise TimeoutError("postgres operation timed out") from error
             raise
 
     def check_deadline(self):

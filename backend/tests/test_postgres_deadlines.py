@@ -39,3 +39,21 @@ def test_statement_budget_is_recomputed_before_every_sequential_write(monkeypatc
     with pytest.raises(TimeoutError, match="deadline"):
         connection.execute("INSERT INTO second_table VALUES (2)")
     assert executed == ["INSERT INTO first_table VALUES (1)"]
+
+
+@pytest.mark.parametrize("sqlstate", ["57014", "55P03"])
+def test_postgres_statement_and_lock_timeouts_have_a_stable_timeout_type(sqlstate):
+    class Connection:
+        def execute(self, query, params=None, **kwargs):
+            del params, kwargs
+            if query.startswith("SELECT set_config"):
+                return
+            error = RuntimeError("private database detail")
+            error.sqlstate = sqlstate
+            raise error
+
+    connection = postgres._DeadlineConnection(
+        Connection(), deadline=None, statement_timeout_ms=5_000, lock_timeout_ms=2_000
+    )
+    with pytest.raises(TimeoutError, match="timed out"):
+        connection.execute("SELECT private_data")

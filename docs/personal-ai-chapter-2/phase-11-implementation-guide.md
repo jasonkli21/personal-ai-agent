@@ -18,6 +18,27 @@ for tested revision and verification status.
   fetch. The assembler's absolute request deadline caps every source deadline
   and is checked between sources and before preparation returns. Empty required
   sources fail preparation and stop later optional reads.
+- Every normalized item needs at least one bounded source reference. Current
+  source classes all have concrete provenance; providers must preserve it and
+  must not invent placeholder references. If a future source class cannot
+  provide provenance, its contract must define a narrow explicit exception.
+- When a selection names entity references, returned entity references must be
+  drawn from that exact set. A provider may return a subset of a multi-entity
+  selection; related entities need an explicit future contract before they can
+  be returned.
+- Tool capabilities use the `tool_result` source class, and context-provider
+  capabilities do not. Tool projections must use registered field names and
+  leave unselected payload fields empty (`None`); both the adapter and shared
+  coordinator reject populated unrequested fields.
+- Optional source failures include the stable provider ID, operation, and
+  bounded reason. The operation distinguishes failures when a provider supports
+  multiple operations without copying request payloads into failure records.
+- Provider deadlines are cooperative absolute monotonic deadlines. Providers
+  must pass the remaining budget to blocking dependencies. The synchronous
+  coordinator detects a non-cooperative overrun after the provider returns;
+  it cannot hard-cancel that call. The profile adapter passes the effective
+  deadline to Postgres, while the other built-in wrappers operate on already
+  loaded snapshots.
 - Payloads must be typed Pydantic models at construction and at the shared
   result boundary. External-research and client-context items cannot claim
   authoritative authority. Normalized items carry bounded field-sensitivity
@@ -75,6 +96,9 @@ and provider projection. The owner can manage it through `GET` and `PUT`
 uses the verified owner principal in deployed configurations.
 Applications receive only requested fields explicitly shared with their
 application ID. No values are inferred or copied from domain records.
+Profile storage unavailability and timeout return the stable `storage_unavailable`
+response; an update revision conflict returns HTTP 409 with
+`profile_update_conflict`.
 
 [`persistence/postgres_context.py`](../../backend/src/personal_ai/persistence/postgres_context.py)
 stores it in the canonical owner-wide `personal_ai` Postgres namespace with
