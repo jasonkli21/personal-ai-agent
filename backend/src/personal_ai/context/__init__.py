@@ -1,6 +1,13 @@
 """Phase 2 branch-scoped context management; no long-term memory."""
 
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.builder import (
+    ContextBuilder,
+    ContextBuildItem,
+    ContextBuildManifest,
+    ContextBuildPolicy,
+    ContextBuildSourceMetadata,
+)
 from personal_ai.context.contracts import ContextError
 from personal_ai.context.providers import (
     ContextItem,
@@ -16,6 +23,11 @@ from personal_ai.context.providers import (
 
 __all__ = [
     "ContextAssembler",
+    "ContextBuildItem",
+    "ContextBuildManifest",
+    "ContextBuildPolicy",
+    "ContextBuildSourceMetadata",
+    "ContextBuilder",
     "ContextError",
     "ContextItem",
     "ContextOperationSpec",

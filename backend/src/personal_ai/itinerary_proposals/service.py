@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from personal_ai.agents.research.contracts import ResearchSession
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.builder import ContextBuildSourceMetadata
 from personal_ai.context.contracts import ContextError
 from personal_ai.entities.conversation import Message, MessageRole, MessageStatus
 from personal_ai.itinerary_proposals.contracts import (
@@ -433,13 +434,34 @@ class ItineraryProposalService:
             status=MessageStatus.COMPLETED,
             created_at=now,
         )
-        messages, selected, excluded, counted = await sync_call(
-            self.context.assemble_research,
+        assembled = await sync_call(
+            self.context.assemble_research_context,
             pending,
             blocks,
             SYSTEM_INSTRUCTION,
             deadline=deadline,
+            now=now,
+            input_token_limit=self.settings.itinerary_proposal_max_input_tokens,
+            required_source_ids=("travel-context",),
+            source_metadata={
+                "travel-context": ContextBuildSourceMetadata(
+                    source_class="domain_current",
+                    authority="authoritative",
+                    sensitivity="sensitive",
+                )
+            },
         )
+        item_reports = assembled.manifest.items if assembled.manifest else ()
+        selected = tuple(item.item_id for item in item_reports if item.injected)
+        excluded = {
+            item.item_id: (
+                "budget"
+                if item.omission_reason in {"budget", "source_budget"}
+                else item.omission_reason or "excluded"
+            )
+            for item in item_reports
+            if not item.injected
+        }
         if "travel-context" not in selected:
             raise _ProposalContextTooLarge("travel context did not fit")
         evidence_handles = {item.handle for item in evidence.blocks}
@@ -451,10 +473,10 @@ class ItineraryProposalService:
                 failure_code="insufficient_evidence",
                 expires_at=_earliest_expiry(evidence, now),
             )
-        if counted.tokens > self.settings.itinerary_proposal_max_input_tokens:
+        if assembled.budget.selected_total > self.settings.itinerary_proposal_max_input_tokens:
             raise _ProposalContextTooLarge("proposal input budget exceeded")
 
-        raw = await self._collect_model_output(messages, deadline, terminal_deadline)
+        raw = await self._collect_model_output(assembled.messages, deadline, terminal_deadline)
         model_result = _parse_model_output(raw)
         if model_result.trip_handle != request.context.trip_handle:
             raise _InvalidProposalOutput("trip_handle_mismatch")

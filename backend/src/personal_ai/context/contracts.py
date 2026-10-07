@@ -1,12 +1,14 @@
 """Provider-neutral, immutable context and conversation-summary contracts."""
 
+from __future__ import annotations
+
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from itertools import pairwise
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
@@ -15,6 +17,9 @@ from personal_ai.context.providers import ContextItem, ContextProviderFailure
 from personal_ai.entities import Message
 from personal_ai.entities.conversation import TimestampedRecord
 from personal_ai.llm.client import ChatMessage
+
+if TYPE_CHECKING:
+    from personal_ai.context.builder import ContextBuildManifest
 
 
 class ContextError(Exception):
@@ -49,7 +54,7 @@ class ConversationSummarizer(Protocol):
     def summarize(
         self,
         source_messages: Sequence[Message],
-        prior_summary: "ConversationSummary | None",
+        prior_summary: ConversationSummary | None,
     ) -> SummaryDraft: ...
 
 
@@ -76,7 +81,7 @@ class ConversationSummary(TimestampedRecord):
     created_at: datetime
 
     @model_validator(mode="after")
-    def validate_coverage(self) -> "ConversationSummary":
+    def validate_coverage(self) -> ConversationSummary:
         if not self.content.strip() or not self.source_message_ids:
             raise ValueError("empty summary")
         if self.source_message_ids[-1] != self.covers_through_message_id:
@@ -154,6 +159,7 @@ class BudgetReport:
     selected_total: int
     counter_kind: str
     memory_tokens: int = 0
+    source_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -169,3 +175,4 @@ class AssembledContext:
     memory_tokens: int = 0
     source_items: tuple[ContextItem, ...] = ()
     source_failures: tuple[ContextProviderFailure, ...] = ()
+    manifest: ContextBuildManifest | None = None

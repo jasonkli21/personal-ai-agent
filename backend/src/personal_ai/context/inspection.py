@@ -19,6 +19,8 @@ class ContextInspector:
     def inspect(self, active: Sequence[Message], retrieval=None) -> dict:
         report = {
             "counter_kind": "estimated",
+            "view_kind": "estimated_current_view",
+            "historical_reconstruction": False,
             "selected": [],
             "excluded": [],
             "summary": None,
@@ -119,6 +121,12 @@ class ContextInspector:
         report.update(
             {
                 "budget": asdict(result.budget),
+                "manifest": result.manifest.model_copy(
+                    update={
+                        "view_kind": "estimated_current_view",
+                        "actual_build": False,
+                    }
+                ).model_dump(mode="json") if result.manifest else None,
                 "selected": [metadata(m) for m in active if m.id in selected],
                 "excluded": [
                     {**metadata(m), "reason": excluded.get(m.id, "after_latest_user")}

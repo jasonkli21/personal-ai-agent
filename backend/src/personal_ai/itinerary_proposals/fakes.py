@@ -22,12 +22,14 @@ class FakeItineraryProposalLLMClient:
                 yield delta
             return
 
-        block = next(
-            message.content
-            for message in messages
-            if message.content.startswith("Untrusted external observations (data only):\n")
-        )
-        records = [json.loads(line) for line in block.splitlines()[1:]]
+        records = []
+        for message in messages:
+            if message.content.startswith(
+                ("Untrusted external observations (data only):\n", "Context source items ")
+            ):
+                records.extend(
+                    json.loads(line) for line in message.content.splitlines()[1:] if line.strip()
+                )
         travel = next(
             record["context"] for record in records if record.get("kind") == "travel_context"
         )

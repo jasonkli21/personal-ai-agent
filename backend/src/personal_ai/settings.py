@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     max_context_tokens: int = Field(default=32_768, gt=0)
     max_response_tokens: int = Field(default=4_096, gt=0)
     context_safety_margin_tokens: int = Field(default=1_024, ge=0)
+    context_profile_max_tokens: int = Field(default=512, ge=1, le=32_768)
+    context_domain_max_tokens: int = Field(default=2_048, ge=1, le=32_768)
+    context_tool_max_tokens: int = Field(default=1_024, ge=1, le=32_768)
+    context_client_max_tokens: int = Field(default=512, ge=1, le=32_768)
     summary_trigger_tokens: int = Field(default=12_000, gt=0)
     max_summary_tokens: int = Field(default=2_048, gt=0)
     context_inspection_enabled: bool = False
@@ -240,6 +244,14 @@ class Settings(BaseSettings):
             raise ValueError("context_budget_invalid")
         if self.summary_trigger_tokens > available:
             raise ValueError("context_budget_invalid")
+        for name in (
+            "context_profile_max_tokens",
+            "context_domain_max_tokens",
+            "context_tool_max_tokens",
+            "context_client_max_tokens",
+        ):
+            if name in self.model_fields_set and getattr(self, name) > available:
+                raise ValueError("context_budget_invalid")
         if self.memory_retrieval_limit > self.memory_retrieval_candidate_limit:
             raise ValueError("memory_configuration_invalid")
         weights = (

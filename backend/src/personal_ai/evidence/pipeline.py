@@ -193,9 +193,20 @@ def select_evidence(session, context, now, deadline, reranker=None):
         status=MessageStatus.COMPLETED,
         created_at=now,
     )
-    messages, ids, budget_excluded, count = context.assemble_research(
-        pending, blocks, SYNTHESIS_INSTRUCTION, deadline=deadline
+    assembled = context.assemble_research_context(
+        pending, blocks, SYNTHESIS_INSTRUCTION, deadline=deadline, now=now
     )
+    item_reports = assembled.manifest.items if assembled.manifest else ()
+    ids = tuple(UUID(item.item_id) for item in item_reports if item.injected)
+    budget_excluded = {
+        item.item_id: (
+            "budget"
+            if item.omission_reason in {"budget", "source_budget"}
+            else item.omission_reason or "excluded"
+        )
+        for item in item_reports
+        if not item.injected
+    }
     excluded.update(budget_excluded)
     selection = EvidenceSelection(
         id=uuid4(),
@@ -204,11 +215,11 @@ def select_evidence(session, context, now, deadline, reranker=None):
         evidence_ids=ids,
         excluded=excluded,
         scores=scores,
-        token_count=count.tokens,
-        counter_kind=count.kind,
+        token_count=assembled.budget.selected_total,
+        counter_kind=assembled.budget.counter_kind,
         created_at=now,
     )
-    return selection, messages
+    return selection, assembled.messages
 
 
 def _unique_object(pairs):

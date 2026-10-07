@@ -21,6 +21,7 @@ from personal_ai.booking_extractions.repositories import (
     ExtractionError,
 )
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.builder import ContextBuildSourceMetadata
 from personal_ai.entities.conversation import Message, MessageRole, MessageStatus
 from personal_ai.llm.errors import LLMTimeoutError
 from personal_ai.storage.async_io import io_call
@@ -212,18 +213,31 @@ class BookingExtractionService:
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
-                messages, _, _, counted = await asyncio.to_thread(
-                    self.context.assemble_research,
+                assembled = await asyncio.to_thread(
+                    self.context.assemble_research_context,
                     pending,
                     ((request.source_sha256, data_line),),
                     SYSTEM_INSTRUCTION,
                     deadline=operation_deadline,
+                    now=now,
+                    input_token_limit=self.settings.booking_extraction_max_input_tokens,
+                    required_source_ids=(request.source_sha256,),
+                    source_metadata={
+                        request.source_sha256: ContextBuildSourceMetadata(
+                            source_class="client_context",
+                            authority="client_supplied",
+                            sensitivity="sensitive",
+                        )
+                    },
+                    source_token_limits={
+                        "client_context": self.settings.booking_extraction_max_input_tokens,
+                    },
                 )
-                if counted.tokens > self.settings.booking_extraction_max_input_tokens:
+                if assembled.budget.selected_total > self.settings.booking_extraction_max_input_tokens:
                     raise ValueError("context_too_large")
                 output = ""
                 stream = self.llm.stream_bounded(
-                    messages,
+                    assembled.messages,
                     max_output_tokens=self.settings.booking_extraction_max_output_tokens,
                     timeout_seconds=max(0.01, _remaining(operation_deadline)),
                 )

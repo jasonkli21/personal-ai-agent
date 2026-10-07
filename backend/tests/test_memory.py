@@ -314,6 +314,8 @@ def test_injection_preserves_phase_2_request_and_whole_record_budget():
     assert result.messages[0].content.index("Correction:") < result.messages[0].content.index(
         "I prefer busy"
     )
+    assert result.memory_tokens > 0
+    assert result.budget.memory_tokens == result.budget.selected_total - base.budget.selected_total
     assert "embedding" not in result.messages[0].content
     assert str(retrieval.selected[0].memory.id) not in result.messages[0].content
     settings.memory_max_context_tokens = 1

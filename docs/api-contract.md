@@ -1,4 +1,4 @@
-# API contract (Phases 1–11 local implementation)
+# API contract (Phases 1–12 local implementation)
 
 This document defines the implemented HTTP boundary. All `/v1` routes require an application principal. Staging/production verify
 Google OIDC and resolve an opaque owner from issuer and stable subject; client
@@ -32,7 +32,7 @@ web-to-API boundary. See the [authorization matrix](phase-9-authorization-matrix
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/regenerate` | — | SSE stream replacing a completed assistant message |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/edit-and-retry` | `{"content": "..."}` | SSE stream after replacing a user message |
 
-## Phase 11 owner profile and context-source preparation
+## Phase 11–12 owner profile and context building
 
 `/v1/profile` is owner-scoped through the application principal and requires
 the standalone `personal_ai` application scope with no workspace. Deployed
@@ -50,10 +50,16 @@ The `global_profile` context provider returns only fields selected by the
 caller and explicitly shared with the current application. The typed context
 provider interfaces also expose bounded selections and normalized items for
 conversation, memory, external evidence, client context, and registered
-read-only tool results. This phase does not automatically select sources or
-insert these prepared source items into model messages; Phase 12 owns that
-builder integration. See the [Phase 11 guide](personal-ai-chapter-2/phase-11-implementation-guide.md)
-and [evidence](personal-ai-chapter-2/phase-11-implementation-evidence.md).
+read-only tool results. The shared Phase 12 builder fits the conversation,
+memory, and explicitly selected provider items under global and per-source
+budgets, rechecks expiry and permission dependencies, preserves source
+authority and sensitivity, and produces a metadata-only manifest for the
+messages actually built. Sources remain caller-selected; deterministic
+automatic planning is Phase 13 scope. The development inspector reports an
+estimated current view and does not claim historical prompt reconstruction.
+See the [Phase 11 guide](personal-ai-chapter-2/phase-11-implementation-guide.md),
+[Phase 12 guide](personal-ai-chapter-2/phase-12-implementation-guide.md), and
+[Phase 12 evidence](personal-ai-chapter-2/phase-12-implementation-evidence.md).
 
 ### Proposed upstream itinerary proposal (pending independent review)
 

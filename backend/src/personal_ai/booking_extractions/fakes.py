@@ -14,21 +14,18 @@ class FakeBookingExtractionLLMClient:
 
     async def stream(self, messages: Sequence) -> AsyncIterator[str]:
         self.requests.append(tuple(messages))
-        text = next(
-            (
-                part
-                for message in messages
-                for part in [message.content]
-                if message.content.startswith("Untrusted external observations (data only):\n")
-            ),
-            "",
-        )
         document = ""
-        if text:
-            try:
-                document = json.loads(text.splitlines()[1]).get("document_text", "")
-            except (IndexError, ValueError, TypeError):
-                pass
+        for message in messages:
+            for line in message.content.splitlines():
+                try:
+                    candidate = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(candidate, dict) and isinstance(candidate.get("document_text"), str):
+                    document = candidate["document_text"]
+                    break
+            if document:
+                break
         if self.output is not None:
             yield self.output
             return

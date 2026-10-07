@@ -12,7 +12,7 @@ The architecture should be **heterogeneous-capable but incrementally activated**
 
 The repository already has conversation/chat, source-attributed memory, research/evidence/decision/domain seams, partial owner authentication, deterministic context/research safeguards, and evaluation infrastructure. Next-scope Phases 1–2 added application/workspace identity and the application registry/manifest model. Phase 10 runtime wiring uses Postgres/pgvector and DynamoDB locally and retires Firestore; real-engine, live cloud/IAM, strict-$0, source/no-source, and recovery acceptance remain open as recorded in [current state](../current-state.md) and [P10.6 evidence](phase-10-p10.6-implementation-evidence.md).
 
-Phase 10 changes persistence; it does not reset this foundation. Phase 11 context-source/provider preparation is implemented locally, and Phase 12 is the next implementation boundary. The Phase 11 Postgres profile contract still needs execution against local Postgres, and cloud/IAM, strict-$0, source/no-source, and recovery acceptance remain open as recorded in [current state](../current-state.md) and the [Phase 11 evidence](phase-11-implementation-evidence.md).
+Phase 10 changes persistence; it does not reset this foundation. Phases 11 and 12 context-source preparation and budgeted model-input building are implemented locally; Phase 13 is the next implementation boundary. The Phase 11 Postgres profile contract still needs execution against local Postgres, and cloud/IAM, strict-$0, source/no-source, and recovery acceptance remain open as recorded in [current state](../current-state.md), [Phase 11 evidence](phase-11-implementation-evidence.md), and [Phase 12 evidence](phase-12-implementation-evidence.md).
 
 ## Product requirements
 

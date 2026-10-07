@@ -52,9 +52,10 @@ for tested revision and verification status.
   cross-app reads.
 - [`context/assembler.py`](../../backend/src/personal_ai/context/assembler.py)
   accepts explicit `context_selections` and returns normalized `source_items`
-  and bounded `source_failures` in `AssembledContext`. It does not choose
-  sources or inject these items into model messages; those belong to Phase 12
-  and later planning work.
+  and bounded `source_failures` in `AssembledContext`. The Phase 11 boundary did
+  not choose or inject sources. Phase 12 now fits explicitly prepared items into
+  model messages through the shared builder; it still does not choose sources.
+  See the [Phase 12 guide](phase-12-implementation-guide.md).
 
 ## Existing-source wrappers
 

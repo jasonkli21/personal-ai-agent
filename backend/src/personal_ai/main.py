@@ -126,12 +126,15 @@ async def health() -> dict[str, str]:
 
 @app.exception_handler(ContextError)
 async def context_error(_: Request, error: ContextError) -> JSONResponse:
-    message = (
-        "This message exceeds the context budget. Edit it to a shorter message and retry."
-        if error.code == "context_message_too_large"
-        else "The context budget is invalid."
-    )
-    return _error_response(422, error.code, message)
+    if error.code == "context_message_too_large":
+        return _error_response(
+            422,
+            error.code,
+            "This message exceeds the context budget. Edit it to a shorter message and retry.",
+        )
+    if error.code == "context_budget_invalid":
+        return _error_response(503, error.code, "The context budget is invalid.")
+    return _error_response(422, error.code, "Required context could not be prepared.")
 
 
 @app.exception_handler(ContextPreparationError)

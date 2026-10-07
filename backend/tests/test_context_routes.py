@@ -176,6 +176,10 @@ def test_inspector_enabled_is_read_only_estimated_metadata_without_provider_call
     assert response.status_code == 200
     report = response.json()
     assert report["counter_kind"] == "estimated"
+    assert report["view_kind"] == "estimated_current_view"
+    assert report["historical_reconstruction"] is False
+    assert report["manifest"]["actual_build"] is False
+    assert report["manifest"]["view_kind"] == "estimated_current_view"
     assert report["selected"] and report["excluded"]
     assert "content" not in str(report) and "test-key" not in str(report)
     assert not llm.requests and not context.summarizer.calls and not summaries.records

@@ -414,6 +414,57 @@ def test_registered_synthetic_application_uses_shared_preparation_without_app_br
     assert item.permission_dependencies[0].permission_id == "synthetic.read_stays"
     assert isinstance(item.payload, SyntheticDomainPayload)
     assert provider.calls == [(('name', 'availability'), 1, 4_096)]
+    source_report = next(
+        row for row in assembled.manifest.items if row.item_id == "stay-1"
+    )
+    assert not source_report.injected
+    assert source_report.omission_reason == "permission_unverified"
+    assert "Juniper House (synthetic)" not in "\n".join(
+        message.content for message in assembled.messages
+    )
+
+
+def test_assembler_rechecks_grants_and_injects_typed_source_with_actual_manifest():
+    context = synthetic_context("synthetic.context")
+    provider = SyntheticContextProvider()
+    coordinator = ContextProviderCoordinator(
+        {"synthetic.context": StaticContextProviderFactory(provider)}
+    )
+
+    class CurrentPermission:
+        def is_current(self, dependency):
+            return dependency.permission_id == "synthetic.read_stays" and dependency.version == "v1"
+
+    pending = Message(
+        id=uuid4(),
+        conversation_id=uuid4(),
+        owner_id=context.scope.owner_id,
+        role=MessageRole.USER,
+        content="Find me a stay.",
+        status=MessageStatus.COMPLETED,
+        created_at=NOW,
+        application_id="synthetic",
+    )
+    assembled = ContextAssembler(
+        Settings(ai_provider="fake", ai_model="fake-model"),
+        FakeTokenCounter(),
+        context_provider_coordinator=coordinator,
+        permission_revalidator=CurrentPermission(),
+    ).assemble(
+        (),
+        pending,
+        refresh=False,
+        application_context=context,
+        context_selections=(selection(),),
+    )
+
+    assert any("Juniper House (synthetic)" in message.content for message in assembled.messages)
+    assert assembled.manifest.actual_build
+    assert assembled.manifest.effective_sensitivity == "sensitive"
+    injected = [item for item in assembled.manifest.items if item.injected]
+    assert [item.item_id for item in injected] == ["stay-1"]
+    assert injected[0].authority == "authoritative"
+    assert injected[0].source_reference_count == 1
 
 
 def test_unknown_authority_and_timestamps_remain_explicit():
