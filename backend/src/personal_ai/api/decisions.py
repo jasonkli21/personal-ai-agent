@@ -5,15 +5,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 
-from personal_ai.agents.research.repositories import FirestoreResearchRepository
 from personal_ai.api.dependencies import get_current_owner_id
 from personal_ai.decisions.contracts import (
     DecisionCreateRequest,
     DecisionInspection,
     DecisionResult,
 )
-from personal_ai.decisions.firestore import FirestoreDecisionRepository
 from personal_ai.decisions.service import DecisionService
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.errors import ResourceNotFoundError
 
@@ -27,10 +26,7 @@ def decision_settings(settings: Annotated[Settings, Depends(get_settings)]) -> S
 
 
 def decision_repository(settings: Annotated[Settings, Depends(decision_settings)]):
-    return FirestoreDecisionRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    return persistence_factory(settings).decision_repository()
 
 
 def _research_repository_factory(settings: Settings):
@@ -39,15 +35,12 @@ def _research_repository_factory(settings: Settings):
 
         return local_repository
 
-    return lambda: FirestoreResearchRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    return lambda: persistence_factory(settings).research_repository()
 
 
 def decision_service(
     settings: Annotated[Settings, Depends(decision_settings)],
-    repository: Annotated[FirestoreDecisionRepository, Depends(decision_repository)],
+    repository: Annotated[object, Depends(decision_repository)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
 ) -> DecisionService:
     return DecisionService(

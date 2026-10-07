@@ -15,7 +15,6 @@ from personal_ai.booking_extractions.contracts import (
 from personal_ai.booking_extractions.fakes import FakeBookingExtractionLLMClient
 from personal_ai.booking_extractions.repositories import (
     BookingExtractionRepository,
-    FirestoreBookingExtractionRepository,
     InMemoryBookingExtractionRepository,
 )
 from personal_ai.booking_extractions.service import BookingExtractionService
@@ -23,6 +22,7 @@ from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.llm.context import GeminiTokenCounter
 from personal_ai.llm.gemini import GeminiLLMClient
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.errors import ResourceNotFoundError
 
@@ -49,10 +49,7 @@ def extraction_repository(
 ) -> BookingExtractionRepository:
     if settings.booking_extraction_storage == "memory":
         return local_repository()
-    return FirestoreBookingExtractionRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    return persistence_factory(settings).booking_extraction_repository()
 
 
 def extraction_service(

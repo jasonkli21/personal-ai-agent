@@ -76,8 +76,12 @@ class Memory(MemoryCandidate, ApplicationScopedRecord):
     effective_at: datetime
     created_at: datetime
     embedding: tuple[float, ...]
+    embedding_provider: Literal["google_genai"] = "google_genai"
     embedding_model: str = Field(min_length=1, max_length=200)
     embedding_dimensions: int = Field(gt=0, le=2048)
+    embedding_normalization: Literal["l2"] = "l2"
+    embedding_document_task: Literal["RETRIEVAL_DOCUMENT"] = "RETRIEVAL_DOCUMENT"
+    embedding_query_task: Literal["RETRIEVAL_QUERY"] = "RETRIEVAL_QUERY"
     schema_version: Literal[1] = 1
 
     @field_validator("embedding", mode="before")
@@ -130,8 +134,12 @@ class DerivedMemory(ApplicationScopedRecord):
     effective_at: datetime
     created_at: datetime
     embedding: tuple[float, ...]
+    embedding_provider: Literal["google_genai"] = "google_genai"
     embedding_model: str = Field(min_length=1, max_length=200)
     embedding_dimensions: int = Field(gt=0, le=2048)
+    embedding_normalization: Literal["l2"] = "l2"
+    embedding_document_task: Literal["RETRIEVAL_DOCUMENT"] = "RETRIEVAL_DOCUMENT"
+    embedding_query_task: Literal["RETRIEVAL_QUERY"] = "RETRIEVAL_QUERY"
     source_memory_ids: tuple[UUID, ...] = Field(min_length=2, max_length=4)
     sources: tuple[DerivedMemorySource, ...] = Field(min_length=2, max_length=4)
     source_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")

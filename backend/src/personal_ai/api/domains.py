@@ -5,9 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 
-from personal_ai.agents.research.repositories import FirestoreResearchRepository
 from personal_ai.api.dependencies import get_current_owner_id, require_standalone_application_scope
-from personal_ai.decisions.firestore import FirestoreDecisionRepository
 from personal_ai.domains.contracts import (
     DomainComparisonCreateRequest,
     DomainComparisonResult,
@@ -17,8 +15,8 @@ from personal_ai.domains.contracts import (
     DomainRegistration,
 )
 from personal_ai.domains.fixtures import get_fixture, list_fixtures
-from personal_ai.domains.repositories import FirestoreDomainRepository
 from personal_ai.domains.service import DomainService
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.errors import ResourceNotFoundError
 
@@ -36,29 +34,24 @@ def domain_service(
     owner_id: Annotated[str, Depends(get_current_owner_id)],
     _scope: Annotated[object, Depends(require_standalone_application_scope)],
 ) -> DomainService:
-    decision_repository = FirestoreDecisionRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
-    domain_repository = FirestoreDomainRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    factory = persistence_factory(settings)
+    decision_repository = factory.decision_repository()
+    domain_repository = factory.domain_repository()
     if settings.research_storage == "memory":
         from personal_ai.api.research import local_repository
 
         research_repository = local_repository
     else:
-        research_repository = lambda: FirestoreResearchRepository(
-            project_id=settings.firestore_project_id,
-            emulator_host=settings.firestore_emulator_host,
-        )
+        research_repository = lambda: factory.research_repository()
     return DomainService(
         settings,
         decision_repository,
         domain_repository,
         research_repository=research_repository,
         owner_id=owner_id,
+        provider_rate_limiter_factory=lambda provider: factory.provider_rate_limiter(
+            provider, domain_repository
+        ),
     )
 
 

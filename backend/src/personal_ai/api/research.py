@@ -9,7 +9,6 @@ from fastapi.responses import StreamingResponse
 
 from personal_ai.agents.research.contracts import ResearchRequest, ResearchSession
 from personal_ai.agents.research.repositories import (
-    FirestoreResearchRepository,
     InMemoryResearchRepository,
 )
 from personal_ai.agents.research.service import ResearchService
@@ -20,6 +19,7 @@ from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.llm.context import GeminiTokenCounter
 from personal_ai.llm.fake import FakeResearchLLMClient
 from personal_ai.llm.gemini import GeminiLLMClient
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.search.contracts import FakeSearchAdapter, SearchResult
 from personal_ai.search.providers.brave import BraveSearchAdapter
 from personal_ai.settings import Settings, get_settings
@@ -42,9 +42,7 @@ def local_repository():
 def research_repository(settings: Annotated[Settings, Depends(research_settings)]):
     if settings.research_storage == "memory":
         return local_repository()
-    return FirestoreResearchRepository(
-        project_id=settings.firestore_project_id, emulator_host=settings.firestore_emulator_host
-    )
+    return persistence_factory(settings).research_repository()
 
 
 def research_service(

@@ -11,7 +11,7 @@ For task-level dependencies, requirements, and acceptance criteria, see the
 [Phase 0–1 implementation plan](phase-1-implementation-plan.md) and the
 [Phase 2 implementation plan](phase-2-implementation-plan.md).
 
-P10.0 now records the future [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). Firestore remains implemented; P10.1–P10.6 and local/cloud cutover acceptance remain unverified. Current setup, deployment and runtime claims change only after implementation.
+P10.0 records the [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). P10.1–P10.3 now have a targeted local implementation and evidence ([status](personal-ai-chapter-2/phase-10-p10.1-p10.3-implementation-evidence.md)); Firestore remains selected at runtime. P10.4–P10.6, Docker Compose execution, and cloud/cutover acceptance remain unverified.
 
 ## Phase 0 — Define the learning baseline
 

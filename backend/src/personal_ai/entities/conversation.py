@@ -48,6 +48,7 @@ class Conversation(TimestampedRecord):
     owner_id: str = Field(min_length=1, max_length=200)
     context_preparation_id: UUID | None = Field(default=None, exclude=True)
     context_preparation_started_at: datetime | None = Field(default=None, exclude=True)
+    persistence_revision: int = Field(default=0, exclude=True, ge=0)
     title: str = Field(min_length=1, max_length=200)
     created_at: datetime
     updated_at: datetime

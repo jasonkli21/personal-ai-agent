@@ -23,7 +23,7 @@ Future separate domain applications -> explicit core API (after an auth boundary
 
 The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the API and worker. The deployment target is Cloud Run, with Firestore as the durable store, Pub/Sub for gated durable memory work, and Secret Manager for configured credentials. Repository contracts hide Firestore details from services; `llm` hides model-provider details. See [GCP deployment](gcp-deployment.md) for the runnable topology and cost boundaries.
 
-P10.0 now records the future [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). Firestore remains implemented; P10.1–P10.6 and local/cloud cutover acceptance remain unverified. Current setup, deployment and runtime claims change only after implementation.
+P10.0 records the [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). P10.1–P10.3 now have a targeted local implementation and evidence ([status](personal-ai-chapter-2/phase-10-p10.1-p10.3-implementation-evidence.md)); Firestore remains selected at runtime. P10.4–P10.6, Docker Compose execution, and cloud/cutover acceptance remain unverified.
 
 ## Core boundaries
 

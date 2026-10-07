@@ -6,7 +6,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
-from personal_ai.agents.research.repositories import FirestoreResearchRepository
 from personal_ai.api.dependencies import get_current_owner_id, require_standalone_application_scope
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
@@ -16,12 +15,12 @@ from personal_ai.itinerary_proposals.contracts import (
 )
 from personal_ai.itinerary_proposals.fakes import FakeItineraryProposalLLMClient
 from personal_ai.itinerary_proposals.repositories import (
-    FirestoreItineraryProposalRepository,
     InMemoryItineraryProposalRepository,
 )
 from personal_ai.itinerary_proposals.service import ItineraryProposalService
 from personal_ai.llm.context import GeminiTokenCounter
 from personal_ai.llm.gemini import GeminiLLMClient
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.errors import ResourceNotFoundError
 
@@ -46,10 +45,7 @@ def local_repository() -> InMemoryItineraryProposalRepository:
 def proposal_repository(settings: Annotated[Settings, Depends(proposal_settings)]):
     if settings.itinerary_proposal_storage == "memory":
         return local_repository()
-    return FirestoreItineraryProposalRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    return persistence_factory(settings).itinerary_proposal_repository()
 
 
 def research_repository_factory(settings: Settings):
@@ -59,10 +55,7 @@ def research_repository_factory(settings: Settings):
         from personal_ai.api.research import local_repository as local_research_repository
 
         return local_research_repository
-    return lambda: FirestoreResearchRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    return lambda: persistence_factory(settings).research_repository()
 
 
 def proposal_service(

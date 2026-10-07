@@ -8,6 +8,7 @@ import json
 import math
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from personal_ai.auth.owner_data import OWNER_DATA_COLLECTIONS
@@ -36,6 +37,19 @@ class AccountRequestConflict(RuntimeError):
 
 class ExportTooLarge(RuntimeError):
     """The export exceeds its configured synchronous response limits."""
+
+
+class AccountDataRepository(Protocol):
+    """Backend-neutral export and account-lifecycle operations."""
+
+    def close(self) -> None: ...
+    def export_owner(self, owner_id: str, *, max_records: int, max_bytes: int) -> dict: ...
+    def record_export(self, *, owner_id: str, idempotency_key: UUID, correlation_id: str) -> None: ...
+    def create_deletion(self, *, owner_id: str, idempotency_key: UUID, correlation_id: str) -> dict: ...
+    def get_deletion(self, *, owner_id: str, request_id: UUID) -> dict: ...
+    def transition_deletion(
+        self, *, owner_id: str, request_id: UUID, action: str, correlation_id: str
+    ) -> dict: ...
 
 
 def _portable(value):

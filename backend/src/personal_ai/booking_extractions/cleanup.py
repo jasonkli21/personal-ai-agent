@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 
-from personal_ai.booking_extractions.repositories import FirestoreBookingExtractionRepository
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.settings import get_settings
 
 
@@ -19,10 +19,7 @@ def main() -> None:
     if not 1 <= args.limit <= 500:
         parser.error("--limit must be between 1 and 500")
     settings = get_settings()
-    repository = FirestoreBookingExtractionRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    repository = persistence_factory(settings).booking_extraction_repository()
     print(repository.purge_expired(datetime.now(UTC), limit=args.limit))
 
 

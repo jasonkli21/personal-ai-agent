@@ -11,13 +11,14 @@ from pydantic import BaseModel, ConfigDict
 
 from personal_ai.api.dependencies import get_current_owner_id, require_recent_auth
 from personal_ai.auth.account_data import (
+    AccountDataRepository,
     AccountDataUnavailable,
     AccountRequestConflict,
     AccountRequestNotFound,
     ExportTooLarge,
-    FirestoreAccountDataRepository,
 )
 from personal_ai.auth.contracts import AuthenticatedPrincipal
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.errors import ResourceNotFoundError
 
@@ -32,7 +33,7 @@ class _IdempotentRequest(BaseModel):
 def account_repository(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
-) -> Iterator[FirestoreAccountDataRepository]:
+) -> Iterator[AccountDataRepository]:
     enabled = (
         settings.export_enabled
         if request.url.path == "/v1/account/export"
@@ -43,10 +44,7 @@ def account_repository(
     if not enabled:
         raise ResourceNotFoundError("account action not found")
     try:
-        repository = FirestoreAccountDataRepository(
-            project_id=settings.firestore_project_id,
-            emulator_host=settings.firestore_emulator_host,
-        )
+        repository = persistence_factory(settings).account_data_repository()
     except Exception as error:
         raise AccountDataUnavailable from error
     try:
@@ -61,7 +59,7 @@ def export_account(
     request: Request,
     principal: Annotated[AuthenticatedPrincipal, Depends(require_recent_auth)],
     settings: Annotated[Settings, Depends(get_settings)],
-    repository: Annotated[FirestoreAccountDataRepository, Depends(account_repository)],
+    repository: Annotated[AccountDataRepository, Depends(account_repository)],
 ):
     if not settings.export_enabled:
         raise ResourceNotFoundError("account export not found")
@@ -94,7 +92,7 @@ def create_deletion_request(
     request: Request,
     principal: Annotated[AuthenticatedPrincipal, Depends(require_recent_auth)],
     settings: Annotated[Settings, Depends(get_settings)],
-    repository: Annotated[FirestoreAccountDataRepository, Depends(account_repository)],
+    repository: Annotated[AccountDataRepository, Depends(account_repository)],
 ):
     if not settings.deletion_enabled:
         raise ResourceNotFoundError("account deletion not found")
@@ -114,7 +112,7 @@ def get_deletion_request(
     request_id: UUID,
     owner_id: Annotated[str, Depends(get_current_owner_id)],
     settings: Annotated[Settings, Depends(get_settings)],
-    repository: Annotated[FirestoreAccountDataRepository, Depends(account_repository)],
+    repository: Annotated[AccountDataRepository, Depends(account_repository)],
 ):
     if not settings.deletion_enabled:
         raise ResourceNotFoundError("account deletion not found")
@@ -131,7 +129,7 @@ def update_deletion_request(
     request: Request,
     principal: Annotated[AuthenticatedPrincipal, Depends(require_recent_auth)],
     settings: Annotated[Settings, Depends(get_settings)],
-    repository: Annotated[FirestoreAccountDataRepository, Depends(account_repository)],
+    repository: Annotated[object, Depends(account_repository)],
 ):
     if not settings.deletion_enabled:
         raise ResourceNotFoundError("account deletion not found")

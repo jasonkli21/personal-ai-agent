@@ -16,8 +16,6 @@ import anyio
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from personal_ai.agents.research.repositories import FirestoreResearchRepository
-from personal_ai.auth.directory import FirestorePrincipalDirectory
 from personal_ai.auth.service_tokens import (
     InvalidServiceToken,
     ServiceTokenVerificationUnavailable,
@@ -30,10 +28,8 @@ from personal_ai.memory.lifecycle_jobs import (
     MemoryLifecycleWorker,
     PubSubMemoryJobPublisher,
 )
-from personal_ai.memory.lifecycle_repositories import FirestoreMemoryLifecycleRepository
-from personal_ai.memory.repositories import FirestoreMemoryRepository
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.settings import Settings, get_settings, validate_startup_configuration
-from personal_ai.storage import FirestoreMessageRepository
 from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import ResourceNotFoundError, StorageError
 
@@ -60,14 +56,10 @@ class _PubSubEnvelope(BaseModel):
 
 
 def _components(settings: Settings):
-    memories = FirestoreMemoryRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
-    messages = FirestoreMessageRepository(
-        client=memories.client,
-    )
-    lifecycle = FirestoreMemoryLifecycleRepository(memories, messages)
+    factory = persistence_factory(settings)
+    memories = factory.memory_repository()
+    messages = factory.message_repository()
+    lifecycle = factory.memory_lifecycle_repository(memories, messages)
     publisher = PubSubMemoryJobPublisher(settings)
     republisher = MemoryLifecycleCoordinator(settings, lifecycle, memories, publisher=publisher)
     worker = MemoryLifecycleWorker(
@@ -136,8 +128,8 @@ async def receive_memory_task(request: Request) -> Response:
         return Response(status_code=204)
 
     try:
-        # Firestore, embeddings and service-token verification are synchronous;
-        # keep them off the request loop so one slow job cannot stall health/push.
+        # Repository, embedding and service-token calls are synchronous; keep
+        # them off the request loop so a slow job cannot stall health/push.
         result = await io_call(
             _process_memory_job,
             settings,
@@ -183,10 +175,7 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         return Response(status_code=204)
 
     try:
-        directory = FirestorePrincipalDirectory(
-            project_id=settings.firestore_project_id,
-            emulator_host=settings.firestore_emulator_host,
-        )
+        directory = persistence_factory(settings).principal_directory()
         owner_ids = await anyio.to_thread.run_sync(partial(directory.active_owner_ids, limit=2))
         if not owner_ids:
             logger.info("Scheduled maintenance completed reason=no_active_owner")
@@ -198,10 +187,7 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         published = await anyio.to_thread.run_sync(
             partial(republisher.republish_pending, limit=settings.memory_job_candidate_limit)
         )
-        research = FirestoreResearchRepository(
-            project_id=settings.firestore_project_id,
-            emulator_host=settings.firestore_emulator_host,
-        )
+        research = persistence_factory(settings).research_repository()
         expired = await anyio.to_thread.run_sync(
             partial(
                 research.expire_due_for_owner,

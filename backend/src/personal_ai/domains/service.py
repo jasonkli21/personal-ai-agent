@@ -25,7 +25,6 @@ from personal_ai.domains.contracts import (
 )
 from personal_ai.domains.providers import (
     DomainProviderError,
-    FirestoreProviderRateLimiter,
 )
 from personal_ai.domains.registry import DomainModule, get_domain, registry
 from personal_ai.domains.repositories import (
@@ -49,6 +48,7 @@ class DomainService:
         owner_id: str = "local",
         clock=lambda: datetime.now(UTC),
         adapters: dict[str, object] | None = None,
+        provider_rate_limiter_factory=None,
     ):
         self.settings = settings
         self.decision_repository = decision_repository
@@ -57,6 +57,7 @@ class DomainService:
         self.owner_id = owner_id
         self.clock = clock
         self.adapters = adapters or {}
+        self.provider_rate_limiter_factory = provider_rate_limiter_factory
 
     def registrations(self):
         return tuple(
@@ -238,9 +239,9 @@ class DomainService:
             if adapter is None:
                 rate_limiter = None
                 if domain_id == "travel" and self.settings.travel_places_adapter == "osm_nominatim":
-                    rate_limiter = self._firestore_rate_limiter("osm_nominatim")
+                    rate_limiter = self._provider_rate_limiter("osm_nominatim")
                 elif domain_id == "shopping" and self.settings.shopping_products_adapter == "open_food_facts":
-                    rate_limiter = self._firestore_rate_limiter("open_food_facts")
+                    rate_limiter = self._provider_rate_limiter("open_food_facts")
                 adapter = module.get_adapter(self.settings, rate_limiter=rate_limiter)
             if domain_id == "travel":
                 records = await adapter.lookup(request.query, request.max_results)
@@ -350,11 +351,10 @@ class DomainService:
             ):
                 raise DomainContractError("domain_provider_policy_required", 404)
 
-    def _firestore_rate_limiter(self, provider: str):
-        client = getattr(self.repository, "client", None)
-        if client is None:
+    def _provider_rate_limiter(self, provider: str):
+        if self.provider_rate_limiter_factory is None:
             return None
-        return FirestoreProviderRateLimiter(client, provider)
+        return self.provider_rate_limiter_factory(provider)
 
     def _research_observations(self, session_id, candidates):
         repository = self.research_repository

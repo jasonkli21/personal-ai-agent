@@ -16,7 +16,7 @@ This roadmap preserves the full former integrated scope, adds the Postgres/Dynam
 
 **Phase 10 — Polyglot persistence foundation and Firestore migration.** It establishes local Postgres/pgvector + DynamoDB Local, cloud Neon Postgres + AWS DynamoDB, canonical store ownership, migration/reconciliation, bounded cutover/rollback, and Firestore retirement before the former Phase 3 roadmap resumes.
 
-P10.0 documentation decisions are complete as of 2026-10-06; P10.1–P10.6 remain unimplemented. See the [storage contract](../../phase-10-storage-ownership-and-access-patterns.md) and [migration/verification plan](../../phase-10-migration-cutover-and-verification-plan.md). Firestore remains current, and no cloud or migration acceptance is implied.
+P10.0 decisions and P10.1–P10.3 local implementation are recorded as of 2026-10-06. See the [storage contract](../../phase-10-storage-ownership-and-access-patterns.md), [migration/verification plan](../../phase-10-migration-cutover-and-verification-plan.md), and [implementation evidence](../../phase-10-p10.1-p10.3-implementation-evidence.md). Firestore remains selected at runtime; P10.4–P10.6 and cloud/cutover acceptance remain open.
 
 ## Roadmap
 

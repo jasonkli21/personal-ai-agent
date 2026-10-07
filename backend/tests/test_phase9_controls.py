@@ -332,10 +332,10 @@ def test_disabled_account_actions_do_not_initialize_firestore(authenticated_acco
     )
     app.dependency_overrides[get_settings] = lambda: configured
 
-    def unexpected_repository(**_kwargs):
-        pytest.fail("disabled account action initialized Firestore")
+    def unexpected_factory(**_kwargs):
+        pytest.fail("disabled account action initialized persistence")
 
-    monkeypatch.setattr("personal_ai.api.account.FirestoreAccountDataRepository", unexpected_repository)
+    monkeypatch.setattr("personal_ai.api.account.persistence_factory", unexpected_factory)
     headers = {"Authorization": "Bearer synthetic-id-token"}
     assert client.post("/v1/account/export", headers=headers, json={"idempotency_key": str(uuid4())}).status_code == 404
     assert client.get(f"/v1/account/deletion/{uuid4()}", headers=headers).status_code == 404

@@ -14,17 +14,14 @@ from personal_ai.applications.registry import (
 from personal_ai.auth.scope import STANDALONE_APPLICATION_ID, RequestScope
 from personal_ai.context import ContextAssembler
 from personal_ai.context.contracts import ConversationSummaryRepository
-from personal_ai.context.repositories import FirestoreSummaryRepository
 from personal_ai.llm import GeminiLLMClient, LLMClient
 from personal_ai.llm.context import GeminiConversationSummarizer, GeminiTokenCounter
 from personal_ai.llm.memory import GeminiMemoryAdapter
 from personal_ai.memory.lifecycle_jobs import MemoryLifecycleCoordinator, PubSubMemoryJobPublisher
-from personal_ai.memory.lifecycle_repositories import FirestoreMemoryLifecycleRepository
-from personal_ai.memory.repositories import FirestoreMemoryRepository
 from personal_ai.memory.services import MemoryExtractionService, MemoryRetriever
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.services import ChatTurnService, ConversationService
 from personal_ai.settings import Settings, get_settings
-from personal_ai.storage import FirestoreConversationRepository, FirestoreMessageRepository
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
 
 
@@ -105,20 +102,14 @@ def get_conversation_repository(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ConversationRepository:
     """Build the production conversation repository from application settings."""
-    return FirestoreConversationRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    return persistence_factory(settings).conversation_repository()
 
 
 def get_message_repository(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> MessageRepository:
     """Build the production message repository from application settings."""
-    return FirestoreMessageRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    return persistence_factory(settings).message_repository()
 
 
 def get_conversation_service(
@@ -143,9 +134,7 @@ def get_llm_client(
 def get_summary_repository(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ConversationSummaryRepository:
-    return FirestoreSummaryRepository(
-        project_id=settings.firestore_project_id, emulator_host=settings.firestore_emulator_host,
-    )
+    return persistence_factory(settings).summary_repository()
 
 
 def get_context_assembler(
@@ -160,10 +149,7 @@ def get_context_assembler(
 def get_memory_repository(settings: Annotated[Settings, Depends(get_settings)]):
     if not settings.memory_enabled and not settings.memory_inspection_enabled:
         return None
-    return FirestoreMemoryRepository(
-        project_id=settings.firestore_project_id,
-        emulator_host=settings.firestore_emulator_host,
-    )
+    return persistence_factory(settings).memory_repository()
 
 
 def get_memory_adapter(settings: Annotated[Settings, Depends(get_settings)]):
@@ -177,7 +163,7 @@ def get_lifecycle_repository(
 ):
     if not settings.memory_lifecycle_inspection_enabled or memory_repository is None:
         return None
-    return FirestoreMemoryLifecycleRepository(memory_repository, messages)
+    return persistence_factory(settings).memory_lifecycle_repository(memory_repository, messages)
 
 
 def get_chat_turn_service(
@@ -195,7 +181,7 @@ def get_chat_turn_service(
     """Compose the durable streaming chat lifecycle."""
     retriever = extraction = lifecycle_coordinator = None
     if settings.memory_enabled and memory_repository is not None:
-        lifecycle_repository = lifecycle_repository or FirestoreMemoryLifecycleRepository(
+        lifecycle_repository = lifecycle_repository or persistence_factory(settings).memory_lifecycle_repository(
             memory_repository, messages
         )
         retriever = MemoryRetriever(

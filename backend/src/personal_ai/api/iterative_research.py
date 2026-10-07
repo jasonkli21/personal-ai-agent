@@ -10,7 +10,6 @@ from fastapi.responses import StreamingResponse
 from personal_ai.agents.research.contracts import ResearchError
 from personal_ai.agents.research.iterative_contracts import IterativeResearchRequest
 from personal_ai.agents.research.iterative_repositories import (
-    FirestoreIterativeResearchRepository,
     InMemoryIterativeResearchRepository,
 )
 from personal_ai.agents.research.iterative_service import IterativeResearchService
@@ -20,11 +19,11 @@ from personal_ai.api.research import local_repository
 from personal_ai.api.routes import SSE_RESPONSES, _LifecycleStreamingResponse
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
-from personal_ai.decisions.firestore import FirestoreDecisionRepository
 from personal_ai.decisions.repositories import InMemoryDecisionRepository
 from personal_ai.llm.context import GeminiTokenCounter
 from personal_ai.llm.fake import FakeResearchLLMClient
 from personal_ai.llm.gemini import GeminiLLMClient
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.search.contracts import FakeSearchAdapter, SearchResult
 from personal_ai.search.providers.brave import BraveSearchAdapter
 from personal_ai.settings import Settings, get_settings
@@ -65,20 +64,10 @@ def iterative_research_service(
         runs = local_iterative_repository()
         decisions = local_iterative_decision_repository()
     else:
-        from personal_ai.agents.research.repositories import FirestoreResearchRepository
-
-        sessions = FirestoreResearchRepository(
-            project_id=settings.firestore_project_id,
-            emulator_host=settings.firestore_emulator_host,
-        )
-        runs = FirestoreIterativeResearchRepository(
-            project_id=settings.firestore_project_id,
-            emulator_host=settings.firestore_emulator_host,
-        )
-        decisions = FirestoreDecisionRepository(
-            project_id=settings.firestore_project_id,
-            emulator_host=settings.firestore_emulator_host,
-        )
+        factory = persistence_factory(settings)
+        sessions = factory.research_repository()
+        runs = factory.iterative_research_repository()
+        decisions = factory.decision_repository()
     if settings.research_search_adapter == "fake":
         adapter = FakeSearchAdapter((SearchResult(
             url="https://example.org/synthetic-research",

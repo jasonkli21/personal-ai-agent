@@ -2,7 +2,7 @@
 
 Status: planned immediate next phase after completed next-scope Phases 0–2. Phases 3–9 are intentionally unused in this renumbered chapter so Phase 10 is the explicit architectural boundary before the preserved former Phase 3 roadmap resumes at Phase 11.
 
-P10.0 documentation decisions completed 2026-10-06 against repository revision `e17ebd76afd1feb90fe47d959c43ab23eb553499`. P10.1–P10.6 are not started; Firestore remains the implemented canonical database. Local-engine, migration and cloud acceptance remain unverified.
+P10.0 documentation decisions completed 2026-10-06 against repository revision `e17ebd76afd1feb90fe47d959c43ab23eb553499`. P10.1–P10.3 have a local implementation and targeted evidence; Firestore remains the selected runtime database. P10.4–P10.6 are not started. See the [P10.1–P10.3 implementation evidence](../../phase-10-p10.1-p10.3-implementation-evidence.md). Docker Compose execution, cloud, migration, and cutover acceptance remain unverified.
 
 Read [ADR 0021](../../../decisions/0021-polyglot-persistence-foundation.md), the [storage ownership/access-pattern contract](../../phase-10-storage-ownership-and-access-patterns.md) and [migration/cutover/verification plan](../../phase-10-migration-cutover-and-verification-plan.md). These Phase 10-specific documents contain the exhaustive inventory, keys, constraints, minimal recovery protocol and release mechanics; this plan remains authoritative for scope.
 

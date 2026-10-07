@@ -23,14 +23,12 @@ from personal_ai.applications.registry import (
 )
 from personal_ai.auth.contracts import AuthenticatedPrincipal
 from personal_ai.auth.directory import (
-    FirestorePrincipalDirectory,
     IdentityDirectoryUnavailable,
     IdentityMappingConflict,
     InMemoryPrincipalDirectory,
     PrincipalDirectory,
 )
 from personal_ai.auth.safeguards import (
-    FirestoreSafeguardStore,
     InMemorySafeguardStore,
     SafeguardDenied,
     SafeguardStore,
@@ -47,6 +45,7 @@ from personal_ai.auth.verification import (
     InvalidIdentityToken,
     principal_from_google_token,
 )
+from personal_ai.persistence.factory import persistence_factory
 from personal_ai.settings import ContextBudgetInvalidError, Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -92,10 +91,7 @@ def _directory(request: Request, settings: Settings) -> PrincipalDirectory:
                 configured = InMemoryPrincipalDirectory()
             else:
                 try:
-                    configured = FirestorePrincipalDirectory(
-                        project_id=settings.firestore_project_id,
-                        emulator_host=settings.firestore_emulator_host,
-                    )
+                    configured = persistence_factory(settings).principal_directory()
                 except Exception as error:
                     raise IdentityDirectoryUnavailable from error
             request.app.state.principal_directory = configured
@@ -113,10 +109,7 @@ def _safeguards(request: Request, settings: Settings) -> SafeguardStore:
                 configured = InMemorySafeguardStore()
             else:
                 try:
-                    configured = FirestoreSafeguardStore(
-                        project_id=settings.firestore_project_id,
-                        emulator_host=settings.firestore_emulator_host,
-                    )
+                    configured = persistence_factory(settings).safeguard_store()
                 except Exception as error:
                     raise SafeguardUnavailable from error
             request.app.state.safeguard_store = configured
