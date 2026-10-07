@@ -298,6 +298,7 @@ class MemoryLifecycleRepository(Protocol):
         event: MemoryLifecycleEvent,
         *,
         completed_assistant_id: UUID | None = None,
+        completed_assistant_conversation_id: UUID | None = None,
         job: MemoryJob | None = None,
         lease_token: UUID | None = None,
     ) -> MemoryLifecycleOutcome: ...

@@ -178,7 +178,10 @@ class MemoryLifecycleCoordinator:
                 expected_state_version=state.state_version,
                 occurred_at=completed.created_at,
             )
-            self.lifecycle.apply_event(event, completed_assistant_id=completed.id)
+            self.lifecycle.apply_event(
+                event, completed_assistant_id=completed.id,
+                completed_assistant_conversation_id=completed.conversation_id,
+            )
         except Exception as error:  # noqa: BLE001 - frequency is advisory
             logger.info("Memory retrieval accounting failed error_class=%s", type(error).__name__)
 
@@ -246,16 +249,22 @@ class MemoryLifecycleCoordinator:
                 owner_id=job.owner_id, job_id=job.id, updated_at=job.updated_at
             )
 
-    def republish_pending(self, *, limit: int = 50):
+    def republish_pending(self, *, limit: int = 50, owner_id: str | None = None):
         if (
-            self.publisher is None
-            or not self.settings.memory_enabled
+            not self.settings.memory_enabled
             or not self.settings.memory_lifecycle_worker_enabled
         ):
             return 0
         from personal_ai.memory.lifecycle_repositories import lifecycle_deadline
 
         with lifecycle_deadline(self.settings.memory_job_execution_seconds):
+            recover = getattr(self.memories, "recover_pending_effects", None)
+            if recover is not None:
+                if owner_id is None:
+                    raise RuntimeError("memory_effect_recovery_owner_required")
+                recover(owner_id=owner_id, limit=limit)
+            if self.publisher is None:
+                return 0
             return self._republish_pending(limit=limit)
 
     def _republish_pending(self, *, limit):

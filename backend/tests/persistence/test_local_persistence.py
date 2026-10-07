@@ -363,6 +363,43 @@ def test_postgres_research_replay_claim_and_revision_contract(postgres_database)
         repository.save(failed)
 
 
+def test_postgres_research_scheduled_expiry_preserves_audit_and_scope(postgres_database):
+    from personal_ai.agents.research.contracts import ResearchRequest, ResearchSession
+
+    now = datetime.now(UTC)
+    owner_id = f"expiry-owner-{uuid4()}"
+    expired_request = ResearchRequest(question="Synthetic expiry?", idempotency_key=uuid4())
+    expired = ResearchSession(
+        id=uuid4(), owner_id=owner_id, request=expired_request,
+        request_fingerprint=expired_request.fingerprint(), state="pending",
+        created_at=now - timedelta(hours=2), updated_at=now - timedelta(hours=1),
+        expires_at=now - timedelta(minutes=1),
+    )
+    future_request = ResearchRequest(question="Still available?", idempotency_key=uuid4())
+    future = ResearchSession(
+        id=uuid4(), owner_id=owner_id, request=future_request,
+        request_fingerprint=future_request.fingerprint(), state="pending",
+        created_at=now, updated_at=now, expires_at=now + timedelta(hours=1),
+    )
+    repository = PostgresResearchRepository(postgres_database)
+    repository.create(expired)
+    repository.create(future)
+    assert repository.expire_due_for_owner(
+        owner_id, now=now, correlation_id="maintenance-test", limit=10
+    ) == 1
+    saved = repository.get(owner_id, expired.id)
+    assert saved.state == "expired" and saved.answer is None and saved.citations == ()
+    assert saved.revision == expired.revision + 1
+    assert repository.get(owner_id, future.id).state == "pending"
+    with postgres_database.connection() as connection:
+        audit = connection.execute(
+            "SELECT payload FROM audit_events WHERE owner_id=%s "
+            "AND payload->>'action'=%s",
+            (owner_id, "research.evidence.expire"),
+        ).fetchone()
+    assert audit is not None and audit[0]["target_id"] == str(expired.id)
+
+
 def test_postgres_decision_snapshot_and_evidence_lookup_contract(postgres_database):
     from personal_ai.decisions.service import DecisionService
     from personal_ai.evaluation.decision import NOW, _request, _widget
@@ -460,6 +497,66 @@ def test_postgres_extraction_replay_and_deletion_tombstone_contract(postgres_dat
         repository.delete_by_key("local", key, "2" * 64, now)
 
 
+def test_postgres_extraction_concurrent_replay_checks_losing_fingerprint(
+    postgres_database, monkeypatch,
+):
+    from threading import Barrier, Lock
+
+    import personal_ai.persistence.postgres_capabilities as adapter
+    from personal_ai.booking_extractions.repositories import ExtractionError
+
+    repository = PostgresBookingExtractionRepository(postgres_database)
+    key = uuid4()
+    now = datetime.now(UTC)
+    scope = ApplicationScope(application_id="personal_ai", workspace_id=None)
+    with postgres_database.transaction() as connection:
+        _ensure_namespace(connection, "race-owner", scope)
+    initial_reads = Barrier(2)
+    count_lock = Lock()
+    initial_count = 0
+    original_select = adapter._select
+
+    def synchronized_select(connection, family, owner_id, app_scope, record_id, *, lock=False):
+        nonlocal initial_count
+        result = original_select(connection, family, owner_id, app_scope, record_id, lock=lock)
+        should_wait = False
+        if family == "booking_document_extractions":
+            with count_lock:
+                if initial_count < 2:
+                    initial_count += 1
+                    should_wait = True
+        if should_wait:
+            initial_reads.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(adapter, "_select", synchronized_select)
+    results, errors = [], []
+
+    def begin(fingerprint_value, source_hash):
+        try:
+            with application_scope_context(scope):
+                results.append(repository.begin(
+                    owner_id="race-owner", key=key, fingerprint=fingerprint_value,
+                    source_sha256=source_hash, now=now,
+                    execution_deadline=now + timedelta(seconds=30),
+                ))
+        except Exception as error:  # noqa: BLE001 - asserted after both writers finish
+            errors.append(error)
+
+    writers = (
+        Thread(target=begin, args=("1" * 64, "a" * 64)),
+        Thread(target=begin, args=("2" * 64, "b" * 64)),
+    )
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join(timeout=10)
+    assert all(not writer.is_alive() for writer in writers)
+    assert len(results) == 1, errors
+    assert len(errors) == 1 and isinstance(errors[0], ExtractionError)
+    assert errors[0].code == "idempotency_conflict"
+
+
 def test_postgres_domain_snapshot_registration_and_lookup_fence_contract(postgres_database):
     from personal_ai.domains.contracts import DomainLookupReservation
     from personal_ai.domains.fixtures import FIXTURE_NOW, fixture_registry
@@ -487,10 +584,95 @@ def test_postgres_domain_snapshot_registration_and_lookup_fence_contract(postgre
     )
     reserved = repository.reserve_lookup(reservation)
     assert reserved.id == reservation.id and reserved.state == "reserved"
+    other_domain = reservation.model_copy(update={"id": uuid4(), "domain_id": "shopping"})
+    assert repository.reserve_lookup(other_domain).domain_id == "shopping"
     completed = repository.complete_lookup(reserved.id, reserved.fence_token, result)
     assert completed == result
     assert repository.get("local", result.comparison.id) == result
 
+
+def test_postgres_dynamodb_portable_export_preserves_logical_records_and_coverage(
+    postgres_database, dynamodb_table,
+):
+    from personal_ai.auth.account_data import ExportTooLarge
+    from personal_ai.persistence.postgres_auth import PostgresAccountLifecycleRepository
+
+    owner_id = f"portable-export-{uuid4()}"
+    scope = ApplicationScope(application_id="personal_ai", workspace_id=None)
+    now = datetime.now(UTC)
+    conversations = DynamoDBConversationRepository(dynamodb_table)
+    messages = DynamoDBMessageRepository(dynamodb_table, conversations)
+    conversation = Conversation(
+        id=uuid4(), owner_id=owner_id, application_id=scope.application_id,
+        workspace_id=None, title="export conversation", created_at=now, updated_at=now,
+    )
+    user = Message(
+        id=uuid4(), conversation_id=conversation.id, owner_id=owner_id,
+        application_id=scope.application_id, role=MessageRole.USER,
+        content="I like green tea", status=MessageStatus.COMPLETED,
+        created_at=now + timedelta(seconds=1),
+    )
+    assistant = Message(
+        id=uuid4(), conversation_id=conversation.id, owner_id=owner_id,
+        application_id=scope.application_id, role=MessageRole.ASSISTANT,
+        content="Noted", status=MessageStatus.COMPLETED,
+        created_at=now + timedelta(seconds=2), parent_message_id=user.id,
+    )
+    summary = ConversationSummary(
+        id=uuid4(), conversation_id=conversation.id, owner_id=owner_id,
+        application_id=scope.application_id, content="The user prefers green tea.",
+        source_message_ids=(user.id, assistant.id),
+        source_fingerprint=fingerprint((user, assistant)),
+        coverage_message_ids=(user.id, assistant.id),
+        coverage_fingerprint=fingerprint((user, assistant), include_state=True),
+        covers_through_message_id=assistant.id, source_token_count=12,
+        summary_token_count=5, model="synthetic", created_at=now,
+    )
+    with application_scope_context(scope):
+        conversations.create(conversation)
+        messages.prepare_message_turn(
+            owner_id=owner_id, conversation_id=conversation.id, expected_active_ids=[],
+            supersede_from_message_id=None, messages=(user, assistant),
+            updated_at=assistant.created_at,
+        )
+        DynamoDBSummaryRepository(dynamodb_table, conversations).create(summary)
+        job_id = job_idempotency_id("portable-export-job", scope.application_id, scope.workspace_id)
+        job = MemoryJob(
+            id=job_id, owner_id=owner_id, application_id=scope.application_id,
+            workspace_id=None, job_type="maintenance", candidate_memory_ids=(),
+            policy_version="score-v1", policy_snapshot={},
+            idempotency_key="portable-export-job", created_at=now, updated_at=now,
+        )
+        DynamoDBMemoryJobRepository(dynamodb_table).create_job(job)
+        source_fp = fingerprint((user,))
+        memory = _memory(
+            (0.123456789012345, 0.987654321098765), owner_id, user.content,
+            source_fingerprint=source_fp, source_conversation_id=conversation.id,
+            source_turn_id=assistant.id, source_message_id=user.id,
+        )
+        memory, _ = PostgresMemoryRepository(
+            postgres_database, _SourceGuard(owner_id)
+        ).create(memory)
+        exported = PostgresAccountLifecycleRepository(
+            postgres_database, dynamodb_table
+        ).export_owner(owner_id, max_records=100, max_bytes=1_000_000)
+
+    assert exported["schema_version"] == "personal-ai-export-v2"
+    assert exported["snapshot_coverage"]["cross_store_snapshot"] is False
+    assert exported["snapshot_coverage"]["postgres"]["isolation"] == "repeatable_read_read_only"
+    assert exported["snapshot_coverage"]["dynamodb"]["consistency"] == "strong_bounded_key_reads"
+    memory_data = exported["collections"]["memories"][0]["data"]
+    assert memory_data["embedding"] == list(memory.embedding)
+    assert exported["collections"]["conversations"][0]["document_id"] == str(conversation.id)
+    assert {entry["document_id"] for entry in exported["collections"]["messages"]} == {
+        str(user.id), str(assistant.id)
+    }
+    assert exported["collections"]["conversation_summaries"][0]["document_id"] == str(summary.id)
+    assert exported["collections"]["memory_lifecycle_jobs"][0]["document_id"] == str(job.id)
+    with application_scope_context(scope), pytest.raises(ExportTooLarge):
+        PostgresAccountLifecycleRepository(
+            postgres_database, dynamodb_table
+        ).export_owner(owner_id, max_records=1, max_bytes=1_000_000)
 
 def test_derived_memory_keeps_original_sources_and_excludes_inactive_dependencies(
     postgres_database,
@@ -573,7 +755,9 @@ def test_derived_memory_keeps_original_sources_and_excludes_inactive_dependencie
     assert ranked_after_inactivation == []
 
 
-def test_postgres_memory_lifecycle_event_replay_and_rebuild(postgres_database, dynamodb_table):
+def test_postgres_memory_lifecycle_guard_replay_and_cross_conversation_accounting(
+    postgres_database, dynamodb_table, monkeypatch,
+):
     owner_id = f"lifecycle-owner-{uuid4()}"
     scope = ApplicationScope(application_id="personal_ai", workspace_id=None)
     now = datetime.now(UTC)
@@ -581,10 +765,15 @@ def test_postgres_memory_lifecycle_event_replay_and_rebuild(postgres_database, d
         id=uuid4(), owner_id=owner_id, title="lifecycle source", created_at=now,
         updated_at=now,
     )
+    consuming_conversation = Conversation(
+        id=uuid4(), owner_id=owner_id, title="completed turn", created_at=now,
+        updated_at=now,
+    )
     conversations = DynamoDBConversationRepository(dynamodb_table)
     messages = DynamoDBMessageRepository(dynamodb_table, conversations)
     with application_scope_context(scope):
         conversations.create(conversation)
+        conversations.create(consuming_conversation)
         user = Message(
             id=uuid4(), conversation_id=conversation.id, owner_id=owner_id,
             role=MessageRole.USER, content="I prefer green tea", status=MessageStatus.COMPLETED,
@@ -599,6 +788,21 @@ def test_postgres_memory_lifecycle_event_replay_and_rebuild(postgres_database, d
             owner_id=owner_id, conversation_id=conversation.id, expected_active_ids=[],
             supersede_from_message_id=None, messages=(user, assistant),
             updated_at=assistant.created_at,
+        )
+        consuming_user = Message(
+            id=uuid4(), conversation_id=consuming_conversation.id, owner_id=owner_id,
+            role=MessageRole.USER, content="Thanks", status=MessageStatus.COMPLETED,
+            created_at=now + timedelta(seconds=3),
+        )
+        consuming_assistant = Message(
+            id=uuid4(), conversation_id=consuming_conversation.id, owner_id=owner_id,
+            role=MessageRole.ASSISTANT, content="You're welcome", status=MessageStatus.COMPLETED,
+            created_at=now + timedelta(seconds=4), parent_message_id=consuming_user.id,
+        )
+        messages.prepare_message_turn(
+            owner_id=owner_id, conversation_id=consuming_conversation.id,
+            expected_active_ids=[], supersede_from_message_id=None,
+            messages=(consuming_user, consuming_assistant), updated_at=consuming_assistant.created_at,
         )
         source_fingerprint = fingerprint((user,))
         candidate = MemoryCandidate(
@@ -615,7 +819,8 @@ def test_postgres_memory_lifecycle_event_replay_and_rebuild(postgres_database, d
             effective_at=user.created_at, created_at=now, embedding=(1.0, 0.0),
             embedding_model="test-model", embedding_dimensions=2,
         )
-        memories = PostgresMemoryRepository(postgres_database, _SourceGuard(owner_id))
+        guard = DynamoDBMemoryEffectGuard(dynamodb_table, messages)
+        memories = PostgresMemoryRepository(postgres_database, guard)
         memories.create(memory)
         lifecycle = PostgresMemoryLifecycleRepository(memories, messages, jobs=None)
         key = "lifecycle-retrieval-contract"
@@ -624,11 +829,50 @@ def test_postgres_memory_lifecycle_event_replay_and_rebuild(postgres_database, d
             owner_id=owner_id, application_id=scope.application_id,
             workspace_id=scope.workspace_id, scope_version=2, memory_id=memory.id,
             event_type="retrieved", reason_code="contract_test", policy_version="score-v1",
-            actor="developer_test", occurred_at=now + timedelta(seconds=3),
+            actor="developer_test", occurred_at=now + timedelta(seconds=5),
             idempotency_key=key, expected_state_version=0,
         )
-        applied = lifecycle.apply_event(event)
-        replayed = lifecycle.apply_event(event)
+        entered_effect, release_effect = Event(), Event()
+        original_apply = lifecycle._apply_event_tx
+
+        def pause_before_effect(*args, **kwargs):
+            entered_effect.set()
+            if not release_effect.wait(timeout=5):
+                raise TimeoutError("test effect interleave timed out")
+            return original_apply(*args, **kwargs)
+
+        monkeypatch.setattr(lifecycle, "_apply_event_tx", pause_before_effect)
+        applied_results, apply_errors = [], []
+
+        def apply_retrieval_event():
+            try:
+                with application_scope_context(scope):
+                    applied_results.append(lifecycle.apply_event(
+                        event, completed_assistant_id=consuming_assistant.id,
+                        completed_assistant_conversation_id=consuming_conversation.id,
+                    ))
+            except Exception as error:  # noqa: BLE001 - surfaced below
+                apply_errors.append(error)
+
+        old_worker = Thread(target=apply_retrieval_event)
+        old_worker.start()
+        assert entered_effect.wait(timeout=5)
+        with pytest.raises(ConversationConflictError):
+            messages.supersede_path(
+                owner_id=owner_id, conversation_id=consuming_conversation.id,
+                message_id=consuming_user.id,
+                updated_at=consuming_assistant.created_at + timedelta(seconds=1),
+            )
+        release_effect.set()
+        old_worker.join(timeout=5)
+        assert not old_worker.is_alive()
+        assert apply_errors == []
+        monkeypatch.setattr(lifecycle, "_apply_event_tx", original_apply)
+        applied = applied_results[0]
+        replayed = lifecycle.apply_event(
+            event, completed_assistant_id=consuming_assistant.id,
+            completed_assistant_conversation_id=consuming_conversation.id,
+        )
         rebuilt = lifecycle.rebuild_state(owner_id=owner_id, memory_id=memory.id)
         events = lifecycle.list_events(owner_id=owner_id, memory_id=memory.id)
 
@@ -802,6 +1046,35 @@ def test_dynamodb_conversation_message_directory_and_branch_semantics(dynamodb_t
     assert long_last.id == last_id and long_last.status is MessageStatus.COMPLETED
 
 
+def test_dynamodb_conversation_update_and_touch_support_null_and_named_workspaces(dynamodb_table):
+    repository = DynamoDBConversationRepository(dynamodb_table)
+    now = datetime.now(UTC)
+    cases = (
+        ApplicationScope(application_id="personal_ai", workspace_id=None),
+        ApplicationScope(application_id="travel", workspace_id="workspace-named"),
+    )
+    for index, scope in enumerate(cases):
+        owner_id = f"conversation-update-{index}-{uuid4()}"
+        conversation = Conversation(
+            id=uuid4(), owner_id=owner_id, application_id=scope.application_id,
+            workspace_id=scope.workspace_id, title="before", created_at=now,
+            updated_at=now,
+        )
+        with application_scope_context(scope):
+            saved = repository.create(conversation)
+            updated = repository.update(saved.model_copy(update={
+                "title": "after", "updated_at": now + timedelta(seconds=1),
+            }))
+            touched = repository.touch(
+                owner_id=owner_id, conversation_id=conversation.id,
+                updated_at=now + timedelta(seconds=2),
+            )
+            current = repository.get(owner_id=owner_id, conversation_id=conversation.id)
+        assert updated.title == current.title == "after"
+        assert touched.persistence_revision == current.persistence_revision == 3
+        assert touched.updated_at == current.updated_at == now + timedelta(seconds=2)
+
+
 def test_cross_store_apply_wins_abort_race_and_late_apply_is_fenced(
     postgres_database, dynamodb_table
 ):
@@ -938,9 +1211,7 @@ def test_cross_store_apply_wins_abort_race_and_late_apply_is_fenced(
         "source_fingerprint": second_fingerprint,
     })
     second_token = guard.acquire(second_record, timeout=5)
-    assert memory_repository.recover_pending_operations(
-        owner_id=owner_id, conversation_id=conversation.id, scope=scope
-    ) == 1
+    assert memory_repository.recover_pending_effects(owner_id=owner_id, limit=10) == 1
     late_effects = []
     with pytest.raises(PersistenceConflict):
         receipts.apply(

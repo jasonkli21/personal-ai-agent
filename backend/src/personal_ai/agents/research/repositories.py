@@ -108,6 +108,9 @@ class ResearchRepository(Protocol):
         self, owner_id: str, session_id: UUID, token: UUID, now: datetime, deadline: datetime
     ) -> ResearchSession: ...
     def save(self, session: ResearchSession) -> ResearchSession: ...
+    def expire_due_for_owner(
+        self, owner_id: str, *, now: datetime, correlation_id: str, limit: int = 40
+    ) -> int: ...
 
 
 class InMemoryResearchRepository:

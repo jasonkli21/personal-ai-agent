@@ -2,7 +2,7 @@
 
 Date: 2026-10-06
 
-Tested source: working tree based on `3238dc527de32cba8854c81b63513aee5551245f`; changes were uncommitted when checked.
+Tested source: review-fix working tree based on commit `c7b14b3` (`Implement local polyglot persistence foundation`). The review fixes and this evidence update are the separate follow-up change.
 
 Scope: P10.1, P10.2, and P10.3 only. P10.4 backfill, P10.5 cloud adapters/release checks, and P10.6 cutover were not started.
 
@@ -31,12 +31,16 @@ The local engines were started outside Docker because Docker Compose is not inst
 - Added strong metadata/revision reads, revision-checked directories, paginated active-branch reads, bounded root cuts, and summary manifests/chunks with a 256-ID chunk bound.
 - Added account-wide DDB request counters and kept P-side provider budget/rate state in Postgres.
 - Added the narrow P/D memory-effect guard and Postgres receipt boundary. Applied effects and their receipts share one P transaction; abort recovery arbitrates on the same key; DDB blocks source/job changes until acknowledgement. Direct source writes and job effects use separate guard paths without a general distributed-transaction framework.
+- Lifecycle events and retrieval accounting now use that same guard/receipt boundary, including the consumer conversation for completed-assistant validation. Bounded pending-effect pointers connect direct/job receipt recovery to scheduled maintenance and the recovery command; recovery processes only pending entries and caps owner namespace inventory.
+- Fixed conditional conversation touch/update for both null and named workspace metadata. Pinned extraction replay conflicts at the unique-key race, restored domain identity to domain lookup replay uniqueness, and implemented the existing scheduled research expiry/audit operation.
+- Postgres acquisition and statement timeouts now honor caller deadlines. Proposal, research, and extraction paths propagate remaining budgets, and async extraction writes retain the existing cancellation-draining behavior.
+- Implemented bounded portable export across P and D. Postgres records are read in a repeatable-read, read-only snapshot; DDB records use strong bounded reads and revision/directory rechecks. Export includes per-store snapshot/revision coverage and retains the canonical stored embedding values. It explicitly reports that there is no cross-store atomic snapshot.
 
 ## Targeted checks
 
-- Real local integration contracts: `17 passed` in `backend/tests/persistence/test_local_persistence.py`, using a local Postgres/pgvector database and DynamoDB Local. Coverage includes 2,048-dimensional lossless round-trip, vector compatibility/threshold/tie behavior and storage measurements, scoped replay/revisions, repository-family transactions, DDB branch/history/summary/job behavior, direct and job effect recovery races, lifecycle replay/rebuild, and the async Postgres session.
-- Existing focused behavior contracts: `216 passed` across memory lifecycle/worker, auth/account data, safeguards, domain/decision, booking extraction, itinerary proposal, research, iterative research, and persistence primitives.
-- `make backend-lint`: passed.
+- Real local integration contracts: `21 passed` in `backend/tests/persistence/test_local_persistence.py`, using a local Postgres/pgvector database and DynamoDB Local. Coverage includes 2,048-dimensional lossless round-trip, vector compatibility/threshold/tie behavior and storage measurements, scoped replay/revisions, domain replay identity, extraction replay race, research expiry, portable export, DDB branch/history/summary/job behavior, direct and job effect recovery races, lifecycle replay/rebuild, and the async Postgres session.
+- Focused behavior/contract tests: `167 passed` across Postgres deadlines, memory lifecycle/worker, booking extraction, itinerary proposals, research, iterative research, auth/account export, and persistence contract primitives (one upstream Starlette deprecation warning).
+- `make backend-lint` with the backend virtual environment activated: passed.
 - `make backend-build`: passed; build artifacts were removed after verification.
 - Local persistence readiness and bootstrap commands: passed against real local services using dummy credentials.
 - `git diff --check`: passed.
@@ -45,7 +49,9 @@ The full Phase 10 verification matrix was not run. No Neon, AWS, emulator, or de
 
 ## Compatibility notes and remaining risks
 
-- Normal runtime still selects Firestore, preserving current export/deletion request behavior before cutover. The new Postgres account adapter currently records export audit and deletion lifecycle state, but its portable `export_owner` operation is deliberately unavailable pending the P/D revision-snapshot export adapter. Do not select the P/D factory for account export or cut over until export covers the declared P and D inventory and reports per-store snapshot/revision coverage. This is the main unresolved compatibility item for review.
+- Normal runtime still selects Firestore, preserving current account lifecycle behavior before cutover. P/D export now returns `personal-ai-export-v2` with explicit per-store coverage; consumers that assumed the prior export schema must handle v2. A single atomic snapshot across Postgres and DynamoDB is not available, so the export reports its bounded consistency model rather than implying one.
+- Retrieval accounting now requires the completed assistant's conversation ID whenever an assistant ID is supplied. Callers that omit it receive the existing assistant-incomplete outcome rather than validating against memory provenance.
+- Domain lookup replay uniqueness now includes `domain_id`; migration `007_domain_lookup_replay_scope.sql` is required before this adapter is used against an existing P10 schema.
 - Postgres deletion request records and audits do not perform physical deletion; Phase 9 physical deletion remains open.
 - Local Postgres/DynamoDB behavior is verified, but production capacity configuration, IAM, cloud connectivity, migration parity, and release/cutover safeguards remain outside this authorization.
 - No change was made to the root README or to the approved P10.0 decision artifacts.

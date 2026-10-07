@@ -42,7 +42,7 @@ def _audit_id(owner_id, action, idempotency_key, application_id=None, workspace_
 
 def _append_audit(
     connection, *, owner_id, audit_id, action, target_type, target_id,
-    correlation_id, result, scope=_ACCOUNT_SCOPE,
+    correlation_id, result, scope=_ACCOUNT_SCOPE, actor_subject=None,
 ):
     scope_id = _ensure_namespace(connection, owner_id, scope)
     existing = connection.execute(
@@ -64,7 +64,7 @@ def _append_audit(
     now = datetime.now(UTC)
     value = {
         "id": audit_id,
-        "actor_subject": owner_id,
+        "actor_subject": actor_subject or owner_id,
         "owner_id": owner_id,
         "action": action,
         "target_type": target_type,
@@ -166,8 +166,9 @@ class PostgresPrincipalDirectory:
 class PostgresAccountLifecycleRepository:
     """P-side deletion intent and audit operations; never performs deletion."""
 
-    def __init__(self, database: PostgresDatabase) -> None:
+    def __init__(self, database: PostgresDatabase, runtime_table=None) -> None:
         self.database = database
+        self.runtime_table = runtime_table
 
     @staticmethod
     def _require_standalone():
@@ -179,8 +180,328 @@ class PostgresAccountLifecycleRepository:
         return None
 
     def export_owner(self, owner_id: str, *, max_records: int, max_bytes: int):
-        del owner_id, max_records, max_bytes
-        raise AccountDataUnavailable("portable export awaits the P/D revision snapshot adapter")
+        import json
+        from time import monotonic
+
+        from personal_ai.auth.account_data import (
+            EXPORT_COLLECTIONS,
+            MAX_EXPORT_SCAN_RECORDS,
+            ExportTooLarge,
+            _portable,
+        )
+        from personal_ai.persistence.dynamodb import (
+            MAX_CONVERSATION_MESSAGES,
+            DynamoDBSummaryRepository,
+            _authorized,
+            _conversation_from_item,
+            _namespace,
+        )
+
+        if self.runtime_table is None or max_records < 1 or max_bytes < 1:
+            raise AccountDataUnavailable("portable export stores unavailable")
+        scope = current_application_scope()
+        started_at = datetime.now(UTC)
+        collections = {}
+        count = 0
+        estimated_bytes = 0
+        p_revision_max = 0
+        p_count = 0
+        p_revision_coverage = {}
+        p_collection_counts = {}
+        p_snapshot_id = None
+
+        def add(collection, document_id, values):
+            nonlocal count, estimated_bytes
+            if collection not in EXPORT_COLLECTIONS:
+                raise AccountDataUnavailable("export collection mapping invalid")
+            record = {"document_id": str(document_id), "data": _portable(values)}
+            encoded = _json(record).encode("utf-8")
+            count += 1
+            estimated_bytes += len(encoded) + len(collection.encode("utf-8")) + 4
+            if count > max_records or count > MAX_EXPORT_SCAN_RECORDS or estimated_bytes > max_bytes:
+                raise ExportTooLarge
+            collections.setdefault(collection, []).append(record)
+
+        p_families = (
+            "research_sessions", "research_request_keys", "itinerary_proposals",
+            "booking_document_extractions", "iterative_research_runs",
+            "iterative_research_request_keys", "memory_lifecycle_states",
+            "memory_lifecycle_events", "canonical_entities", "entity_aliases",
+            "entity_claims", "entity_matches", "decision_snapshots",
+            "decision_evidence_snapshots", "candidate_evaluations",
+            "domain_claim_extensions", "provider_observations", "domain_comparison_views",
+            "domain_lookup_idempotency", "account_lifecycle_requests", "audit_events",
+            "identity_mappings", "usage_budgets",
+        )
+        try:
+            with self.database.connection(snapshot=True) as connection:
+                p_snapshot_id = connection.execute(
+                    "SELECT txid_current_snapshot()::text"
+                ).fetchone()[0]
+                for family in p_families:
+                    rows = connection.execute(
+                        f"SELECT record_id,payload,revision FROM {family} "
+                        "WHERE owner_id=%s AND application_id=%s "
+                        "AND workspace_id IS NOT DISTINCT FROM %s ORDER BY record_id LIMIT %s",
+                        (owner_id, scope.application_id, scope.workspace_id,
+                         MAX_EXPORT_SCAN_RECORDS + 1),
+                    ).fetchall()
+                    if len(rows) > MAX_EXPORT_SCAN_RECORDS:
+                        raise ExportTooLarge
+                    p_collection_counts[family] = len(rows)
+                    p_revision_coverage[family] = max(
+                        (int(row[2] or 0) for row in rows), default=0
+                    )
+                    for record_id, payload, revision in rows:
+                        p_revision_max = max(p_revision_max, int(revision or 0))
+                        add(family, record_id, payload)
+                        p_count += 1
+                for family in ("memories", "derived_memories"):
+                    rows = connection.execute(
+                        f"SELECT record_id,payload,embedding FROM {family} "
+                        "WHERE owner_id=%s AND application_id=%s "
+                        "AND workspace_id IS NOT DISTINCT FROM %s ORDER BY record_id LIMIT %s",
+                        (owner_id, scope.application_id, scope.workspace_id,
+                         MAX_EXPORT_SCAN_RECORDS + 1),
+                    ).fetchall()
+                    if len(rows) > MAX_EXPORT_SCAN_RECORDS:
+                        raise ExportTooLarge
+                    p_collection_counts[family] = len(rows)
+                    p_revision_coverage[family] = "identity_set_in_repeatable_read_snapshot"
+                    for record_id, payload, embedding in rows:
+                        add(family, record_id, {**payload, "embedding": list(embedding)})
+                        p_count += 1
+                relation_rows = connection.execute(
+                    "SELECT ds.derived_memory_id,ds.source_memory_id,d.owner_id,d.application_id,"
+                    "d.workspace_id,d.created_at FROM derived_memory_sources ds "
+                    "JOIN derived_memories d ON d.scope_id=ds.scope_id "
+                    "AND d.record_id=ds.derived_memory_id WHERE d.owner_id=%s "
+                    "AND d.application_id=%s AND d.workspace_id IS NOT DISTINCT FROM %s "
+                    "ORDER BY ds.derived_memory_id,ds.source_ordinal LIMIT %s",
+                    (owner_id, scope.application_id, scope.workspace_id,
+                     MAX_EXPORT_SCAN_RECORDS + 1),
+                ).fetchall()
+                if len(relation_rows) > MAX_EXPORT_SCAN_RECORDS:
+                    raise ExportTooLarge
+                p_collection_counts["derived_memory_sources"] = len(relation_rows)
+                p_revision_coverage["derived_memory_sources"] = "parent_revision_in_repeatable_read_snapshot"
+                for derived_id, source_id, relation_owner, app_id, workspace_id, created_at in relation_rows:
+                    relation_id = hashlib.sha256(
+                        f"{relation_owner}:{app_id}:{workspace_id or ''}:{source_id}:{derived_id}".encode()
+                    ).hexdigest()
+                    add("derived_memory_sources", relation_id, {
+                        "owner_id": relation_owner, "application_id": app_id,
+                        "workspace_id": workspace_id, "scope_version": 2,
+                        "source_memory_id": source_id, "derived_memory_id": derived_id,
+                        "created_at": created_at,
+                    })
+                    p_count += 1
+                receipts = connection.execute(
+                    "SELECT operation_id,attempt_id,fingerprint,outcome,result_refs,"
+                    "execution_deadline,created_at FROM memory_lifecycle_operations "
+                    "WHERE owner_id=%s AND application_id=%s "
+                    "AND workspace_id IS NOT DISTINCT FROM %s ORDER BY operation_id,attempt_id LIMIT %s",
+                    (owner_id, scope.application_id, scope.workspace_id,
+                     MAX_EXPORT_SCAN_RECORDS + 1),
+                ).fetchall()
+                if len(receipts) > MAX_EXPORT_SCAN_RECORDS:
+                    raise ExportTooLarge
+                p_collection_counts["memory_lifecycle_operations"] = len(receipts)
+                p_revision_coverage["memory_lifecycle_operations"] = "receipt_identity_in_repeatable_read_snapshot"
+                for operation_id, attempt_id, fp, outcome, refs, deadline, created_at in receipts:
+                    document_id = hashlib.sha256((
+                        f"{owner_id}\0{PostgresPayloadRepository.scope_id(owner_id, scope)}\0"
+                        f"{operation_id}\0{attempt_id}"
+                    ).encode()).hexdigest()
+                    add("memory_lifecycle_operations", document_id, {
+                        "owner_id": owner_id, "application_id": scope.application_id,
+                        "workspace_id": scope.workspace_id, "scope_version": 2,
+                        "operation_id": operation_id, "attempt_id": attempt_id,
+                        "fingerprint": fp.strip(), "outcome": outcome,
+                        "result_refs": refs, "execution_deadline": deadline,
+                        "created_at": created_at,
+                    })
+                    p_count += 1
+        except ExportTooLarge:
+            raise
+        except AccountDataUnavailable:
+            raise
+        except Exception as error:
+            raise AccountDataUnavailable("Postgres export failed") from error
+
+        postgres_finished_at = datetime.now(UTC)
+        dynamo_started_at = postgres_finished_at
+        dynamo_revisions = {}
+        d_count = 0
+        namespace = _namespace(scope, owner_id)
+        catalog_partition = f"{namespace}#CATALOG"
+        deadline = monotonic() + 60
+        summary_repository = DynamoDBSummaryRepository(self.runtime_table)
+        try:
+            conversation_entries = self.runtime_table.query(
+                partition=catalog_partition, sort_prefix="CONV#", consistent=True,
+                deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
+            )
+            job_entries = self.runtime_table.query(
+                partition=catalog_partition, sort_prefix="JOB#", consistent=True,
+                deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
+            )
+            if len(conversation_entries) > MAX_EXPORT_SCAN_RECORDS or len(job_entries) > MAX_EXPORT_SCAN_RECORDS:
+                raise ExportTooLarge
+            conversation_keys = []
+            summary_directory = {}
+            for entry in conversation_entries:
+                if not _authorized(entry, owner_id, scope):
+                    raise AccountDataUnavailable("conversation directory scope mismatch")
+                conversation_id = entry["conversation_id"]
+                partition = f"{namespace}#CONV#{conversation_id}"
+                meta_key = {"PK": partition, "SK": "META"}
+                metadata = self.runtime_table.get(meta_key)
+                if (
+                    metadata is None or not _authorized(metadata, owner_id, scope)
+                    or int(metadata["revision"]) != int(entry["revision"])
+                    or metadata["updated_at"] != entry["updated_at"]
+                ):
+                    raise AccountDataUnavailable("conversation directory revision mismatch")
+                conversation = _conversation_from_item(metadata)
+                add("conversations", conversation.id, conversation.model_dump(mode="json"))
+                d_count += 1
+                dynamo_revisions[f"conversation:{conversation_id}"] = int(metadata["revision"])
+                conversation_keys.append((entry["SK"], int(entry["revision"]), conversation_id, partition))
+
+                message_items = self.runtime_table.query(
+                    partition=partition, sort_prefix="MSG#", consistent=True,
+                    deadline=deadline, limit=MAX_CONVERSATION_MESSAGES + 1,
+                )
+                if len(message_items) > MAX_CONVERSATION_MESSAGES:
+                    raise ExportTooLarge
+                for item in message_items:
+                    if not _authorized(item, owner_id, scope):
+                        raise AccountDataUnavailable("message scope mismatch")
+                    add("messages", item["message_id"], json.loads(item["payload"]))
+                    d_count += 1
+
+                summary_items = self.runtime_table.query(
+                    partition=partition, sort_prefix="SUM#", consistent=True,
+                    deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
+                )
+                if len(summary_items) > MAX_EXPORT_SCAN_RECORDS:
+                    raise ExportTooLarge
+                summary_directory[conversation_id] = [item["SK"] for item in summary_items]
+                for item in summary_items:
+                    if not item.get("published") or not _authorized(item, owner_id, scope):
+                        raise AccountDataUnavailable("summary header unavailable")
+                    summary = summary_repository._load(item, partition, deadline)
+                    add("conversation_summaries", summary.id, summary.model_dump(mode="json"))
+                    dynamo_revisions[f"summary:{summary.id}"] = {
+                        "source_manifest_sha256": hashlib.sha256(
+                            item["source_manifest"].encode()
+                        ).hexdigest(),
+                        "coverage_manifest_sha256": hashlib.sha256(
+                            item["coverage_manifest"].encode()
+                        ).hexdigest(),
+                    }
+                    d_count += 1
+
+            job_keys = []
+            for entry in job_entries:
+                if not _authorized(entry, owner_id, scope):
+                    raise AccountDataUnavailable("job directory scope mismatch")
+                job_item = self.runtime_table.get({"PK": entry["record_pk"], "SK": entry["record_sk"]})
+                if job_item is None or not _authorized(job_item, owner_id, scope):
+                    raise AccountDataUnavailable("job record unavailable")
+                if job_item.get("job_id") != entry.get("job_id"):
+                    raise AccountDataUnavailable("job directory identity mismatch")
+                job_id = job_item["job_id"]
+                data = json.loads(job_item["payload"])
+                if job_item.get("pending_effect") is not None:
+                    data["pending_effect"] = job_item["pending_effect"]
+                add("memory_lifecycle_jobs", job_id, data)
+                d_count += 1
+                dynamo_revisions[f"job:{job_id}"] = int(job_item["revision"])
+                job_keys.append((entry["SK"], job_id, entry["record_pk"], entry["record_sk"], int(job_item["revision"])))
+
+            for sort_key, revision, conversation_id, partition in conversation_keys:
+                metadata = self.runtime_table.get({"PK": partition, "SK": "META"})
+                if metadata is None or int(metadata["revision"]) != revision:
+                    raise AccountDataUnavailable("conversation changed during export")
+                message_items = self.runtime_table.query(
+                    partition=partition, sort_prefix="MSG#", consistent=True,
+                    deadline=deadline, limit=MAX_CONVERSATION_MESSAGES + 1,
+                )
+                if len(message_items) > MAX_CONVERSATION_MESSAGES:
+                    raise ExportTooLarge
+                current_summaries = self.runtime_table.query(
+                    partition=partition, sort_prefix="SUM#", consistent=True,
+                    deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
+                )
+                if [item["SK"] for item in current_summaries] != summary_directory[conversation_id]:
+                    raise AccountDataUnavailable("summary directory changed during export")
+            final_conversations = self.runtime_table.query(
+                partition=catalog_partition, sort_prefix="CONV#", consistent=True,
+                deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
+            )
+            if [(item["SK"], int(item["revision"])) for item in final_conversations] != [
+                (sk, revision) for sk, revision, _, _ in conversation_keys
+            ]:
+                raise AccountDataUnavailable("conversation directory changed during export")
+            final_jobs = self.runtime_table.query(
+                partition=catalog_partition, sort_prefix="JOB#", consistent=True,
+                deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
+            )
+            if [(item["SK"], item["job_id"]) for item in final_jobs] != [
+                (sk, job_id) for sk, job_id, _, _, _ in job_keys
+            ]:
+                raise AccountDataUnavailable("job directory changed during export")
+            for _, job_id, record_pk, record_sk, revision in job_keys:
+                current = self.runtime_table.get({"PK": record_pk, "SK": record_sk})
+                if current is None or int(current["revision"]) != revision:
+                    raise AccountDataUnavailable("job changed during export")
+        except ExportTooLarge:
+            raise
+        except AccountDataUnavailable:
+            raise
+        except Exception as error:
+            raise AccountDataUnavailable("DynamoDB export failed") from error
+
+        finished_at = datetime.now(UTC)
+        result = {
+            "schema_version": "personal-ai-export-v2",
+            "generated_at": finished_at.isoformat(),
+            "owner_id": owner_id,
+            "application_id": scope.application_id,
+            "workspace_id": scope.workspace_id,
+            "collections": collections,
+            "snapshot_coverage": {
+                "cross_store_snapshot": False,
+                "postgres": {
+                    "isolation": "repeatable_read_read_only",
+                    "snapshot_id": p_snapshot_id,
+                    "started_at": started_at.isoformat(),
+                    "finished_at": postgres_finished_at.isoformat(),
+                    "record_count": p_count,
+                    "max_revision": p_revision_max,
+                    "collection_counts": p_collection_counts,
+                    "revision_coverage": p_revision_coverage,
+                },
+                "dynamodb": {
+                    "consistency": "strong_bounded_key_reads",
+                    "started_at": dynamo_started_at.isoformat(),
+                    "finished_at": finished_at.isoformat(),
+                    "record_count": d_count,
+                    "revisions": dynamo_revisions,
+                },
+            },
+        }
+        try:
+            byte_count = len(json.dumps(
+                result, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            ).encode("utf-8"))
+        except (TypeError, ValueError) as error:
+            raise AccountDataUnavailable("export serialization failed") from error
+        if byte_count > max_bytes:
+            raise ExportTooLarge
+        return result
 
     def record_export(self, *, owner_id, idempotency_key, correlation_id):
         scope = current_application_scope()

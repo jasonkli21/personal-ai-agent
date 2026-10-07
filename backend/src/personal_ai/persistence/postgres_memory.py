@@ -54,6 +54,12 @@ class MemorySourceGuard(Protocol):
         self, record: Memory | DerivedMemory, *, timeout: float
     ) -> EffectGuardToken: ...
 
+    def acquire_lifecycle_event(
+        self, record: Memory | DerivedMemory, *, operation_id: str, fingerprint: str,
+        completed_assistant_id: UUID | None, completed_assistant_conversation_id: UUID | None,
+        timeout: float,
+    ) -> EffectGuardToken: ...
+
     def acknowledge(
         self,
         token: EffectGuardToken,
@@ -114,6 +120,36 @@ class PostgresMemoryRepository:
         return recover(
             owner_id=owner_id, job_id=job_id, scope=scope, receipts=self.receipts
         )
+
+    def recover_pending_effects(self, *, owner_id: str, limit: int = 50) -> int:
+        """Resolve bounded in-doubt direct and job effects before worker progress."""
+        recover = getattr(self.source_guard, "recover_pending_effects", None)
+        if recover is None:
+            raise RuntimeError("memory_effect_recovery_unavailable")
+        return recover(owner_id=owner_id, limit=limit, receipts=self.receipts)
+
+    def apply_lifecycle_effect(
+        self, *, event, record: Memory | DerivedMemory, operation_id: str,
+        fingerprint: str, completed_assistant_id: UUID | None,
+        completed_assistant_conversation_id: UUID | None, effect, timeout: float = 5,
+    ):
+        """Guard D source/consumer chats around one atomic P event and receipt."""
+        token = self.source_guard.acquire_lifecycle_event(
+            record, operation_id=operation_id, fingerprint=fingerprint,
+            completed_assistant_id=completed_assistant_id,
+            completed_assistant_conversation_id=completed_assistant_conversation_id,
+            timeout=timeout,
+        )
+        receipt, applied = self.receipts.apply(
+            owner_id=event.owner_id, scope=token.scope,
+            operation_id=token.operation_id, attempt_id=token.attempt_id,
+            fingerprint=token.fingerprint, execution_deadline=token.execution_deadline,
+            effect=effect,
+        )
+        self.source_guard.acknowledge(
+            token, outcome=receipt.outcome, result_refs=receipt.result_refs
+        )
+        return receipt, applied
 
     def apply_job_effect(
         self,

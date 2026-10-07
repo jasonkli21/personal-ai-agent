@@ -167,6 +167,7 @@ class PostgresMemoryLifecycleRepository:
 
     def _apply_event_tx(
         self, connection, event: MemoryLifecycleEvent, *, completed_assistant_id=None,
+        completed_assistant_conversation_id=None,
         job: MemoryJob | None = None,
     ):
         scope = ApplicationScope(
@@ -197,16 +198,21 @@ class PostgresMemoryLifecycleRepository:
         elif record.status != "active":
             return {"status": "conflict", "reason": "source_inactive"}
         if completed_assistant_id is not None:
-            if not isinstance(record, Memory):
+            if not isinstance(record, Memory) or completed_assistant_conversation_id is None:
                 return {"status": "conflict", "reason": "assistant_incomplete"}
             try:
                 assistant = self.messages.get(
-                    owner_id=owner_id, conversation_id=record.source_conversation_id,
+                    owner_id=owner_id, conversation_id=completed_assistant_conversation_id,
                     message_id=completed_assistant_id,
                 )
             except ResourceNotFoundError:
                 return {"status": "conflict", "reason": "assistant_incomplete"}
-            if assistant.role is not MessageRole.ASSISTANT or assistant.status is not MessageStatus.COMPLETED:
+            if (
+                assistant.conversation_id != completed_assistant_conversation_id
+                or assistant.owner_id != owner_id or not scope_matches(assistant, scope)
+                or assistant.role is not MessageRole.ASSISTANT
+                or assistant.status is not MessageStatus.COMPLETED
+            ):
                 return {"status": "conflict", "reason": "assistant_incomplete"}
         if event.job_id is not None and (job is None or job.id != event.job_id):
             return {"status": "conflict", "reason": "stale_lease"}
@@ -280,6 +286,7 @@ class PostgresMemoryLifecycleRepository:
 
     def apply_event(
         self, event: MemoryLifecycleEvent, *, completed_assistant_id=None,
+        completed_assistant_conversation_id=None,
         job: MemoryJob | None = None, lease_token: UUID | None = None,
     ):
         event = scoped_record(event)
@@ -306,10 +313,31 @@ class PostgresMemoryLifecycleRepository:
                 status=status, state=state, event_id=event.id if status != "conflict" else None,
                 reason=reason,
             ))
-        with self.database.transaction() as connection:
-            result = self._apply_event_tx(
-                connection, event, completed_assistant_id=completed_assistant_id
+        if completed_assistant_id is not None and completed_assistant_conversation_id is None:
+            return scoped_record(MemoryLifecycleOutcome(
+                status="conflict", reason="assistant_incomplete"
+            ))
+        try:
+            record = self._get_record(owner_id=event.owner_id, memory_id=event.memory_id)
+            effect_fingerprint = hashlib.sha256((event.model_dump_json() + "\0" +
+                str(completed_assistant_conversation_id or "") + "\0" +
+                str(completed_assistant_id or "")).encode()).hexdigest()
+            receipt, newly_applied = self.memories.apply_lifecycle_effect(
+                event=event, record=record, operation_id=f"lifecycle:{event.id}",
+                fingerprint=effect_fingerprint,
+                completed_assistant_id=completed_assistant_id,
+                completed_assistant_conversation_id=completed_assistant_conversation_id,
+                effect=lambda connection: self._apply_event_tx(
+                    connection, event, completed_assistant_id=completed_assistant_id,
+                    completed_assistant_conversation_id=completed_assistant_conversation_id,
+                ),
             )
+        except ConversationConflictError as error:
+            reason = "assistant_incomplete" if "assistant" in str(error) else "source_inactive"
+            return scoped_record(MemoryLifecycleOutcome(status="conflict", reason=reason))
+        result = receipt.result_refs
+        if not newly_applied and result.get("status") == "applied":
+            result = {**result, "status": "replayed"}
         state = self.get_state(owner_id=event.owner_id, memory_id=event.memory_id)
         return scoped_record(MemoryLifecycleOutcome(
             status=result["status"], state=state,

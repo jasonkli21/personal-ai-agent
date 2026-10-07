@@ -15,11 +15,12 @@ from uuid import UUID, uuid4
 from personal_ai.auth.scope import (
     ApplicationScope,
     current_application_scope,
+    scope_matches,
     scoped_record,
 )
 from personal_ai.context.contracts import ConversationSummary, fingerprint
 from personal_ai.context.repositories import newest_compatible
-from personal_ai.entities import Conversation, Message, MessageStatus
+from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
 from personal_ai.persistence.postgres_memory import EffectGuardToken
 from personal_ai.storage.branches import active_path, descendant_ids, effective_message
 from personal_ai.storage.errors import (
@@ -318,17 +319,20 @@ class DynamoDBConversationRepository:
                     ":next": old_revision + 1,
                     ":owner": previous.owner_id,
                     ":app": scope.application_id,
+                    ":workspace_present": scope.workspace_id is not None,
+                    ":workspace": scope.workspace_id or "",
                 },
                 condition="#owner=:owner AND #app=:app AND revision=:old AND attribute_not_exists(effect_guard)",
-                more_names={"#owner": "owner_id", "#app": "application_id"},
+                more_names={
+                    "#owner": "owner_id", "#app": "application_id",
+                    "#workspace_present": "workspace_id_present", "#workspace": "workspace_id",
+                },
                 more_values={":old": old_revision},
             )
         ]
-        if scope.workspace_id is None:
-            operations[0]["Update"]["ConditionExpression"] += " AND attribute_not_exists(workspace_id)"
-        else:
-            operations[0]["Update"]["ConditionExpression"] += " AND workspace_id=:workspace"
-            operations[0]["Update"]["ExpressionAttributeValues"][":workspace"] = scope.workspace_id
+        operations[0]["Update"]["ConditionExpression"] += (
+            " AND #workspace_present=:workspace_present AND #workspace=:workspace"
+        )
         new_catalog_key = {"PK": new_catalog["PK"], "SK": new_catalog["SK"]}
         if old_catalog != new_catalog_key:
             operations.extend(
@@ -1237,22 +1241,34 @@ class DynamoDBMemoryEffectGuard:
         self.table = table
         self.messages = messages
 
-    def acquire(self, record: Any, *, timeout: float) -> EffectGuardToken:
+    def acquire(
+        self, record: Any, *, timeout: float, operation_id: str | None = None,
+        fingerprint_value: str | None = None,
+        extra_conversation_ids: tuple[UUID, ...] = (),
+        completed_assistant_id: UUID | None = None,
+    ) -> EffectGuardToken:
         owner_id = record.owner_id
         scope = ApplicationScope(application_id=record.application_id, workspace_id=record.workspace_id)
         refs = _source_refs(record)
         if not refs or len(refs) > 4:
             raise ConversationConflictError("memory source set invalid")
         deadline = monotonic() + timeout
-        operation_id = str(record.id)
-        fp = _record_fingerprint(record)
+        operation_id = operation_id or str(record.id)
+        fp = fingerprint_value or _record_fingerprint(record)
+        if not operation_id or len(operation_id) > 512:
+            raise ValueError("memory_effect_operation_id_invalid")
+        guarded_conversations = sorted(
+            {ref["conversation_id"] for ref in refs}
+            | {str(value) for value in extra_conversation_ids},
+            key=str,
+        )
         first_ref = refs[0]
         first_partition = _conversation_keys(
             scope, UUID(first_ref["conversation_id"]), owner_id
         ).partition
         prior_operations = self.table.query(
             partition=first_partition,
-            sort_prefix=f"OP#{record.id}#",
+            sort_prefix=f"OP#{operation_id}#",
             consistent=True,
             deadline=deadline,
             limit=100,
@@ -1270,7 +1286,7 @@ class DynamoDBMemoryEffectGuard:
                 coordination_conversation_id=UUID(first_ref["conversation_id"]),
             )
         snapshots = {}
-        for conversation_id in sorted({ref["conversation_id"] for ref in refs}, key=str):
+        for conversation_id in guarded_conversations:
             metadata = self.messages.conversations._metadata_item_for(owner_id, conversation_id, scope)
             if metadata is None:
                 raise ConversationConflictError("memory source not found")
@@ -1299,6 +1315,26 @@ class DynamoDBMemoryEffectGuard:
                 or fingerprint(sources) != ref["source_fingerprint"]
             ):
                 raise ConversationConflictError("memory source inactive")
+        if completed_assistant_id is not None:
+            if len(extra_conversation_ids) != 1:
+                raise ConversationConflictError("assistant_conversation_invalid")
+            assistant_conversation_id = extra_conversation_ids[0]
+            active = self.messages.list_active(
+                owner_id=owner_id, conversation_id=assistant_conversation_id,
+                timeout=max(0.1, deadline - monotonic()),
+            )
+            assistant = next(
+                (item for item in active if item.id == completed_assistant_id), None
+            )
+            if (
+                assistant is None
+                or assistant.conversation_id != assistant_conversation_id
+                or assistant.owner_id != owner_id
+                or not scope_matches(assistant, scope)
+                or assistant.role is not MessageRole.ASSISTANT
+                or assistant.status is not MessageStatus.COMPLETED
+            ):
+                raise ConversationConflictError("assistant_incomplete")
         existing_attempts = {
             metadata.get("effect_guard", {}).get("attempt_id")
             for metadata in snapshots.values()
@@ -1332,6 +1368,8 @@ class DynamoDBMemoryEffectGuard:
             "status": "pending",
             "execution_deadline": _timestamp(fixed_deadline),
             "refs": _json(refs),
+            "guard_conversations": _json(guarded_conversations),
+            "coordination_conversation_id": first_ref["conversation_id"],
             "created_at": _timestamp(datetime.now(UTC)),
         }
         if _item_size(operation_item) > MAX_DYNAMO_ITEM_BYTES:
@@ -1363,6 +1401,20 @@ class DynamoDBMemoryEffectGuard:
             if not (prior and prior.get("status") == "pending"):
                 operation_item["execution_deadline"] = _timestamp(fixed_deadline)
                 operations.append(_put(operation_item, condition="attribute_not_exists(PK)"))
+                operations.append(_put({
+                    "PK": f"{_namespace(scope, owner_id)}#OPS",
+                    "SK": f"DIRECT#{first_ref['conversation_id']}#{operation_id}#{attempt_id}",
+                    "kind": "pending-memory-effect",
+                    "effect_kind": "direct",
+                    "owner_id": owner_id,
+                    "application_id": scope.application_id,
+                    "workspace_id_present": scope.workspace_id is not None,
+                    "workspace_id": scope.workspace_id or "",
+                    "operation_pk": operation_key["PK"],
+                    "operation_sk": operation_key["SK"],
+                    "conversation_id": first_ref["conversation_id"],
+                    "created_at": _timestamp(datetime.now(UTC)),
+                }, condition="attribute_not_exists(PK)"))
         elif old_operation.get("fingerprint") != fp:
             raise ConversationConflictError("memory effect identity conflict")
         else:
@@ -1379,6 +1431,20 @@ class DynamoDBMemoryEffectGuard:
             execution_deadline=fixed_deadline,
             scope=scope,
             coordination_conversation_id=UUID(first_ref["conversation_id"]),
+        )
+
+    def acquire_lifecycle_event(
+        self, record: Any, *, operation_id: str, fingerprint: str,
+        completed_assistant_id: UUID | None,
+        completed_assistant_conversation_id: UUID | None, timeout: float,
+    ) -> EffectGuardToken:
+        extra = () if completed_assistant_conversation_id is None else (
+            completed_assistant_conversation_id,
+        )
+        return self.acquire(
+            record, timeout=timeout, operation_id=operation_id,
+            fingerprint_value=fingerprint, extra_conversation_ids=extra,
+            completed_assistant_id=completed_assistant_id,
         )
 
     def acquire_job(
@@ -1557,6 +1623,18 @@ class DynamoDBMemoryEffectGuard:
                       "AND #token=:token AND #generation=:generation AND #expires>:now "
                       "AND attribute_not_exists(pending_effect)",
         ))
+        operations.append(_put({
+            "PK": f"{_namespace(scope, owner_id)}#OPS",
+            "SK": f"JOB#{job.id}",
+            "kind": "pending-memory-effect",
+            "effect_kind": "job",
+            "owner_id": owner_id,
+            "application_id": scope.application_id,
+            "workspace_id_present": scope.workspace_id is not None,
+            "workspace_id": scope.workspace_id or "",
+            "job_id": str(job.id),
+            "created_at": _timestamp(datetime.now(UTC)),
+        }, condition="attribute_not_exists(PK)"))
         self.table.transact(operations)
         return EffectGuardToken(
             owner_id=owner_id,
@@ -1593,7 +1671,9 @@ class DynamoDBMemoryEffectGuard:
                 raise ConversationConflictError("memory effect outcome conflict")
             return
         refs = json.loads(operation["refs"])
-        conversations = sorted({ref["conversation_id"] for ref in refs})
+        conversations = json.loads(operation.get(
+            "guard_conversations", _json(sorted({ref["conversation_id"] for ref in refs}))
+        ))
         actions = []
         for conversation_key in conversations:
             key = _conversation_keys(token.scope, UUID(conversation_key), token.owner_id).meta
@@ -1617,6 +1697,11 @@ class DynamoDBMemoryEffectGuard:
                     ":pending": "pending", ":fingerprint": token.fingerprint},
             condition="#status=:pending AND fingerprint=:fingerprint",
         ))
+        actions.append(_delete({
+            "PK": f"{_namespace(token.scope, token.owner_id)}#OPS",
+            "SK": f"DIRECT#{operation['coordination_conversation_id']}#"
+                 f"{token.operation_id}#{token.attempt_id}",
+        }))
         self.table.transact(actions)
 
     def _acknowledge_job(self, token, *, outcome, result_refs):
@@ -1688,6 +1773,10 @@ class DynamoDBMemoryEffectGuard:
                       "AND pending_effect.fingerprint=:fingerprint "
                       "AND pending_effect.lease_generation=:generation",
         ))
+        actions.append(_delete({
+            "PK": f"{_namespace(token.scope, token.owner_id)}#OPS",
+            "SK": f"JOB#{job_id}",
+        }))
         try:
             self.table.transact(actions)
         except Exception as error:
@@ -1713,20 +1802,24 @@ class DynamoDBMemoryEffectGuard:
     ):
         if not 1 <= limit <= 100:
             raise ValueError("operation_limit_invalid")
-        partition = _conversation_keys(scope, conversation_id, owner_id).partition
         items = self.table.query(
-            partition=partition,
-            sort_prefix="OP#",
+            partition=f"{_namespace(scope, owner_id)}#OPS",
+            sort_prefix=f"DIRECT#{conversation_id}#",
             consistent=True,
             deadline=monotonic() + 5,
             limit=limit,
         )
-        return tuple(
-            item for item in items
-            if item.get("kind") == "memory-effect"
-            and item.get("status") == "pending"
-            and _authorized(item, owner_id, scope)
-        )
+        operations = []
+        for pointer in items:
+            operation = self.table.get({"PK": pointer["operation_pk"], "SK": pointer["operation_sk"]})
+            if (
+                operation is not None and operation.get("kind") == "memory-effect"
+                and operation.get("status") == "pending"
+                and _authorized(operation, owner_id, scope)
+            ):
+                operation["coordination_conversation_id"] = str(conversation_id)
+                operations.append(operation)
+        return tuple(operations)
 
     def recover_pending(
         self, *, owner_id: str, conversation_id: UUID, scope: ApplicationScope,
@@ -1761,6 +1854,69 @@ class DynamoDBMemoryEffectGuard:
             )
             self.acknowledge(token, outcome=receipt.outcome, result_refs=receipt.result_refs)
         return len(operations)
+
+    def recover_pending_effects(self, *, owner_id: str, limit: int, receipts) -> int:
+        """Reconcile a bounded owner namespace inventory through pending-only pointers."""
+        if not 1 <= limit <= 100:
+            raise ValueError("operation_limit_invalid")
+        namespaces = self.table.query(
+            partition="MAINT#NAMESPACES", sort_prefix="NS#", consistent=True,
+            deadline=monotonic() + 10, limit=501,
+        )
+        if len(namespaces) > 500:
+            raise StorageUnavailableError("memory effect namespace inventory exceeds bound")
+        processed = 0
+        for entry in namespaces:
+            if entry.get("owner_id") != owner_id:
+                continue
+            scope = ApplicationScope(
+                application_id=entry["application_id"],
+                workspace_id=entry["workspace_id"] if entry.get("workspace_id_present") else None,
+            )
+            pointers = []
+            for prefix in ("DIRECT#", "JOB#"):
+                pointers.extend(self.table.query(
+                    partition=f"{entry['namespace']}#OPS", sort_prefix=prefix,
+                    consistent=True, deadline=monotonic() + 10, limit=limit,
+                ))
+            for pointer in pointers:
+                if pointer.get("kind") != "pending-memory-effect" or not _authorized(pointer, owner_id, scope):
+                    continue
+                if pointer.get("effect_kind") == "job":
+                    processed += self.recover_pending_job(
+                        owner_id=owner_id, job_id=UUID(pointer["job_id"]),
+                        scope=scope, receipts=receipts,
+                    )
+                elif pointer.get("effect_kind") == "direct":
+                    operation = self.table.get({
+                        "PK": pointer["operation_pk"], "SK": pointer["operation_sk"]
+                    })
+                    if operation is None or operation.get("status") != "pending":
+                        self.table.transact([_delete({"PK": pointer["PK"], "SK": pointer["SK"]})])
+                        continue
+                    args = {
+                        "owner_id": owner_id, "scope": scope,
+                        "operation_id": operation["operation_id"],
+                        "attempt_id": operation["attempt_id"],
+                    }
+                    receipt = receipts.get(**args)
+                    if receipt is None:
+                        receipt = receipts.abort_if_unresolved(
+                            **args, fingerprint=operation["fingerprint"],
+                            execution_deadline=_parse_timestamp(operation["execution_deadline"]),
+                        )
+                    token = EffectGuardToken(
+                        owner_id=owner_id, operation_id=operation["operation_id"],
+                        attempt_id=operation["attempt_id"], fingerprint=operation["fingerprint"],
+                        execution_deadline=_parse_timestamp(operation["execution_deadline"]),
+                        scope=scope,
+                        coordination_conversation_id=UUID(pointer["conversation_id"]),
+                    )
+                    self.acknowledge(token, outcome=receipt.outcome, result_refs=receipt.result_refs)
+                    processed += 1
+                if processed >= limit:
+                    return processed
+        return processed
 
     def recover_pending_job(
         self, *, owner_id: str, job_id: UUID, scope: ApplicationScope, receipts

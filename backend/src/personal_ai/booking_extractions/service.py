@@ -23,6 +23,7 @@ from personal_ai.booking_extractions.repositories import (
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.entities.conversation import Message, MessageRole, MessageStatus
 from personal_ai.llm.errors import LLMTimeoutError
+from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import StorageUnavailableError
 
 SYSTEM_INSTRUCTION = """Extract reservation facts from the supplied booking document.
@@ -183,7 +184,7 @@ class BookingExtractionService:
         try:
             async with asyncio.timeout(_remaining(operation_deadline)):
                 now = self.clock().astimezone(UTC)
-                record, created = await asyncio.to_thread(
+                record, created = await io_call(
                     self.repository.begin,
                     owner_id=self.owner_id,
                     key=request.idempotency_key,
@@ -192,6 +193,8 @@ class BookingExtractionService:
                     now=now,
                     execution_deadline=now
                     + timedelta(seconds=max(0, operation_deadline - started)),
+                    timeout_seconds=max(0.01, _remaining(operation_deadline)),
+                    deadline=operation_deadline,
                 )
                 if not created:
                     return self._view(record)
@@ -267,7 +270,11 @@ class BookingExtractionService:
             result = self._failed(record, "generation_outcome_unknown")
         try:
             async with asyncio.timeout(_remaining(operation_deadline)):
-                saved = await asyncio.to_thread(self.repository.complete, record, result)
+                saved = await io_call(
+                    self.repository.complete, record, result,
+                    timeout_seconds=max(0.01, _remaining(operation_deadline)),
+                    deadline=operation_deadline,
+                )
                 return self._view(saved)
         except (StorageUnavailableError, TimeoutError, ExtractionError):
             # A lost terminal write remains fenced; GET by key is the only recovery.

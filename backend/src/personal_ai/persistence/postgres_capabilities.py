@@ -91,10 +91,9 @@ class PostgresItineraryProposalRepository:
         request_fingerprint: str, now: datetime, execution_deadline: datetime,
         timeout_seconds: float = 5, deadline: float | None = None,
     ) -> tuple[ProposalRecord, bool]:
-        del timeout_seconds, deadline
         record = _new_record(owner_id, request, request_fingerprint, now, execution_deadline)
         scope = _scope(record)
-        with self.database.transaction() as connection:
+        with self.database.transaction(timeout_seconds=timeout_seconds, deadline=deadline) as connection:
             _ensure_namespace(connection, owner_id, scope)
             current = _select(
                 connection, "itinerary_proposals", owner_id, scope, record.proposal_id, lock=True
@@ -123,9 +122,8 @@ class PostgresItineraryProposalRepository:
         self, record: ProposalRecord, result: ItineraryProposalResult,
         timeout_seconds: float = 5, deadline: float | None = None,
     ) -> ProposalRecord:
-        del timeout_seconds, deadline
         scope = _scope(record)
-        with self.database.transaction() as connection:
+        with self.database.transaction(timeout_seconds=timeout_seconds, deadline=deadline) as connection:
             current = _select(
                 connection, "itinerary_proposals", record.owner_id, scope, record.proposal_id, lock=True
             )
@@ -169,11 +167,14 @@ class PostgresBookingExtractionRepository:
     def __init__(self, database: PostgresDatabase) -> None:
         self.database = database
 
-    def begin(self, *, owner_id, key, fingerprint, source_sha256, now, execution_deadline):
+    def begin(
+        self, *, owner_id, key, fingerprint, source_sha256, now, execution_deadline,
+        timeout_seconds=5, deadline=None,
+    ):
         record = _new_extraction(owner_id, key, fingerprint, source_sha256, now, execution_deadline)
         scope = _scope(record)
         try:
-            with self.database.transaction() as connection:
+            with self.database.transaction(timeout_seconds=timeout_seconds, deadline=deadline) as connection:
                 _ensure_namespace(connection, owner_id, scope)
                 current = _select(
                     connection, "booking_document_extractions", owner_id, scope,
@@ -190,12 +191,20 @@ class PostgresBookingExtractionRepository:
         except Exception as error:
             if error.__class__.__name__ != "UniqueViolation":
                 raise
-            return self.get_by_key(owner_id, key), False
+            replay = self.get_by_key(owner_id, key, timeout_seconds=timeout_seconds, deadline=deadline)
+            try:
+                _check_extraction(replay, owner_id, fingerprint, source_sha256)
+            except ExtractionError as conflict:
+                raise conflict from error
+            return replay, False
         return record, True
 
-    def complete(self, record: ExtractionRecord, result: BookingExtractionResult):
+    def complete(
+        self, record: ExtractionRecord, result: BookingExtractionResult,
+        timeout_seconds=5, deadline=None,
+    ):
         scope = _scope(record)
-        with self.database.transaction() as connection:
+        with self.database.transaction(timeout_seconds=timeout_seconds, deadline=deadline) as connection:
             current = _select(
                 connection, "booking_document_extractions", record.owner_id, scope,
                 record.extraction_id, lock=True,
@@ -219,9 +228,9 @@ class PostgresBookingExtractionRepository:
                 raise ExtractionError("extraction_conflict")
         return updated
 
-    def get(self, owner_id, extraction_id):
+    def get(self, owner_id, extraction_id, *, timeout_seconds=None, deadline=None):
         scope = current_application_scope()
-        with self.database.connection() as connection:
+        with self.database.connection(timeout_seconds=timeout_seconds, deadline=deadline) as connection:
             current = _select(
                 connection, "booking_document_extractions", owner_id, scope, extraction_id
             )
@@ -232,8 +241,11 @@ class PostgresBookingExtractionRepository:
             raise ResourceNotFoundError("extraction not found")
         return record
 
-    def get_by_key(self, owner_id, key):
-        return self.get(owner_id, extraction_id_for(owner_id, key))
+    def get_by_key(self, owner_id, key, timeout_seconds=None, deadline=None):
+        return self.get(
+            owner_id, extraction_id_for(owner_id, key),
+            timeout_seconds=timeout_seconds, deadline=deadline,
+        )
 
     def delete(self, owner_id, extraction_id):
         record = self.get(owner_id, extraction_id)

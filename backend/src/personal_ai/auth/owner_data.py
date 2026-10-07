@@ -29,5 +29,7 @@ OWNER_DATA_COLLECTIONS = (
     "provider_observations",
     "domain_comparison_views",
     "domain_lookup_idempotency",
+    "identity_mappings",
     "audit_events",
+    "usage_budgets",
 )

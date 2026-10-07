@@ -185,7 +185,11 @@ async def run_scheduled_maintenance(request: Request) -> Response:
             return Response(status_code=503)
         _, republisher = await anyio.to_thread.run_sync(_components, settings)
         published = await anyio.to_thread.run_sync(
-            partial(republisher.republish_pending, limit=settings.memory_job_candidate_limit)
+            partial(
+                republisher.republish_pending,
+                limit=settings.memory_job_candidate_limit,
+                owner_id=owner_ids[0],
+            )
         )
         research = persistence_factory(settings).research_repository()
         expired = await anyio.to_thread.run_sync(

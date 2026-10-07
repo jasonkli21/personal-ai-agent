@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, date, datetime
 from importlib.resources import files
+from time import monotonic
 from typing import Any
 
 from personal_ai.auth.scope import ApplicationScope
@@ -56,6 +57,49 @@ class PersistenceConflict(RuntimeError):
 
 class PersistenceRecordNotFound(LookupError):
     """An identifier does not resolve inside the caller's authorized scope."""
+
+
+class _DeadlineConnection:
+    """Apply a caller's remaining budget to every statement in a transaction."""
+
+    def __init__(self, connection, *, deadline, statement_timeout_ms, lock_timeout_ms):
+        self._connection = connection
+        self._deadline = deadline
+        self._statement_timeout_ms = statement_timeout_ms
+        self._lock_timeout_ms = lock_timeout_ms
+
+    def _remaining_ms(self):
+        remaining = None if self._deadline is None else self._deadline - monotonic()
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError("postgres operation deadline exceeded")
+        return remaining
+
+    def execute(self, query, params=None, **kwargs):
+        remaining = self._remaining_ms()
+        statement_ms = self._statement_timeout_ms
+        lock_ms = self._lock_timeout_ms
+        if remaining is not None:
+            remaining_ms = max(1, int(remaining * 1000))
+            statement_ms = min(statement_ms, remaining_ms)
+            lock_ms = min(lock_ms, remaining_ms)
+        self._connection.execute(
+            "SELECT set_config('statement_timeout', %s, true), "
+            "set_config('lock_timeout', %s, true)",
+            (f"{statement_ms}ms", f"{lock_ms}ms"),
+        )
+        self._remaining_ms()
+        try:
+            return self._connection.execute(query, params, **kwargs)
+        except Exception as error:
+            if getattr(error, "sqlstate", None) == "57014" and self._deadline is not None:
+                raise TimeoutError("postgres operation deadline exceeded") from error
+            raise
+
+    def check_deadline(self):
+        self._remaining_ms()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
 
 
 class PostgresDatabase:
@@ -153,23 +197,53 @@ class PostgresDatabase:
         await self._async_pool.open()
 
     @contextmanager
-    def connection(self) -> Iterator[Any]:
+    def connection(
+        self, *, timeout_seconds: float | None = None, deadline: float | None = None,
+        snapshot: bool = False,
+    ) -> Iterator[Any]:
+        if timeout_seconds is not None:
+            if timeout_seconds <= 0:
+                raise TimeoutError("postgres operation deadline exceeded")
+            relative_deadline = monotonic() + timeout_seconds
+            deadline = relative_deadline if deadline is None else min(deadline, relative_deadline)
+        remaining = None if deadline is None else deadline - monotonic()
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError("postgres operation deadline exceeded")
+        pool_timeout = self._pool_timeout if remaining is None else min(self._pool_timeout, remaining)
         self.open()
         try:
             with (
-                self._pool.connection(timeout=self._pool_timeout) as connection,
-                connection.transaction(),
+                self._pool.connection(timeout=pool_timeout) as raw_connection,
+                raw_connection.transaction(),
             ):
+                if snapshot:
+                    raw_connection.execute(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+                    )
+                connection = _DeadlineConnection(
+                    raw_connection,
+                    deadline=deadline,
+                    statement_timeout_ms=self._statement_timeout_ms,
+                    lock_timeout_ms=self._lock_timeout_ms,
+                )
                 yield connection
+                connection.check_deadline()
         except Exception as error:
+            if deadline is not None and monotonic() >= deadline:
+                raise TimeoutError("postgres operation deadline exceeded") from error
             if _is_connection_error(error):
                 raise PersistenceUnavailable("postgres_unavailable") from error
             raise
 
     @contextmanager
-    def transaction(self) -> Iterator[Any]:
+    def transaction(
+        self, *, timeout_seconds: float | None = None, deadline: float | None = None,
+        snapshot: bool = False,
+    ) -> Iterator[Any]:
         """Alias that makes transaction-group intent explicit at call sites."""
-        with self.connection() as connection:
+        with self.connection(
+            timeout_seconds=timeout_seconds, deadline=deadline, snapshot=snapshot
+        ) as connection:
             yield connection
 
     @asynccontextmanager

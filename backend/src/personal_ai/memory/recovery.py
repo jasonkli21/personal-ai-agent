@@ -18,10 +18,19 @@ def recover_pending(settings, *, limit=50, coordinator=None):
         memories = factory.memory_repository()
         messages = factory.message_repository()
         lifecycle = factory.memory_lifecycle_repository(memories, messages)
+        owner_ids = factory.principal_directory().active_owner_ids(limit=2)
+        if len(owner_ids) != 1:
+            raise RuntimeError("memory_recovery_requires_one_active_owner")
         coordinator = MemoryLifecycleCoordinator(
             settings, lifecycle, memories, publisher=PubSubMemoryJobPublisher(settings)
         )
-    return {"status": "completed", "published": coordinator.republish_pending(limit=limit)}
+        owner_id = owner_ids[0]
+    else:
+        owner_id = None
+    return {
+        "status": "completed",
+        "published": coordinator.republish_pending(limit=limit, owner_id=owner_id),
+    }
 
 
 def main():

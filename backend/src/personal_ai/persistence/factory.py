@@ -269,7 +269,7 @@ class PostgresDynamoPersistenceFactory:
     def account_data_repository(self):
         from personal_ai.persistence.postgres_auth import PostgresAccountLifecycleRepository
 
-        return PostgresAccountLifecycleRepository(self.database)
+        return PostgresAccountLifecycleRepository(self.database, self.runtime_table)
 
     def safeguard_store(self):
         from personal_ai.persistence.controls import (

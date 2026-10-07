@@ -62,11 +62,12 @@ def _insert(connection, family, *, owner_id, scope, record_id, payload,
     scope_id = _ensure_namespace(connection, owner_id, scope)
     connection.execute(
         f"INSERT INTO {family}(record_id,scope_id,owner_id,application_id,workspace_id,"
-        "record_version,status,revision,created_at,idempotency_key,payload) "
-        "VALUES (%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s::jsonb)",
+        "record_version,status,revision,created_at,expires_at,idempotency_key,payload) "
+        "VALUES (%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s::jsonb)",
         (
             record_id, scope_id, owner_id, scope.application_id, scope.workspace_id,
-            status, revision, created_at or datetime.now(UTC), idempotency_key,
+            status, revision, created_at or datetime.now(UTC), payload.get("expires_at"),
+            idempotency_key,
             PostgresPayloadRepository._json(payload),
         ),
     )
@@ -107,9 +108,8 @@ class PostgresResearchRepository:
         return value
 
     def get(self, owner_id, session_id, timeout_seconds=None, deadline=None):
-        del timeout_seconds, deadline
         scope = current_application_scope()
-        with self.database.connection() as connection:
+        with self.database.connection(timeout_seconds=timeout_seconds, deadline=deadline) as connection:
             payload, _ = _read(
                 connection, "research_sessions", owner_id=owner_id, scope=scope,
                 record_id=str(session_id),
@@ -238,6 +238,72 @@ class PostgresResearchRepository:
             if cursor.rowcount != 1:
                 raise ResearchError("research_conflict", 409)
         return candidate
+
+    def expire_due_for_owner(self, owner_id, *, now, correlation_id, limit=40):
+        """Expire bounded due sessions and append matching audit rows atomically."""
+        if not 1 <= limit <= 500:
+            raise ValueError("research_expiry_limit_invalid")
+        now = now.astimezone(UTC)
+        from personal_ai.auth.scope import ApplicationScope
+        from personal_ai.persistence.postgres_auth import _append_audit
+
+        with self.database.transaction() as connection:
+            rows = connection.execute(
+                "SELECT scope_id,record_id,payload,revision,expires_at FROM research_sessions "
+                "WHERE owner_id=%s AND status=ANY(%s) AND expires_at<=%s "
+                "ORDER BY expires_at,scope_id,record_id FOR UPDATE SKIP LOCKED LIMIT %s",
+                (
+                    owner_id, ["pending", "completed", "insufficient", "failed"], now, limit,
+                ),
+            ).fetchall()
+            expired = 0
+            for scope_id, record_id, payload, revision, expires_at in rows:
+                scope = ApplicationScope(
+                    application_id=payload.get("application_id", STANDALONE_APPLICATION_ID),
+                    workspace_id=payload.get("workspace_id"),
+                )
+                session = self._decode(payload, owner_id, scope)
+                if session.expires_at > now:
+                    continue
+                updated = evolve(
+                    session,
+                    state="expired",
+                    answer=None,
+                    citations=(),
+                    updated_at=max(session.updated_at, now),
+                    revision=session.revision + 1,
+                )
+                cursor = connection.execute(
+                    "UPDATE research_sessions SET payload=%s::jsonb,status='expired',"
+                    "revision=revision+1,updated_at=%s WHERE scope_id=%s AND record_id=%s "
+                    "AND revision=%s AND status=ANY(%s)",
+                    (
+                        PostgresPayloadRepository._json(_payload(updated)), updated.updated_at,
+                        scope_id, record_id, revision,
+                        ["pending", "completed", "insufficient", "failed"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ResearchError("research_conflict", 409)
+                expires_value = payload.get("expires_at", expires_at.isoformat())
+                audit_id = sha256((
+                    f"research-expiry\0{record_id}\0{expires_value}"
+                    f"\0{scope.application_id}\0{scope.workspace_id or ''}"
+                ).encode()).hexdigest()
+                _append_audit(
+                    connection,
+                    owner_id=owner_id,
+                    audit_id=audit_id,
+                    action="research.evidence.expire",
+                    target_type="research_session",
+                    target_id=record_id,
+                    correlation_id=correlation_id,
+                    result="expired",
+                    scope=scope,
+                    actor_subject="service:maintenance",
+                )
+                expired += 1
+        return expired
 
 
 class PostgresIterativeResearchRepository:

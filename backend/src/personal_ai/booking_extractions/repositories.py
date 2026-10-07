@@ -68,9 +68,12 @@ class BookingExtractionRepository(Protocol):
         source_sha256: str,
         now: datetime,
         execution_deadline: datetime,
+        timeout_seconds: float = 5,
+        deadline: float | None = None,
     ) -> tuple[ExtractionRecord, bool]: ...
     def complete(
-        self, record: ExtractionRecord, result: BookingExtractionResult
+        self, record: ExtractionRecord, result: BookingExtractionResult,
+        timeout_seconds: float = 5, deadline: float | None = None,
     ) -> ExtractionRecord: ...
     def get(self, owner_id: str, extraction_id: UUID) -> ExtractionRecord: ...
     def get_by_key(self, owner_id: str, key: UUID) -> ExtractionRecord: ...
@@ -132,7 +135,10 @@ class InMemoryBookingExtractionRepository:
         self._records: dict[UUID, ExtractionRecord] = {}
         self._lock = RLock()
 
-    def begin(self, *, owner_id, key, fingerprint, source_sha256, now, execution_deadline):
+    def begin(
+        self, *, owner_id, key, fingerprint, source_sha256, now, execution_deadline,
+        timeout_seconds=5, deadline=None,
+    ):
         extraction_id = extraction_id_for(owner_id, key)
         with self._lock:
             old = self._records.get(extraction_id)
@@ -143,7 +149,7 @@ class InMemoryBookingExtractionRepository:
             self._records[extraction_id] = record
             return record, True
 
-    def complete(self, record, result):
+    def complete(self, record, result, timeout_seconds=5, deadline=None):
         with self._lock:
             old = self._records.get(record.extraction_id)
             if old is None or old.owner_id != record.owner_id or not scope_matches(old):
@@ -236,7 +242,10 @@ class FirestoreBookingExtractionRepository:
         except (GoogleAPICallError, RetryError, OSError, ValueError) as error:
             raise StorageUnavailableError("extraction storage unavailable") from error
 
-    def begin(self, *, owner_id, key, fingerprint, source_sha256, now, execution_deadline):
+    def begin(
+        self, *, owner_id, key, fingerprint, source_sha256, now, execution_deadline,
+        timeout_seconds=5, deadline=None,
+    ):
         record = _new(owner_id, key, fingerprint, source_sha256, now, execution_deadline)
 
         def op(transaction, timeout):
@@ -249,9 +258,11 @@ class FirestoreBookingExtractionRepository:
             transaction.set(ref, self._data(record))
             return record, True
 
-        return self._call(lambda: bounded_transaction(self.client, op, seconds=5))
+        return self._call(lambda: bounded_transaction(
+            self.client, op, seconds=timeout_seconds, deadline=deadline
+        ))
 
-    def complete(self, record, result):
+    def complete(self, record, result, timeout_seconds=5, deadline=None):
         def op(transaction, timeout):
             ref = self.collection.document(str(record.extraction_id))
             old = self._decode(
@@ -263,7 +274,9 @@ class FirestoreBookingExtractionRepository:
             transaction.set(ref, self._data(updated))
             return updated
 
-        return self._call(lambda: bounded_transaction(self.client, op, seconds=5))
+        return self._call(lambda: bounded_transaction(
+            self.client, op, seconds=timeout_seconds, deadline=deadline
+        ))
 
     def get(self, owner_id, extraction_id):
         return self._call(

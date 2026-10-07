@@ -254,6 +254,7 @@ class InMemoryMemoryLifecycleRepository:
         event: MemoryLifecycleEvent,
         *,
         completed_assistant_id: UUID | None = None,
+        completed_assistant_conversation_id: UUID | None = None,
         job: MemoryJob | None = None,
         lease_token: UUID | None = None,
     ) -> MemoryLifecycleOutcome:
@@ -294,6 +295,7 @@ class InMemoryMemoryLifecycleRepository:
                 if (
                     assistant is None
                     or assistant.owner_id != event.owner_id
+                    or (completed_assistant_conversation_id is not None and assistant.conversation_id != completed_assistant_conversation_id)
                     or not scope_matches(assistant)
                     or assistant.role is not MessageRole.ASSISTANT
                     or assistant.status is not MessageStatus.COMPLETED
@@ -964,6 +966,7 @@ class FirestoreMemoryLifecycleRepository:
         event: MemoryLifecycleEvent,
         *,
         completed_assistant_id: UUID | None = None,
+        completed_assistant_conversation_id: UUID | None = None,
         job: MemoryJob | None = None,
         lease_token: UUID | None = None,
     ) -> MemoryLifecycleOutcome:
@@ -1002,6 +1005,7 @@ class FirestoreMemoryLifecycleRepository:
                     return MemoryLifecycleOutcome(status="conflict", reason="assistant_incomplete")
                 if (
                     assistant.owner_id != event.owner_id
+                    or (completed_assistant_conversation_id is not None and assistant.conversation_id != completed_assistant_conversation_id)
                     or not scope_matches(assistant)
                     or assistant.role is not MessageRole.ASSISTANT
                     or assistant.status is not MessageStatus.COMPLETED
