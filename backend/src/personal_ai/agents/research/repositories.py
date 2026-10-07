@@ -1,25 +1,19 @@
 """Atomic bounded aggregates with owner-scoped creation and fenced execution."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from hashlib import sha256
 from threading import RLock
-from time import monotonic
 from typing import Protocol
 from uuid import UUID
-
-from google.api_core.exceptions import GoogleAPICallError, RetryError
 
 from personal_ai.agents.research.contracts import ResearchError, ResearchSession, evolve
 from personal_ai.auth.scope import (
     STANDALONE_APPLICATION_ID,
-    data_scope_matches,
     preserve_legacy_child_scope,
     scope_matches,
     scoped_record,
 )
-from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
-from personal_ai.storage.firestore import _firestore_client
-from personal_ai.storage.transactions import bounded_transaction
+from personal_ai.storage.errors import ResourceNotFoundError
 
 
 def key_id(session):
@@ -154,192 +148,3 @@ class InMemoryResearchRepository:
             validate_save(current, session)
             self.sessions[session.id] = session
             return session
-
-
-class FirestoreResearchRepository:
-    def __init__(self, client=None, *, project_id=None, emulator_host=None):
-        self.client = client if client is not None else _firestore_client(project_id, emulator_host)
-        self.sessions = self.client.collection("research_sessions")
-        self.keys = self.client.collection("research_request_keys")
-
-    def _run(self, operation):
-        try:
-            return operation()
-        except (GoogleAPICallError, RetryError, OSError, ValueError) as error:
-            raise StorageUnavailableError("research storage unavailable") from error
-
-    @staticmethod
-    def _decode(snapshot, owner_id):
-        if not snapshot.exists:
-            raise ResourceNotFoundError("research not found")
-        session = ResearchSession.model_validate(snapshot.to_dict())
-        if session.owner_id != owner_id or not scope_matches(session):
-            raise ResourceNotFoundError("research not found")
-        return session
-
-    @staticmethod
-    def _data(session):
-        data = session.model_dump(mode="json")
-        data["run_token"] = str(session.run_token) if session.run_token else None
-        return data
-
-    def get(self, owner_id, session_id, timeout_seconds=None, deadline=None):
-        def rpc_timeout():
-            if deadline is None:
-                return timeout_seconds or 5
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                raise TimeoutError("research read deadline")
-            return min(remaining, timeout_seconds) if timeout_seconds else remaining
-
-        return self._run(
-            lambda: self._decode(
-                self.sessions.document(str(session_id)).get(
-                    retry=None, timeout=rpc_timeout()
-                ),
-                owner_id,
-            )
-        )
-
-    def create(self, session):
-        session = scoped_record(session)
-        def operation(tx, timeout):
-            ref = self.keys.document(key_id(session))
-            snapshot = ref.get(transaction=tx, retry=None, timeout=timeout())
-            if snapshot.exists:
-                mapping = snapshot.to_dict()
-                if mapping["owner_id"] != session.owner_id or not data_scope_matches(mapping):
-                    raise ResourceNotFoundError("research not found")
-                old = self._decode(
-                    self.sessions.document(mapping["session_id"]).get(
-                        transaction=tx, retry=None, timeout=timeout()
-                    ),
-                    session.owner_id,
-                )
-                if old.request_fingerprint != session.request_fingerprint:
-                    raise ResearchError("idempotency_conflict", 409)
-                return old
-            tx.create(self.sessions.document(str(session.id)), self._data(session))
-            tx.create(ref, {
-                "owner_id": session.owner_id,
-                "session_id": str(session.id),
-                "application_id": session.application_id,
-                "workspace_id": session.workspace_id,
-                "scope_version": 2,
-            })
-            return session
-
-        return self._run(lambda: bounded_transaction(self.client, operation))
-
-    def claim(self, owner_id, session_id, token, now, deadline):
-        def operation(tx, timeout):
-            ref = self.sessions.document(str(session_id))
-            old = self._decode(ref.get(transaction=tx, retry=None, timeout=timeout()), owner_id)
-            session = claim_session(old, token, now, deadline)
-            tx.set(ref, self._data(session))
-            return session
-
-        return self._run(lambda: bounded_transaction(self.client, operation))
-
-    def save(self, session):
-        session = scoped_record(session)
-        if not scope_matches(session):
-            raise ResourceNotFoundError("research not found")
-        def operation(tx, timeout):
-            ref = self.sessions.document(str(session.id))
-            old = self._decode(
-                ref.get(transaction=tx, retry=None, timeout=timeout()), session.owner_id
-            )
-            candidate = preserve_legacy_child_scope(old, session)
-            validate_save(old, candidate)
-            tx.set(ref, self._data(candidate))
-            return candidate
-
-        return self._run(lambda: bounded_transaction(self.client, operation))
-
-    def expire_due_for_owner(self, owner_id, *, now, correlation_id, limit=40):
-        """Mark expired sessions ineligible while retaining evidence for export/audit."""
-        from google.cloud import firestore
-
-        # Aggregate timestamps are UTC ISO strings. A native Firestore timestamp
-        # cannot match them. Query through the next whole second, then compare
-        # decoded instants: ISO strings with optional fractions do not sort
-        # chronologically within the same second ("...00Z" > "...00.1Z").
-        now = now.astimezone(UTC)
-        bound = (now + timedelta(seconds=1)).replace(microsecond=0)
-        query_bound = bound.isoformat().replace("+00:00", "Z")
-        serialized_now = now.isoformat().replace("+00:00", "Z")
-
-        # This operator maintenance sweep intentionally covers every app/workspace
-        # belonging to the requested owner. User-facing reads remain scoped.
-        query = self.sessions.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
-        query = (
-            query
-            .where(
-                filter=firestore.FieldFilter(
-                    "state", "in", ["pending", "completed", "insufficient", "failed"]
-                )
-            )
-            .where(filter=firestore.FieldFilter("expires_at", "<", query_bound))
-            .order_by("expires_at")
-            .limit(limit)
-        )
-
-        def operation():
-            snapshots = tuple(query.stream(retry=None, timeout=5))
-            if not snapshots:
-                return 0
-            batch = self.client.batch()
-            expired = 0
-            for snapshot in snapshots:
-                values = snapshot.to_dict() or {}
-                if values.get("owner_id") != owner_id or values.get("state") not in {
-                    "pending", "completed", "insufficient", "failed"
-                }:
-                    continue
-                try:
-                    session = ResearchSession.model_validate(values)
-                except (TypeError, ValueError, KeyError) as error:
-                    raise StorageUnavailableError("research record invalid") from error
-                if session.owner_id != owner_id:
-                    continue
-                if session.expires_at > now:
-                    continue
-                batch.update(
-                    snapshot.reference,
-                    {
-                        "state": "expired",
-                        "answer": None,
-                        "citations": [],
-                        "revision": int(values.get("revision", 0)) + 1,
-                        "updated_at": serialized_now,
-                    },
-                    option=firestore.LastUpdateOption(snapshot.update_time),
-                )
-                audit_id = sha256((
-                    f"research-expiry\0{snapshot.id}\0{values.get('expires_at')}"
-                    f"\0{values.get('application_id', STANDALONE_APPLICATION_ID)}"
-                    f"\0{values.get('workspace_id') or ''}"
-                ).encode()
-                ).hexdigest()
-                audit_ref = self.client.collection("audit_events").document(audit_id)
-                batch.create(audit_ref, {
-                    "id": audit_id,
-                    "actor_subject": "service:maintenance",
-                    "owner_id": owner_id,
-                    "application_id": values.get("application_id", STANDALONE_APPLICATION_ID),
-                    "workspace_id": values.get("workspace_id"),
-                    "scope_version": 2,
-                    "action": "research.evidence.expire",
-                    "target_type": "research_session",
-                    "target_id": snapshot.id,
-                    "result": "expired",
-                    "correlation_id": correlation_id,
-                    "occurred_at": now,
-                })
-                expired += 1
-            if expired:
-                batch.commit(retry=None, timeout=5)
-            return expired
-
-        return self._run(operation)

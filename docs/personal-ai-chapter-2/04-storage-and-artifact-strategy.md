@@ -13,7 +13,7 @@ summaries/runtime       provenance/lifecycle             exports/replay
 checkpoints/idempotency research/decisions/metadata
 ```
 
-This supersedes the future-facing Firestore/GCS-only target. Firestore remains historical/current implementation until Phase 10 actually migrates it.
+This supersedes the future-facing Firestore/GCS-only target. Phase 10's local runtime wiring now targets Neon/Postgres + DynamoDB; its no-source disposition is based on the user's report, with no independent cloud inventory or data migration.
 
 ## DynamoDB ownership
 
@@ -41,14 +41,19 @@ Sensitive Finance/Health verbose artifacts default to minimal/no retention. Sour
 - Stable opaque IDs connect stores.
 - No distributed transaction assumption.
 - Use idempotency and conditional writes; narrowly coordinate memory source/job validation through the Phase 10 guard/receipt contract, rather than a general cross-store workflow platform.
-- No permanent Firestore/Postgres/DynamoDB dual-write architecture.
+- No permanent dual-write architecture.
 - Account export/deletion inventory spans every canonical store and object tier.
 
 ## Local development
 
 Phase 10 provides local Postgres + pgvector and official DynamoDB Local. Normal development should not require Neon/AWS credentials. Fakes remain useful for unit tests, but persistence integration tests should exercise local engines with the actual semantics they represent.
 
-## Firestore migration
+## Conditional source migration
+
+These source-backed steps apply only if a deployed Firestore source is later
+found. P10.6 took the reported no-source path, so this project did not run a
+backfill, final delta, or data rollback window. The fuller conditional protocol
+remains in the [Phase 10 migration plan](phase-10-migration-cutover-and-verification-plan.md).
 
 Phase 10 owns:
 

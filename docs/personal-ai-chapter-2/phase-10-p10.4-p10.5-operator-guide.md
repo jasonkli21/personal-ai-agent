@@ -1,5 +1,10 @@
 # Phase 10 P10.4–P10.5 operator guide
 
+> Historical reference only: P10.6 removed the Firestore reader, migration
+> command, and migration-control schema for the user-reported no-source path.
+> The commands below are no longer available or current operating instructions.
+> No independent cloud inventory or real data migration was performed.
+
 Status: implementation tooling exists; the commands below are not evidence that
 the source inventory, target engines, cloud permissions, or strict-$0 fit have
 been verified for a real account. See the [implementation evidence](phase-10-p10.4-p10.5-implementation-evidence.md).

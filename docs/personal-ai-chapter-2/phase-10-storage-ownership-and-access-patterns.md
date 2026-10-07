@@ -1,8 +1,9 @@
 # Phase 10 storage ownership and access-pattern contract
 
 Status: P10.0 documentation decision, 2026-10-06. Reviewed code revision:
-`e17ebd76afd1feb90fe47d959c43ab23eb553499`. Firestore is still the implemented
-canonical store; P10.1+ and cloud/migration acceptance remain unverified.
+`e17ebd76afd1feb90fe47d959c43ab23eb553499`. P10.6 code cutover is implemented
+locally; no source migration ran because the user reports there was no deployed
+Firestore dataset. Target-engine/cloud acceptance remains unverified.
 
 The [Phase 10 plan](personal-ai-next-scope-detailed-implementation-plans/plans/phase-10-implementation-plan.md)
 owns scope. [ADR 0021](../decisions/0021-polyglot-persistence-foundation.md) records
@@ -16,17 +17,12 @@ not just [the owner inventory](../../backend/src/personal_ai/auth/owner_data.py)
 Repositories also contain embedded records: these follow their aggregate unless
 a separate family below owns them. No live source contents/counts were inspected.
 
-Existing behavior comes from [chat storage](../../backend/src/personal_ai/storage/firestore.py),
-[summary storage](../../backend/src/personal_ai/context/repositories.py),
-[memory storage](../../backend/src/personal_ai/memory/repositories.py),
-[lifecycle storage](../../backend/src/personal_ai/memory/lifecycle_repositories.py),
-[research storage](../../backend/src/personal_ai/agents/research/repositories.py),
-[iterative storage](../../backend/src/personal_ai/agents/research/iterative_repositories.py),
-[decision storage](../../backend/src/personal_ai/decisions/firestore.py),
-[domain storage](../../backend/src/personal_ai/domains/repositories.py),
-[proposal storage](../../backend/src/personal_ai/itinerary_proposals/repositories.py),
-[extraction storage](../../backend/src/personal_ai/booking_extractions/repositories.py)
-and [account export/lifecycle](../../backend/src/personal_ai/auth/account_data.py).
+The inventory reflects the pre-cutover implementation reviewed at
+`e17ebd76afd1feb90fe47d959c43ab23eb553499`; the Firestore adapter files from
+that revision were removed in P10.6. The current Postgres and DynamoDB
+implementations live under `backend/src/personal_ai/persistence/`. This
+inventory describes required behavior and access patterns, not a claim that a
+deployed Firestore dataset was inspected.
 
 Table shorthand: D = DynamoDB, P = Postgres; scope = authenticated owner,
 application and nullable workspace unless marked account-wide/global. "Retain"

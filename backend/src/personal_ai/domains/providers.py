@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import json
-from datetime import UTC, datetime, timedelta
 from threading import Lock
 from time import monotonic
 from typing import Protocol
@@ -96,71 +95,6 @@ class _ProcessRateLimiter:
                 raise TimeoutError("provider request deadline")
             self.next_request = slot + interval
         delay = max(0.0, slot - monotonic())
-        if delay >= max(0.0, deadline - monotonic()):
-            raise TimeoutError("provider request deadline")
-        await asyncio.sleep(delay)
-        if monotonic() >= deadline:
-            raise TimeoutError("provider request deadline")
-
-
-class FirestoreProviderRateLimiter:
-    """Reserve provider request slots across app instances using one Firestore record."""
-
-    def __init__(self, client, provider: str):
-        self.client, self.provider = client, provider
-
-    async def wait(self, interval: float, *, deadline: float) -> None:
-        from google.api_core.exceptions import GoogleAPICallError
-
-        from personal_ai.storage.transactions import bounded_transaction
-
-        reference = self.client.collection("domain_provider_rate_limits").document(self.provider)
-
-        def reserve():
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                raise TimeoutError("provider request deadline")
-            now = datetime.now(UTC)
-
-            def operation(transaction, timeout):
-                if timeout() <= 0:
-                    raise TimeoutError("provider request deadline")
-                snapshot = next(transaction.get(reference, retry=None, timeout=timeout()), None)
-                next_at = None
-                if snapshot is not None and snapshot.exists:
-                    raw = snapshot.to_dict().get("next_request_at")
-                    if raw:
-                        next_at = datetime.fromisoformat(raw).astimezone(UTC)
-                slot = max(now, next_at) if next_at is not None else now
-                delay = max(0.0, (slot - now).total_seconds())
-                if delay >= deadline - monotonic():
-                    return None
-                transaction.set(reference, {
-                    "provider": self.provider,
-                    "next_request_at": (slot + timedelta(seconds=interval)).isoformat(),
-                })
-                return delay
-
-            return bounded_transaction(self.client, operation, seconds=remaining)
-
-        delay = None
-        for attempt in range(3):
-            if monotonic() >= deadline:
-                raise TimeoutError("provider request deadline")
-            try:
-                delay = await asyncio.to_thread(reserve)
-                break
-            except TimeoutError:
-                raise
-            except GoogleAPICallError as error:
-                if attempt == 2:
-                    raise DomainProviderError("domain_rate_limit_unavailable") from error
-                pause = min(0.05 * (attempt + 1), max(0.0, deadline - monotonic()))
-                if pause <= 0:
-                    raise TimeoutError("provider request deadline") from error
-                await asyncio.sleep(pause)
-        if delay is None:
-            raise TimeoutError("provider request deadline")
         if delay >= max(0.0, deadline - monotonic()):
             raise TimeoutError("provider request deadline")
         await asyncio.sleep(delay)

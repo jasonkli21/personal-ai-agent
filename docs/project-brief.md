@@ -2,7 +2,7 @@
 
 Read this document before making implementation decisions. It carries the product intent and guardrails that sit behind the architecture and implementation plan.
 
-P10.0 records the [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). P10.1–P10.3 have targeted local implementation evidence; P10.4 migration and P10.5 cloud-control tooling now have synthetic/static evidence ([P10.4–P10.5 status](personal-ai-chapter-2/phase-10-p10.4-p10.5-implementation-evidence.md)). Firestore remains selected at runtime. Real-engine migration, cloud acceptance, Docker Compose execution and P10.6 cutover remain unverified or not started.
+P10.0–P10.5 implementation is recorded. P10.6 has switched active runtime wiring to Neon/Postgres and DynamoDB, removed Firestore SDK/repositories/migration tooling, and recorded the user-reported no-source disposition. See [P10.6 implementation evidence](personal-ai-chapter-2/phase-10-p10.6-implementation-evidence.md). Docker Compose execution, real local-engine regressions, live Neon/AWS/GCP acceptance and strict-$0 eligibility remain unverified; no actual Firestore inventory was performed.
 
 ## Purpose
 
@@ -17,7 +17,7 @@ evidence-backed decision support, Phase 7 travel/shopping comparison modules,
 and Phase 8 bounded iterative research are implemented locally. Phases 6–8
 were explicitly authorized; decision, domain, and iterative gates remain
 disabled by default. Offline checks use synthetic evidence and fakes. Real
-Firestore, Gemini, provider-rights, and deployed GCP behavior still need
+Neon/DynamoDB, Gemini, provider-rights, and deployed GCP behavior still need
 verification.
 See the Phase 5 [reviewed plan](phase-5-implementation-plan.md),
 [guide](phase-5-implementation-guide.md) and
@@ -43,7 +43,7 @@ Implemented:
 - Minimal API and worker health endpoints.
 - Web-to-API health check at `/api/health`.
 - Conversation creation, listing, and reopening through FastAPI and the UI.
-- Owner-scoped Firestore repositories and in-memory test repositories.
+- Owner-scoped repositories backed by Postgres/DynamoDB and in-memory test repositories.
 - A provider-neutral LLM interface and Gemini streaming adapter with timeouts
   and safe error mapping.
 - SSE chat streaming, persisted completion/failure states, regenerate, and
@@ -71,7 +71,7 @@ Implemented:
   conservative resolution, deterministic hard constraints, and explainable
   preference ranking with immutable decision snapshots.
 - Session-backed and explicitly supplied evidence decision paths, a persisted
-  Firestore repository, 15 deterministic decision fixtures, a source-grounded
+  Postgres repository, 15 deterministic decision fixtures, a source-grounded
   result view, and separately gated development inspection.
 - Versioned travel and shopping modules that reuse shared evidence, identity,
   constraints, ranking, and decision snapshots; bounded Nominatim place lookup
@@ -89,6 +89,8 @@ Implemented:
   bounded account export and deletion-request audit records.
 - Offline backend/frontend tests, lint/type checks, and GitHub Actions CI.
 - Dockerfiles and a GCP bootstrap/deployment script.
+- Local Postgres/pgvector and DynamoDB Local stack; deployed Neon/Postgres and
+  federated DynamoDB runtime wiring.
 - Architecture, deployment, research-agent, and implementation-plan documents.
 
 Not implemented:
@@ -126,19 +128,23 @@ current context-management behavior and evidence.
 
 ## Chosen technical direction
 
-The current intended stack is:
+The current runtime stack is:
 
 - **Web:** Next.js, React, TypeScript, Cloud Run.
 - **API and worker:** Python, FastAPI, Uvicorn, Cloud Run.
-- **Durable data:** Firestore in Native mode.
+- **Query-rich durable data and vectors:** Neon Postgres with pgvector.
+- **Conversation/runtime state:** DynamoDB, accessed locally through DynamoDB
+  Local and in cloud through Google OIDC → AWS STS federation.
 - **Asynchronous work:** Pub/Sub push delivery to a Cloud Run worker.
 - **Secrets:** Secret Manager.
 - **Initial model direction:** Gemini for hosted inference and embeddings, behind a replaceable provider interface.
 
 The deployment script configures request-based Cloud Run with zero minimum
-instances. Chat uses Firestore; Pub/Sub is provisioned; gated Phase 4 post-terminal work can publish durable
-lifecycle-job notifications to the private worker. Bootstrap leaves those gates off. See [GCP deployment](gcp-deployment.md)
-for the topology, provisioning script, quota notes, and security boundary.
+instances and consumes pre-provisioned Neon and DynamoDB resources. Pub/Sub is
+provisioned; gated Phase 4 post-terminal work can publish durable lifecycle-job
+notifications to the private worker. Bootstrap leaves those gates off. See
+[GCP deployment](gcp-deployment.md) for the topology, prerequisites, and security
+boundary.
 
 ## Architectural invariants
 
@@ -162,7 +168,8 @@ Phase 4 local implementation is delivered; use its [guide](phase-4-implementatio
 and [release evidence](releases/phase-4-experimental-memory.md) for behavior and checks. Keep the following
 verification closeout work for delivered Phase 1–3 behavior visible:
 
-1. Verify Firestore Emulator persistence across an API restart.
+1. Verify local Postgres/DynamoDB persistence across an API restart and run the
+   real local-engine contract suite.
 2. Maintain the disconnect, storage-failure, and concurrency regression suite;
    verify browser cancellation through the deployed proxy.
 3. Run the opt-in Gemini smoke test and credentialed GCP deployment checklist
@@ -204,9 +211,9 @@ Resolve these in short architecture decision records before implementation depen
   Gemini embeddings initially. Chat already uses the Google
   Gen AI SDK with runtime model selection; see [ADR 0001](decisions/0001-llm-provider-boundary.md).
 - Acceptance of the implemented Google OIDC boundary in staging/production; see [ADR 0018](decisions/0018-personal-oidc-authentication.md).
-- Future Firestore schema migrations, backups, export, and deletion behavior.
-  Phase 1 collections, owner scoping, and indexes are implemented; see the
-  [API contract](api-contract.md) and [ADR 0002](decisions/0002-firestore-native-persistence.md).
+- Future persistence schema changes, backup/restore, export, and deletion
+  behavior. Firestore ADRs and implementation plans remain historical; see the
+  [API contract](api-contract.md) and [ADR 0021](decisions/0021-polyglot-persistence-foundation.md).
 - Additional search providers and their data, pricing, and attribution requirements. Phase 5's gated Brave snippet adapter and storage-rights policy are implemented locally.
 - Additional travel and shopping providers, after separate policy review and
   attribution/retention decisions.
@@ -224,4 +231,4 @@ Resolve these in short architecture decision records before implementation depen
 
 ## Chapter 2 next-scope handoff — 2026-10-06
 
-The [Chapter 2 Phase 0 reconciliation](personal-ai-chapter-2/09-phase-0-reconciliation.md) records the original Phase 0 review against code revision `ad1dea5912af81eda0c9c5d6a41180ce186a07a5` and the 2026-10-06 amendment that adds Phase 10 to migrate planned persistence from Firestore to DynamoDB + Neon Postgres/pgvector. Chapter 2 remains separate from the original repository phase history: next-scope Phases 0–2 are complete, Phase 10 is next, and former next-scope Phases 3–28 are preserved under the [numbering map](personal-ai-chapter-2/NUMBERING-MAP.md). Next-scope Phase 1 identity and Phase 2 application registry are implemented and verified locally; see the [Phase 1 guide/evidence](personal-ai-chapter-2/phase-1-implementation-guide.md) and [Phase 2 guide/evidence](personal-ai-chapter-2/phase-2-implementation-guide.md). Domain context providers/actions and cross-app grants remain future work. Workspace membership, live Firestore indexes, deployed IAM/proxy behavior, and existing Phase 9 physical deletion and owner migration remain unverified or open. The target is incremental and preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.
+The [Chapter 2 Phase 0 reconciliation](personal-ai-chapter-2/09-phase-0-reconciliation.md) records the original Phase 0 review and the 2026-10-06 amendment that adds Phase 10 for the DynamoDB + Neon Postgres/pgvector runtime. Chapter 2 remains separate from the original repository phase history: next-scope Phases 0–2 are complete, Phase 10 runtime cutover is implemented locally, and former next-scope Phases 3–28 are preserved under the [numbering map](personal-ai-chapter-2/NUMBERING-MAP.md). Next-scope Phase 1 identity and Phase 2 application registry are implemented and verified locally; see the [Phase 1 guide/evidence](personal-ai-chapter-2/phase-1-implementation-guide.md) and [Phase 2 guide/evidence](personal-ai-chapter-2/phase-2-implementation-guide.md). Domain context providers/actions and cross-app grants remain future work. Workspace membership, deployed IAM/proxy behavior, target-engine/cloud acceptance, and existing Phase 9 physical deletion and owner migration remain unverified or open. The user reports no Firestore source exists; this has not been checked against a cloud account. The target preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.

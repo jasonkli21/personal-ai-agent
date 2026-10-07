@@ -6,7 +6,6 @@ import json
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
-from time import monotonic
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -191,7 +190,7 @@ def scope_matches(record, scope: ApplicationScope | None = None) -> bool:
 
 
 def data_scope_matches(data: dict, scope: ApplicationScope | None = None) -> bool:
-    """Scope check for raw Firestore dictionaries before model hydration."""
+    """Scope check for persisted payloads before model hydration."""
     scope = scope or current_application_scope()
     return (
         data.get("application_id", STANDALONE_APPLICATION_ID) == scope.application_id
@@ -287,83 +286,3 @@ def scope_normalized_dump(value):
     if isinstance(value, (tuple, list)):
         return [scope_normalized_dump(item) for item in value]
     return value
-
-
-def scope_query(query, scope: ApplicationScope | None = None):
-    """Add Firestore prefilters for non-legacy namespaces.
-
-    Standalone compatibility queries intentionally retain their existing
-    owner-prefilter so absent-field v1 records remain readable; callers must
-    apply ``scope_matches`` to each result before returning it.
-    """
-    scope = scope or current_application_scope()
-    if scope.application_id == STANDALONE_APPLICATION_ID and scope.workspace_id is None:
-        return query
-    from google.cloud import firestore
-
-    return (
-        query.where(filter=firestore.FieldFilter("scope_version", "==", 2))
-        .where(filter=firestore.FieldFilter("application_id", "==", scope.application_id))
-        .where(filter=firestore.FieldFilter("workspace_id", "==", scope.workspace_id))
-    )
-
-
-def scope_filtered_snapshots(
-    query,
-    *,
-    limit: int,
-    scope: ApplicationScope | None = None,
-    scan_limit: int = 5_000,
-    timeout: float = 5,
-    page_size: int = 100,
-    order_field: str = "__name__",
-    direction=None,
-):
-    """Read a bounded number of scope-eligible snapshots before applying limit.
-
-    Legacy standalone reads cannot filter absent scope fields in Firestore. This
-    helper pages the owner-filtered query, checks each stored envelope before
-    adding it to the result window, and fails closed when its scan budget is
-    exhausted. Callers must apply their remaining record-specific validation.
-    """
-    if limit < 1:
-        return ()
-    if scan_limit < 1 or page_size < 1 or timeout <= 0:
-        raise ValueError("scope_scan_bounds_invalid")
-    active_scope = scope or current_application_scope()
-    ordered = (
-        query.order_by(order_field)
-        if direction is None else query.order_by(order_field, direction=direction)
-    )
-    deadline = monotonic() + timeout
-    snapshots = []
-    cursor = None
-    scanned = 0
-    while len(snapshots) < limit:
-        remaining = deadline - monotonic()
-        if remaining <= 0:
-            raise TimeoutError("scope compatibility scan deadline exceeded")
-        if scanned >= scan_limit:
-            probe = ordered.start_after(cursor).limit(1).stream(
-                retry=None, timeout=remaining
-            )
-            if next(iter(probe), None) is not None:
-                raise TimeoutError("scope compatibility scan exceeded its record bound")
-            break
-        page_limit = min(page_size, scan_limit - scanned)
-        page_query = ordered.limit(page_limit)
-        if cursor is not None:
-            page_query = page_query.start_after(cursor)
-        page = list(page_query.stream(retry=None, timeout=remaining))
-        if not page:
-            break
-        scanned += len(page)
-        cursor = page[-1]
-        for snapshot in page:
-            if data_scope_matches(snapshot.to_dict() or {}, active_scope):
-                snapshots.append(snapshot)
-                if len(snapshots) == limit:
-                    break
-        if len(page) < page_limit:
-            break
-    return tuple(snapshots)

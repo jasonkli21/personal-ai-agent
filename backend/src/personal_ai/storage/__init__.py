@@ -14,10 +14,6 @@ from personal_ai.storage.fake import (
     InMemoryConversationRepository,
     InMemoryMessageRepository,
 )
-from personal_ai.storage.firestore import (
-    FirestoreConversationRepository,
-    FirestoreMessageRepository,
-)
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
 
 __all__ = [
@@ -25,8 +21,6 @@ __all__ = [
     "ConversationRepository",
     "FakeConversationRepository",
     "FakeMessageRepository",
-    "FirestoreConversationRepository",
-    "FirestoreMessageRepository",
     "InMemoryConversationRepository",
     "InMemoryMessageRepository",
     "MessageRepository",

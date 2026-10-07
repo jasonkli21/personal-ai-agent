@@ -9,7 +9,7 @@ This package supersedes the deleted `docs/personal-ai-next-scope-chatgpt-integra
 - Next-scope Phase 0 reconciliation: complete.
 - Next-scope Phase 1 application/workspace identity: implemented and locally verified, with the previously recorded external/deployed gaps still open.
 - Next-scope Phase 2 application registry/manifest model: implemented and locally verified, with the previously recorded external/deployed gaps still open.
-- **Current implementation phase: Phase 10 — Polyglot persistence foundation and Firestore migration.** P10.0 decisions and P10.1–P10.3 local implementation are recorded; P10.4 migration and P10.5 cloud-control tooling are implemented with targeted synthetic/static checks. Firestore remains selected at runtime; real-engine migration, live cloud acceptance, and P10.6 cutover remain open. See the [P10.4–P10.5 evidence](phase-10-p10.4-p10.5-implementation-evidence.md).
+- **Current implementation phase: Phase 10 — Polyglot persistence foundation and Firestore retirement.** P10.0–P10.6 runtime code changes are implemented locally. The no-source disposition is based on the user's report; no cloud inventory or data migration occurred. Docker Compose/real-engine checks, live cloud acceptance, and strict-$0 eligibility remain open. See the [P10.6 evidence](phase-10-p10.6-implementation-evidence.md).
 - Phases 3–9 are intentionally unused in this chapter. This keeps Phase 10 as the clear architecture boundary without renumbering the completed Phases 0–2.
 - Former Phases 3–16 are preserved as Phases 11–24.
 - Former ChatGPT Phases 17.1–17.4 are preserved as Phases 25.1–25.4.
@@ -43,7 +43,7 @@ DynamoDB Local             <->  AWS DynamoDB
 local/fake artifact store  <->  private GCS (Phase 20+)
 ```
 
-Firestore remains the **current implementation until Phase 10 is actually completed**. Phase 10 performs the bounded migration/cutover and then retires Firestore from normal runtime. Planning this migration does not make the repository README describe the future architecture prematurely.
+The active runtime wiring now targets Neon/Postgres + DynamoDB, and Firestore has been removed from application runtime and deployment setup. The user reports that Firestore was never deployed; this has not been independently verified against a cloud account. Do not describe this implementation change as a real data migration or completed cloud acceptance.
 
 ## Storage ownership after Phase 10
 

@@ -1,12 +1,14 @@
 """Repository construction seam used by HTTP, worker, and control services.
 
-Application composition depends on this protocol. The current implementation
-still selects Firestore until Phase 10 backfill/cutover; database SDK details
-stay inside the selected factory and adapter modules.
+Repositories use Postgres for query-rich knowledge and DynamoDB for operational
+timeline state. Local/test environments require explicit local endpoints;
+deployed environments require the configured Neon and federated AWS adapters.
 """
 
 from __future__ import annotations
 
+from hashlib import sha256
+from threading import RLock
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -45,146 +47,8 @@ class PersistenceFactory(Protocol):
     def provider_rate_limiter(self, provider: str, repository=None): ...
 
 
-class FirestorePersistenceFactory:
-    """The pre-cutover adapter factory; construction stays behind this seam."""
-
-    def __init__(self, settings) -> None:
-        self.settings = settings
-
-    def conversation_repository(self):
-        from personal_ai.storage import FirestoreConversationRepository
-
-        return FirestoreConversationRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def message_repository(self):
-        from personal_ai.storage import FirestoreMessageRepository
-
-        return FirestoreMessageRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def summary_repository(self):
-        from personal_ai.context.repositories import FirestoreSummaryRepository
-
-        return FirestoreSummaryRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def memory_repository(self):
-        from personal_ai.memory.repositories import FirestoreMemoryRepository
-
-        return FirestoreMemoryRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def memory_lifecycle_repository(self, memories, messages):
-        from personal_ai.memory.lifecycle_repositories import FirestoreMemoryLifecycleRepository
-
-        return FirestoreMemoryLifecycleRepository(memories, messages)
-
-    def research_repository(self):
-        from personal_ai.agents.research.repositories import FirestoreResearchRepository
-
-        return FirestoreResearchRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def iterative_research_repository(self):
-        from personal_ai.agents.research.iterative_repositories import (
-            FirestoreIterativeResearchRepository,
-        )
-
-        return FirestoreIterativeResearchRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def decision_repository(self):
-        from personal_ai.decisions.firestore import FirestoreDecisionRepository
-
-        return FirestoreDecisionRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def domain_repository(self):
-        from personal_ai.domains.repositories import FirestoreDomainRepository
-
-        return FirestoreDomainRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def itinerary_proposal_repository(self):
-        from personal_ai.itinerary_proposals.repositories import (
-            FirestoreItineraryProposalRepository,
-        )
-
-        return FirestoreItineraryProposalRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def booking_extraction_repository(self):
-        from personal_ai.booking_extractions.repositories import (
-            FirestoreBookingExtractionRepository,
-        )
-
-        return FirestoreBookingExtractionRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def principal_directory(self):
-        from personal_ai.auth.directory import FirestorePrincipalDirectory
-
-        return FirestorePrincipalDirectory(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def account_data_repository(self):
-        from personal_ai.auth.account_data import FirestoreAccountDataRepository
-
-        return FirestoreAccountDataRepository(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def safeguard_store(self):
-        from personal_ai.auth.safeguards import FirestoreSafeguardStore
-
-        return FirestoreSafeguardStore(
-            project_id=self.settings.firestore_project_id,
-            emulator_host=self.settings.firestore_emulator_host,
-        )
-
-    def provider_rate_limiter(self, provider: str, repository=None):
-        from personal_ai.domains.providers import FirestoreProviderRateLimiter
-        from personal_ai.storage.firestore import _firestore_client
-
-        client = getattr(repository, "client", None)
-        if client is None:
-            client = _firestore_client(
-                self.settings.firestore_project_id,
-                self.settings.firestore_emulator_host,
-            )
-        return FirestoreProviderRateLimiter(client, provider)
-
-
 class PostgresDynamoPersistenceFactory:
-    """P10 repository composition for local/contract use before cutover.
-
-    Construction is explicit so merely setting an application environment
-    variable cannot silently move normal traffic away from Firestore.
-    """
+    """Compose existing repository contracts over the two canonical stores."""
 
     def __init__(self, database, runtime_table) -> None:
         self.database = database
@@ -287,7 +151,91 @@ class PostgresDynamoPersistenceFactory:
 
         return PostgresDomainProviderRateLimiter(self.database, provider)
 
+    def close(self) -> None:
+        self.database.close()
+        close = getattr(self.runtime_table, "close", None)
+        if close is not None:
+            close()
+
+
+_FACTORY_LOCK = RLock()
+_FACTORIES: dict[tuple[str, ...], PostgresDynamoPersistenceFactory] = {}
+
+
+def _factory_key(settings) -> tuple[str, ...]:
+    cloud = settings.app_environment in {"staging", "production"}
+    postgres_dsn = (
+        settings.p10_neon_runtime_dsn.get_secret_value()
+        if cloud else settings.persistence_local_postgres_dsn.get_secret_value()
+    )
+    postgres_key = sha256(postgres_dsn.encode()).hexdigest()
+    endpoint = "cloud" if cloud else settings.persistence_local_dynamodb_endpoint
+    return (
+        settings.app_environment,
+        str(cloud),
+        postgres_key,
+        endpoint,
+        settings.p10_dynamodb_region,
+        settings.p10_dynamodb_table_name,
+        settings.p10_dynamodb_role_arn,
+        settings.p10_dynamodb_identity_token_audience,
+        str(settings.p10_neon_pool_max_size),
+    )
+
 
 def persistence_factory(settings) -> PersistenceFactory:
-    """Return the single configured repository backend for this release."""
-    return FirestorePersistenceFactory(settings)
+    """Return the configured runtime factory without cloud/local fallback."""
+    cloud = settings.app_environment in {"staging", "production"}
+    if cloud and not settings.p10_cloud_adapters_configured:
+        raise RuntimeError("deployed_polyglot_persistence_required")
+    if not cloud and settings.p10_cloud_adapters_configured:
+        raise RuntimeError("cloud_persistence_requires_deployed_environment")
+
+    key = _factory_key(settings)
+    with _FACTORY_LOCK:
+        factory = _FACTORIES.get(key)
+        if factory is not None:
+            return factory
+        if cloud:
+            from personal_ai.persistence.dynamodb_cloud import (
+                FederatedDynamoDBConfig,
+                FederatedDynamoDBRuntimeTable,
+            )
+            from personal_ai.persistence.neon import NeonRuntimeDatabase
+
+            database = NeonRuntimeDatabase(
+                settings.p10_neon_runtime_dsn.get_secret_value(),
+                environment=settings.app_environment,
+                max_size=settings.p10_neon_pool_max_size,
+            )
+            table = FederatedDynamoDBRuntimeTable(FederatedDynamoDBConfig(
+                region=settings.p10_dynamodb_region,
+                table_name=settings.p10_dynamodb_table_name,
+                role_arn=settings.p10_dynamodb_role_arn,
+                identity_token_audience=settings.p10_dynamodb_identity_token_audience,
+            ))
+        else:
+            from personal_ai.persistence.dynamodb import DynamoDBRuntimeTable
+            from personal_ai.persistence.postgres import PostgresDatabase
+
+            database = PostgresDatabase(
+                settings.persistence_local_postgres_dsn.get_secret_value(),
+                environment=settings.app_environment,
+            )
+            table = DynamoDBRuntimeTable(
+                settings.persistence_local_dynamodb_endpoint,
+                table_name=settings.p10_dynamodb_table_name,
+                region=settings.p10_dynamodb_region,
+            )
+        factory = PostgresDynamoPersistenceFactory(database, table)
+        _FACTORIES[key] = factory
+        return factory
+
+
+def close_persistence_clients() -> None:
+    """Close shared database clients during process shutdown."""
+    with _FACTORY_LOCK:
+        factories = tuple(_FACTORIES.values())
+        _FACTORIES.clear()
+    for factory in factories:
+        factory.close()

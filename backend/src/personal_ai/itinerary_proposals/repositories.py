@@ -7,7 +7,6 @@ from threading import RLock
 from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from google.api_core.exceptions import GoogleAPICallError, RetryError
 from pydantic import ConfigDict, Field
 
 from personal_ai.auth.scope import (
@@ -22,9 +21,7 @@ from personal_ai.itinerary_proposals.contracts import (
     ItineraryProposalResult,
     ProposalError,
 )
-from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
-from personal_ai.storage.firestore import _firestore_client
-from personal_ai.storage.transactions import bounded_transaction
+from personal_ai.storage.errors import ResourceNotFoundError
 
 MAX_RESULT_LIFETIME = timedelta(hours=24)
 IDEMPOTENCY_RETENTION = timedelta(hours=48)
@@ -161,101 +158,3 @@ class InMemoryItineraryProposalRepository:
             if old is None or old.owner_id != owner_id or not scope_matches(old):
                 raise ResourceNotFoundError("proposal not found")
             return old
-
-
-class FirestoreItineraryProposalRepository:
-    """Single-document transaction boundary; no travel database is accessed."""
-
-    def __init__(self, client=None, *, project_id=None, emulator_host=None):
-        self.client = client if client is not None else _firestore_client(project_id, emulator_host)
-        self.proposals = self.client.collection("itinerary_proposals")
-
-    @staticmethod
-    def _data(record: ProposalRecord) -> dict:
-        data = record.model_dump(mode="json")
-        # Native Firestore timestamp is required by its TTL policy.
-        data["retained_until"] = record.retained_until
-        return data
-
-    @staticmethod
-    def _decode(snapshot, owner_id: str) -> ProposalRecord:
-        if not snapshot.exists:
-            raise ResourceNotFoundError("proposal not found")
-        record = ProposalRecord.model_validate(snapshot.to_dict())
-        if record.owner_id != owner_id or not scope_matches(record):
-            raise ResourceNotFoundError("proposal not found")
-        return record
-
-    @staticmethod
-    def _storage_call(operation):
-        try:
-            return operation()
-        except (GoogleAPICallError, RetryError, OSError, ValueError) as error:
-            raise StorageUnavailableError("proposal storage unavailable") from error
-
-    def begin(
-        self,
-        *,
-        owner_id: str,
-        request: ItineraryProposalRequest,
-        request_fingerprint: str,
-        now: datetime,
-        execution_deadline: datetime,
-        timeout_seconds: float = 5,
-        deadline: float | None = None,
-    ) -> tuple[ProposalRecord, bool]:
-        record = _new_record(owner_id, request, request_fingerprint, now, execution_deadline)
-
-        def operation(transaction, timeout):
-            ref = self.proposals.document(str(record.proposal_id))
-            snapshot = ref.get(transaction=transaction, retry=None, timeout=timeout())
-            if snapshot.exists:
-                old = self._decode(snapshot, owner_id)
-                _check_replay(old, owner_id, request_fingerprint, now)
-                if old.retained_until > now:
-                    return old, False
-            transaction.set(ref, self._data(record))
-            return record, True
-
-        return self._storage_call(
-            lambda: bounded_transaction(
-                self.client, operation, seconds=timeout_seconds, deadline=deadline
-            )
-        )
-
-    def complete(
-        self,
-        record: ProposalRecord,
-        result: ItineraryProposalResult,
-        timeout_seconds: float = 5,
-        deadline: float | None = None,
-    ) -> ProposalRecord:
-        def operation(transaction, timeout):
-            ref = self.proposals.document(str(record.proposal_id))
-            snapshot = ref.get(transaction=transaction, retry=None, timeout=timeout())
-            old = self._decode(snapshot, record.owner_id)
-            if (
-                old.state != "running"
-                or old.request_fingerprint != record.request_fingerprint
-                or old.created_at != record.created_at
-                or result.proposal_id != old.proposal_id
-                or result.created_at != old.created_at
-                or result.state == "running"
-            ):
-                raise ProposalError("proposal_conflict", 409)
-            completed = old.model_copy(update={"state": result.state, "result": result})
-            transaction.set(ref, self._data(completed))
-            return completed
-
-        return self._storage_call(
-            lambda: bounded_transaction(
-                self.client, operation, seconds=timeout_seconds, deadline=deadline
-            )
-        )
-
-    def get(self, owner_id: str, proposal_id: UUID) -> ProposalRecord:
-        return self._storage_call(
-            lambda: self._decode(
-                self.proposals.document(str(proposal_id)).get(retry=None, timeout=5), owner_id
-            )
-        )

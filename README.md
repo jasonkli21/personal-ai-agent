@@ -61,17 +61,10 @@ Core capabilities include:
                 +----+-------------+----+
                      |             |
                      |             +-------> hosted LLM/search providers
+                     +-------> Neon Postgres + pgvector
+                     +-------> DynamoDB runtime state
                      |
-                     v
-               Firestore Native
-                     |
-                     | durable async jobs
-                     v
-                   Pub/Sub
-                     |
-                     v
-              private Cloud Run
-                   worker
+                     +-------> Pub/Sub ---> private Cloud Run worker
 ```
 
 Domain applications integrate over explicit HTTP contracts rather than importing internal packages.
@@ -94,7 +87,8 @@ Domain applications integrate over explicit HTTP contracts rather than importing
 │   │   ├── ranking/         # deterministic ranking/constraints
 │   │   ├── search/          # search adapters and pipeline
 │   │   ├── services/        # chat/application orchestration
-│   │   └── storage/         # Firestore and persistence primitives
+│   │   ├── storage/         # repository contracts and persistence primitives
+│   │   └── persistence/    # Postgres/DynamoDB adapters and migrations
 │   └── tests/
 ├── frontend/
 │   ├── src/                 # Next.js application and API proxies
@@ -102,7 +96,7 @@ Domain applications integrate over explicit HTTP contracts rather than importing
 ├── infrastructure/          # local/GCP deployment assets
 ├── experiments/             # isolated research experiments
 ├── docs/                    # architecture, ADRs, runbooks, evaluations
-├── firestore.indexes.json
+├── docker-compose.persistence.yml
 └── Makefile
 ```
 
@@ -121,12 +115,15 @@ Domain applications integrate over explicit HTTP contracts rather than importing
 - FastAPI
 - Uvicorn
 - Google Gen AI SDK behind an application-level provider abstraction
+- psycopg and boto3 adapters behind repository contracts
 
 ### Cloud
 
 - Google Cloud Run
-- Cloud Firestore Native mode
+- Neon Postgres with pgvector for query-rich durable records and embeddings
+- DynamoDB for conversations, messages, summaries, runtime guards, and jobs
 - Pub/Sub
+- AWS STS web-identity federation from Cloud Run for DynamoDB access
 - Secret Manager
 - Artifact Registry
 - Cloud Build
@@ -139,7 +136,7 @@ Domain applications integrate over explicit HTTP contracts rather than importing
 - `uv` 0.11.13
 - Node.js 22
 - pnpm 11.19.0
-- optional Google Cloud CLI for the Firestore emulator
+- Docker Compose for local Postgres/pgvector and DynamoDB Local
 
 ### 1. Clone the repository
 
@@ -179,21 +176,19 @@ The default local configuration keeps optional research, memory-lifecycle, decis
 
 Automated tests use fakes and do not require model credentials or GCP access.
 
-### 5. Optional: start the Firestore emulator
+### 5. Start local persistence
 
-For manual persistence testing:
+The application uses the local Postgres and DynamoDB endpoints from
+`backend/.env.example`. Start and initialize them before using persistence-backed
+application flows:
 
 ```bash
-gcloud components install cloud-firestore-emulator
-gcloud emulators firestore start --host-port=127.0.0.1:8080
+make persistence-up
+make persistence-bootstrap
 ```
 
-The example backend environment already points to:
-
-```env
-FIRESTORE_PROJECT_ID=example-personal-ai
-FIRESTORE_EMULATOR_HOST=localhost:8080
-```
+Stop the containers with `make persistence-down`. `make persistence-clean`
+also deletes their local volumes.
 
 ### 6. Start the application
 
@@ -265,7 +260,9 @@ These evaluations are designed to make changes to memory, retrieval, ranking, co
 
 ## Cloud deployment
 
-The deployed topology is designed around a public web shell, private API/worker services, Firestore, and authenticated Pub/Sub delivery.
+The deployed topology uses Cloud Run for the web/API/worker, Neon Postgres and
+DynamoDB for durable state, and authenticated Pub/Sub delivery for bounded
+memory lifecycle jobs.
 
 ```text
 Browser
@@ -277,7 +274,9 @@ Cloud Run: personal-ai-web
   v
 Cloud Run: personal-ai-api
   |
-  +------> Firestore
+  +------> Neon Postgres (TLS transaction pooler)
+  |
+  +------> DynamoDB (Google identity token exchanged through AWS STS)
   |
   +------> hosted model/search providers
   |
@@ -292,7 +291,10 @@ Provision or prepare:
 2. a Google OAuth web client;
 3. a Gemini API key stored in Secret Manager;
 4. a reviewed staging domain/origin;
-5. appropriate Cloud Run, Firestore, Pub/Sub, Secret Manager, IAM, and Artifact Registry permissions.
+5. a provisioned Neon database and runtime DSN stored in Secret Manager;
+6. a provisioned DynamoDB table/GSI and an AWS role whose OIDC trust matches the
+   Cloud Run service identity and configured audience;
+7. appropriate Cloud Run, Pub/Sub, Secret Manager, IAM, and Artifact Registry permissions.
 
 ### Store the model key
 
@@ -309,7 +311,13 @@ Do not place the key in repository files or command-line arguments.
 
 ### Deploy
 
-From a clean reviewed commit:
+Provision Neon and DynamoDB using the reviewed Phase 10 schema and resource
+templates before deploying. The deploy script does not create or migrate those
+stores. Set `NEON_RUNTIME_DSN_SECRET_NAME`,
+`NEON_RUNTIME_DSN_SECRET_VERSION`, `DYNAMODB_ROLE_ARN`, and
+`DYNAMODB_IDENTITY_TOKEN_AUDIENCE` in the deployment shell. The Neon DSN secret
+must contain the TLS transaction-pooler DSN. Then deploy from a clean reviewed
+commit:
 
 ```bash
 chmod +x infrastructure/gcp/deploy.sh
@@ -329,13 +337,13 @@ infrastructure/gcp/deploy.sh \
 The deployment script:
 
 - enables required GCP APIs;
-- creates Firestore and indexes;
 - builds backend/frontend images;
 - resolves immutable image digests;
 - deploys separate web, API, and worker services;
 - creates scoped service identities;
 - configures authenticated Pub/Sub delivery;
-- injects the model key from an explicit Secret Manager version.
+- injects the model key and Neon DSN from explicit Secret Manager versions;
+- configures the API/worker to use the pre-provisioned Neon and DynamoDB resources.
 
 Production deployment requires the repository's explicit production acknowledgement and should be rehearsed in a synthetic staging project first.
 
@@ -344,12 +352,16 @@ Production deployment requires the repository's explicit production acknowledgem
 The architecture is intentionally compatible with low-idle-cost personal use:
 
 - Cloud Run uses request-based billing and can scale to zero;
-- Firestore is the primary durable record store;
+- Neon and provisioned DynamoDB are durable stores with distinct storage owners;
 - Pub/Sub is used only for concrete durable async work;
 - optional providers remain disabled until needed;
 - provider usage is bounded by application-level request/token/call limits.
 
-This is **free-tier-aware**, not a guarantee of zero cost. Firestore backups/TTL behavior, external providers, network egress, and model usage can incur charges.
+This is **free-tier-aware**, not a guarantee of zero cost. Database compute/storage,
+DynamoDB capacity and requests, cross-cloud egress, external providers, and model
+usage can incur charges. Confirm current account-specific allowances before
+deploying; local tests and static configuration checks do not establish strict-$0
+eligibility.
 
 ## Security notes
 

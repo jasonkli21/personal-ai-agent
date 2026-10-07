@@ -211,7 +211,7 @@ def test_owned_publisher_is_lazy_bounded_and_closed_after_notification(
     monkeypatch.setattr("personal_ai.memory.lifecycle_jobs.pubsub_v1.PublisherClient", constructor)
     if publication_fails:
         client.publish.return_value.result.side_effect = TimeoutError("synthetic timeout")
-    publisher = PubSubMemoryJobPublisher(settings(firestore_project_id="synthetic-project"))
+    publisher = PubSubMemoryJobPublisher(settings(gcp_project_id="synthetic-project"))
     constructor.assert_not_called()
 
     if publication_fails:

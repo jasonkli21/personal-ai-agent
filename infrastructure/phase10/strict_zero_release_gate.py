@@ -21,8 +21,6 @@ REQUIRED_RESOURCES = frozenset({
     "dynamodb_job_gsi_read_capacity",
     "dynamodb_job_gsi_write_capacity",
     "gcp_cloud_run",
-    "gcp_firestore_document_reads",
-    "gcp_firestore_storage",
     "gcp_pubsub",
     "gcp_gcs",
     "gcp_artifact_registry",
@@ -31,7 +29,7 @@ REQUIRED_RESOURCES = frozenset({
     "gcp_scheduler",
     "gcp_external_egress",
     "aws_return_traffic",
-    "migration_and_recovery_amplification",
+    "runtime_recovery_amplification",
 })
 
 

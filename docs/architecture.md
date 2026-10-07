@@ -9,7 +9,8 @@ Browser -> public Next.js sign-in/UI -> /api proxy -> private FastAPI API
                                                 |               |-> optional memory
                                                 |-- research SSE -> search -> evidence
                                                 |                   |-> shared context -> LLM
-                                                '--> Firestore: chat, memory, research, decisions
+                                                '--> Neon/Postgres: memory, research, decisions
+                                                '--> DynamoDB: conversations, messages, summaries, jobs
 
 Gated Phase 4 post-terminal work -> durable memory job -> Pub/Sub
                                                      -> private Cloud Run worker
@@ -21,9 +22,9 @@ Future separate domain applications -> explicit core API (after an auth boundary
   authoritative domain-app state.
 ```
 
-The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the API and worker. The deployment target is Cloud Run, with Firestore as the durable store, Pub/Sub for gated durable memory work, and Secret Manager for configured credentials. Repository contracts hide Firestore details from services; `llm` hides model-provider details. See [GCP deployment](gcp-deployment.md) for the runnable topology and cost boundaries.
+The frontend uses Next.js, React, and TypeScript; FastAPI and Uvicorn power the API and worker. The deployment target is Cloud Run. Neon/Postgres with pgvector owns query-rich durable records and embeddings; DynamoDB owns conversations and operational runtime state. Pub/Sub carries gated durable memory work, and Secret Manager holds configured credentials. Repository contracts hide storage details from services; `llm` hides model-provider details. See [GCP deployment](gcp-deployment.md) for the runtime topology and remaining verification gaps.
 
-P10.0 records the [polyglot storage decision](decisions/0021-polyglot-persistence-foundation.md) and [Phase 10 migration/verification requirements](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md). P10.1–P10.3 have targeted local implementation evidence; P10.4 migration and P10.5 cloud-control tooling now have synthetic/static evidence ([P10.4–P10.5 status](personal-ai-chapter-2/phase-10-p10.4-p10.5-implementation-evidence.md)). Firestore remains selected in normal runtime wiring. Real-engine migration, live cloud acceptance and P10.6 cutover remain unverified or not started.
+P10.0–P10.6 runtime implementation is recorded. P10.6 switched normal API/worker persistence to Neon/Postgres + DynamoDB, removed Firestore runtime and migration dependencies, and documented the user-reported no-source disposition. See the [P10.6 evidence](personal-ai-chapter-2/phase-10-p10.6-implementation-evidence.md). Docker Compose and real-engine regression execution, live cloud acceptance, actual source inventory, and strict-$0 eligibility remain unverified; no real data migration occurred.
 
 ## Core boundaries
 
@@ -55,7 +56,7 @@ Memory and evidence are deliberately different. A user preference can last month
 
 ## Persistence boundary
 
-Repository contracts cover conversations, messages, memories, bounded research-session aggregates, canonical entities/aliases/claims, and immutable decision/evidence snapshots with candidate evaluations. These research records remain separate from an external application's authoritative trip, booking, or purchase state. Firestore remains the current store; its memory vector search is a separate portability concern from canonical-record persistence.
+Repository contracts cover conversations, messages, memories, bounded research-session aggregates, canonical entities/aliases/claims, and immutable decision/evidence snapshots with candidate evaluations. DynamoDB owns conversations, messages, summaries, job/guard state, and idempotency records. Neon/Postgres owns memory and lifecycle state, research aggregates, canonical entities/claims, decisions, account controls, and provider throttles; pgvector supports memory retrieval. These records remain separate from an external application's authoritative trip, booking, or purchase state.
 
 
 ## Delivered Phase 2 request boundary
@@ -64,7 +65,7 @@ Chat services reserve and persist the user/branch mutation, then invoke the
 provider-neutral context assembler before creating a streaming assistant.
 `context` owns budget allocation, complete-turn selection, summary provenance,
 and read-only inspection. Gemini counting and bounded summary-generation SDK
-calls stay inside `llm`; Firestore summary records stay behind repository
+calls stay inside `llm`; DynamoDB summary records stay behind repository
 contracts. The worker/Pub/Sub path remains idle. See
 [Phase 2 implementation](phase-2-implementation-guide.md).
 
@@ -125,7 +126,7 @@ entity, claim, constraint, and decision contracts. A domain adds typed display
 fields and ranking features only after the shared evaluator filters hard
 requirements. Immutable domain claim extensions and provider observations
 retain claim/evidence IDs, source policy, attribution, adapter version, and
-expiry in a bounded Firestore transaction. Comparison snapshots include
+expiry in a bounded Postgres transaction. Comparison snapshots include
 visible constraints and policy versions. The browser proxy and pages require
 both the shared decision gate and an independent domain gate; comparison
 inspection has another gate. Nominatim is limited to submitted place searches,
@@ -140,7 +141,7 @@ provider supplies current stays/offers in this implementation. See the
 `agents/research` persists a versioned run over the existing Phase 5
 owner-scoped research session. Its finite-state transitions, safe progress
 events, budget ledger, cancellation fence, and recovery lease are written
-through repository contracts; Firestore run/session commits are transactional.
+through repository contracts; Postgres run/session commits are transactional.
 The deterministic assessor emits named gaps, and a schema-validated template
 planner can only request bounded follow-up work tied to one gap and its frozen
 allowed-domain set. Query execution, extraction, evidence selection, context
@@ -160,7 +161,7 @@ configured Pub/Sub and Scheduler identities. Local/test development bypass is
 rejected in staging/production. Browser identity stays in memory and passes
 only through same-origin proxies.
 
-Durable Firestore request limits and request-level usage estimates precede
+Durable DynamoDB request limits and Postgres usage estimates precede
 provider-backed API operations. These estimates do not account for every
 counting/embedding/worker RPC or settle actual usage. A bounded scheduled
 handler marks expired research sessions ineligible and republishes durable
@@ -177,6 +178,6 @@ not establish cloud IAM, recovery, provider-policy, or production readiness.
 
 ## Chapter 2 next-scope handoff — 2026-10-06
 
-The [Chapter 2 Phase 0 reconciliation](personal-ai-chapter-2/09-phase-0-reconciliation.md) records the original Phase 0 review against code revision `ad1dea5912af81eda0c9c5d6a41180ce186a07a5` and the 2026-10-06 amendment that adds Phase 10 to migrate planned persistence from Firestore to DynamoDB + Neon Postgres/pgvector. Chapter 2 remains separate from the original repository phase history: next-scope Phases 0–2 are complete, Phase 10 is next, and former next-scope Phases 3–28 are preserved under the [numbering map](personal-ai-chapter-2/NUMBERING-MAP.md). Next-scope Phases 1–2 application/workspace identity and manifest registration are implemented locally; see the [Phase 1 guide/evidence](personal-ai-chapter-2/phase-1-implementation-guide.md) and [Phase 2 guide/evidence](personal-ai-chapter-2/phase-2-implementation-guide.md). Phase 2 resolves request metadata from the application registry and carries it through conversation context preparation; registered domain providers/actions remain unavailable stubs, and registration grants no data access. Workspace membership, live Firestore indexes, deployed IAM/proxy behavior, and existing Phase 9 physical deletion and owner migration remain unverified or open. The target is incremental and preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.
+The [Chapter 2 Phase 0 reconciliation](personal-ai-chapter-2/09-phase-0-reconciliation.md) records the original Phase 0 review and the 2026-10-06 amendment that adds Phase 10 for the DynamoDB + Neon Postgres/pgvector runtime. Chapter 2 remains separate from the original repository phase history: next-scope Phases 0–2 are complete, Phase 10 runtime cutover is implemented locally, and former next-scope Phases 3–28 are preserved under the [numbering map](personal-ai-chapter-2/NUMBERING-MAP.md). Next-scope Phases 1–2 application/workspace identity and manifest registration are implemented locally; see the [Phase 1 guide/evidence](personal-ai-chapter-2/phase-1-implementation-guide.md) and [Phase 2 guide/evidence](personal-ai-chapter-2/phase-2-implementation-guide.md). Phase 2 resolves request metadata from the application registry and carries it through conversation context preparation; registered domain providers/actions remain unavailable stubs, and registration grants no data access. Workspace membership, deployed IAM/proxy behavior, target-engine/cloud acceptance, and existing Phase 9 physical deletion and owner migration remain unverified or open. The user reports no Firestore source exists; this has not been checked against a cloud account. The target preserves domain authority, source-attributed memory/evidence, strict-free and privacy boundaries.
 
 The current budget guarantee applies to chat/evidence/proposal/extraction preparation. Structured memory extraction still calls Gemini directly with character/output bounds; Chapter 2 Phase 16 must route it through shared preparation. Existing Gemini remote token counting is a disclosure, and future provider fallback needs an eligible endpoint-specific counter rather than sending all prompts to Gemini. The current context inspector reports estimated reconstructed context, not an exact historical dispatch.

@@ -35,10 +35,13 @@ esac
         **os.environ,
         "PATH": f"{executables}:/usr/bin:/bin",
         "DEPLOY_COMMAND_LOG": str(commands),
-        "BACKUP_ENABLED": "false",
         "MAINTENANCE_ENABLED": "false",
         "EXPORT_ENABLED": "false",
         "DELETION_ENABLED": "false",
+        "NEON_RUNTIME_DSN_SECRET_NAME": "personal-ai-neon-runtime-dsn",
+        "NEON_RUNTIME_DSN_SECRET_VERSION": "1",
+        "DYNAMODB_ROLE_ARN": "arn:aws:iam::123456789012:role/personal-ai-runtime",
+        "DYNAMODB_IDENTITY_TOKEN_AUDIENCE": "https://personal-ai.example/aws-role",
     }
     result = subprocess.run(
         [
@@ -72,4 +75,7 @@ esac
     ) in log
     assert 'MAINTENANCE_ENABLED: "false"' in log
     assert 'EXPORT_ENABLED: "false"' in log and 'DELETION_ENABLED: "false"' in log
+    assert 'P10_CLOUD_ADAPTERS_CONFIGURED: "true"' in log
+    assert "P10_NEON_RUNTIME_DSN=personal-ai-neon-runtime-dsn:1" in log
+    assert "firestore" not in log.lower()
     assert "scheduler jobs pause personal-ai-maintenance" in log

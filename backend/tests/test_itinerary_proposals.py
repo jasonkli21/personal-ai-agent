@@ -7,18 +7,15 @@ import json
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from google.api_core.exceptions import ServiceUnavailable
 from pydantic import ValidationError
 from starlette.requests import Request
 
 from personal_ai.api.dependencies import get_settings
 from personal_ai.api.itinerary_proposals import proposal_service as proposal_service_dependency
-from personal_ai.auth.account_data import EXPORT_COLLECTIONS
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.contracts import TokenCount
 from personal_ai.context.tokens import EstimatedTokenCounter
@@ -32,14 +29,13 @@ from personal_ai.itinerary_proposals.contracts import (
 )
 from personal_ai.itinerary_proposals.fakes import FakeItineraryProposalLLMClient
 from personal_ai.itinerary_proposals.repositories import (
-    FirestoreItineraryProposalRepository,
     InMemoryItineraryProposalRepository,
     proposal_id_for,
 )
 from personal_ai.itinerary_proposals.service import ItineraryProposalService
 from personal_ai.main import app
 from personal_ai.settings import Settings
-from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
+from personal_ai.storage.errors import StorageUnavailableError
 
 NOW = datetime(2026, 10, 3, 12, tzinfo=UTC)
 FIXTURE = Path(__file__).parent / "fixtures" / "itinerary-proposal-example.json"
@@ -108,36 +104,6 @@ def build_service(
     )
 
 
-def firestore_proposal_repository():
-    records, refs, ref_ids = {}, {}, {}
-    client = MagicMock()
-    client._firestore_api.begin_transaction.return_value = SimpleNamespace(transaction=b"offline")
-    tx = client.transaction.return_value
-    tx.id, tx._write_pbs = b"offline", []
-
-    def collection(name):
-        result = MagicMock()
-
-        def document(identifier):
-            ref = refs.setdefault((name, identifier), MagicMock())
-            ref_ids[id(ref)] = (name, identifier)
-            ref.get.side_effect = lambda **kwargs: SimpleNamespace(
-                exists=(name, identifier) in records,
-                to_dict=lambda: records[(name, identifier)],
-            )
-            return ref
-
-        result.document.side_effect = document
-        return result
-
-    def transaction_set(ref, data):
-        records[ref_ids[id(ref)]] = data
-
-    tx.set.side_effect = transaction_set
-    client.collection.side_effect = collection
-    return FirestoreItineraryProposalRepository(client), records, refs, client, tx
-
-
 @pytest.mark.anyio
 async def test_exact_consumer_fixture_replays_immutable_result_and_rejects_changed_content():
     service = build_service()
@@ -157,83 +123,6 @@ async def test_exact_consumer_fixture_replays_immutable_result_and_rejects_chang
     assert len(service.llm.requests) == 1
     with pytest.raises(ProposalError, match="idempotency_conflict"):
         await service.create(request.model_copy(update={"instruction": "Different request."}))
-
-
-def test_firestore_owner_scoped_transaction_replay_and_bounded_result_storage():
-    repo, records, refs, client, tx = firestore_proposal_repository()
-    request = fixture_request()
-    fingerprint = request.fingerprint()
-    first, created = repo.begin(
-        owner_id="local",
-        request=request,
-        request_fingerprint=fingerprint,
-        now=NOW,
-        execution_deadline=NOW + timedelta(seconds=35),
-        deadline=time.monotonic() + 2,
-    )
-    assert created and first.state == "running"
-    stored = records[("itinerary_proposals", str(first.proposal_id))]
-    assert isinstance(stored["retained_until"], datetime)
-    assert first.proposal_id == proposal_id_for("local", request.idempotency_key)
-    assert "itinerary_proposals" in EXPORT_COLLECTIONS
-
-    replay, created = repo.begin(
-        owner_id="local",
-        request=request,
-        request_fingerprint=fingerprint,
-        now=NOW + timedelta(seconds=1),
-        execution_deadline=NOW + timedelta(seconds=36),
-    )
-    assert not created and replay == first
-    with pytest.raises(ProposalError, match="idempotency_conflict"):
-        repo.begin(
-            owner_id="local",
-            request=request,
-            request_fingerprint="0" * 64,
-            now=NOW + timedelta(seconds=1),
-            execution_deadline=NOW + timedelta(seconds=36),
-        )
-
-    terminal = ItineraryProposalResult(
-        proposal_id=first.proposal_id,
-        state="insufficient",
-        support_mode="context_only",
-        trip_handle=request.context.trip_handle,
-        operations=(),
-        operation_support=(),
-        citations=(),
-        failure_code="no_safe_operations",
-        created_at=first.created_at,
-        expires_at=first.proposal_expires_at,
-    )
-    completed = repo.complete(first, terminal, deadline=time.monotonic() + 0.75)
-    assert completed.result == terminal
-    assert repo.get("local", first.proposal_id) == completed
-    with pytest.raises(ResourceNotFoundError):
-        repo.get("another-owner", first.proposal_id)
-
-    for method in (client._firestore_api.begin_transaction, client._firestore_api.commit):
-        assert method.call_args.kwargs["retry"] is None
-        assert 0 < method.call_args.kwargs["timeout"] <= 5
-    assert client._firestore_api.begin_transaction.call_args_list[0].kwargs["timeout"] <= 2
-    assert client._firestore_api.commit.call_args.kwargs["timeout"] <= 0.75
-    assert (
-        refs[("itinerary_proposals", str(first.proposal_id))].get.call_args.kwargs["retry"] is None
-    )
-    assert tx.set.call_count == 2
-
-
-def test_firestore_repository_maps_uncertain_commit_to_safe_storage_error():
-    repo, _, _, client, _ = firestore_proposal_repository()
-    client._firestore_api.commit.side_effect = ServiceUnavailable("private provider detail")
-    with pytest.raises(StorageUnavailableError, match="proposal storage unavailable"):
-        repo.begin(
-            owner_id="local",
-            request=fixture_request(),
-            request_fingerprint=fixture_request().fingerprint(),
-            now=NOW,
-            execution_deadline=NOW + timedelta(seconds=35),
-        )
 
 
 @pytest.mark.anyio
@@ -818,7 +707,7 @@ def test_proposal_request_is_counted_by_existing_provider_safeguards():
         ai_provider="gemini",
         itinerary_proposal_generator="gemini",
         itinerary_proposal_provider_enabled=True,
-        itinerary_proposal_storage="firestore",
+        itinerary_proposal_storage="postgres",
         ai_api_key="synthetic-key",
         external_providers_kill_switch_enabled=True,
     )
@@ -898,7 +787,7 @@ def test_fake_backed_http_endpoint_returns_and_reopens_typed_result():
         {"end_time": None},
     ],
 )
-def test_partial_time_field_presence_survives_http_firestore_and_replay(time_fields):
+def test_partial_time_field_presence_survives_http_and_replay(time_fields):
     operation = {
         "kind": "set_item_times",
         "item_handle": "h_item0001",
@@ -908,8 +797,8 @@ def test_partial_time_field_presence_survives_http_firestore_and_replay(time_fie
     model_output["operations"] = [operation]
     model_output["operation_support"] = []
     llm = FakeItineraryProposalLLMClient((json.dumps(model_output),))
-    repository, records, _, _, _ = firestore_proposal_repository()
-    configured = settings(itinerary_proposals_enabled=True, itinerary_proposal_storage="firestore")
+    repository = InMemoryItineraryProposalRepository()
+    configured = settings(itinerary_proposals_enabled=True, itinerary_proposal_storage="memory")
     service = ItineraryProposalService(
         configured,
         repository,
@@ -941,7 +830,7 @@ def test_partial_time_field_presence_survives_http_firestore_and_replay(time_fie
         assert wire["policy_version"] == "itinerary-proposal-policy-v2"
         assert wire["support_mode"] == "context_only"
         assert wire["operations"] == [expected_operation]
-        durable = records[("itinerary_proposals", proposal_id)]["result"]
+        durable = repository.get("local", UUID(proposal_id)).result.model_dump(mode="json")
         assert durable["operations"] == [expected_operation]
         assert detail.status_code == by_key.status_code == 200
         assert detail.json() == by_key.json() == wire

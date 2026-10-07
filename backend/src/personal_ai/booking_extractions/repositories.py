@@ -8,22 +8,17 @@ from threading import RLock
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from google.api_core.exceptions import GoogleAPICallError, RetryError
 from pydantic import ConfigDict, Field
 
 from personal_ai.auth.scope import (
     STANDALONE_APPLICATION_ID,
     ApplicationScopedRecord,
     current_application_scope,
-    scope_filtered_snapshots,
     scope_matches,
-    scope_query,
     scoped_record,
 )
 from personal_ai.booking_extractions.contracts import BookingExtractionResult
-from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
-from personal_ai.storage.firestore import _firestore_client
-from personal_ai.storage.transactions import bounded_transaction
+from personal_ai.storage.errors import ResourceNotFoundError
 
 RESULT_RETENTION = timedelta(days=7)
 
@@ -210,146 +205,3 @@ class InMemoryBookingExtractionRepository:
                 )
                 removed += 1
         return removed
-
-
-class FirestoreBookingExtractionRepository:
-    def __init__(self, client=None, *, project_id=None, emulator_host=None):
-        self.client = client if client is not None else _firestore_client(project_id, emulator_host)
-        self.collection = self.client.collection("booking_document_extractions")
-
-    @staticmethod
-    def _data(record):
-        value = record.model_dump(mode="json")
-        value["created_at"] = record.created_at
-        value["execution_deadline"] = record.execution_deadline
-        value["expires_at"] = record.expires_at
-        value["retained_until"] = record.retained_until
-        return value
-
-    @staticmethod
-    def _decode(snapshot, owner_id):
-        if not snapshot.exists:
-            raise ResourceNotFoundError("extraction not found")
-        record = ExtractionRecord.model_validate(snapshot.to_dict())
-        if record.owner_id != owner_id or not scope_matches(record):
-            raise ResourceNotFoundError("extraction not found")
-        return record
-
-    @staticmethod
-    def _call(fn):
-        try:
-            return fn()
-        except (GoogleAPICallError, RetryError, OSError, ValueError) as error:
-            raise StorageUnavailableError("extraction storage unavailable") from error
-
-    def begin(
-        self, *, owner_id, key, fingerprint, source_sha256, now, execution_deadline,
-        timeout_seconds=5, deadline=None,
-    ):
-        record = _new(owner_id, key, fingerprint, source_sha256, now, execution_deadline)
-
-        def op(transaction, timeout):
-            ref = self.collection.document(str(record.extraction_id))
-            snapshot = ref.get(transaction=transaction, retry=None, timeout=timeout())
-            if snapshot.exists:
-                old = self._decode(snapshot, owner_id)
-                _check(old, owner_id, fingerprint, source_sha256)
-                return old, False
-            transaction.set(ref, self._data(record))
-            return record, True
-
-        return self._call(lambda: bounded_transaction(
-            self.client, op, seconds=timeout_seconds, deadline=deadline
-        ))
-
-    def complete(self, record, result, timeout_seconds=5, deadline=None):
-        def op(transaction, timeout):
-            ref = self.collection.document(str(record.extraction_id))
-            old = self._decode(
-                ref.get(transaction=transaction, retry=None, timeout=timeout()), record.owner_id
-            )
-            if old.state != "running" or old.request_fingerprint != record.request_fingerprint:
-                raise ExtractionError("extraction_conflict")
-            updated = old.model_copy(update={"state": result.state, "result": result})
-            transaction.set(ref, self._data(updated))
-            return updated
-
-        return self._call(lambda: bounded_transaction(
-            self.client, op, seconds=timeout_seconds, deadline=deadline
-        ))
-
-    def get(self, owner_id, extraction_id):
-        return self._call(
-            lambda: self._decode(
-                self.collection.document(str(extraction_id)).get(retry=None, timeout=5), owner_id
-            )
-        )
-
-    def get_by_key(self, owner_id, key):
-        return self.get(owner_id, extraction_id_for(owner_id, key))
-
-    def delete(self, owner_id, extraction_id):
-        def op(transaction, timeout):
-            ref = self.collection.document(str(extraction_id))
-            old = self._decode(
-                ref.get(transaction=transaction, retry=None, timeout=timeout()), owner_id
-            )
-            updated = _deleted(old)
-            transaction.set(ref, self._data(updated))
-            return updated
-
-        return self._call(lambda: bounded_transaction(self.client, op, seconds=5))
-
-    def delete_by_key(self, owner_id, key, source_sha256, now):
-        extraction_id = extraction_id_for(owner_id, key)
-
-        def op(transaction, timeout):
-            ref = self.collection.document(str(extraction_id))
-            snapshot = ref.get(transaction=transaction, retry=None, timeout=timeout())
-            if snapshot.exists:
-                old = self._decode(snapshot, owner_id)
-                if old.source_sha256 != source_sha256:
-                    raise ExtractionError("idempotency_conflict")
-            else:
-                fingerprint = sha256(f"deleted:{key}:{source_sha256}".encode()).hexdigest()
-                old = _new(owner_id, key, fingerprint, source_sha256, now, now)
-            updated = _deleted(old)
-            transaction.set(ref, self._data(updated))
-            return updated
-
-        return self._call(lambda: bounded_transaction(self.client, op, seconds=5))
-
-    def purge_expired(self, now, *, limit):
-        if not 1 <= limit <= 500:
-            raise ValueError("cleanup limit must be between one and 500")
-        query = scope_query(
-            self.collection.where("state", "==", "completed")
-            .where("expires_at", "<=", now)
-        )
-        snapshots = scope_filtered_snapshots(
-            query,
-            limit=limit,
-            timeout=5,
-            order_field="expires_at",
-        )
-        purged = 0
-        for snapshot in snapshots:
-
-            def op(transaction, timeout, snapshot=snapshot):
-                ref = self.collection.document(snapshot.id)
-                old = self._decode(
-                    ref.get(transaction=transaction, retry=None, timeout=timeout()),
-                    snapshot.to_dict()["owner_id"],
-                )
-                if old.state != "completed" or old.expires_at > now or old.result is None:
-                    return False
-                expired_result = old.result.model_copy(
-                    update={"state": "expired", "candidates": ()}
-                )
-                updated = old.model_copy(update={"state": "expired", "result": expired_result})
-                transaction.set(ref, self._data(updated))
-                return True
-
-            if self._call(lambda: bounded_transaction(self.client, op, seconds=5)):
-                purged += 1
-        return purged

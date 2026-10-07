@@ -139,6 +139,11 @@ class DynamoDBRuntimeTable:
     def bootstrap(self) -> None:
         self.local.ensure_runtime_table(self.table_name)
 
+    def close(self) -> None:
+        close = getattr(self.client, "close", None)
+        if close is not None:
+            close()
+
     def get(self, key: dict[str, str], *, consistent: bool = True) -> dict[str, Any] | None:
         response = self.client.get_item(
             TableName=self.table_name,

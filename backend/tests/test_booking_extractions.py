@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from time import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 from uuid import uuid4
 
 import httpx
@@ -26,7 +25,6 @@ from personal_ai.booking_extractions.contracts import (
 from personal_ai.booking_extractions.fakes import FakeBookingExtractionLLMClient
 from personal_ai.booking_extractions.repositories import (
     ExtractionError,
-    FirestoreBookingExtractionRepository,
     InMemoryBookingExtractionRepository,
 )
 from personal_ai.booking_extractions.service import BookingExtractionService, _model_output
@@ -363,78 +361,6 @@ def test_delete_by_key_before_post_creates_owner_scoped_fencing_tombstone():
         repo.get("owner-b", deleted.extraction_id)
 
 
-def test_firestore_retention_uses_native_timestamps_and_preserves_tombstone():
-    records = {}
-    refs = {}
-    collections = {}
-    client = MagicMock()
-    client._firestore_api.begin_transaction.return_value = SimpleNamespace(transaction=b"offline")
-    transaction = client.transaction.return_value
-    transaction.id, transaction._write_pbs = b"offline", []
-
-    def collection(name):
-        result = collections.setdefault(name, MagicMock())
-
-        def document(identifier):
-            key = (name, identifier)
-            ref = refs.setdefault(key, MagicMock())
-            ref.get.side_effect = lambda **kwargs: SimpleNamespace(
-                exists=key in records,
-                to_dict=lambda: records[key],
-            )
-            return ref
-
-        result.document.side_effect = document
-        return result
-
-    def write(ref, value):
-        key = next(key for key, candidate in refs.items() if candidate is ref)
-        records[key] = value
-
-    transaction.set.side_effect = write
-    client.collection.side_effect = collection
-    repo = FirestoreBookingExtractionRepository(client)
-    submitted = request()
-    now = datetime(2026, 10, 4, tzinfo=UTC)
-    record, created = repo.begin(
-        owner_id="verified-owner",
-        key=submitted.idempotency_key,
-        fingerprint=submitted.fingerprint(),
-        source_sha256=submitted.source_sha256,
-        now=now,
-        execution_deadline=now + timedelta(seconds=30),
-    )
-    assert created
-    stored = records[("booking_document_extractions", str(record.extraction_id))]
-    assert isinstance(stored["created_at"], datetime)
-    assert isinstance(stored["execution_deadline"], datetime)
-    assert isinstance(stored["expires_at"], datetime)
-
-    terminal = BookingExtractionResult(
-        extraction_id=record.extraction_id,
-        idempotency_key=record.idempotency_key,
-        source_sha256=record.source_sha256,
-        state="completed",
-        candidates=(),
-        created_at=record.created_at,
-        expires_at=record.expires_at,
-    )
-    repo.complete(record, terminal)
-    snapshot = SimpleNamespace(
-        id=str(record.extraction_id),
-        to_dict=lambda: records[("booking_document_extractions", str(record.extraction_id))],
-    )
-    query = collections["booking_document_extractions"].where.return_value
-    query.where.return_value.order_by.return_value.limit.return_value.stream.return_value = [snapshot]
-    expired_at = now + timedelta(days=8)
-    assert repo.purge_expired(expired_at, limit=10) == 1
-    expired = repo.get("verified-owner", record.extraction_id)
-    assert expired.state == "expired"
-    assert expired.result is not None and expired.result.candidates == ()
-    assert expired.request_fingerprint == submitted.fingerprint()
-    assert query.where.call_args.args == ("expires_at", "<=", expired_at)
-
-
 def test_fake_http_route_reopens_same_owner_result_and_delete_tombstone():
     previous = app.dependency_overrides.copy()
     app.dependency_overrides[get_settings] = lambda: route_settings()
@@ -499,7 +425,7 @@ def test_real_provider_requires_google_oidc_authentication():
             booking_extractions_enabled=True,
             booking_extraction_generator="gemini",
             booking_extraction_provider_enabled=True,
-            booking_extraction_storage="firestore",
+            booking_extraction_storage="postgres",
         )
 
 

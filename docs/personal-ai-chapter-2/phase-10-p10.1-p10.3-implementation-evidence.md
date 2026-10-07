@@ -55,3 +55,12 @@ The full Phase 10 verification matrix was not run. No Neon, AWS, emulator, or de
 - Postgres deletion request records and audits do not perform physical deletion; Phase 9 physical deletion remains open.
 - Local Postgres/DynamoDB behavior is verified, but production capacity configuration, IAM, cloud connectivity, migration parity, and release/cutover safeguards remain outside this authorization.
 - No change was made to the root README or to the approved P10.0 decision artifacts.
+
+## P10.6 supersession addendum — 2026-10-06
+
+This evidence records the pre-cutover implementation. P10.6 later switched
+runtime construction to Neon/Postgres + DynamoDB and removed the Firestore
+adapter code. The user reports that no deployed Firestore source existed, so
+there was no data migration; no independent cloud inventory was performed.
+See the [P10.6 evidence](phase-10-p10.6-implementation-evidence.md) for current
+runtime and verification status.

@@ -1,4 +1,4 @@
-"""Top-level Firestore collections whose records are explicitly owner scoped."""
+"""Canonical private record families covered by account export and deletion."""
 
 OWNER_DATA_COLLECTIONS = (
     "conversations",

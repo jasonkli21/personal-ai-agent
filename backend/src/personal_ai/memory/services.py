@@ -192,7 +192,7 @@ class MemoryRetriever:
         return True, None
 
     def retrieve(self, owner_id, query, active_messages, *, timeout=None):
-        from personal_ai.memory.lifecycle_repositories import lifecycle_deadline
+        from personal_ai.memory.deadlines import lifecycle_deadline
 
         with lifecycle_deadline(timeout or self.settings.memory_timeout_seconds):
             return self._retrieve(owner_id, query, active_messages, timeout=timeout)

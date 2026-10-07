@@ -1,22 +1,27 @@
 # Phase 10 migration, cutover and verification plan
 
 Status: normative migration/cutover contract, reviewed 2026-10-06 against
-repository revision `e17ebd76afd1feb90fe47d959c43ab23eb553499`. P10.4–P10.5
-implementation evidence is recorded in the [handoff](phase-10-p10.4-p10.5-implementation-evidence.md): synthetic migration and static configuration checks ran; real Firestore/target-engine migration, cloud provisioning/connectivity and cutover have not been verified. The user reports that Firestore was never deployed and no records exist; P10.6 supports an evidence-recorded no-source disposition, while runtime cutover and target-store verification remain required.
+repository revision `e17ebd76afd1feb90fe47d959c43ab23eb553499`. P10.6 runtime
+cutover and code retirement are implemented locally. The user reports that
+Firestore was never deployed and no records exist; no cloud inventory or data
+migration was performed. Docker Compose/target-engine execution, cloud
+connectivity, and strict-$0 eligibility remain unverified. See the
+[P10.6 implementation evidence](phase-10-p10.6-implementation-evidence.md).
 
 Read the authoritative [Phase 10 plan](personal-ai-next-scope-detailed-implementation-plans/plans/phase-10-implementation-plan.md),
 [ADR 0021](../decisions/0021-polyglot-persistence-foundation.md) and
 [ownership/access-pattern contract](phase-10-storage-ownership-and-access-patterns.md).
-This document remains the normative acceptance contract. Implemented P10.4–P10.5
-operator commands and their present verification limits are listed in the
-[operator guide](phase-10-p10.4-p10.5-operator-guide.md) and [implementation
-evidence](phase-10-p10.4-p10.5-implementation-evidence.md).
+This document remains the normative acceptance contract. The P10.4–P10.5
+operator guide is retained as historical evidence of synthetic migration
+tooling; P10.6 removed those commands for the no-source path.
 
 ## Migration contract
 
-Firestore remains canonical during backfill. Targets are migration-only until
-cutover; there is no permanent live dual write or normal-request source fallback.
-Each logical family has exactly one target from the ownership inventory.
+When an actual Firestore source exists, Firestore remains canonical during
+backfill. Targets are migration-only until cutover; there is no permanent live
+dual write or normal-request source fallback. Each logical family has exactly
+one target from the ownership inventory. The no-source branch skips data
+backfill and removes its operator code, as recorded in P10.6 evidence.
 Record migration version, source project/database, source schema/scope versions,
 target schema/key/extension versions, configuration, revision and safe counts.
 No credentials or private bodies enter reports/fixtures.

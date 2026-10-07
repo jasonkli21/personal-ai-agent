@@ -10,21 +10,37 @@ GOOGLE_OAUTH_CLIENT_ID=${6:?Set the Google OAuth web client ID as argument 6}
 ALLOWED_OWNER_EMAIL=${7:?Set the exact allowed Google account email as argument 7}
 WEB_ORIGIN=${8:?Set the exact HTTPS web origin as argument 8}
 MODEL_SECRET_VERSION=${9:?Set an explicit numeric Secret Manager version as argument 9}
-BACKUP_ENABLED=${BACKUP_ENABLED:-false}
 MAINTENANCE_ENABLED=${MAINTENANCE_ENABLED:-false}
 EXPORT_ENABLED=${EXPORT_ENABLED:-false}
 DELETION_ENABLED=${DELETION_ENABLED:-false}
-if [[ ! "$BACKUP_ENABLED" =~ ^(true|false)$ || ! "$MAINTENANCE_ENABLED" =~ ^(true|false)$ || \
+if [[ ! "$MAINTENANCE_ENABLED" =~ ^(true|false)$ || \
       ! "$EXPORT_ENABLED" =~ ^(true|false)$ || ! "$DELETION_ENABLED" =~ ^(true|false)$ ]]; then
-  echo "BACKUP_ENABLED, MAINTENANCE_ENABLED, EXPORT_ENABLED, and DELETION_ENABLED must be true or false." >&2
+  echo "MAINTENANCE_ENABLED, EXPORT_ENABLED, and DELETION_ENABLED must be true or false." >&2
   exit 2
 fi
+NEON_RUNTIME_DSN_SECRET_NAME=${NEON_RUNTIME_DSN_SECRET_NAME:?Set the Secret Manager secret containing the Neon transaction-pooler DSN}
+NEON_RUNTIME_DSN_SECRET_VERSION=${NEON_RUNTIME_DSN_SECRET_VERSION:?Set the numeric Neon DSN secret version}
+DYNAMODB_RUNTIME_TABLE_NAME=${DYNAMODB_RUNTIME_TABLE_NAME:-personal-ai-runtime-v1}
+DYNAMODB_AWS_REGION=${DYNAMODB_AWS_REGION:-us-east-1}
+DYNAMODB_ROLE_ARN=${DYNAMODB_ROLE_ARN:?Set the least-privilege AWS runtime role ARN}
+DYNAMODB_IDENTITY_TOKEN_AUDIENCE=${DYNAMODB_IDENTITY_TOKEN_AUDIENCE:?Set the HTTPS audience trusted by the AWS role}
 if [[ ! "$AI_MODEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Model identifier contains unsupported characters." >&2
   exit 2
 fi
 if [[ ! "$MODEL_SECRET_VERSION" =~ ^[1-9][0-9]*$ ]]; then
   echo "Use an explicit numeric Secret Manager version; 'latest' is not permitted." >&2
+  exit 2
+fi
+if [[ ! "$NEON_RUNTIME_DSN_SECRET_VERSION" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Use an explicit numeric Neon DSN Secret Manager version; 'latest' is not permitted." >&2
+  exit 2
+fi
+if [[ ! "$DYNAMODB_RUNTIME_TABLE_NAME" =~ ^[A-Za-z0-9_.-]{3,255}$ || \
+      ! "$DYNAMODB_AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]$ || \
+      ! "$DYNAMODB_ROLE_ARN" =~ ^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$ || \
+      ! "$DYNAMODB_IDENTITY_TOKEN_AUDIENCE" =~ ^https://[A-Za-z0-9.-]+(/[^[:space:]]*)?$ ]]; then
+  echo "Neon/DynamoDB runtime settings are invalid." >&2
   exit 2
 fi
 
@@ -78,7 +94,7 @@ WORKER_ENV_FILE=$(mktemp)
 trap 'rm -f "$API_ENV_FILE" "$WEB_ENV_FILE" "$WORKER_ENV_FILE"' EXIT
 
 gcloud config set project "$PROJECT_ID"
-gcloud services enable run.googleapis.com firestore.googleapis.com pubsub.googleapis.com secretmanager.googleapis.com cloudscheduler.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+gcloud services enable run.googleapis.com pubsub.googleapis.com secretmanager.googleapis.com cloudscheduler.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
 
 if ! gcloud secrets describe "$MODEL_SECRET_NAME" >/dev/null 2>&1; then
   echo "Secret '$MODEL_SECRET_NAME' does not exist. Create it first; its value must be a Gemini API key." >&2
@@ -86,6 +102,14 @@ if ! gcloud secrets describe "$MODEL_SECRET_NAME" >/dev/null 2>&1; then
 fi
 if ! gcloud secrets versions describe "$MODEL_SECRET_VERSION" --secret="$MODEL_SECRET_NAME" >/dev/null 2>&1; then
   echo "Secret version '$MODEL_SECRET_VERSION' does not exist." >&2
+  exit 1
+fi
+if ! gcloud secrets describe "$NEON_RUNTIME_DSN_SECRET_NAME" >/dev/null 2>&1; then
+  echo "Neon DSN secret '$NEON_RUNTIME_DSN_SECRET_NAME' does not exist." >&2
+  exit 1
+fi
+if ! gcloud secrets versions describe "$NEON_RUNTIME_DSN_SECRET_VERSION" --secret="$NEON_RUNTIME_DSN_SECRET_NAME" >/dev/null 2>&1; then
+  echo "Neon DSN secret version '$NEON_RUNTIME_DSN_SECRET_VERSION' does not exist." >&2
   exit 1
 fi
 gcloud artifacts repositories describe "$ARTIFACT_REPOSITORY" --location="$REGION" >/dev/null 2>&1 || \
@@ -113,53 +137,10 @@ gcloud secrets add-iam-policy-binding "$MODEL_SECRET_NAME" \
   --member="serviceAccount:$API_RUNTIME_EMAIL" --role='roles/secretmanager.secretAccessor' >/dev/null
 gcloud secrets add-iam-policy-binding "$MODEL_SECRET_NAME" \
   --member="serviceAccount:$WORKER_RUNTIME_EMAIL" --role='roles/secretmanager.secretAccessor' >/dev/null
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-  --member="serviceAccount:$API_RUNTIME_EMAIL" --role='roles/datastore.user' >/dev/null
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-  --member="serviceAccount:$WORKER_RUNTIME_EMAIL" --role='roles/datastore.user' >/dev/null
-
-if ! gcloud firestore databases describe --database='(default)' >/dev/null 2>&1; then
-  gcloud firestore databases create --location="$REGION" --database='(default)' --type=firestore-native
-fi
-
-if [[ -z "$(gcloud firestore indexes composite list --database='(default)' \
-  --filter='collectionGroup=conversations AND fields.fieldPath=owner_id AND fields.fieldPath=updated_at' \
-  --format='value(name)' --limit=1)" ]]; then
-  gcloud firestore indexes composite create --database='(default)' --collection-group=conversations \
-    --field-config=field-path=owner_id,order=ascending --field-config=field-path=updated_at,order=descending
-fi
-if [[ -z "$(gcloud firestore indexes composite list --database='(default)' \
-  --filter='collectionGroup=messages AND fields.fieldPath=owner_id AND fields.fieldPath=conversation_id AND fields.fieldPath=created_at' \
-  --format='value(name)' --limit=1)" ]]; then
-  gcloud firestore indexes composite create --database='(default)' --collection-group=messages \
-    --field-config=field-path=owner_id,order=ascending \
-    --field-config=field-path=conversation_id,order=ascending \
-    --field-config=field-path=created_at,order=ascending
-fi
-if [[ -z "$(gcloud firestore indexes composite list --database='(default)' \
-  --filter='collectionGroup=conversation_summaries AND fields.fieldPath=owner_id AND fields.fieldPath=conversation_id' \
-  --format='value(name)' --limit=1)" ]]; then
-  gcloud firestore indexes composite create --database='(default)' --collection-group=conversation_summaries \
-    --field-config=field-path=owner_id,order=ascending --field-config=field-path=conversation_id,order=ascending
-fi
-if [[ -z "$(gcloud firestore indexes composite list --database='(default)' \
-  --filter='collectionGroup=research_sessions AND fields.fieldPath=owner_id AND fields.fieldPath=state AND fields.fieldPath=expires_at' \
-  --format='value(name)' --limit=1)" ]]; then
-  gcloud firestore indexes composite create --database='(default)' --collection-group=research_sessions \
-    --field-config=field-path=owner_id,order=ascending \
-    --field-config=field-path=state,order=ascending \
-    --field-config=field-path=expires_at,order=ascending
-fi
-if [[ "$BACKUP_ENABLED" == "true" ]] && [[ -z "$(gcloud firestore backups schedules list \
-  --database='(default)' --format='value(name)' --limit=1)" ]]; then
-  gcloud firestore backups schedules create --database='(default)' \
-    --recurrence=daily --retention=30d
-fi
-gcloud firestore fields ttls update expires_at --collection-group=rate_limit_windows \
-  --database='(default)' --enable-ttl
-gcloud firestore fields ttls update expires_at --collection-group=usage_budgets \
-  --database='(default)' --enable-ttl
-
+gcloud secrets add-iam-policy-binding "$NEON_RUNTIME_DSN_SECRET_NAME" \
+  --member="serviceAccount:$API_RUNTIME_EMAIL" --role='roles/secretmanager.secretAccessor' >/dev/null
+gcloud secrets add-iam-policy-binding "$NEON_RUNTIME_DSN_SECRET_NAME" \
+  --member="serviceAccount:$WORKER_RUNTIME_EMAIL" --role='roles/secretmanager.secretAccessor' >/dev/null
 gcloud pubsub topics describe "$TOPIC" >/dev/null 2>&1 || gcloud pubsub topics create "$TOPIC"
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
 gcloud pubsub topics add-iam-policy-binding "$TOPIC" \
@@ -169,9 +150,15 @@ gcloud pubsub topics add-iam-policy-binding "$TOPIC" \
 
 cat >"$API_ENV_FILE" <<EOF
 APP_ENVIRONMENT: $TARGET_ENV
+GCP_PROJECT_ID: $PROJECT_ID
+P10_CLOUD_ADAPTERS_CONFIGURED: "true"
+P10_DYNAMODB_REGION: $DYNAMODB_AWS_REGION
+P10_DYNAMODB_TABLE_NAME: $DYNAMODB_RUNTIME_TABLE_NAME
+P10_DYNAMODB_ROLE_ARN: $DYNAMODB_ROLE_ARN
+P10_DYNAMODB_IDENTITY_TOKEN_AUDIENCE: $DYNAMODB_IDENTITY_TOKEN_AUDIENCE
+P10_NEON_POOL_MAX_SIZE: "4"
 AI_PROVIDER: gemini
 AI_MODEL: $AI_MODEL
-FIRESTORE_PROJECT_ID: $PROJECT_ID
 AUTH_MODE: google_oidc
 AUTH_REQUIRED: "true"
 AUTH_ISSUER: https://accounts.google.com
@@ -190,7 +177,6 @@ WORKER_KILL_SWITCH_ENABLED: "false"
 EXTERNAL_PROVIDERS_KILL_SWITCH_ENABLED: "false"
 MAINTENANCE_ENABLED: "$MAINTENANCE_ENABLED"
 MAINTENANCE_BATCH_SIZE: "40"
-BACKUP_ENABLED: "$BACKUP_ENABLED"
 EXPORT_ENABLED: "$EXPORT_ENABLED"
 DELETION_ENABLED: "$DELETION_ENABLED"
 CONTEXT_INSPECTION_ENABLED: "false"
@@ -211,9 +197,15 @@ EOF
 
 cat >"$WORKER_ENV_FILE" <<EOF
 APP_ENVIRONMENT: $TARGET_ENV
+GCP_PROJECT_ID: $PROJECT_ID
+P10_CLOUD_ADAPTERS_CONFIGURED: "true"
+P10_DYNAMODB_REGION: $DYNAMODB_AWS_REGION
+P10_DYNAMODB_TABLE_NAME: $DYNAMODB_RUNTIME_TABLE_NAME
+P10_DYNAMODB_ROLE_ARN: $DYNAMODB_ROLE_ARN
+P10_DYNAMODB_IDENTITY_TOKEN_AUDIENCE: $DYNAMODB_IDENTITY_TOKEN_AUDIENCE
+P10_NEON_POOL_MAX_SIZE: "2"
 AI_PROVIDER: gemini
 AI_MODEL: $AI_MODEL
-FIRESTORE_PROJECT_ID: $PROJECT_ID
 AUTH_MODE: google_oidc
 AUTH_REQUIRED: "true"
 AUTH_ISSUER: https://accounts.google.com
@@ -259,7 +251,7 @@ gcloud run deploy "$API_SERVICE" \
   --image="$BACKEND_IMAGE" --region="$REGION" --no-allow-unauthenticated \
   --min-instances=0 --max-instances=3 --concurrency=10 --cpu=1 --memory=1Gi --timeout=300 \
   --service-account="$API_RUNTIME_EMAIL" --env-vars-file="$API_ENV_FILE" \
-  --set-secrets="AI_API_KEY=$MODEL_SECRET_NAME:$MODEL_SECRET_VERSION"
+  --set-secrets="AI_API_KEY=$MODEL_SECRET_NAME:$MODEL_SECRET_VERSION,P10_NEON_RUNTIME_DSN=$NEON_RUNTIME_DSN_SECRET_NAME:$NEON_RUNTIME_DSN_SECRET_VERSION"
 API_URL=$(gcloud run services describe "$API_SERVICE" --region="$REGION" --format='value(status.url)')
 
 gcloud run services add-iam-policy-binding "$API_SERVICE" --region="$REGION" \
@@ -270,7 +262,7 @@ gcloud run deploy "$WORKER_SERVICE" \
   --min-instances=0 --max-instances=1 --concurrency=1 --cpu=1 --memory=1Gi --timeout=60 \
   --service-account="$WORKER_RUNTIME_EMAIL" --command=uvicorn \
   --args="personal_ai.worker:app,--host=0.0.0.0,--port=8080" --env-vars-file="$WORKER_ENV_FILE" \
-  --set-secrets="AI_API_KEY=$MODEL_SECRET_NAME:$MODEL_SECRET_VERSION"
+  --set-secrets="AI_API_KEY=$MODEL_SECRET_NAME:$MODEL_SECRET_VERSION,P10_NEON_RUNTIME_DSN=$NEON_RUNTIME_DSN_SECRET_NAME:$NEON_RUNTIME_DSN_SECRET_VERSION"
 WORKER_URL=$(gcloud run services describe "$WORKER_SERVICE" --region="$REGION" --format='value(status.url)')
 gcloud run services update "$WORKER_SERVICE" --region="$REGION" \
   --update-env-vars="WORKER_PUSH_AUTH_REQUIRED=true,WORKER_PUSH_AUDIENCE=$WORKER_URL,WORKER_PUSH_SERVICE_ACCOUNT=$WORKER_INVOKER_EMAIL,WORKER_MAINTENANCE_AUTH_REQUIRED=true,WORKER_MAINTENANCE_AUDIENCE=$WORKER_URL,WORKER_MAINTENANCE_SERVICE_ACCOUNT=$MAINTENANCE_INVOKER_EMAIL"

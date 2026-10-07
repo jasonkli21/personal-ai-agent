@@ -28,7 +28,7 @@ from personal_ai.memory.lifecycle_jobs import (
     MemoryLifecycleWorker,
     PubSubMemoryJobPublisher,
 )
-from personal_ai.persistence.factory import persistence_factory
+from personal_ai.persistence.factory import close_persistence_clients, persistence_factory
 from personal_ai.settings import Settings, get_settings, validate_startup_configuration
 from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import ResourceNotFoundError, StorageError
@@ -39,7 +39,10 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_startup_configuration()
-    yield
+    try:
+        yield
+    finally:
+        close_persistence_clients()
 
 
 app = FastAPI(title="Personal AI Memory Worker", version="0.1.0", lifespan=lifespan)

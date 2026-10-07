@@ -324,7 +324,7 @@ def test_worker_checks_expected_service_identity_before_its_feature_gate(monkeyp
     ]
 
 
-def test_disabled_account_actions_do_not_initialize_firestore(authenticated_account_client, monkeypatch):
+def test_disabled_account_actions_do_not_initialize_persistence(authenticated_account_client, monkeypatch):
     client, _ = authenticated_account_client
     configured = settings(
         auth_mode="google_oidc", auth_required=True, auth_audience="synthetic-client",

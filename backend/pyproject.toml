@@ -15,7 +15,6 @@ dependencies = [
   "pydantic-settings>=2.0,<3.0",
   "google-auth>=2.0,<3.0",
   "google-genai>=1.0,<2.0",
-  "google-cloud-firestore>=2.16,<3.0",
   "google-cloud-pubsub>=2.21,<3.0",
   "psycopg[binary,pool]>=3.2,<4.0",
   "boto3>=1.35,<2.0",

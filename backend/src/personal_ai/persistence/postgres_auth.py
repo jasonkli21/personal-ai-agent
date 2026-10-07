@@ -273,7 +273,7 @@ class PostgresAccountLifecycleRepository:
                         p_count += 1
                 relation_rows = connection.execute(
                     "SELECT ds.derived_memory_id,ds.source_memory_id,d.owner_id,d.application_id,"
-                    "d.workspace_id,d.created_at,ds.source_document_id,ds.scope_version,ds.source_payload "
+                    "d.workspace_id,d.created_at "
                     "FROM derived_memory_sources ds "
                     "JOIN derived_memories d ON d.scope_id=ds.scope_id "
                     "AND d.record_id=ds.derived_memory_id WHERE d.owner_id=%s "
@@ -286,14 +286,13 @@ class PostgresAccountLifecycleRepository:
                     raise ExportTooLarge
                 p_collection_counts["derived_memory_sources"] = len(relation_rows)
                 p_revision_coverage["derived_memory_sources"] = "parent_revision_in_repeatable_read_snapshot"
-                for (derived_id, source_id, relation_owner, app_id, workspace_id, created_at,
-                     source_document_id, scope_version, source_payload) in relation_rows:
-                    relation_id = source_document_id or hashlib.sha256(
+                for derived_id, source_id, relation_owner, app_id, workspace_id, created_at in relation_rows:
+                    relation_id = hashlib.sha256(
                         f"{relation_owner}:{app_id}:{workspace_id or ''}:{source_id}:{derived_id}".encode()
                     ).hexdigest()
-                    values = source_payload or {
+                    values = {
                         "owner_id": relation_owner, "application_id": app_id,
-                        "workspace_id": workspace_id, "scope_version": scope_version,
+                        "workspace_id": workspace_id, "scope_version": 2,
                         "source_memory_id": source_id, "derived_memory_id": derived_id,
                         "created_at": created_at,
                     }
@@ -301,7 +300,7 @@ class PostgresAccountLifecycleRepository:
                     p_count += 1
                 receipts = connection.execute(
                     "SELECT operation_id,attempt_id,fingerprint,outcome,result_refs,"
-                    "execution_deadline,created_at,payload FROM memory_lifecycle_operations "
+                    "execution_deadline,created_at FROM memory_lifecycle_operations "
                     "WHERE owner_id=%s AND application_id=%s "
                     "AND workspace_id IS NOT DISTINCT FROM %s ORDER BY operation_id,attempt_id LIMIT %s",
                     (owner_id, scope.application_id, scope.workspace_id,
@@ -309,23 +308,16 @@ class PostgresAccountLifecycleRepository:
                 ).fetchall()
                 if len(receipts) > MAX_EXPORT_SCAN_RECORDS:
                     raise ExportTooLarge
-                legacy_operations = connection.execute(
-                    "SELECT record_id,payload FROM legacy_memory_lifecycle_operations "
-                    "WHERE owner_id=%s AND application_id=%s "
-                    "AND workspace_id IS NOT DISTINCT FROM %s ORDER BY record_id LIMIT %s",
-                    (owner_id, scope.application_id, scope.workspace_id,
-                     MAX_EXPORT_SCAN_RECORDS + 1),
-                ).fetchall()
-                if len(receipts) + len(legacy_operations) > MAX_EXPORT_SCAN_RECORDS:
+                if len(receipts) > MAX_EXPORT_SCAN_RECORDS:
                     raise ExportTooLarge
-                p_collection_counts["memory_lifecycle_operations"] = len(receipts) + len(legacy_operations)
-                p_revision_coverage["memory_lifecycle_operations"] = "receipt_and_legacy_identity_in_repeatable_read_snapshot"
-                for operation_id, attempt_id, fp, outcome, refs, deadline, created_at, source_payload in receipts:
+                p_collection_counts["memory_lifecycle_operations"] = len(receipts)
+                p_revision_coverage["memory_lifecycle_operations"] = "receipt_identity_in_repeatable_read_snapshot"
+                for operation_id, attempt_id, fp, outcome, refs, deadline, created_at in receipts:
                     document_id = hashlib.sha256((
                         f"{owner_id}\0{PostgresPayloadRepository.scope_id(owner_id, scope)}\0"
                         f"{operation_id}\0{attempt_id}"
                     ).encode()).hexdigest()
-                    add("memory_lifecycle_operations", document_id, source_payload or {
+                    add("memory_lifecycle_operations", document_id, {
                         "owner_id": owner_id, "application_id": scope.application_id,
                         "workspace_id": scope.workspace_id, "scope_version": 2,
                         "operation_id": operation_id, "attempt_id": attempt_id,
@@ -333,9 +325,6 @@ class PostgresAccountLifecycleRepository:
                         "result_refs": refs, "execution_deadline": deadline,
                         "created_at": created_at,
                     })
-                    p_count += 1
-                for record_id, payload in legacy_operations:
-                    add("memory_lifecycle_operations", record_id, payload)
                     p_count += 1
         except ExportTooLarge:
             raise

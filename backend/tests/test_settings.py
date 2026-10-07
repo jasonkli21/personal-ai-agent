@@ -17,8 +17,8 @@ def test_settings_load_from_example_file() -> None:
     assert settings.ai_provider == "gemini"
     assert settings.ai_model == "gemini-2.5-flash"
     assert settings.ai_api_key.get_secret_value() == ""
-    assert settings.firestore_project_id == "example-personal-ai"
-    assert settings.firestore_emulator_host == "localhost:8080"
+    assert settings.persistence_local_postgres_dsn.get_secret_value().startswith("postgresql://")
+    assert settings.persistence_local_dynamodb_endpoint == "http://127.0.0.1:8000"
     assert settings.request_timeout_seconds == 30
     assert settings.max_context_tokens == 32768
     assert not settings.context_inspection_enabled
@@ -65,14 +65,24 @@ def test_deployed_origins_must_be_exact_https_origins(origin) -> None:
         )
 
 
-def test_deployed_environment_rejects_inherited_firestore_emulator() -> None:
-    with pytest.raises(ValidationError, match="deployed_firestore_emulator_forbidden"):
-        Settings(
-            _env_file=None, ai_provider="gemini", ai_model="synthetic",
-            app_environment="staging", auth_mode="google_oidc", auth_required=True,
-            auth_audience="client", auth_allowed_emails=("owner@gmail.com",),
-            allowed_origins=("https://personal.example",), firestore_emulator_host="localhost:8080",
-        )
+def test_deployed_runtime_requires_explicit_polyglot_persistence(monkeypatch) -> None:
+    from personal_ai.settings import validate_startup_configuration
+
+    configured = Settings(
+        _env_file=None,
+        ai_provider="gemini",
+        ai_model="synthetic",
+        app_environment="staging",
+        auth_mode="google_oidc",
+        auth_required=True,
+        auth_audience="client",
+        auth_allowed_emails=("owner@gmail.com",),
+        allowed_origins=("https://personal.example",),
+    )
+    monkeypatch.setenv("APP_ENVIRONMENT", "staging")
+    monkeypatch.setattr("personal_ai.settings.get_settings", lambda: configured)
+    with pytest.raises(ValueError, match="deployed_polyglot_persistence_required"):
+        validate_startup_configuration()
 
 
 def test_required_authentication_cannot_silently_use_development_identity() -> None:

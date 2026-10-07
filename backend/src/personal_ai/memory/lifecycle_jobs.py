@@ -19,6 +19,7 @@ from personal_ai.auth.scope import (
 )
 from personal_ai.llm.errors import LLMError
 from personal_ai.memory.contracts import Memory
+from personal_ai.memory.deadlines import lifecycle_deadline, rpc_timeout
 from personal_ai.memory.lifecycle import MemoryJob, ScorePolicy
 from personal_ai.memory.lifecycle_policy import (
     CONTRADICTION_POLICY_VERSION,
@@ -51,7 +52,7 @@ class PubSubMemoryJobPublisher:
         self.client = client
 
     def publish(self, job: MemoryJob, *, timeout: float = 10):
-        project = self.settings.firestore_project_id
+        project = self.settings.gcp_project_id
         if not project:
             raise ValueError("memory_lifecycle_project_missing")
         # A worker delivery often has nothing to publish. Construct an owned
@@ -90,8 +91,6 @@ class MemoryLifecycleCoordinator:
         self.publisher = publisher
 
     def after_completed(self, completed, selected_memory_ids=()):
-        from personal_ai.memory.lifecycle_repositories import lifecycle_deadline
-
         # Discovery/accounting can perform several bounded RPCs per candidate.
         # Their combined work also needs a ceiling, beyond individual RPC limits.
         with lifecycle_deadline(self.settings.memory_job_execution_seconds):
@@ -237,8 +236,6 @@ class MemoryLifecycleCoordinator:
     def _publish(self, job):
         if self.publisher is None:
             return
-        from personal_ai.memory.lifecycle_repositories import rpc_timeout
-
         scope = ApplicationScope(
             application_id=job.application_id,
             workspace_id=job.workspace_id,
@@ -255,8 +252,6 @@ class MemoryLifecycleCoordinator:
             or not self.settings.memory_lifecycle_worker_enabled
         ):
             return 0
-        from personal_ai.memory.lifecycle_repositories import lifecycle_deadline
-
         with lifecycle_deadline(self.settings.memory_job_execution_seconds):
             recover = getattr(self.memories, "recover_pending_effects", None)
             if recover is not None:
@@ -299,8 +294,6 @@ class MemoryLifecycleWorker:
         application_id: str = "personal_ai",
         workspace_id: str | None = None,
     ) -> Literal["completed", "busy", "retry", "disabled"]:
-        from personal_ai.memory.lifecycle_repositories import lifecycle_deadline
-
         scope = ApplicationScope(application_id=application_id, workspace_id=workspace_id)
         with application_scope_context(scope), lifecycle_deadline(
             self.settings.memory_job_execution_seconds

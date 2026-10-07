@@ -118,7 +118,7 @@ def _safeguards(request: Request, settings: Settings) -> SafeguardStore:
 
 def _ensure_active_principal(request, settings, principal, correlation_id) -> None:
     # Client construction may discover credentials, so it belongs in the same
-    # worker thread as the first Firestore call.
+    # worker thread as the first blocking persistence call.
     _directory(request, settings).ensure_active(principal, correlation_id=correlation_id)
 
 
@@ -537,7 +537,7 @@ async def authenticate_request(request: Request) -> Response | None:
             )
         # Local and test defaults stay friction-free; focused tests can inject an
         # explicit store to exercise enforcement. Staging and production always
-        # use durable counters and fail closed if Firestore is unavailable.
+        # use durable counters and fail closed if persistence is unavailable.
         enforce_safeguards = (
             settings.app_environment not in {"local", "test"}
             or getattr(request.app.state, "safeguard_store", None) is not None

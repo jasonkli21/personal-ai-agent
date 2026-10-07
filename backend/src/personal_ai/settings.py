@@ -30,11 +30,17 @@ class Settings(BaseSettings):
     ai_provider: str = Field(min_length=1)
     ai_model: str = Field(min_length=1)
     ai_api_key: SecretStr = Field(default=SecretStr(""))
-    firestore_project_id: str | None = None
-    firestore_emulator_host: str | None = None
+    gcp_project_id: str = Field(default="", max_length=200)
+    persistence_local_postgres_dsn: SecretStr = Field(
+        default=SecretStr(
+            "postgresql://personal_ai:personal_ai_local_only@127.0.0.1:54329/personal_ai"
+        )
+    )
+    persistence_local_dynamodb_endpoint: str = Field(
+        default="http://127.0.0.1:8000", min_length=1, max_length=300
+    )
     app_environment: str = Field(default="local", pattern=r"^(local|test|staging|production)$")
-    # Opt-in connection material for P10 cloud adapter validation/smoke only.
-    # These fields do not select or activate a new runtime persistence backend.
+    # Deployed runtime persistence uses the verified Neon pooler and federated AWS role.
     p10_cloud_adapters_configured: bool = False
     p10_neon_runtime_dsn: SecretStr = Field(default=SecretStr(""))
     p10_neon_pool_max_size: int = Field(default=4, ge=1, le=4)
@@ -67,7 +73,6 @@ class Settings(BaseSettings):
     external_providers_kill_switch_enabled: bool = False
     maintenance_enabled: bool = False
     maintenance_batch_size: int = Field(default=40, ge=1, le=100)
-    backup_enabled: bool = False
     export_enabled: bool = False
     deletion_enabled: bool = False
     deletion_grace_period_days: int = Field(default=7, ge=1, le=90)
@@ -115,7 +120,7 @@ class Settings(BaseSettings):
     memory_job_lease_seconds: int = Field(default=60, ge=30, le=300)
     memory_job_candidate_limit: int = Field(default=40, ge=1, le=100)
 
-    research_storage: str = Field(default="firestore", pattern=r"^(firestore|memory)$")
+    research_storage: str = Field(default="postgres", pattern=r"^(postgres|memory)$")
     research_enabled: bool = False
     research_inspection_enabled: bool = False
     research_search_adapter: str = Field(default="fake", pattern=r"^(fake|brave)$")
@@ -195,7 +200,7 @@ class Settings(BaseSettings):
     itinerary_proposals_enabled: bool = False
     itinerary_proposal_generator: str = Field(default="fake", pattern=r"^(fake|gemini)$")
     itinerary_proposal_provider_enabled: bool = False
-    itinerary_proposal_storage: str = Field(default="firestore", pattern=r"^(firestore|memory)$")
+    itinerary_proposal_storage: str = Field(default="postgres", pattern=r"^(postgres|memory)$")
     itinerary_proposal_timeout_seconds: float = Field(default=35, gt=0, le=45)
     itinerary_proposal_max_input_tokens: int = Field(default=4096, ge=512, le=32768)
     itinerary_proposal_max_output_tokens: int = Field(default=2048, ge=128, le=4096)
@@ -204,7 +209,7 @@ class Settings(BaseSettings):
     booking_extractions_enabled: bool = False
     booking_extraction_generator: str = Field(default="fake", pattern=r"^(fake|gemini)$")
     booking_extraction_provider_enabled: bool = False
-    booking_extraction_storage: str = Field(default="firestore", pattern=r"^(firestore|memory)$")
+    booking_extraction_storage: str = Field(default="postgres", pattern=r"^(postgres|memory)$")
     booking_extraction_timeout_seconds: float = Field(default=30, gt=0, le=35)
     booking_extraction_max_input_tokens: int = Field(default=8192, ge=512, le=32768)
     booking_extraction_max_output_tokens: int = Field(default=2048, ge=128, le=4096)
@@ -295,7 +300,7 @@ class Settings(BaseSettings):
             or self.auth_mode != "google_oidc"
             or self.ai_provider.lower() != "gemini"
             or not self.ai_api_key.get_secret_value()
-            or self.booking_extraction_storage != "firestore"
+            or self.booking_extraction_storage != "postgres"
         ):
             raise ValueError("booking_extraction_configuration_invalid")
         if (
@@ -303,7 +308,7 @@ class Settings(BaseSettings):
             and self.app_environment not in {"local", "test"}
             and (
                 self.booking_extraction_generator != "gemini"
-                or self.booking_extraction_storage != "firestore"
+                or self.booking_extraction_storage != "postgres"
                 or not self.booking_extraction_provider_enabled
             )
         ):
@@ -313,7 +318,7 @@ class Settings(BaseSettings):
             or not self.itinerary_proposal_provider_enabled
             or self.ai_provider.lower() != "gemini"
             or not self.ai_api_key.get_secret_value()
-            or self.itinerary_proposal_storage != "firestore"
+            or self.itinerary_proposal_storage != "postgres"
         ):
             raise ValueError("itinerary_proposal_configuration_invalid")
         if (
@@ -321,7 +326,7 @@ class Settings(BaseSettings):
             and self.app_environment not in {"local", "test"}
             and (
                 self.itinerary_proposal_generator != "gemini"
-                or self.itinerary_proposal_storage != "firestore"
+                or self.itinerary_proposal_storage != "postgres"
                 or not self.itinerary_proposal_provider_enabled
             )
         ):
@@ -352,7 +357,7 @@ class Settings(BaseSettings):
             self.research_enabled
             and self.research_search_adapter == "brave"
             and (
-                self.research_storage != "firestore"
+                self.research_storage != "postgres"
                 or not self.research_provider_storage_approved
                 or not self.research_api_key.get_secret_value()
             )
@@ -453,9 +458,6 @@ class Settings(BaseSettings):
                 and origin.scheme != "https"
             ):
                 raise ValueError("authentication_configuration_invalid")
-        if self.app_environment in {"staging", "production"} and self.firestore_emulator_host:
-            # An inherited local emulator variable selects anonymous credentials.
-            raise ValueError("deployed_firestore_emulator_forbidden")
         return self
 
     allowed_origins: tuple[AnyHttpUrl, ...] = Field(
@@ -492,3 +494,5 @@ def validate_startup_configuration() -> None:
         settings = get_settings()
         if cloud_run_service and settings.app_environment not in {"staging", "production"}:
             raise ValueError("deployed_environment_must_be_explicit")
+        if not settings.p10_cloud_adapters_configured:
+            raise ValueError("deployed_polyglot_persistence_required")

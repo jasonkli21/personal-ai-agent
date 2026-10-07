@@ -1,4 +1,4 @@
-"""Cloud-only Neon validation; Firestore remains the selected runtime backend."""
+"""Cloud-only Neon runtime and direct migration connection boundaries."""
 
 from __future__ import annotations
 

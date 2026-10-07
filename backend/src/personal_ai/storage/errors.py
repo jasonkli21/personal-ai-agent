@@ -1,6 +1,6 @@
 """Application-level persistence errors.
 
-These errors deliberately contain no Firestore exception objects so callers can
+These errors deliberately contain no provider exception objects so callers can
 map them to stable HTTP responses without exposing infrastructure details.
 """
 

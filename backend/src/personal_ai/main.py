@@ -25,6 +25,7 @@ from personal_ai.domains.contracts import DomainContractError
 from personal_ai.domains.providers import DomainProviderError
 from personal_ai.itinerary_proposals.contracts import ProposalError
 from personal_ai.llm.errors import LLMError
+from personal_ai.persistence.factory import close_persistence_clients
 from personal_ai.services import InvalidRetryTargetError
 from personal_ai.settings import ContextBudgetInvalidError, validate_startup_configuration
 from personal_ai.storage import ConversationConflictError, ResourceNotFoundError, StorageError
@@ -33,7 +34,10 @@ from personal_ai.storage import ConversationConflictError, ResourceNotFoundError
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_startup_configuration()
-    yield
+    try:
+        yield
+    finally:
+        close_persistence_clients()
 
 
 app = FastAPI(title="Personal AI System", version="0.1.0", lifespan=lifespan)

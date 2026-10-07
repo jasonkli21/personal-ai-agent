@@ -129,3 +129,13 @@ No deviation from the approved P10.0 store ownership or P10.1–P10.3 runtime
 contracts is intended. Real account quotas, cross-cloud connectivity and
 repository/API parity remain unverified release evidence, not implementation
 defaults.
+
+## P10.6 supersession addendum — 2026-10-06
+
+P10.6 has since switched local runtime wiring to Neon/Postgres + DynamoDB and
+removed the Firestore SDK, repositories, source-migration command, and
+migration-only control schema. The user reports that Firestore was never
+deployed; no cloud inventory or real migration was performed. This P10.4–P10.5
+evidence remains historical for its synthetic migration and static cloud
+checks. See the [P10.6 implementation evidence](phase-10-p10.6-implementation-evidence.md)
+for current tests and open engine/cloud verification.
