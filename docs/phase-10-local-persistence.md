@@ -1,9 +1,13 @@
 # Phase 10 local persistence
 
-P10.1–P10.3 add local Postgres/pgvector and DynamoDB Local without switching
-normal application runtime away from Firestore. These commands need no cloud
-account, AWS credentials, or Neon credentials. The local AWS keys in the examples
-are dummy values used only with the explicit DynamoDB Local endpoint.
+The Phase 10 cutover is implemented locally. Local and test application
+configurations use explicit Postgres/pgvector and DynamoDB Local endpoints;
+staging and production use Neon/Postgres and DynamoDB through the configured
+runtime adapters. Firestore runtime adapters and fallback configuration have
+been removed. This guide covers the local persistence commands and isolated
+integration checks. They need no cloud account, AWS credentials, or Neon
+credentials. The local AWS keys in the examples are dummy values used only with
+the explicit DynamoDB Local endpoint.
 
 ## Start and stop the development stores
 
@@ -53,5 +57,6 @@ use and pass dummy credentials directly to the SDK, so local checks cannot use
 the AWS credential-provider chain. No Neon, IAM, or provider configuration is
 introduced by these local commands.
 
-The application still selects Firestore in its normal runtime factory until
-the separately authorized migration/backfill and cutover work is complete.
+The local commands do not configure Neon, cloud IAM, or model providers. Cloud
+provisioning and the remaining target-store acceptance checks are documented in
+the [GCP deployment guide](gcp-deployment.md) and [Phase 10 verification plan](personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md).
