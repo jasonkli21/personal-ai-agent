@@ -8,10 +8,50 @@
       "provider_id": "ai_memory",
       "source_class": "ai_memory",
       "operation": "search",
-      "allowed_fields": ["content", "memory_type", "effective_at", "private_embedding"],
-      "expected_fields": ["content", "memory_type", "effective_at"],
-      "excluded_fields": ["private_embedding"],
-      "answer_support_needs": ["content"],
+      "allowed_fields": [
+        "content",
+        "memory_type",
+        "effective_at",
+        "private_embedding"
+      ],
+      "expected_fields": [
+        "content",
+        "memory_type",
+        "effective_at"
+      ],
+      "excluded_fields": [
+        "private_embedding"
+      ],
+      "answer_support_needs": [
+        "content"
+      ],
+      "expected_retrieved_fields": [
+        "content",
+        "memory_type",
+        "effective_at"
+      ],
+      "expected_injected_fields": [
+        "content",
+        "memory_type",
+        "effective_at"
+      ],
+      "expected_authority": "user_asserted",
+      "expected_selections": [
+        {
+          "provider_id": "ai_memory",
+          "operation": "search",
+          "fields": [
+            "content",
+            "effective_at",
+            "memory_type"
+          ],
+          "max_results": 5,
+          "max_bytes": 16384,
+          "max_tokens": 512,
+          "timeout_seconds": 2.0,
+          "window_seconds": null
+        }
+      ],
       "use_default_rules": true
     },
     {
@@ -21,10 +61,44 @@
       "provider_id": "global_profile",
       "source_class": "global_profile",
       "operation": "profile",
-      "allowed_fields": ["preferred_units", "locale", "response_style", "answer_length"],
-      "expected_fields": ["preferred_units"],
-      "excluded_fields": ["locale", "response_style", "answer_length"],
-      "answer_support_needs": ["preferred_units"],
+      "allowed_fields": [
+        "preferred_units",
+        "locale",
+        "response_style",
+        "answer_length"
+      ],
+      "expected_fields": [
+        "preferred_units"
+      ],
+      "excluded_fields": [
+        "locale",
+        "response_style",
+        "answer_length"
+      ],
+      "answer_support_needs": [
+        "preferred_units"
+      ],
+      "expected_retrieved_fields": [
+        "preferred_units"
+      ],
+      "expected_injected_fields": [
+        "preferred_units"
+      ],
+      "expected_authority": "user_asserted",
+      "expected_selections": [
+        {
+          "provider_id": "global_profile",
+          "operation": "profile",
+          "fields": [
+            "preferred_units"
+          ],
+          "max_results": 1,
+          "max_bytes": 2048,
+          "max_tokens": 256,
+          "timeout_seconds": 1.0,
+          "window_seconds": null
+        }
+      ],
       "use_default_rules": true
     },
     {
@@ -34,14 +108,58 @@
       "provider_id": "travel.trip_context",
       "source_class": "domain_current",
       "operation": "current",
-      "allowed_fields": ["city", "start_date", "end_date", "payment_details"],
-      "rule_fields": ["city", "start_date", "end_date"],
-      "expected_fields": ["city", "start_date", "end_date"],
-      "excluded_fields": ["payment_details"],
-      "answer_support_needs": ["start_date", "end_date"],
+      "allowed_fields": [
+        "city",
+        "start_date",
+        "end_date",
+        "payment_details"
+      ],
+      "rule_fields": [
+        "city",
+        "start_date",
+        "end_date"
+      ],
+      "expected_fields": [
+        "city",
+        "start_date",
+        "end_date"
+      ],
+      "excluded_fields": [
+        "payment_details"
+      ],
+      "answer_support_needs": [
+        "start_date",
+        "end_date"
+      ],
       "category": "travel",
       "phrase": "hotel booking",
-      "max_tokens": 96
+      "max_tokens": 256,
+      "expected_retrieved_fields": [
+        "city",
+        "start_date",
+        "end_date"
+      ],
+      "expected_injected_fields": [
+        "city",
+        "start_date",
+        "end_date"
+      ],
+      "expected_selections": [
+        {
+          "provider_id": "travel.trip_context",
+          "operation": "current",
+          "fields": [
+            "city",
+            "end_date",
+            "start_date"
+          ],
+          "max_results": 3,
+          "max_bytes": 4096,
+          "max_tokens": 256,
+          "timeout_seconds": 1.0,
+          "window_seconds": null
+        }
+      ]
     },
     {
       "name": "synthetic-shopping-saved-chair",
@@ -50,14 +168,52 @@
       "provider_id": "shopping.product_context",
       "source_class": "domain_current",
       "operation": "current",
-      "allowed_fields": ["product_name", "price", "tax_id"],
-      "rule_fields": ["product_name", "price"],
-      "expected_fields": ["product_name", "price"],
-      "excluded_fields": ["tax_id"],
-      "answer_support_needs": ["product_name", "price"],
+      "allowed_fields": [
+        "product_name",
+        "price",
+        "tax_id"
+      ],
+      "rule_fields": [
+        "product_name",
+        "price"
+      ],
+      "expected_fields": [
+        "product_name",
+        "price"
+      ],
+      "excluded_fields": [
+        "tax_id"
+      ],
+      "answer_support_needs": [
+        "product_name",
+        "price"
+      ],
       "category": "shopping",
       "phrase": "saved chair",
-      "max_tokens": 96
+      "max_tokens": 256,
+      "expected_retrieved_fields": [
+        "product_name",
+        "price"
+      ],
+      "expected_injected_fields": [
+        "product_name",
+        "price"
+      ],
+      "expected_selections": [
+        {
+          "provider_id": "shopping.product_context",
+          "operation": "current",
+          "fields": [
+            "price",
+            "product_name"
+          ],
+          "max_results": 3,
+          "max_bytes": 4096,
+          "max_tokens": 256,
+          "timeout_seconds": 1.0,
+          "window_seconds": null
+        }
+      ]
     },
     {
       "name": "synthetic-finance-cash-position",
@@ -66,14 +222,52 @@
       "provider_id": "finance.account_context",
       "source_class": "domain_current",
       "operation": "current",
-      "allowed_fields": ["balance", "currency", "tax_id"],
-      "rule_fields": ["balance", "currency"],
-      "expected_fields": ["balance", "currency"],
-      "excluded_fields": ["tax_id"],
-      "answer_support_needs": ["balance", "currency"],
+      "allowed_fields": [
+        "balance",
+        "currency",
+        "tax_id"
+      ],
+      "rule_fields": [
+        "balance",
+        "currency"
+      ],
+      "expected_fields": [
+        "balance",
+        "currency"
+      ],
+      "excluded_fields": [
+        "tax_id"
+      ],
+      "answer_support_needs": [
+        "balance",
+        "currency"
+      ],
       "category": "finance",
       "phrase": "cash balance",
-      "max_tokens": 96
+      "max_tokens": 256,
+      "expected_retrieved_fields": [
+        "balance",
+        "currency"
+      ],
+      "expected_injected_fields": [
+        "balance",
+        "currency"
+      ],
+      "expected_selections": [
+        {
+          "provider_id": "finance.account_context",
+          "operation": "current",
+          "fields": [
+            "balance",
+            "currency"
+          ],
+          "max_results": 3,
+          "max_bytes": 4096,
+          "max_tokens": 256,
+          "timeout_seconds": 1.0,
+          "window_seconds": null
+        }
+      ]
     },
     {
       "name": "synthetic-health-medication-history",
@@ -82,26 +276,78 @@
       "provider_id": "health.history_context",
       "source_class": "domain_history",
       "operation": "history",
-      "allowed_fields": ["medication_name", "dose", "diagnosis", "observed_at"],
-      "rule_fields": ["medication_name", "dose", "observed_at"],
-      "expected_fields": ["medication_name", "dose", "observed_at"],
-      "excluded_fields": ["diagnosis"],
-      "answer_support_needs": ["medication_name", "dose", "observed_at"],
+      "allowed_fields": [
+        "medication_name",
+        "dose",
+        "diagnosis",
+        "observed_at"
+      ],
+      "rule_fields": [
+        "medication_name",
+        "dose",
+        "observed_at"
+      ],
+      "expected_fields": [
+        "medication_name",
+        "dose",
+        "observed_at"
+      ],
+      "excluded_fields": [
+        "diagnosis"
+      ],
+      "answer_support_needs": [
+        "medication_name",
+        "dose",
+        "observed_at"
+      ],
       "category": "health",
       "phrase": "medication dose",
       "window_seconds": 2592000,
       "max_window_seconds": 2592000,
-      "max_tokens": 96
+      "max_tokens": 256,
+      "expected_retrieved_fields": [
+        "medication_name",
+        "dose",
+        "observed_at"
+      ],
+      "expected_injected_fields": [
+        "medication_name",
+        "dose",
+        "observed_at"
+      ],
+      "expected_selections": [
+        {
+          "provider_id": "health.history_context",
+          "operation": "history",
+          "fields": [
+            "dose",
+            "medication_name",
+            "observed_at"
+          ],
+          "max_results": 3,
+          "max_bytes": 4096,
+          "max_tokens": 256,
+          "timeout_seconds": 1.0,
+          "window_seconds": 2592000
+        }
+      ]
     },
     {
       "name": "ambiguous-travel-and-health-request",
       "application_id": "travel",
       "intent": "Review my travel health records.",
       "ambiguous": true,
-      "provider_ids": ["travel.trip_context", "health.history_context"],
+      "provider_ids": [
+        "travel.trip_context",
+        "health.history_context"
+      ],
       "expected_fields": [],
-      "excluded_fields": ["city", "medication_name"],
+      "excluded_fields": [
+        "city",
+        "medication_name"
+      ],
       "answer_support_needs": [],
+      "expected_selections": [],
       "expected_omission_reason": "ambiguous_intent"
     },
     {
@@ -111,15 +357,65 @@
       "provider_id": "travel.trip_context",
       "source_class": "domain_current",
       "operation": "current",
-      "allowed_fields": ["city", "dates"],
-      "rule_fields": ["city"],
+      "allowed_fields": [
+        "city",
+        "dates"
+      ],
+      "rule_fields": [
+        "city"
+      ],
       "expected_fields": [],
-      "excluded_fields": ["city", "dates"],
+      "excluded_fields": [
+        "city",
+        "dates"
+      ],
       "answer_support_needs": [],
       "category": "travel",
       "phrase": "hotel booking",
       "provider_unavailable": true,
-      "expected_omission_reason": "provider_unavailable"
+      "expected_omission_reason": "provider_unavailable",
+      "expected_selections": []
+    },
+    {
+      "name": "standalone-profile-unshared-locale",
+      "application_id": "personal_ai",
+      "intent": "What language do I prefer?",
+      "provider_id": "global_profile",
+      "source_class": "global_profile",
+      "operation": "profile",
+      "allowed_fields": [
+        "preferred_units",
+        "locale",
+        "response_style",
+        "answer_length"
+      ],
+      "expected_fields": [
+        "locale"
+      ],
+      "excluded_fields": [
+        "preferred_units",
+        "response_style",
+        "answer_length"
+      ],
+      "answer_support_needs": [],
+      "expected_retrieved_fields": [],
+      "expected_injected_fields": [],
+      "shared_profile_fields": [],
+      "expected_selections": [
+        {
+          "provider_id": "global_profile",
+          "operation": "profile",
+          "fields": [
+            "locale"
+          ],
+          "max_results": 1,
+          "max_bytes": 2048,
+          "max_tokens": 256,
+          "timeout_seconds": 1.0,
+          "window_seconds": null
+        }
+      ],
+      "use_default_rules": true
     }
   ]
 }

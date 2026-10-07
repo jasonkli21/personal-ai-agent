@@ -93,3 +93,22 @@ token-count accuracy, live source integrations, Postgres/DynamoDB behavior,
 cloud/IAM, deployment, and production security remain unverified. The inspector
 still estimates the current view and cannot reconstruct the exact prompt from a
 past generation. Phase 13 automatic source planning remains out of scope.
+
+## Verification pass
+
+Date: 2026-10-07 (America/Los_Angeles)
+
+Verified revision: `24502e4ea9463da68e0e3736c9b5befb45ba141c` (documentation-only
+follow-up to implementation revision `d37bd883aafc883b32ce7dc0103f1b561917b15a`).
+The current code matches the review remediation; no remaining Phase 12 review
+finding was identified.
+
+- Backend suite: **672 passed, 26 skipped**.
+- Ruff: **passed**.
+- Context, memory, research, and itinerary-proposal evaluations: **passed**;
+  these use synthetic/offline fixtures.
+- `git diff --check`: **passed**.
+
+The Makefile targets could not launch because `python` is absent from this
+shell's `PATH`; equivalent Python modules were run with `backend/.venv/bin/python`.
+Skipped local persistence, cloud, and manual provider checks remain unverified.

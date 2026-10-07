@@ -2,56 +2,56 @@
 
 Date: 2026-10-07 (America/Los_Angeles)
 
-Tested source revision: `24502e4ea9463da68e0e3736c9b5befb45ba141c`, with the
-Phase 13 implementation working tree. Verification below ran after the
-implementation was complete and before its single commit.
+Tested source: Phase 13 remediation working tree based on
+`9e5ec35d54078f8203604662b4b59ba52a2c57c7`; the fixes and this evidence are
+included in the single follow-up commit created after verification.
 
 ## Delivered
 
-- Added versioned, deterministic context planning rules and an immutable plan
-  contract for provider operations, fields, candidate entities, bounded time
-  windows, result/byte/time limits, source token budgets, and required/optional
-  sources. Plans include safe selection and omission reasons and a request-scope
-  fingerprint.
-- Added coordinator capability inspection for planning. The coordinator still
-  repeats registration, scope, operation, bounds, and provider checks before
-  any selected provider runs. Missing optional providers are omitted with a
-  reason; missing required sources stop planning. No fallback widens a request.
-- Routed chat planning before memory retrieval. Default rules select bounded
-  memory only for explicit recall requests and one explicitly asked-for shared
-  profile field. Final assembly rechecks memory enablement and current profile
-  sharing.
-- Applied planned per-source token ceilings in the Phase 12 builder and added
-  planner version/reasons to the content-free build manifest.
-- Added eight named offline baseline fixtures for standalone recall/profile
-  requests, synthetic Travel, Shopping, Finance, and Health selections,
-  ambiguity, and an unavailable optional provider. The evaluator records exact
-  provider calls, selected and excluded fields, omission/over-fetch, answer
-  support, bytes, estimated tokens, token allocations, and latency.
-- Updated the implementation guide, root README, current-state snapshot, and
-  documentation router. Real domain providers and app-specific production
-  rules remain future work.
+- Default memory planning now requires a bounded personal-recall question.
+  General “remember” instructions, general knowledge questions, and negative
+  recall language do not select memory, call the retriever, or inject memory.
+- Rules merged for one provider operation retain complete requested profile
+  field coverage. The profile contract defines one result per field, subject to
+  registered and global limits. Required fields reserve planning budget before
+  optional fields; displaced optional rules receive explicit omission reasons.
+- The builder enforces each planned provider/operation token allocation along
+  with source-class and whole-request ceilings. An oversized optional selection
+  is omitted without spending another selection's allocation; an oversized
+  required selection fails closed.
+- Typed memory items preserve original `user_asserted` and `derived`
+  authorities. Validated derived-memory source IDs pass through to the builder;
+  represented originals are suppressed only after the derivation is admitted,
+  so originals and unrelated memories remain eligible if it does not fit.
+- Actual chat retrieval uses the minimum of the selected memory-operation
+  timeout, configured memory timeout, and remaining request deadline. Unselected
+  memory does not trigger retrieval.
+- The offline planner evaluator exercises the built-in memory and shared-profile
+  adapters, including current sharing checks. It verifies exact provider
+  operations and bounds, distinguishes planned/retrieved/injected support, fails
+  positive-support fixtures when permission or budget removes that support, and
+  exits nonzero for any failed fixture. Its byte-based envelope counter is an
+  offline estimate; provider token-count accuracy was not evaluated live.
 
 ## Verification
 
-Commands ran with the repository backend virtual environment:
+Commands ran with the repository backend virtual environment on the tested
+source tree:
 
-- `make backend-test`: **686 passed, 26 skipped**. Skips were 23 opt-in local
-  Postgres/DynamoDB cases, one cloud smoke case, one manual context case, and
-  one manual Gemini case.
+- `make backend-test`: **710 passed, 26 skipped**. The skips are 23 opt-in local
+  Postgres/DynamoDB checks, one cloud smoke check, one manual context check, and
+  one manual Gemini check.
 - `make backend-lint`: **passed**.
-- `make context-plan-eval`: **passed**, all eight synthetic fixtures.
-- `make context-eval memory-eval research-eval domain-eval`: **passed** using
-  their deterministic offline fixtures.
-- Focused planner checks: `14 passed`; Ruff checks for changed backend modules
-  passed.
-- `git diff --check` and `git diff --cached --check`: **passed** after the final
-  documentation edits; the staged diff check included the new evidence and
-  guide.
+- `make context-plan-eval`: **passed**, including all nine planner fixtures
+  against built-in memory/profile adapters and synthetic domain providers.
+- `make context-eval memory-eval research-eval domain-eval
+  memory-lifecycle-eval`: **passed** with deterministic offline fixtures.
+- `git diff --check`: **passed** after the final implementation and evidence
+  edits.
 
-These checks establish local behavior and synthetic/offline contracts only.
-They do not establish local Postgres or DynamoDB behavior, cloud/IAM behavior,
-real provider behavior, deployed source grants, production security, or live
-domain integrations. No frontend or deployment check was required for this
-backend-only phase. The skipped local persistence, cloud smoke, and manual
-provider/context checks remain unverified.
+These results establish local behavior and offline contracts only. They do not
+establish local Postgres or DynamoDB behavior, cloud/IAM behavior, real provider
+behavior, deployed source grants, production security, live token-count
+accuracy, or live domain integrations. The skipped local persistence, cloud
+smoke, and manual provider/context checks remain unverified. Synthetic domain
+providers remain evaluation fixtures rather than production integrations.

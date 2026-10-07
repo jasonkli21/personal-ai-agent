@@ -175,6 +175,7 @@ class ContextBuildItem(BaseModel):
             source_refs=item.source_refs,
             expires_at=item.expires_at,
             permission_dependencies=item.permission_dependencies,
+            represented_item_ids=item.represented_item_ids,
             atomic_group_id=atomic_group_id,
             required=required,
             order=order,
@@ -316,6 +317,7 @@ class ContextBuilder:
         base_sensitivity: ContextSensitivity = "personal",
         source_counters: Mapping[ContextSourceClass, TokenCounter] | None = None,
         source_item_limits: Mapping[ContextSourceClass, int] | None = None,
+        selection_token_budgets: Mapping[tuple[str, ContextOperation], int] | None = None,
         base_token_count: TokenCount | None = None,
     ) -> ContextBuildResult:
         prefix = tuple(prefix_messages)
@@ -329,6 +331,7 @@ class ContextBuilder:
             entries,
             key=lambda item: (
                 policy.source_priorities[item.source_class],
+                0 if item.source_class == "ai_memory" and item.represented_item_ids else 1,
                 item.order,
                 item.provider_id,
                 item.source_id,
@@ -352,6 +355,7 @@ class ContextBuilder:
             key=lambda group: (
                 not any(item.required for item in group),
                 policy.source_priorities[group[0].source_class],
+                0 if any(item.represented_item_ids for item in group) else 1,
                 min(item.order for item in group),
                 group[0].provider_id,
                 group[0].source_id,
@@ -363,6 +367,7 @@ class ContextBuilder:
         exclusions: list[tuple[str, str]] = []
         diagnostics: list[str] = []
         class_items: dict[ContextSourceClass, list[ContextBuildItem]] = defaultdict(list)
+        selection_items: dict[tuple[str, ContextOperation], list[ContextBuildItem]] = defaultdict(list)
         class_counts: dict[ContextSourceClass, int] = {}
         memory_count_failed = False
         represented_memory_ids: set[str] = set()
@@ -422,6 +427,25 @@ class ContextBuilder:
 
             item_counter = (source_counters or {}).get(source_class, self.counter)
             try:
+                selection_key = (
+                    (group[0].provider_id, group[0].selected_operation)
+                    if group[0].selected_operation is not None
+                    else None
+                )
+                selection_budget = (
+                    selection_token_budgets.get(selection_key)
+                    if selection_token_budgets is not None and selection_key is not None
+                    else None
+                )
+                if selection_budget is not None:
+                    proposed_selection_items = (*selection_items[selection_key], *group)
+                    selection_message = self._source_message(
+                        source_class, proposed_selection_items
+                    )
+                    selection_count = item_counter.count((selection_message,)).tokens
+                    if selection_count > selection_budget:
+                        omit_group(group, "selection_budget", selection_count)
+                        continue
                 proposed_source_items = (*class_items[source_class], *group)
                 source_message = self._source_message(source_class, proposed_source_items)
                 source_count = item_counter.count((source_message,)).tokens
@@ -447,6 +471,8 @@ class ContextBuilder:
                 continue
             included.extend((item, source_message, source_count) for item in group)
             class_items[source_class].extend(group)
+            if selection_key is not None:
+                selection_items[selection_key].extend(group)
             class_counts[source_class] = source_count
             for item in group:
                 if source_class == "ai_memory":

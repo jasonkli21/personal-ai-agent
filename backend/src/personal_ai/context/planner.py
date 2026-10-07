@@ -170,7 +170,7 @@ DEFAULT_CONTEXT_PLANNING_RULES = (
         fields=("preferred_units",),
         max_results=1,
         max_bytes=2_048,
-        max_tokens=64,
+        max_tokens=256,
         timeout_seconds=1,
         priority=5,
         explanation="The request asks for the explicitly shared preferred-units field.",
@@ -184,7 +184,7 @@ DEFAULT_CONTEXT_PLANNING_RULES = (
         fields=("locale",),
         max_results=1,
         max_bytes=2_048,
-        max_tokens=64,
+        max_tokens=256,
         timeout_seconds=1,
         priority=5,
         explanation="The request asks for the explicitly shared locale field.",
@@ -202,7 +202,7 @@ DEFAULT_CONTEXT_PLANNING_RULES = (
         fields=("response_style",),
         max_results=1,
         max_bytes=2_048,
-        max_tokens=64,
+        max_tokens=256,
         timeout_seconds=1,
         priority=5,
         explanation="The request asks for the explicitly shared response-style field.",
@@ -220,7 +220,7 @@ DEFAULT_CONTEXT_PLANNING_RULES = (
         fields=("answer_length",),
         max_results=1,
         max_bytes=2_048,
-        max_tokens=64,
+        max_tokens=256,
         timeout_seconds=1,
         priority=5,
         explanation="The request asks for the explicitly shared answer-length field.",
@@ -229,12 +229,12 @@ DEFAULT_CONTEXT_PLANNING_RULES = (
         rule_id="memory.personal-recall:v1",
         category="personal_recall",
         phrases=(
-            "remember",
-            "recall",
             "what did i tell you",
+            "what have i told you",
+            "what did i say",
+            "what have i said",
+            "what do you remember about me",
             "what do you know about me",
-            "as i mentioned",
-            "from our earlier conversation",
             "what preference did i mention",
         ),
         provider_id="ai_memory",
@@ -242,7 +242,7 @@ DEFAULT_CONTEXT_PLANNING_RULES = (
         fields=("content", "memory_type", "effective_at"),
         max_results=5,
         max_bytes=16_384,
-        max_tokens=256,
+        max_tokens=512,
         timeout_seconds=2,
         priority=10,
         explanation="The request explicitly asks to recall previously saved personal context.",
@@ -440,28 +440,124 @@ class ContextPlanner:
         ordered_groups = sorted(
             candidates.items(),
             key=lambda row: (
-                min(item.rule.priority for item in row[1]),
+                min(
+                    (item.rule.priority for item in row[1] if item.rule.required),
+                    default=10_001,
+                ),
                 row[0][0],
                 row[0][1],
             ),
         )
-        for (provider_id, operation), rows in ordered_groups:
-            rows.sort(key=lambda item: (item.rule.priority, item.rule.rule_id))
+        selected_by_operation: dict[tuple[str, ContextOperation], dict[str, object]] = {}
+
+        def merged_fields(rows: Sequence[_MatchedRule]) -> tuple[str, ...]:
+            return tuple(dict.fromkeys(field for row in rows for field in row.fields))
+
+        def merged_result_limit(rows: Sequence[_MatchedRule]) -> int:
+            operation_spec = rows[0].operation_spec
+            if operation_spec.results_per_field:
+                return len(merged_fields(rows))
+            return min(
+                max(row.rule.max_results for row in rows),
+                operation_spec.maximum_results,
+                rows[0].spec.maximum_items_per_call,
+            )
+
+        def bounds_reason(rows: Sequence[_MatchedRule]) -> str | None:
+            operation_spec = rows[0].operation_spec
+            result_limit = merged_result_limit(rows)
+            if result_limit > min(
+                operation_spec.maximum_results,
+                rows[0].spec.maximum_items_per_call,
+            ):
+                return "selection_result_limit_exceeded"
+            if len(merged_fields(rows)) > 32:
+                return "selection_field_limit_exceeded"
+            ends = [row.window_end for row in rows if row.window_end is not None]
+            starts = [row.window_start for row in rows if row.window_start is not None]
+            if ends and starts and max(starts) >= min(ends):
+                return "incompatible_time_windows"
+            return None
+
+        # Required selections reserve their complete requested allocations
+        # before any optional rule can spend from the request budget.
+        for key, rows in ordered_groups:
+            required_rows = sorted(
+                (row for row in rows if row.rule.required),
+                key=lambda item: (item.rule.priority, item.rule.rule_id),
+            )
+            if not required_rows:
+                continue
+            if len(selected_by_operation) >= self.MAX_SELECTIONS:
+                raise ContextPreparationError("required_context_plan_budget_exceeded")
+            if bounds_reason(required_rows):
+                raise ContextPreparationError("required_context_source_bounds_exceeded")
+            requested_tokens = sum(row.rule.max_tokens for row in required_rows)
+            if requested_tokens > total_budget - allocated:
+                raise ContextPreparationError("required_context_plan_budget_exceeded")
+            selected_by_operation[key] = {
+                "rows": required_rows,
+                "tokens": requested_tokens,
+            }
+            allocated += requested_tokens
+
+        optional_rows = sorted(
+            (
+                (key, row)
+                for key, rows in candidates.items()
+                for row in rows
+                if not row.rule.required
+            ),
+            key=lambda item: (item[1].rule.priority, item[0][0], item[0][1], item[1].rule.rule_id),
+        )
+        for key, row in optional_rows:
+            current = selected_by_operation.get(key)
+            current_rows = list(current["rows"]) if current else []
+            trial_rows = [*current_rows, row]
+            source_class = row.spec.source_class
+            reason = bounds_reason(trial_rows)
+            if current is None and len(selected_by_operation) >= self.MAX_SELECTIONS:
+                reason = "selection_limit_exceeded"
+            if total_budget - allocated < row.rule.max_tokens:
+                reason = reason or "plan_token_budget_exhausted"
+            if reason:
+                decisions.append(self._omitted(row.rule, reason, source_class))
+                continue
+            if current is None:
+                current = {"rows": [], "tokens": 0}
+                selected_by_operation[key] = current
+            current["rows"] = trial_rows
+            current["tokens"] = int(current["tokens"]) + row.rule.max_tokens
+            allocated += row.rule.max_tokens
+
+        for (provider_id, operation), state in sorted(
+            selected_by_operation.items(),
+            key=lambda item: (
+                min(row.rule.priority for row in item[1]["rows"]),
+                item[0][0],
+                item[0][1],
+            ),
+        ):
+            rows = sorted(state["rows"], key=lambda item: (item.rule.priority, item.rule.rule_id))
             source_class = rows[0].spec.source_class
-            requested_fields = tuple(dict.fromkeys(field for row in rows for field in row.fields))
+            operation_spec = rows[0].operation_spec
+            requested_fields = merged_fields(rows)
             excluded_fields = tuple(dict.fromkeys(
                 field for row in rows for field in row.excluded_fields
             ))
-            row_entities = rows[0].entity_refs
-            if any(row.entity_refs != row_entities for row in rows[1:]):
-                row_entities = tuple(dict.fromkeys(
-                    entity for row in rows for entity in row.entity_refs
-                ))[: self.MAX_CANDIDATE_ENTITIES]
+            row_entities = tuple(dict.fromkeys(
+                entity for row in rows for entity in row.entity_refs
+            ))[: self.MAX_CANDIDATE_ENTITIES]
             ends = [row.window_end for row in rows if row.window_end is not None]
             starts = [row.window_start for row in rows if row.window_start is not None]
             window_end = min(ends) if ends else None
             window_start = max(starts) if starts else None
-            operation_spec = rows[0].operation_spec
+            if (
+                window_start is not None
+                and window_end is not None
+                and window_start >= window_end
+            ):
+                raise ContextPreparationError("context_planner_window_merge_invalid")
             if (
                 window_start is not None
                 and window_end is not None
@@ -471,21 +567,6 @@ class ContextPlanner:
                 window_start = window_end - timedelta(
                     seconds=operation_spec.maximum_window_seconds
                 )
-            requested_tokens = min(row.rule.max_tokens for row in rows)
-            remaining_tokens = total_budget - allocated
-            if len(selections) >= self.MAX_SELECTIONS:
-                reason = "selection_limit_exceeded"
-            elif remaining_tokens < 1:
-                reason = "plan_token_budget_exhausted"
-            else:
-                reason = ""
-            if reason:
-                if any(row.rule.required for row in rows):
-                    raise ContextPreparationError("required_context_plan_budget_exceeded")
-                for row in rows:
-                    decisions.append(self._omitted(row.rule, reason, source_class))
-                continue
-            token_budget = min(requested_tokens, remaining_tokens)
             selection = ContextSelection(
                 provider_id=provider_id,
                 operation=operation,
@@ -493,15 +574,12 @@ class ContextPlanner:
                 entity_refs=row_entities,
                 window_start=window_start,
                 window_end=window_end,
-                max_results=min(
-                    *(row.rule.max_results for row in rows),
-                    *(row.operation_spec.maximum_results for row in rows),
-                ),
+                max_results=merged_result_limit(rows),
                 max_bytes=min(
-                    *(row.rule.max_bytes for row in rows),
-                    *(row.operation_spec.maximum_bytes for row in rows),
+                    sum(row.rule.max_bytes for row in rows),
+                    operation_spec.maximum_bytes,
                 ),
-                max_tokens=token_budget,
+                max_tokens=int(state["tokens"]),
                 timeout_seconds=min(
                     *(row.rule.timeout_seconds for row in rows),
                     *(row.operation_spec.maximum_timeout_seconds for row in rows),
@@ -513,8 +591,7 @@ class ContextPlanner:
                 ),
             )
             selections.append(selection)
-            allocated += token_budget
-            source_budgets[source_class] += token_budget
+            source_budgets[source_class] += selection.max_tokens or 0
             for row in rows:
                 decisions.append(
                     ContextPlanDecision(

@@ -265,6 +265,7 @@ class MemoryContextProvider:
                 # memory disclosure path. Lifecycle/source eligibility remains
                 # the retriever's responsibility.
                 continue
+            is_derived = isinstance(memory, DerivedMemory)
             records.append(
                 ContextItem(
                     source_class="ai_memory",
@@ -275,10 +276,15 @@ class MemoryContextProvider:
                     owner_id=scope.owner_id,
                     application_id=scope.application_id,
                     workspace_id=scope.workspace_id,
-                    authority="derived",
+                    authority="derived" if is_derived else "user_asserted",
                     observed_at=memory.observed_at if hasattr(memory, "observed_at") else memory.created_at,
                     effective_at=memory.effective_at,
                     sensitivity="personal",
+                    represented_item_ids=(
+                        tuple(str(source.memory_id) for source in memory.sources)
+                        if is_derived
+                        else ()
+                    ),
                     source_refs=(
                         tuple(
                             ContextSourceReference(

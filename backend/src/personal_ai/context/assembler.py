@@ -330,6 +330,11 @@ class ContextAssembler:
             base_sensitivity=base_sensitivity,
             source_counters=source_counters,
             source_item_limits={"ai_memory": self.settings.memory_retrieval_limit},
+            selection_token_budgets={
+                (selection.provider_id, selection.operation): selection.max_tokens
+                for selection in context_selections
+                if selection.max_tokens is not None
+            },
             base_token_count=TokenCount(
                 result.budget.selected_total, result.budget.counter_kind
             ),

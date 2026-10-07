@@ -18,6 +18,7 @@ from personal_ai.context.adapters import (
     MemoryContextProviderFactory,
 )
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.contracts import ContextError
 from personal_ai.context.planner import (
     ContextPlanner,
     ContextPlanningCapability,
@@ -105,6 +106,63 @@ class FixtureProvider:
         )
 
 
+class MultiOperationFixtureProvider:
+    def __init__(self):
+        self.spec = ContextProviderSpec(
+            provider_id="travel.shared_context",
+            source_class="domain_current",
+            source_version="fixture-provider-v1",
+            operations=(
+                ContextOperationSpec(operation="current", allowed_fields=("current_fact",)),
+                ContextOperationSpec(operation="history", allowed_fields=("history_fact",)),
+            ),
+        )
+        self.payload_type = create_model(
+            "MultiOperationPayload",
+            __config__=ConfigDict(extra="forbid", frozen=True),
+            current_fact=(str | None, None),
+            history_fact=(str | None, None),
+        )
+        self.calls = []
+
+    def validate_selection(self, selection, inputs):
+        del inputs
+        assert self.spec.operation(selection.operation) is not None
+
+    def fetch(self, selection, scope, *, deadline):
+        del deadline
+        self.calls.append((selection.operation, selection.max_tokens))
+        payload = self.payload_type(
+            **{
+                field: (
+                    "oversized " * 80
+                    if field == "current_fact"
+                    else "bounded history"
+                )
+                for field in selection.fields
+            }
+        )
+        return (
+            ContextItem(
+                source_class="domain_current",
+                provider_id=self.spec.provider_id,
+                source_id="fixture-records-v1",
+                source_version="fixture-record-v1",
+                item_id=selection.operation,
+                owner_id=scope.owner_id,
+                application_id=scope.application_id,
+                workspace_id=scope.workspace_id,
+                authority="authoritative",
+                observed_at=NOW,
+                sensitivity="sensitive",
+                source_refs=(
+                    ContextSourceReference(kind="record", reference_id=selection.operation),
+                ),
+                payload=payload,
+            ),
+        )
+
+
 def _context(provider: FixtureProvider, application_id: str) -> ApplicationContextRequest:
     definition = ApplicationDefinition(
         application_id=application_id,
@@ -127,6 +185,32 @@ def _context(provider: FixtureProvider, application_id: str) -> ApplicationConte
         definition=definition,
         scope=scope,
         context_provider_capabilities=(capability,),
+    )
+
+
+def _context_for_providers(providers, application_id: str) -> ApplicationContextRequest:
+    provider_ids = tuple(provider.spec.provider_id for provider in providers)
+    return ApplicationContextRequest(
+        definition=ApplicationDefinition(
+            application_id=application_id,
+            display_name=application_id.title(),
+            memory_namespace=application_id,
+            context_provider_ids=provider_ids,
+        ),
+        scope=RequestScope(
+            owner_id="owner-1",
+            request_id="request-many",
+            application_id=application_id,
+            workspace_id="workspace-1",
+        ),
+        context_provider_capabilities=tuple(
+            CapabilityRegistration(
+                capability_id=provider.spec.provider_id,
+                kind="context_provider",
+                available=True,
+            )
+            for provider in providers
+        ),
     )
 
 
@@ -226,8 +310,69 @@ def test_default_standalone_recall_rule_is_deterministic_and_narrow():
     assert first.selections[0].fields == ("content", "memory_type", "effective_at")
     assert first.selections[0].max_results == 5
     assert first.selections[0].max_bytes == 8_192
-    assert first.selections[0].max_tokens == 256
+    assert first.selections[0].max_tokens == 512
     assert "source_message_ids" not in first.selections[0].fields
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "Remember to explain recursion step by step.",
+        "What do you remember about recursion?",
+        "I cannot remember how to reset my router.",
+        "Do not recall my saved personal information.",
+        "Remember that I prefer metric units.",
+        "What do you not remember about me?",
+        "I don't recall what I told you.",
+    ],
+)
+def test_non_recall_or_negated_memory_language_does_not_select_memory(intent):
+    provider = FixtureProvider(
+        "ai_memory",
+        "ai_memory",
+        ContextOperationSpec(
+            operation="search",
+            allowed_fields=("content", "memory_type", "effective_at"),
+            maximum_results=8,
+            maximum_bytes=8_192,
+            maximum_timeout_seconds=2,
+        ),
+    )
+    context = _context(provider, "personal_ai")
+    assembler = _assembler(provider, context, ContextPlanner())
+
+    plan = assembler.plan_context(intent, context, now=NOW)
+    assembled = assembler.assemble(
+        (), _pending(context, intent), application_context=context,
+        context_plan=plan, refresh=False,
+    )
+
+    assert not any(item.provider_id == "ai_memory" for item in plan.selections)
+    assert provider.calls == []
+    assert not any(item.source_class == "ai_memory" for item in assembled.source_items)
+
+
+@pytest.mark.parametrize(
+    "intent",
+    ["What did I tell you?", "What do you remember about me?"],
+)
+def test_explicit_personal_recall_phrases_still_select_memory(intent):
+    provider = FixtureProvider(
+        "ai_memory",
+        "ai_memory",
+        ContextOperationSpec(
+            operation="search",
+            allowed_fields=("content", "memory_type", "effective_at"),
+        ),
+    )
+    context = _context(provider, "personal_ai")
+    plan = _assembler(provider, context, ContextPlanner()).plan_context(
+        intent, context, now=NOW
+    )
+
+    assert [(item.provider_id, item.operation) for item in plan.selections] == [
+        ("ai_memory", "search")
+    ]
 
 
 def test_default_profile_rule_selects_one_shared_field():
@@ -251,6 +396,151 @@ def test_default_profile_rule_selects_one_shared_field():
     assert plan.selections[0].provider_id == "global_profile"
     assert plan.selections[0].fields == ("preferred_units",)
     assert plan.selections[0].max_results == 1
+
+
+@pytest.mark.parametrize(
+    ("fields", "intent"),
+    [
+        (("preferred_units", "locale"), "My preferred units and my preferred language"),
+        (
+            ("preferred_units", "locale", "response_style", "answer_length"),
+            (
+                "What are my preferred units, my preferred language, my preferred response style, "
+                "and my preferred answer length?"
+            ),
+        ),
+    ],
+)
+def test_merged_profile_rules_fetch_every_shared_field(fields, intent):
+    values = {
+        "preferred_units": "metric",
+        "locale": "en-US",
+        "response_style": "concise",
+        "answer_length": "short",
+    }
+    repository = InMemoryGlobalProfileRepository(clock=lambda: NOW)
+    repository.update(
+        "owner-1",
+        GlobalProfileUpdate(
+            fields=tuple(
+                GlobalProfileFieldUpdate(
+                    field=field,
+                    value=values[field],
+                    shared_with_applications=("personal_ai",),
+                )
+                for field in fields
+            )
+        ),
+    )
+    factory = GlobalProfileContextProviderFactory(repository)
+    context = _context(factory, "personal_ai")
+    settings = Settings(
+        ai_provider="gemini",
+        ai_model="fixture-model",
+        max_context_tokens=4_096,
+        max_response_tokens=100,
+        context_safety_margin_tokens=20,
+        summary_trigger_tokens=1_000,
+        max_summary_tokens=512,
+    )
+    assembler = ContextAssembler(
+        settings,
+        FakeTokenCounter(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {"global_profile": factory}
+        ),
+        permission_revalidator=BuiltInContextPermissionRevalidator(settings, repository),
+    )
+    plan = assembler.plan_context(intent, context, now=NOW)
+    scope_token = bind_request_scope(context.scope)
+    try:
+        assembled = assembler.assemble(
+            (), _pending(context, intent), application_context=context,
+            context_plan=plan, refresh=False,
+        )
+    finally:
+        reset_request_scope(scope_token)
+
+    assert set(plan.selections[0].fields) == set(fields)
+    assert plan.selections[0].max_results == len(fields)
+    admitted = {
+        item.payload.field: item.payload.value
+        for item in assembled.source_items
+        if item.payload.field in fields
+    }
+    assert admitted == {field: values[field] for field in fields}
+    assert set(assembled.manifest.injected_item_ids) == set(fields)
+    rendered = " ".join(message.content for message in assembled.messages)
+    assert all(values[field] in rendered for field in fields)
+
+
+def test_required_profile_field_survives_optional_field_budget_pressure():
+    values = {"preferred_units": "metric", "locale": "en-US"}
+    repository = InMemoryGlobalProfileRepository(clock=lambda: NOW)
+    repository.update(
+        "owner-1",
+        GlobalProfileUpdate(
+            fields=tuple(
+                GlobalProfileFieldUpdate(
+                    field=field,
+                    value=value,
+                    shared_with_applications=("personal_ai",),
+                )
+                for field, value in values.items()
+            )
+        ),
+    )
+    factory = GlobalProfileContextProviderFactory(repository)
+    context = _context(factory, "personal_ai")
+    required_rule = _rule(
+        application_id="personal_ai", category="required_units",
+        provider_id="global_profile", operation="profile", fields=("preferred_units",),
+        phrase="profile request", required=True, max_tokens=80,
+    )
+    optional_rule = _rule(
+        application_id="personal_ai", category="optional_locale",
+        provider_id="global_profile", operation="profile", fields=("locale",),
+        phrase="profile request", max_tokens=80,
+    )
+    planner = ContextPlanner(
+        (required_rule, optional_rule), include_default_rules=False, max_total_tokens=80
+    )
+    settings = Settings(
+        ai_provider="gemini", ai_model="fixture-model", max_context_tokens=4_096,
+        max_response_tokens=100, context_safety_margin_tokens=20,
+        summary_trigger_tokens=1_000, max_summary_tokens=512,
+    )
+    assembler = ContextAssembler(
+        settings,
+        FakeTokenCounter(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {"global_profile": factory}
+        ),
+        permission_revalidator=BuiltInContextPermissionRevalidator(settings, repository),
+        context_planner=planner,
+    )
+    plan = assembler.plan_context("profile request", context, now=NOW)
+    scope_token = bind_request_scope(context.scope)
+    try:
+        assembled = assembler.assemble(
+            (), _pending(context, "profile request"), application_context=context,
+            context_plan=plan, refresh=False,
+        )
+    finally:
+        reset_request_scope(scope_token)
+
+    assert len(plan.selections) == 1
+    assert plan.selections[0].fields == ("preferred_units",)
+    assert plan.selections[0].required
+    assert plan.selections[0].max_results == 1
+    assert any(
+        item.rule_id == optional_rule.rule_id
+        and item.disposition == "omitted"
+        and item.reason == "plan_token_budget_exhausted"
+        for item in plan.decisions
+    )
+    assert [item.payload.field for item in assembled.source_items] == ["preferred_units"]
+    assert "metric" in " ".join(message.content for message in assembled.messages)
 
 
 @pytest.mark.parametrize(
@@ -525,6 +815,255 @@ def test_global_planner_token_budget_omits_lower_priority_sources():
     )
 
 
+def test_required_sources_reserve_plan_tokens_before_higher_priority_optional_sources():
+    optional = FixtureProvider(
+        "travel.optional_context",
+        "domain_current",
+        ContextOperationSpec(operation="current", allowed_fields=("city",)),
+    )
+    required = FixtureProvider(
+        "travel.required_context",
+        "domain_current",
+        ContextOperationSpec(operation="current", allowed_fields=("dates",)),
+    )
+    context = _context_for_providers((optional, required), "travel")
+    optional_rule = _rule(
+        application_id="travel", category="optional", provider_id=optional.spec.provider_id,
+        operation="current", fields=("city",), phrase="trip planning", max_tokens=20,
+    ).model_copy(update={"priority": 1})
+    required_rule = _rule(
+        application_id="travel", category="required", provider_id=required.spec.provider_id,
+        operation="current", fields=("dates",), phrase="trip planning", max_tokens=20,
+        required=True,
+    ).model_copy(update={"priority": 50})
+    plan = ContextPlanner(
+        (optional_rule, required_rule), include_default_rules=False, max_total_tokens=20
+    ).plan(
+        "trip planning",
+        context,
+        {
+            provider.spec.provider_id: ContextPlanningCapability(
+                status="available", spec=provider.spec
+            )
+            for provider in (optional, required)
+        },
+        input_token_budget=100,
+        now=NOW,
+    )
+
+    assert [(item.provider_id, item.fields, item.required) for item in plan.selections] == [
+        (required.spec.provider_id, ("dates",), True)
+    ]
+    assert any(
+        item.rule_id == optional_rule.rule_id
+        and item.disposition == "omitted"
+        and item.reason == "plan_token_budget_exhausted"
+        for item in plan.decisions
+    )
+
+
+def test_required_sources_fail_when_their_combined_budget_does_not_fit():
+    providers = tuple(
+        FixtureProvider(
+            provider_id,
+            "domain_current",
+            ContextOperationSpec(operation="current", allowed_fields=("city",)),
+        )
+        for provider_id in ("travel.first_context", "travel.second_context")
+    )
+    context = _context_for_providers(providers, "travel")
+    rules = tuple(
+        _rule(
+            application_id="travel", category=f"required_{index}",
+            provider_id=provider.spec.provider_id, operation="current", fields=("city",),
+            phrase="required trip data", required=True, max_tokens=10,
+        )
+        for index, provider in enumerate(providers)
+    )
+    with pytest.raises(ContextPreparationError, match="required_context_plan_budget_exceeded"):
+        ContextPlanner(rules, include_default_rules=False, max_total_tokens=19).plan(
+            "required trip data",
+            context,
+            {
+                provider.spec.provider_id: ContextPlanningCapability(
+                    status="available", spec=provider.spec
+                )
+                for provider in providers
+            },
+            input_token_budget=100,
+            now=NOW,
+        )
+
+
+def test_selection_count_exhaustion_omits_optional_and_fails_required_rules():
+    providers = tuple(
+        FixtureProvider(
+            f"travel.source_{index:02d}",
+            "domain_current",
+            ContextOperationSpec(operation="current", allowed_fields=("city",)),
+        )
+        for index in range(17)
+    )
+    context = ApplicationContextRequest(
+        definition=ApplicationDefinition(
+            application_id="travel",
+            display_name="Travel",
+            memory_namespace="travel",
+            context_provider_ids=tuple(item.spec.provider_id for item in providers[:16]),
+        ),
+        scope=RequestScope(
+            owner_id="owner-1", request_id="request-limit", application_id="travel",
+            workspace_id="workspace-1",
+        ),
+        context_provider_capabilities=tuple(
+            CapabilityRegistration(
+                capability_id=item.spec.provider_id, kind="context_provider", available=True
+            )
+            for item in providers
+        ),
+    )
+    optional_rules = tuple(
+        _rule(
+            application_id="travel", category=f"source_{index}",
+            provider_id=provider.spec.provider_id, operation="current", fields=("city",),
+            phrase="all travel sources", max_tokens=1,
+        )
+        for index, provider in enumerate(providers)
+    )
+    capabilities = {
+        item.spec.provider_id: ContextPlanningCapability(status="available", spec=item.spec)
+        for item in providers
+    }
+    optional_plan = ContextPlanner(
+        optional_rules, include_default_rules=False, max_total_tokens=100
+    ).plan("all travel sources", context, capabilities, input_token_budget=1_000, now=NOW)
+    assert len(optional_plan.selections) == ContextPlanner.MAX_SELECTIONS
+    assert any(item.reason == "selection_limit_exceeded" for item in optional_plan.decisions)
+
+    required_rules = tuple(rule.model_copy(update={"required": True}) for rule in optional_rules)
+    with pytest.raises(ContextPreparationError, match="required_context_plan_budget_exceeded"):
+        ContextPlanner(
+            required_rules, include_default_rules=False, max_total_tokens=100
+        ).plan("all travel sources", context, capabilities, input_token_budget=1_000, now=NOW)
+
+
+def test_each_provider_operation_obeys_its_own_token_allocation():
+    large = FixtureProvider(
+        "travel.large_context", "domain_current",
+        ContextOperationSpec(operation="current", allowed_fields=("city",)),
+        values={"city": "oversized " * 80},
+    )
+    small = FixtureProvider(
+        "travel.small_context", "domain_current",
+        ContextOperationSpec(operation="current", allowed_fields=("price",)),
+        values={"price": "bounded value"},
+    )
+    providers = (large, small)
+    context = _context_for_providers(providers, "travel")
+    rules = (
+        _rule(
+            application_id="travel", category="large", provider_id=large.spec.provider_id,
+            operation="current", fields=("city",), phrase="trip details", max_tokens=12,
+        ),
+        _rule(
+            application_id="travel", category="small", provider_id=small.spec.provider_id,
+            operation="current", fields=("price",), phrase="trip details", max_tokens=200,
+        ),
+    )
+    settings = Settings(
+        ai_provider="gemini", ai_model="fixture-model", max_context_tokens=4_096,
+        max_response_tokens=100, context_safety_margin_tokens=20, summary_trigger_tokens=1_000,
+        max_summary_tokens=512,
+    )
+    assembler = ContextAssembler(
+        settings,
+        FakeTokenCounter(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {item.spec.provider_id: StaticContextProviderFactory(item) for item in providers}
+        ),
+        context_planner=ContextPlanner(rules, include_default_rules=False, max_total_tokens=212),
+    )
+    plan = assembler.plan_context("trip details", context, now=NOW)
+    assembled = assembler.assemble(
+        (), _pending(context, "trip details"), application_context=context,
+        context_plan=plan, refresh=False,
+    )
+    reports = {item.provider_id: item for item in assembled.manifest.items}
+
+    assert {item.provider_id: item.max_tokens for item in plan.selections} == {
+        large.spec.provider_id: 12,
+        small.spec.provider_id: 200,
+    }
+    assert reports[large.spec.provider_id].omission_reason == "selection_budget"
+    assert reports[small.spec.provider_id].injected
+    assert assembled.budget.selected_total <= assembled.budget.input_budget
+    source_budget = next(
+        item for item in assembled.manifest.sources if item.source_class == "domain_current"
+    )
+    assert source_budget.token_count <= source_budget.token_limit
+
+    required_rules = (rules[0].model_copy(update={"required": True}),)
+    required_assembler = ContextAssembler(
+        settings,
+        FakeTokenCounter(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {large.spec.provider_id: StaticContextProviderFactory(large)}
+        ),
+        context_planner=ContextPlanner(
+            required_rules, include_default_rules=False, max_total_tokens=20
+        ),
+    )
+    required_plan = required_assembler.plan_context("trip details", context, now=NOW)
+    with pytest.raises(ContextError, match="context_source_unavailable"):
+        required_assembler.assemble(
+            (), _pending(context, "trip details"), application_context=context,
+            context_plan=required_plan, refresh=False,
+        )
+
+
+def test_each_operation_of_one_provider_obeys_its_own_token_allocation():
+    provider = MultiOperationFixtureProvider()
+    context = _context_for_providers((provider,), "travel")
+    rules = (
+        _rule(
+            application_id="travel", category="current", provider_id=provider.spec.provider_id,
+            operation="current", fields=("current_fact",), phrase="trip details",
+            max_tokens=12,
+        ),
+        _rule(
+            application_id="travel", category="history", provider_id=provider.spec.provider_id,
+            operation="history", fields=("history_fact",), phrase="trip details",
+            max_tokens=200,
+        ),
+    )
+    settings = Settings(
+        ai_provider="gemini", ai_model="fixture-model", max_context_tokens=4_096,
+        max_response_tokens=100, context_safety_margin_tokens=20, summary_trigger_tokens=1_000,
+        max_summary_tokens=512,
+    )
+    assembler = ContextAssembler(
+        settings,
+        FakeTokenCounter(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {provider.spec.provider_id: StaticContextProviderFactory(provider)}
+        ),
+        context_planner=ContextPlanner(rules, include_default_rules=False, max_total_tokens=212),
+    )
+    plan = assembler.plan_context("trip details", context, now=NOW)
+    assembled = assembler.assemble(
+        (), _pending(context, "trip details"), application_context=context,
+        context_plan=plan, refresh=False,
+    )
+    reports = {
+        (item.provider_id, item.selected_operation): item for item in assembled.manifest.items
+    }
+
+    assert provider.calls == [("current", 12), ("history", 200)]
+    assert reports[(provider.spec.provider_id, "current")].omission_reason == "selection_budget"
+    assert reports[(provider.spec.provider_id, "history")].injected
+    assert assembled.budget.selected_total <= assembled.budget.input_budget
+
+
 def test_scope_fingerprint_prevents_plan_reuse_across_requests():
     provider = FixtureProvider(
         "travel.trip_context",
@@ -663,8 +1202,17 @@ def test_planned_source_budget_limits_builder_source_ceiling():
     assert result.budget.selected_total <= result.budget.input_budget
 
 
-def test_chat_plans_before_running_memory_retrieval():
-    settings = Settings(ai_provider="gemini", ai_model="fixture-model", memory_enabled=True)
+@pytest.mark.parametrize(
+    ("memory_timeout", "request_timeout", "expected_timeout"),
+    [(5, 30, 2), (0.5, 30, 0.5), (5, 0.5, 0.5)],
+)
+def test_chat_plans_before_memory_retrieval_and_caps_its_timeout(
+    memory_timeout, request_timeout, expected_timeout
+):
+    settings = Settings(
+        ai_provider="gemini", ai_model="fixture-model", memory_enabled=True,
+        memory_timeout_seconds=memory_timeout, request_timeout_seconds=request_timeout,
+    )
     factory = MemoryContextProviderFactory(settings)
     capability = CapabilityRegistration(
         capability_id="ai_memory",
@@ -702,17 +1250,29 @@ def test_chat_plans_before_running_memory_retrieval():
     class Retriever:
         def __init__(self):
             self.queries = []
+            self.timeouts = []
 
         def retrieve(self, owner_id, query, active, *, timeout):
-            del owner_id, active, timeout
+            del owner_id, active
             assert planned_intents[-1] == query
             self.queries.append(query)
+            self.timeouts.append(timeout)
 
     retriever = Retriever()
     conversations = InMemoryConversationRepository()
     messages = InMemoryMessageRepository(conversations)
     conversation_ids = []
-    for index in range(2):
+    intents = [
+        "What is the capital of Norway?",
+        "What did I tell you to remember about travel?",
+        "Remember to explain recursion step by step.",
+        "I cannot remember how to reset my router.",
+        "Do not recall my saved personal information.",
+        "Remember that I prefer metric units.",
+        "What do you not remember about me?",
+        "I don't recall what I told you.",
+    ]
+    for index in range(len(intents)):
         conversation = Conversation(
             id=uuid4(),
             owner_id="local",
@@ -733,15 +1293,22 @@ def test_chat_plans_before_running_memory_retrieval():
         memory_retriever=retriever,
     )
 
-    service.send(conversation_ids[0], "What is the capital of Norway?", request_id="ordinary")
-    service.send(
-        conversation_ids[1],
-        "What did I tell you to remember about travel?",
-        request_id="recall",
-    )
+    for index, intent in enumerate(intents):
+        service.send(conversation_ids[index], intent, request_id=f"intent-{index}")
 
-    assert planned_intents == [
-        "What is the capital of Norway?",
-        "What did I tell you to remember about travel?",
-    ]
+    assert planned_intents == intents
+    assert retriever.queries == ["What did I tell you to remember about travel?"]
+    assert len(retriever.timeouts) == 1
+    assert 0 < retriever.timeouts[0] <= expected_timeout
+
+    service._application_context = None
+    unplanned_conversation = Conversation(
+        id=uuid4(), owner_id="local", title="unplanned", created_at=NOW, updated_at=NOW
+    )
+    conversations.create(unplanned_conversation)
+    service.send(
+        unplanned_conversation.id,
+        "Remember this general instruction for the current answer.",
+        request_id="unplanned-memory",
+    )
     assert retriever.queries == ["What did I tell you to remember about travel?"]

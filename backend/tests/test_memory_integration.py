@@ -18,8 +18,15 @@ from personal_ai.api.dependencies import (
     get_message_repository,
     get_summary_repository,
 )
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.applications.registry import default_application_registry
+from personal_ai.auth.scope import RequestScope
 from personal_ai.context import ContextAssembler
+from personal_ai.context.adapters import (
+    BuiltInContextPermissionRevalidator,
+    MemoryContextProviderFactory,
+)
+from personal_ai.context.providers import ContextProviderCoordinator
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import FakeTokenCounter
 from personal_ai.entities import MessageStatus
@@ -36,6 +43,9 @@ from personal_ai.settings import get_settings
 def environment():
     f = next(f for f in load_fixtures() if f["name"] == "later-preference")
     settings, conversations, messages, repo, turns, candidates, pending, embedder = build_fixture(f)
+    query = "What did I tell you about the lodging atmosphere I prefer?"
+    embedder.vectors[query] = embedder.vectors[pending.content]
+    pending = pending.model_copy(update={"content": query})
     settings.context_inspection_enabled = settings.memory_inspection_enabled = True
     extraction = MemoryExtractionService(
         settings, repo, messages, FakeMemoryExtractor(candidates), embedder
@@ -43,13 +53,33 @@ def environment():
     extraction.run(turns[0][1])
     llm = FakeLLMClient(["Synthetic answer."])
     summaries = InMemorySummaryRepository()
-    context = ContextAssembler(settings, FakeTokenCounter(), summaries)
+    registry = default_application_registry()
+    registration = registry.registration("personal_ai")
+    application_context = ApplicationContextRequest(
+        definition=registry.get("personal_ai"),
+        scope=RequestScope(
+            owner_id="local", request_id="memory-integration", application_id="personal_ai"
+        ),
+        context_provider_capabilities=registration.context_providers,
+        tool_capabilities=registration.tools,
+    )
+    context = ContextAssembler(
+        settings,
+        FakeTokenCounter(),
+        summaries,
+        context_provider_coordinator=ContextProviderCoordinator(
+            {"ai_memory": MemoryContextProviderFactory(settings)},
+            feature_flags={"memory_enabled": settings.memory_enabled},
+        ),
+        permission_revalidator=BuiltInContextPermissionRevalidator(settings),
+    )
     retriever = MemoryRetriever(settings, repo, messages, embedder)
     service = ChatTurnService(
         conversations,
         messages,
         llm,
         owner_id="local",
+        application_context=application_context,
         model="fake",
         context_assembler=context,
         memory_retriever=retriever,
@@ -287,7 +317,7 @@ def test_regenerate_and_edit_retrieve_post_mutation_path(environment, monkeypatc
     response = client.post(path + f"/messages/{assistant.id}/regenerate")
     assert events(response)[-1] == "response.completed"
     assert snapshots[-1] == (user,)
-    edited = "What lodging atmosphere do I enjoy?"
+    edited = "What did I tell you about my lodging preference?"
     embedder.vectors[edited] = [1, 0, 0]
     response = client.post(path + f"/messages/{user.id}/edit-and-retry", json={"content": edited})
     assert events(response)[-1] == "response.completed"

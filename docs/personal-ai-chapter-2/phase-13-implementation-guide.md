@@ -24,14 +24,18 @@ source state and remaining limits.
   sources stop planning. Ambiguous categories in one configured exclusive
   group produce no selections.
 - Plans carry a request-scope fingerprint, selected provider operations,
-  category and rule reasons, and per-source token allocations. The safe Phase 12
-  build manifest records the planner version and reason codes without storing
-  user intent. A plan cannot be reused for another request scope.
+  category and rule reasons, and per-operation token allocations. The builder
+  enforces each operation allocation alongside its source-class and global
+  ceilings. Required rules receive budget before optional rules. The safe Phase
+  12 build manifest records the planner version and reason codes without
+  storing user intent. A plan cannot be reused for another request scope.
 - `ContextAssembler.plan_context` resolves planning capability state before
   retrieval. `ChatTurnService` invokes it before the memory retriever. Default
-  rules select the bounded `ai_memory.search` projection only when the user
-  explicitly asks to recall saved personal context. They select one
-  `global_profile.profile` field only for a matching explicit profile question.
+  rules select the bounded `ai_memory.search` projection only for explicit
+  personal-recall questions; general “remember” instructions and negated recall
+  language do not select memory. Matching profile questions select only their
+  shared fields. The profile operation declares one result per field, so merged
+  rules retain complete field coverage within the registered result limit.
   Other requests do not read either source.
 - The built-in permission revalidator checks the `memory_enabled` gate and
   re-reads current per-application profile sharing at final assembly. The
@@ -47,13 +51,17 @@ source state and remaining limits.
 ## Baseline and evaluation
 
 [`context-plan-fixtures.json`](../../backend/src/personal_ai/evaluation/context-plan-fixtures.json)
-contains named standalone and synthetic Travel, Shopping, Finance, and Health
-requests, plus ambiguous and unavailable-provider cases. The
+contains named standalone memory/profile requests using the built-in adapters,
+synthetic Travel, Shopping, Finance, and Health requests, plus ambiguous,
+unavailable-provider, and unshared-profile cases. The
 [`context_planner` evaluation](../../backend/src/personal_ai/evaluation/context_planner.py)
-records selected/excluded fields, exact synthetic provider calls, answer-support
-coverage, response bytes, estimated input tokens, planned token budgets, and
-fixture latency. Run it with `make context-plan-eval`. The fixtures use fake
-providers and establish only local deterministic planning behavior.
+records planned, retrieved, and injected answer support; exact operation fields,
+windows, and bounds; provider calls; source metadata; response bytes; estimated
+input tokens; planned token budgets; and fixture latency. Its offline byte
+counter includes serialized source-envelope overhead, but does not establish
+live model token-count accuracy. Run it with `make context-plan-eval`; any failed
+fixture makes the command exit nonzero. Synthetic domain fixtures establish
+only local deterministic planning behavior.
 
 ## Scope limits
 

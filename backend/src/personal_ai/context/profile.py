@@ -205,6 +205,7 @@ class GlobalProfileContextProvider:
             ContextOperationSpec(
                 operation="profile",
                 allowed_fields=("preferred_units", "locale", "response_style", "answer_length"),
+                results_per_field=True,
                 maximum_results=4,
                 maximum_bytes=16_384,
                 maximum_timeout_seconds=2,

@@ -235,13 +235,23 @@ class ChatTurnService:
                     for selection in context_plan.selections
                 )
             retrieval = None
-            if self._memory_retriever is not None and (
-                self._application_context is None or use_planned_memory
-            ):
+            if self._memory_retriever is not None and use_planned_memory:
+                memory_selection_timeout = next(
+                    (
+                        selection.timeout_seconds
+                        for selection in (context_plan.selections if context_plan else ())
+                        if selection.provider_id == "ai_memory"
+                        and selection.operation == "search"
+                    ),
+                    self._context.settings.memory_timeout_seconds,
+                )
                 retrieval = self._memory_retriever.retrieve(
                     self._owner_id, user.content, post_active,
-                    timeout=min(self._context.settings.memory_timeout_seconds,
-                                remaining(deadline) / 4),
+                    timeout=min(
+                        memory_selection_timeout,
+                        self._context.settings.memory_timeout_seconds,
+                        remaining(deadline),
+                    ),
                 )
             assembled = self._context.assemble(
                 post_active[:-1], post_active[-1], deadline=deadline, retrieval=retrieval,

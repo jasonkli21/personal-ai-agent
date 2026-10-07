@@ -108,6 +108,7 @@ class ContextItem(BaseModel, Generic[PayloadT]):
     expires_at: datetime | None = None
     sensitivity: ContextSensitivity = "unknown"
     source_refs: tuple[ContextSourceReference, ...] = Field(default=(), max_length=200)
+    represented_item_ids: tuple[str, ...] = Field(default=(), max_length=32)
     permission_dependencies: tuple[ContextPermissionDependency, ...] = Field(
         default=(), max_length=16
     )
@@ -145,6 +146,16 @@ class ContextItem(BaseModel, Generic[PayloadT]):
             raise ValueError("context_source_refs_must_be_unique")
         if len(set(self.entity_refs)) != len(self.entity_refs):
             raise ValueError("context_entity_refs_must_be_unique")
+        if len(set(self.represented_item_ids)) != len(self.represented_item_ids):
+            raise ValueError("context_represented_item_ids_must_be_unique")
+        if self.represented_item_ids and (
+            self.source_class != "ai_memory"
+            or self.provider_id != "ai_memory"
+            or self.authority != "derived"
+            or getattr(self.payload, "record_kind", None) != "derived_memory"
+            or self.item_id in self.represented_item_ids
+        ):
+            raise ValueError("context_represented_items_require_derived_memory")
         if self.source_class in {"external_research", "client_context"} and (
             self.authority == "authoritative"
         ):
@@ -242,6 +253,7 @@ class ContextOperationSpec(BaseModel):
     allowed_fields: tuple[str, ...] = Field(default=(), max_length=32)
     dynamic_fields: bool = False
     fields_required: bool = True
+    results_per_field: bool = False
     accepts_entity_refs: bool = False
     requires_time_window: bool = False
     maximum_window_seconds: int = Field(default=0, ge=0, le=31_536_000)
@@ -255,6 +267,10 @@ class ContextOperationSpec(BaseModel):
             raise ValueError("context_operation_fields_must_be_unique")
         if self.dynamic_fields and self.allowed_fields:
             raise ValueError("context_dynamic_fields_cannot_have_static_fields")
+        if self.results_per_field and (self.dynamic_fields or not self.fields_required):
+            raise ValueError("context_results_per_field_requires_static_fields")
+        if self.results_per_field and len(self.allowed_fields) > self.maximum_results:
+            raise ValueError("context_results_per_field_exceeds_result_limit")
         if self.requires_time_window and self.maximum_window_seconds < 1:
             raise ValueError("context_time_window_bound_required")
         return self

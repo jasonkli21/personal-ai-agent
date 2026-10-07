@@ -16,6 +16,7 @@ from personal_ai.applications.contracts import (
 from personal_ai.applications.registry import ApplicationRegistry, default_application_registry
 from personal_ai.auth.scope import ApplicationScope, RequestScope
 from personal_ai.context.adapters import (
+    BuiltInContextPermissionRevalidator,
     ClientContextProviderFactory,
     ConversationContextProvider,
     ConversationContextProviderFactory,
@@ -27,6 +28,7 @@ from personal_ai.context.adapters import (
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.contracts import ContextError
 from personal_ai.context.inspection import ContextInspector
+from personal_ai.context.planner import ContextPlanner
 from personal_ai.context.profile import (
     GlobalProfileContextProviderFactory,
     GlobalProfileFieldUpdate,
@@ -2143,9 +2145,154 @@ def test_memory_wrapper_preserves_source_refs_without_disclosing_embeddings():
     )
     item = result.items[0]
     assert item.source_class == "ai_memory"
+    assert item.authority == "user_asserted"
     assert item.source_refs[0].reference_id == str(source_message_id)
     assert item.payload.content == "I prefer metric units."
     assert "embedding" not in item.payload.model_dump()
+
+
+def test_planned_memory_preserves_authority_and_derived_suppression_with_fallback():
+    registry = default_application_registry()
+    application = registry.registration("personal_ai")
+    scope = RequestScope(
+        owner_id="local", request_id="request-planned-memory", application_id="personal_ai"
+    )
+    context = ApplicationContextRequest(
+        definition=application.definition,
+        scope=scope,
+        context_provider_capabilities=application.context_providers,
+        tool_capabilities=application.tools,
+    )
+    derived = _derived_memory_record(scope)
+    backups = tuple(
+        _memory_record(scope, content=source.excerpt).model_copy(
+            update={
+                "id": source.memory_id,
+                "source_fingerprint": source.source_fingerprint,
+                "source_conversation_id": source.source_conversation_id,
+                "source_turn_id": source.source_turn_id,
+                "source_message_ids": source.source_message_ids,
+            }
+        )
+        for source in derived.sources
+    )
+    unrelated = _memory_record(scope, content="I like quiet hotels.")
+    pending = Message(
+        id=uuid4(),
+        conversation_id=uuid4(),
+        owner_id=scope.owner_id,
+        role=MessageRole.USER,
+        content="What do you remember about me?",
+        status=MessageStatus.COMPLETED,
+        created_at=NOW,
+        application_id=scope.application_id,
+    )
+    settings = Settings(
+        ai_provider="fake", ai_model="fake-model", memory_enabled=True,
+        memory_retrieval_limit=4,
+    )
+    coordinator = ContextProviderCoordinator(
+        {"ai_memory": MemoryContextProviderFactory(settings)},
+        feature_flags={"memory_enabled": True},
+    )
+    retrieval = RetrievalResult(
+        selected=tuple(
+            ScoredMemory(memory, 0.9 - index * 0.01)
+            for index, memory in enumerate((*backups, derived, unrelated))
+        )
+    )
+
+    def build(memory_budget):
+        assembler = ContextAssembler(
+        settings.model_copy(update={"memory_max_context_tokens": memory_budget}),
+        FakeTokenCounter(),
+        context_provider_coordinator=coordinator,
+        permission_revalidator=BuiltInContextPermissionRevalidator(settings),
+        context_planner=ContextPlanner(max_total_tokens=memory_budget),
+        )
+        plan = assembler.plan_context(pending.content, context, now=NOW)
+        return assembler.assemble(
+            (), pending, refresh=False, retrieval=retrieval,
+            application_context=context, context_plan=plan,
+        )
+
+    fitting = build(512)
+    derived_item = next(item for item in fitting.source_items if item.item_id == str(derived.id))
+    original_items = {
+        item.item_id: item for item in fitting.source_items if item.item_id != str(derived.id)
+    }
+    assert derived_item.authority == "derived"
+    assert set(derived_item.represented_item_ids) == {str(item.id) for item in backups}
+    assert all(item.authority == "user_asserted" for item in original_items.values())
+    assert fitting.selected_memory_ids == (derived.id, unrelated.id)
+    assert all(
+        (item.id, "represented_by_derived_memory") in fitting.excluded_memories
+        for item in backups
+    )
+    rendered = " ".join(message.content for message in fitting.messages)
+    assert '"authority":"derived"' in rendered
+    assert '"authority":"user_asserted"' in rendered
+    reports = {item.item_id: item for item in fitting.manifest.items}
+    assert reports[str(derived.id)].authority == "derived"
+    assert reports[str(backups[0].id)].authority == "user_asserted"
+
+    long_excerpt = "I like tea " + "quiet hotels are peaceful " * 17
+    long_sources = tuple(
+        source.model_copy(update={"excerpt": long_excerpt}) for source in derived.sources
+    )
+    oversized_content = (
+        "Historical personal context from repeated user statements:\n"
+        + "\n".join(source.excerpt for source in long_sources)
+    )
+    oversized_derived = derived.model_copy(
+        update={
+            "sources": long_sources,
+            "content": oversized_content,
+            "normalized_content": normalize(oversized_content),
+        }
+    )
+    oversized_derived = DerivedMemory.model_validate(oversized_derived.model_dump())
+    fallback_backups = tuple(
+        Memory.model_validate(
+            _memory_record(scope, content=long_excerpt)
+            .model_copy(
+                update={
+                    "id": source.memory_id,
+                    "source_fingerprint": source.source_fingerprint,
+                    "source_conversation_id": source.source_conversation_id,
+                    "source_turn_id": source.source_turn_id,
+                    "source_message_ids": source.source_message_ids,
+                }
+            )
+            .model_dump()
+        )
+        for source in long_sources
+    )
+    fallback_retrieval = RetrievalResult(
+        selected=tuple(
+            ScoredMemory(memory, 0.9 - index * 0.01)
+            for index, memory in enumerate((*fallback_backups, oversized_derived, unrelated))
+        )
+    )
+    fallback_assembler = ContextAssembler(
+        settings.model_copy(update={"memory_max_context_tokens": 200}),
+        FakeTokenCounter(),
+        context_provider_coordinator=coordinator,
+        permission_revalidator=BuiltInContextPermissionRevalidator(settings),
+        context_planner=ContextPlanner(max_total_tokens=512),
+    )
+    fallback_plan = fallback_assembler.plan_context(pending.content, context, now=NOW)
+    fallback = fallback_assembler.assemble(
+        (), pending, refresh=False, retrieval=fallback_retrieval,
+        application_context=context, context_plan=fallback_plan,
+    )
+    assert oversized_derived.id not in fallback.selected_memory_ids
+    assert any(item.id in fallback.selected_memory_ids for item in fallback_backups)
+    assert unrelated.id in fallback.selected_memory_ids
+    assert any(
+        memory_id == oversized_derived.id and reason == "budget"
+        for memory_id, reason in fallback.excluded_memories
+    )
 
 
 def test_memory_limit_applies_after_derived_fit_and_backup_fallback():
