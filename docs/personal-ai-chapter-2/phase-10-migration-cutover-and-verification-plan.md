@@ -2,7 +2,7 @@
 
 Status: normative migration/cutover contract, reviewed 2026-10-06 against
 repository revision `e17ebd76afd1feb90fe47d959c43ab23eb553499`. P10.4–P10.5
-implementation evidence is recorded in the [handoff](phase-10-p10.4-p10.5-implementation-evidence.md): synthetic migration and static configuration checks ran; real Firestore/target-engine migration, cloud provisioning/connectivity and cutover have not been verified. P10.6 has not started.
+implementation evidence is recorded in the [handoff](phase-10-p10.4-p10.5-implementation-evidence.md): synthetic migration and static configuration checks ran; real Firestore/target-engine migration, cloud provisioning/connectivity and cutover have not been verified. The user reports that Firestore was never deployed and no records exist; P10.6 supports an evidence-recorded no-source disposition, while runtime cutover and target-store verification remain required.
 
 Read the authoritative [Phase 10 plan](personal-ai-next-scope-detailed-implementation-plans/plans/phase-10-implementation-plan.md),
 [ADR 0021](../decisions/0021-polyglot-persistence-foundation.md) and
@@ -88,7 +88,30 @@ cycles, missing parents, cross-scope refs, unmatched jobs/receipts, duplicate
 semantic identities and invalid vector spaces. Reject/quarantine reports remain
 safe; a quarantine is not acceptance or a hidden alternate canonical store.
 
-## Final delta and cutover
+## Source disposition and runtime cutover
+
+First determine which branch applies:
+
+- **Source exists:** use the full inventory, backfill, final-delta and bounded
+  cutover protocol below. A no-source assertion does not override an actual
+  deployed database, emulator dataset, backup/export, or other Firestore source.
+- **No source/data:** record the operator disposition, date, basis, checked
+  deployment/configuration surfaces, and any surfaces that could not be checked.
+  The user reports that Firestore was never deployed; this report is context, not
+  independent cloud-account evidence. In this branch, do not run an empty live
+  backfill, final delta, data rollback window, or source teardown. Preserve
+  synthetic migration results in historical evidence, then remove the
+  Firestore source reader/command and migration-only schema/code if no future
+  import use case is retained.
+
+Both branches require an application runtime cutover: switch the complete API,
+worker, safeguard, provider-throttling, maintenance and cleanup bundle from the
+currently selected Firestore repositories to Postgres/DynamoDB, fence any old
+runtime consumers, run target-store parity and isolation checks, and record the
+recovery path. A no-source data disposition does not establish cloud connectivity
+or strict-$0 eligibility.
+
+### If a Firestore source exists
 
 Choose and record the operator, write-freeze budget and rollback-window duration
 before cloud cutover; repository plans cannot infer them from a live account.
@@ -132,7 +155,7 @@ represent target changes safely; where it cannot, supported recovery is forward
 repair. Maintain compatible application/schema revisions and deletion-aware
 restore requirements. A rollback plan is not proof of a tested restore.
 
-Retirement acceptance requires:
+For an actual source, retirement acceptance requires:
 
 - complete reconciliation or explicit approved per-record dispositions;
 - scoped repository/evaluation regressions and export/lifecycle inventory checks;
@@ -141,8 +164,17 @@ Retirement acceptance requires:
   in API, worker, auth/safeguards, domain throttling, maintenance or cleanup;
 - removal of obsolete runtime IAM grants, source provisioning/index/emulator/TTL
   and paid backup assumptions; explicit legacy-data/access/window disposition;
-- legacy migration/export tooling isolated from normal runtime dependencies;
+- legacy migration/export tooling isolated from normal runtime dependencies, if a source exists and the tool is retained;
 - factual README/architecture/setup/deployment/runbook closeout and recovery status.
+
+For a documented no-source disposition, replace source reconciliation and the
+rollback-window requirements with recorded no-source evidence; do not report
+them as completed migrations. Retirement still requires the full runtime
+dependency removal, affected regressions, target-store recovery status, obsolete
+Firestore setup/grant removal, and factual documentation closeout. This project's
+re-scoped path removes the Firestore migration tool and migration-only control
+schema because no legacy import source is expected; preserve this contract and
+existing migration evidence as historical documentation.
 
 Historical ADRs/evidence remain historical. Physical account deletion, full legacy
 owner migration, complete provider accounting and operational release readiness
@@ -200,7 +232,8 @@ their completion. Later Phase 36 consumes, rather than replaces, those obligatio
 
 ### P10.6
 
-- Freeze every writer and cut over the complete compatible runtime bundle.
+- For a source-backed cutover, freeze every writer; in either branch, cut over the
+  complete compatible runtime bundle.
 - Run all affected existing repository/evaluation regressions, real local-engine
   contract tests, migration/recovery/final-delta tests and export/isolation checks.
 - Verify live Neon/AWS/GCP paths separately; local DynamoDB ignores provisioned
@@ -211,6 +244,11 @@ their completion. Later Phase 36 consumes, rather than replaces, those obligatio
   Full Phase 10 completion requires its cloud acceptance; missing credentials
   never weaken offline tests or become evidence of passing cloud checks.
 
+For the no-source branch, writer freeze/final delta/data rollback-window bullets
+above apply only if a source is found. Record the evidence basis and limits for
+the no-source disposition, still perform runtime cutover and parity checks, and
+remove migration-only Firestore code when no legacy import is retained.
+
 ## Verification matrix — future acceptance, not execution evidence
 
 | Surface | Deterministic/local checks | Separate opt-in checks |
@@ -220,7 +258,7 @@ their completion. Later Phase 36 consumes, rather than replaces, those obligatio
 | P knowledge/research | Atomic run/session and effect/state commits; FK/replay constraints; v1/v2/expiry/source parity | Neon migrations/pooled connection/version behavior |
 | Embeddings | Original-value round-trip, provider/task/dimension mismatch, 768d and 2,048d exact casts, numeric threshold/band/tie coverage; CPU/byte measurements | Neon extension/vector queries and plan resource fit; no provider calls for backfill |
 | Cross-store recovery | Crash before/after P apply/D ack, applied-versus-abort receipt race, expired guard, stale worker, lease replacement and source edits | Cross-cloud timeout/outage/cancellation recovery |
-| Migration | Dry-run/rerun/restart/checkpoint-loss, source updates/deletes, rejection/count/hash closure and complete scoped export | Controlled Firestore snapshot and final delta |
+| Migration | Dry-run/rerun/restart/checkpoint-loss, source updates/deletes, rejection/count/hash closure and complete scoped export when a source exists; otherwise a documented no-source disposition | Controlled Firestore snapshot and final delta only when a source exists |
 | Account lifecycle | Full inventory, authorized export completeness/size/failure, tombstones/derived deps; preserve pending-operator deletion | Export fidelity, backup/deletion-aware restore remain independent obligations |
 | Deployment/cost | Configuration rejects cloud fallback/unknown billing paths; bounded clients and defaults | Service federation, Cloud Run→Neon/AWS TLS, private IAM, account/region pricing/limits/network and recovery |
 

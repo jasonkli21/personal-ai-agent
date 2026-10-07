@@ -1,6 +1,6 @@
 # Phase 10 implementation plan — Polyglot persistence foundation and Firestore migration
 
-Status: P10.0–P10.5 implementation is recorded; Firestore remains the selected runtime database and P10.6 has not started. P10.4 synthetic migration/reconciliation and P10.5 static IAM/capacity checks pass. Real Firestore/target-engine runs, deployed cloud acceptance, Docker Compose execution and cutover remain unverified or open. Phases 3–9 are intentionally unused in this renumbered chapter so Phase 10 is the explicit architectural boundary before the preserved former Phase 3 roadmap resumes at Phase 11.
+Status: P10.0–P10.5 implementation is recorded; Firestore remains the selected runtime database and P10.6 has not started. P10.4 synthetic migration/reconciliation and P10.5 static IAM/capacity checks pass. The user reports that Firestore was never deployed and there is no source dataset to migrate. P10.6 therefore has a no-source retirement path: record that disposition, cut over runtime wiring, verify target-store behavior, and remove Firestore runtime and migration code without fabricating a live data cutover. Real target-engine and deployed cloud acceptance, and Docker Compose execution, remain unverified or open. Phases 3–9 are intentionally unused in this renumbered chapter so Phase 10 is the explicit architectural boundary before the preserved former Phase 3 roadmap resumes at Phase 11.
 
 P10.0 documentation decisions completed 2026-10-06 against repository revision `e17ebd76afd1feb90fe47d959c43ab23eb553499`. P10.1–P10.3 have a local implementation and targeted evidence; P10.4–P10.5 implementation now has targeted synthetic/static evidence. Firestore remains the selected runtime database. P10.6 is not started. See the [P10.1–P10.3 implementation evidence](../../phase-10-p10.1-p10.3-implementation-evidence.md) and [P10.4–P10.5 implementation evidence](../../phase-10-p10.4-p10.5-implementation-evidence.md). Real-engine migration, Docker Compose execution, deployed cloud acceptance and cutover remain unverified.
 
@@ -208,23 +208,25 @@ Review fixed provisioned Standard table/GSI capacity against actual account/regi
 
 **Acceptance:** opt-in cloud smoke tests prove CRUD/query/vector paths against Neon and AWS without silently enabling an unreviewed paid path.
 
-### P10.6 — Cutover, rollback window, Firestore retirement, and documentation closeout
+### P10.6 — Runtime cutover, conditional data cutover, Firestore retirement, and documentation closeout
 
-Before cutover, run repository/evaluation regressions, reconcile source/target invariants, verify account export/deletion inventory, verify no cross-owner/app/workspace leakage, and validate Cloud Run/strict-$0 configuration.
+P10.6 always cuts over the application runtime and proves that the target stores preserve existing behavior. A Firestore data cutover is conditional on an actual deployed source and records. The user reports that Firestore was never deployed and no Firestore data exists; for this no-source path, record the operator disposition and its evidence basis, and treat backfill, final-delta, data rollback-window, and source-resource teardown steps as not applicable. Do not claim cloud inventory was independently verified if no cloud account check was performed.
 
-Cut over with a short write freeze/final delta rather than indefinite dual writes. Keep Firestore data/read access only for a bounded rollback/verification window. A rollback after new writes must include an explicit replay/export plan; do not describe a config flip that loses post-cutover writes as lossless.
+Before runtime cutover, run affected repository/evaluation regressions, real local-engine contract tests, verify account export/deletion inventory and owner/application/workspace isolation, and validate Cloud Run/strict-$0 configuration. The runtime cutover remains necessary because the current code selects Firestore. If a source dataset is discovered, stop and use the full freeze, final-delta, reconciliation, rollback-window, and retirement protocol in the migration/cutover contract before removing its reader or data.
 
-Cut over all API, worker, auth/safeguard, provider-throttling, maintenance and cleanup factories as one compatible bundle; fence old revisions/consumers. Reverse replay must cover cuts, knowledge effects, jobs/replay, audit, counters and deletion/tombstones, or use forward repair. Retirement requires no normal Firestore constructor/import/settings dependency or fallback, reconciled source dispositions and explicit legacy access/window policy. Open Phase 9 physical deletion, full owner migration, accounting and release obligations remain independent.
+Cut over all API, worker, auth/safeguard, provider-throttling, maintenance and cleanup factories as one compatible bundle; fence old revisions/consumers. For a verified no-source disposition, no reverse data replay or rollback window is needed; document forward repair as the recovery path for runtime defects. Retirement requires no Firestore runtime or migration-tool dependency, no Firestore fallback, and an explicit no-source disposition. If a source exists, require reconciliation, a tested/explicit post-cutover recovery plan, and legacy access/window policy. Open Phase 9 physical deletion, full owner migration, accounting and operational release obligations remain independent.
+
+Because the no-source path does not retain an import use case, remove the operator Firestore migration reader/command and migration-only runtime dependencies/control schema along with Firestore repositories. Preserve migration contracts, synthetic results, ADRs, and prior evidence as historical documentation; do not rewrite history to imply Firestore was deployed or that a real migration ran.
 
 After acceptance:
 
-- remove Firestore from normal repository wiring;
+- remove Firestore repositories, SDK dependencies, settings, runtime wiring, source migration command, and migration-only schema/code;
 - remove obsolete Firestore vector/composite indexes and emulator/deployment assumptions that are no longer needed;
 - remove paid TTL assumptions incompatible with strict-$0 operation;
-- retain migration/export tooling and historical ADR/evidence as appropriate;
+- preserve migration contracts, synthetic results, ADRs, and prior evidence as historical documentation; remove the source importer because the no-source path has no legacy import use case;
 - update living architecture/deployment/project docs to describe Firestore as retired legacy storage rather than current architecture.
 
-**Acceptance:** normal local/cloud runtime has no Firestore dependency, regression suites pass on the new stores, and rollback/recovery status is explicit.
+**Acceptance:** application code, local/cloud runtime, and active setup have no Firestore dependency; affected regression suites pass on Postgres/DynamoDB; the no-source disposition or actual source reconciliation is recorded; target-store recovery status is explicit. Cloud acceptance gates remain separately reported as verified or unverified.
 
 ## Requirement coverage
 
@@ -234,7 +236,7 @@ After acceptance:
 | R10.2: Support cloud-independent local Postgres/pgvector and DynamoDB Local. | P10.1 |
 | R10.3: Migrate query-rich/vector knowledge state to Postgres/pgvector. | P10.2 |
 | R10.4: Migrate operational timeline state to DynamoDB using access-pattern-first design. | P10.3 |
-| R10.5: Provide idempotent/reconcilable Firestore migration. | P10.4 |
+| R10.5: Provide idempotent/reconcilable Firestore migration when a source exists; otherwise record an evidence-based no-source disposition. | P10.4, P10.6 |
 | R10.6: Support strict-$0 Neon/AWS deployment while compute remains primarily GCP. | P10.5 |
 | R10.7: Perform bounded cutover and retire Firestore from normal runtime. | P10.6 |
 | R10.8: Preserve all prior product/security/provenance/export/deletion scope. | P10.0–P10.6 |
@@ -271,6 +273,6 @@ Phase 11+ consumes this phase as a standing storage foundation. Specifically:
 
 Required local/offline checks include unit/lint suites, repository contract tests against fakes, Postgres integration tests, DynamoDB Local integration tests, migration dry-run/restart/idempotency tests, cross-store provenance/reference tests, account export/deletion inventory tests, vector compatibility/index tests, and whitespace/link validation.
 
-External opt-in checks include Neon connectivity/migrations/vector queries, AWS DynamoDB IAM/table/GSI/conditional-write behavior, production capacity/throttle behavior not reproduced by DynamoDB Local, Cloud Run-to-Neon/AWS connectivity, safe Firestore-source migration against a controlled snapshot, and strict-$0 account/resource configuration. Skipped external checks remain **unverified**, not passed.
+External opt-in checks include Neon connectivity/migrations/vector queries, AWS DynamoDB IAM/table/GSI/conditional-write behavior, production capacity/throttle behavior not reproduced by DynamoDB Local, Cloud Run-to-Neon/AWS connectivity, and strict-$0 account/resource configuration. A controlled Firestore-source migration is required only if a deployed source/data set is found. Skipped external checks remain **unverified**, not passed.
 
-Phase 10 is complete only when the local stack is reproducible, cloud implementations satisfy repository contracts in opt-in smoke tests, migration is repeatable/reconciled, normal runtime no longer depends on Firestore, README/living docs accurately describe the implemented architecture, and no previously planned product scope has been removed.
+Phase 10 is complete only when the local stack is reproducible, cloud implementations satisfy repository contracts in opt-in smoke tests, any actual source is repeatably migrated and reconciled (or an evidence-based no-source disposition is recorded), normal runtime and application code no longer depend on Firestore, README/living docs accurately describe the implemented architecture, and no previously planned product scope has been removed. Report unavailable cloud acceptance as unverified rather than silently passing it.
