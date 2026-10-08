@@ -35,6 +35,7 @@ from personal_ai.context.providers import (
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import FakeTokenCounter
 from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
+from personal_ai.llm import GeminiLLMClient
 from personal_ai.llm.fake import FakeLLMClient
 from personal_ai.services.chat_turns import ChatTurnService
 from personal_ai.settings import Settings
@@ -491,3 +492,28 @@ def test_chat_passes_effective_sensitivity_and_policy_version_to_inference():
     assert inference_context.effective_sensitivity == "sensitive"
     assert inference_context.maximum_sensitivity == "sensitive"
     assert inference_context.policy_version == "application-context-policy-v1"
+
+
+def test_real_provider_chat_requires_application_context_before_reserving_turn():
+    settings = Settings(ai_provider="gemini", ai_model="gemini-test", ai_api_key="test-key")
+    conversations = InMemoryConversationRepository()
+    messages = InMemoryMessageRepository(conversations)
+    now = datetime(2026, 10, 7, tzinfo=UTC)
+    conversation = Conversation(
+        id=uuid4(), owner_id="local", title="unscoped", created_at=now, updated_at=now
+    )
+    conversations.create(conversation)
+    llm = GeminiLLMClient(settings, client=object())
+    service = ChatTurnService(
+        conversations,
+        messages,
+        llm,
+        owner_id="local",
+        model="gemini-test",
+        context_assembler=ContextAssembler(settings, FakeTokenCounter()),
+    )
+
+    with pytest.raises(ContextPreparationError, match="application_context_required"):
+        service.send(conversation.id, "Hello", request_id="unscoped-real-provider")
+
+    assert messages.list_active(owner_id="local", conversation_id=conversation.id) == []

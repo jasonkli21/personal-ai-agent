@@ -8,6 +8,8 @@ from personal_ai.llm.client import ChatMessage, InferenceContext
 class FakeLLMClient:
     """Yield configured deltas in order without network or credentials."""
 
+    requires_inference_context = False
+
     def __init__(self, deltas: Sequence[str] = ()) -> None:
         self.deltas = tuple(deltas)
         self.requests: list[tuple[ChatMessage, ...]] = []

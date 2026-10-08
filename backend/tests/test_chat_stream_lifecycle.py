@@ -20,6 +20,9 @@ from personal_ai.api.dependencies import (
     get_message_repository,
     get_settings,
 )
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import default_application_registry
+from personal_ai.auth.scope import RequestScope
 from personal_ai.context import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
@@ -37,6 +40,8 @@ from personal_ai.storage import (
 
 class ControlledLLM:
     """Fake provider with explicit wait and iterator-finalization signals."""
+
+    requires_inference_context = False
 
     def __init__(self, *, wait_after_first: bool = False, fail_after_first: bool = False) -> None:
         self.wait_after_first = wait_after_first
@@ -560,11 +565,22 @@ def test_gemini_timeout_after_first_delta_finalizes_partial_turn() -> None:
         updated_at=now,
     )
     conversations.create(conversation)
+    registry = default_application_registry()
+    registration = registry.registration("personal_ai")
+    application_context = ApplicationContextRequest(
+        definition=registration.definition,
+        scope=RequestScope(
+            owner_id="local", request_id="gemini-timeout-test", application_id="personal_ai"
+        ),
+        context_provider_capabilities=registration.context_providers,
+        tool_capabilities=registration.tools,
+    )
     service = ChatTurnService(
         conversations,
         messages,
         llm,
         owner_id="local",
+        application_context=application_context,
         model="test",
         context_assembler=ContextAssembler(
             Settings(ai_provider="gemini", ai_model="test"), EstimatedTokenCounter()

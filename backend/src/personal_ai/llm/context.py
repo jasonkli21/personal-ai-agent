@@ -109,9 +109,14 @@ class GeminiConversationSummarizer:
         client = self.client
         owns = client is None
         try:
+            adapter = GeminiLLMClient(self.settings)
+            adapter._validate_inference_context(inference_context, required=True)
             if owns:
-                adapter = GeminiLLMClient(self.settings)
-                adapter._validate_request(request, inference_context=inference_context)
+                adapter._validate_request(
+                    request,
+                    inference_context=inference_context,
+                    require_inference_context=True,
+                )
                 client = adapter._build_client()
             options = {"retry_options": {"attempts": 1}}
             if timeout_seconds is not None:

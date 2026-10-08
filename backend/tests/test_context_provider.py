@@ -10,7 +10,13 @@ from google import genai
 
 from personal_ai.context.assembler import SUMMARY_INSTRUCTION, summary_request
 from personal_ai.evaluation.context import build_fixture, fixture_settings, load_fixtures
-from personal_ai.llm import ChatMessage, GeminiLLMClient, LLMUnavailableError
+from personal_ai.llm import (
+    ChatMessage,
+    GeminiLLMClient,
+    InferenceContext,
+    LLMInvalidRequestError,
+    LLMUnavailableError,
+)
 from personal_ai.llm.client import SYSTEM_INSTRUCTION
 from personal_ai.llm.context import GeminiConversationSummarizer, GeminiTokenCounter
 
@@ -66,7 +72,15 @@ def test_summary_generation_adapter_sets_output_ceiling_and_preserves_prompt_ins
     active, _, _ = build_fixture(load_fixtures()[2])
     try:
         settings = fixture_settings()
-        draft = GeminiConversationSummarizer(settings, client).summarize(active[:2], None)
+        draft = GeminiConversationSummarizer(settings, client).summarize(
+            active[:2],
+            None,
+            inference_context=InferenceContext(
+                effective_sensitivity="personal",
+                maximum_sensitivity="sensitive",
+                policy_version="test-policy-v1",
+            ),
+        )
         assert draft.content == "Launch color is amber."
         assert captured[0]["generationConfig"]["maxOutputTokens"] == settings.max_summary_tokens
         system = captured[0]["systemInstruction"]["parts"][0]["text"]
@@ -78,6 +92,27 @@ def test_summary_generation_adapter_sets_output_ceiling_and_preserves_prompt_ins
         )
     finally:
         client.close()
+
+
+def test_gemini_summary_requires_policy_before_provider_dispatch():
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"candidates": []})
+
+    client = genai.Client(
+        api_key="offline-fake",
+        http_options={"client_args": {"transport": httpx.MockTransport(handler)}},
+    )
+    active, _, _ = build_fixture(load_fixtures()[2])
+    settings = fixture_settings(ai_api_key="offline-fake")
+
+    with pytest.raises(LLMInvalidRequestError, match="context disclosure policy is required"):
+        GeminiConversationSummarizer(settings, client).summarize(active[:2], None)
+
+    assert calls == []
+    client.close()
 
 
 def test_provider_count_failure_is_translated_without_leaking_response():
@@ -119,7 +154,12 @@ def test_stream_adapter_keeps_summary_in_system_context_and_enforces_response_re
         return [
             chunk
             async for chunk in client.stream(
-                [ChatMessage("system", "Historical summary"), ChatMessage("user", "newest")]
+                [ChatMessage("system", "Historical summary"), ChatMessage("user", "newest")],
+                inference_context=InferenceContext(
+                    effective_sensitivity="personal",
+                    maximum_sensitivity="sensitive",
+                    policy_version="test-policy-v1",
+                ),
             )
         ]
 

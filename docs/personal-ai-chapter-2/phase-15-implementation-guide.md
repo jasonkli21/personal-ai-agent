@@ -39,8 +39,10 @@ records the exact tested tree and remaining gates.
   provider-neutral `InferenceContext`. [`services/chat_turns.py`](../../backend/src/personal_ai/services/chat_turns.py)
   passes the assembled effective sensitivity, policy ceiling, and policy version
   to the inference client. [`llm/gemini.py`](../../backend/src/personal_ai/llm/gemini.py)
-  validates that envelope before generation; it is internal control metadata and
-  is not sent as provider prompt content.
+  requires and validates that envelope before generation; missing or invalid
+  envelopes fail before provider dispatch. The built-in fake client is the
+  explicit unscoped development/test path. The envelope is internal control
+  metadata and is not sent as provider prompt content.
 - [`test_context_authorization.py`](../../backend/tests/test_context_authorization.py)
   covers preflight denial before source, summary, or counting work, item-level
   sensitivity joining, and the inference envelope. The context-plan baseline
@@ -64,8 +66,11 @@ grants; no grant is enabled by these fields.
   conversation messages and summaries do not yet carry source grant dependencies
   end-to-end. Revocation through all history, summaries, caches, traces, exports,
   and artifacts is not complete.
-- The local policy does not prove deployed application/workspace membership,
-  provider data-use/retention behavior, cloud IAM, or production security.
+- A client-supplied application label selects a registered namespace but does
+  not independently prove principal membership. The local policy does not prove
+  deployed application/workspace membership, provider data-use/retention
+  behavior, cloud IAM, or production security; live domain sources must wait for
+  an authoritative membership check.
   Synthetic providers and offline tests establish only the stated local code
   contracts; no regulatory-readiness claim follows.
 - The root README was reviewed. No README edit was needed because this phase

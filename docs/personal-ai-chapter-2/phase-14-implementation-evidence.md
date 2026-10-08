@@ -91,3 +91,14 @@ product; repository status and guides now describe Phase 14 as partial.
   standalone research, proposal, and booking manifests remain in-memory.
 - Offline evaluation targets use synthetic/fake fixtures and do not verify
   provider behavior.
+
+## Current review-closure verification
+
+The later Phase 15 review-closure pass reran the full backend suite on a working
+tree based on `78d1de9ae9f7b1a6c2b73b5eaabd642eae2bfafd`, including the Phase 14
+trace persistence deadline and unsupported historical schema regressions:
+735 passed, 26 skipped, and one warning (761 collected). Ruff and
+`git diff --check` also passed. Exact commands and the scope limits are recorded
+in the [Phase 15 evidence](phase-15-implementation-evidence.md). This does not
+close Phase 14's immutable Postgres policy/source-version reference prerequisite
+or its DynamoDB Local and external verification gates.

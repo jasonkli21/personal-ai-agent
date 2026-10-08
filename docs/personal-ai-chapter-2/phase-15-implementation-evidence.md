@@ -84,3 +84,28 @@ The focused and full checks use fake/offline context, repository, and model
 adapters. They verify local contracts only and do not establish provider,
 emulator, cloud, deployed membership, IAM, production-security, or regulatory
 behavior. The 26 skipped tests were not represented as passed.
+
+## Phase 14 and Phase 15 review-closure verification
+
+Date: 2026-10-07 (America/Los_Angeles). The verification tree was based on
+`78d1de9ae9f7b1a6c2b73b5eaabd642eae2bfafd` with the review-pass code and
+documentation changes present in the working tree. It closes the remaining
+dispatch gap by requiring a valid sensitivity/policy envelope for Gemini
+generation and summaries, and by rejecting unscoped chat preparation when the
+configured inference client requires that envelope. The built-in fake client is
+explicitly marked as the unscoped development/test adapter.
+
+| Command | Result |
+| --- | --- |
+| `cd backend && .venv/bin/python -m pytest` | Passed: 735 passed, 26 skipped, 1 warning (761 collected). |
+| `cd backend && .venv/bin/python -m ruff check .` | Passed. |
+| `git diff --check` | Passed. |
+
+The full suite includes the Phase 14 trace-deadline/schema cases and Phase 15
+payload-projection, baseline-history, standalone-policy, and inference-envelope
+cases. The root Makefile aliases could not start in this shell because `python`
+was not on `PATH`; the equivalent backend virtual-environment commands passed.
+These offline results do not close the remaining immutable Postgres version
+reference, derived-context revocation, application-membership, provider, local
+emulator, cloud, or production-security gates. The Phase 14 and Phase 15
+acceptance status remains partial.

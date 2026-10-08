@@ -5,7 +5,11 @@ import os
 
 import pytest
 
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import default_application_registry
+from personal_ai.auth.scope import RequestScope
 from personal_ai.context import ContextAssembler
+from personal_ai.context.authorization import make_inference_context
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.evaluation.context import build_fixture, load_fixtures
 from personal_ai.llm import GeminiLLMClient
@@ -37,7 +41,17 @@ def test_synthetic_long_thread_preserves_old_fact_with_authoritative_counts():
         InMemorySummaryRepository(),
         GeminiConversationSummarizer(settings),
     )
-    context = assembler.assemble(active, pending)
+    registry = default_application_registry()
+    registration = registry.registration("personal_ai")
+    application_context = ApplicationContextRequest(
+        definition=registration.definition,
+        scope=RequestScope(
+            owner_id="local", request_id="manual-context-check", application_id="personal_ai"
+        ),
+        context_provider_capabilities=registration.context_providers,
+        tool_capabilities=registration.tools,
+    )
+    context = assembler.assemble(active, pending, application_context=application_context)
     assert context.budget.counter_kind == "provider"
     assert context.budget.selected_total <= context.budget.input_budget
     assert context.summary and "amber" in context.summary.content.lower()
@@ -45,7 +59,15 @@ def test_synthetic_long_thread_preserves_old_fact_with_authoritative_counts():
 
     async def collect():
         return "".join(
-            [chunk async for chunk in GeminiLLMClient(settings).stream(context.messages)]
+            [
+                chunk
+                async for chunk in GeminiLLMClient(settings).stream(
+                    context.messages,
+                    inference_context=make_inference_context(
+                        application_context, context.manifest.effective_sensitivity
+                    ),
+                )
+            ]
         )
 
     assert "amber" in asyncio.run(collect()).lower()

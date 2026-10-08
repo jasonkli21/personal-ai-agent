@@ -21,6 +21,8 @@ from personal_ai.settings import Settings
 class GeminiLLMClient:
     """Stream Gemini responses while containing all SDK details in ``llm``."""
 
+    requires_inference_context = True
+
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         self._settings = settings
         self._client = client
@@ -56,7 +58,11 @@ class GeminiLLMClient:
         timeout_seconds: float,
         inference_context: InferenceContext | None = None,
     ) -> AsyncIterator[str]:
-        self._validate_request(messages, inference_context=inference_context)
+        self._validate_request(
+            messages,
+            inference_context=inference_context,
+            require_inference_context=True,
+        )
         client = self._client
         owns_client = client is None
         try:
@@ -92,6 +98,7 @@ class GeminiLLMClient:
         messages: Sequence[ChatMessage],
         *,
         inference_context: InferenceContext | None = None,
+        require_inference_context: bool = False,
     ) -> None:
         if self._settings.ai_provider.lower() != "gemini":
             raise LLMInvalidConfigurationError("AI_PROVIDER must be 'gemini'")
@@ -101,6 +108,16 @@ class GeminiLLMClient:
             raise LLMInvalidRequestError("at least one chat message is required")
         if any(not message.content.strip() for message in messages):
             raise LLMInvalidRequestError("chat messages must not be empty")
+        self._validate_inference_context(
+            inference_context, required=require_inference_context
+        )
+
+    @staticmethod
+    def _validate_inference_context(
+        inference_context: InferenceContext | None, *, required: bool
+    ) -> None:
+        if required and inference_context is None:
+            raise LLMInvalidRequestError("context disclosure policy is required")
         if inference_context is not None:
             try:
                 InferenceContext(

@@ -32,6 +32,8 @@ class InferenceContext:
 class LLMClient(Protocol):
     """Stream provider-neutral text deltas for an ordered chat history."""
 
+    requires_inference_context: bool
+
     def stream(
         self,
         messages: Sequence[ChatMessage],

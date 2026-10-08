@@ -21,8 +21,10 @@ from personal_ai.api.schemas import (
 from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.auth.scope import ApplicationScope
 from personal_ai.context import ContextAssembler
+from personal_ai.context.authorization import make_inference_context
 from personal_ai.context.contracts import ContextError
 from personal_ai.context.deadline import remaining
+from personal_ai.context.providers import ContextPreparationError
 from personal_ai.context.traces import ContextTraceManifest, ContextTraceRepository
 from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
 from personal_ai.llm import (
@@ -221,6 +223,11 @@ class ChatTurnService:
         assistant_supersedes: UUID | None,
         request_id: str,
     ) -> AsyncIterator[str]:
+        if (
+            self._application_context is None
+            and getattr(self._llm, "requires_inference_context", True)
+        ):
+            raise ContextPreparationError("application_context_required")
         reservation = uuid4()
         deadline = monotonic() + self._context.settings.request_timeout_seconds
         persisted_users = self._messages.prepare_message_turn(
@@ -301,17 +308,12 @@ class ChatTurnService:
                 remaining(deadline)
             if assembled.manifest is None:
                 raise ContextError("actual_context_manifest_unavailable")
-            policy = (
-                self._application_context.definition.context_policy
+            inference_context = (
+                make_inference_context(
+                    self._application_context, assembled.manifest.effective_sensitivity
+                )
                 if self._application_context is not None
                 else None
-            )
-            inference_context = InferenceContext(
-                effective_sensitivity=assembled.manifest.effective_sensitivity,
-                maximum_sensitivity=(
-                    policy.maximum_model_sensitivity if policy is not None else "sensitive"
-                ),
-                policy_version=policy.version if policy is not None else "unscoped-local-v1",
             )
             assistant = self._new_message(
                 conversation_id=user.conversation_id,

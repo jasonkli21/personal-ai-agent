@@ -6,7 +6,7 @@ import os
 import pytest
 
 from personal_ai.entities.conversation import MessageRole
-from personal_ai.llm import ChatMessage, GeminiLLMClient
+from personal_ai.llm import ChatMessage, GeminiLLMClient, InferenceContext
 from personal_ai.settings import Settings
 
 
@@ -19,7 +19,14 @@ def test_configured_gemini_streams_a_response() -> None:
     client = GeminiLLMClient(settings)
 
     deltas = asyncio.run(
-        _collect(client.stream([ChatMessage(role=MessageRole.USER, content="Reply with hello.")]))
+        _collect(client.stream(
+            [ChatMessage(role=MessageRole.USER, content="Reply with hello.")],
+            inference_context=InferenceContext(
+                effective_sensitivity="personal",
+                maximum_sensitivity="sensitive",
+                policy_version="manual-test-policy-v1",
+            ),
+        ))
     )
 
     assert "".join(deltas)
