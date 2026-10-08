@@ -51,6 +51,7 @@ def _groq_settings(**overrides) -> Settings:
         "groq_free_tier_verified": True,
         "groq_privacy_approved": True,
         "groq_privacy_max_sensitivity": "personal",
+        "groq_account_scope_id": "groq-synthetic-account",
         "groq_approved_model_aliases": ("fixture-model-rev2",),
         "groq_structured_output_verified": True,
         "groq_preflight_reference": "synthetic-fixture-only",

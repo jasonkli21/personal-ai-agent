@@ -304,6 +304,19 @@ class Settings(BaseSettings):
             raise ValueError("groq_quota_bucket_required")
         if self.cloudflare_quota_membership_verified and not self.cloudflare_quota_buckets:
             raise ValueError("cloudflare_quota_bucket_required")
+        if self.groq_free_tier_verified and (
+            not self.groq_account_scope_id.strip() or not self.groq_preflight_reference.strip()
+        ):
+            raise ValueError("groq_endpoint_preflight_required")
+        if self.groq_privacy_approved and not self.groq_preflight_reference.strip():
+            raise ValueError("groq_endpoint_preflight_required")
+        if self.cloudflare_free_tier_verified and (
+            not self.cloudflare_account_id.strip()
+            or not self.cloudflare_preflight_reference.strip()
+        ):
+            raise ValueError("cloudflare_endpoint_preflight_required")
+        if self.cloudflare_privacy_approved and not self.cloudflare_preflight_reference.strip():
+            raise ValueError("cloudflare_endpoint_preflight_required")
         if self.groq_adapter_enabled and (
             not self.groq_model
             or not self.groq_api_key.get_secret_value()

@@ -6,17 +6,23 @@ import pytest
 from pydantic import ValidationError
 
 from personal_ai.routing import (
+    CandidateRequirementsChangedError,
     CandidateSetOverflowError,
     CounterCompatibility,
     CountRequirement,
     DataUsePolicy,
     EndpointCandidateRequirements,
+    EndpointNotAdmissibleError,
     EndpointProfile,
     EndpointRegistry,
+    EndpointRegistrySnapshot,
     QuotaBucket,
     RegistryConflictError,
+    RegistryPayloadTooLargeError,
     RegistryRevisionChangedError,
+    StrictFreeEligibilityAttestation,
     build_initial_endpoint_profiles,
+    compute_registry_version,
 )
 from personal_ai.settings import Settings
 
@@ -28,6 +34,8 @@ def _bucket(
     operations: frozenset[str] = frozenset({"bounded_generation"}),
     remaining: int | None = 400,
     fresh_until: datetime | None = None,
+    reset_at: datetime | None = None,
+    confidence: str = "verified",
 ) -> QuotaBucket:
     return QuotaBucket(
         bucket_id=bucket_id,
@@ -35,9 +43,10 @@ def _bucket(
         operations=operations,
         unit="requests",
         window_seconds=60,
-        reset_at=None,
+        reset_at=reset_at,
         source="provider_contract",
-        confidence="verified",
+        confidence=confidence,
+        evidence_reference="quota:synthetic-v1",
         observed_at=datetime(2026, 10, 8, tzinfo=UTC) if fresh_until else None,
         fresh_until=fresh_until,
         limit=500 if remaining is not None else None,
@@ -67,10 +76,30 @@ def _profile(
     serializer_id: str = "synthetic-chat-v1",
     context_limit_tokens: int | None = 4096,
     max_output_tokens: int | None = 1024,
+    embedding_dimensions: int | None = None,
     max_search_query_chars: int | None = None,
     max_search_results: int | None = None,
     profile_version: int = 1,
+    strict_free_attestation: StrictFreeEligibilityAttestation | None = None,
 ) -> EndpointProfile:
+    if (
+        strict_free_attestation is None
+        and (tier_verified or strict_free_enabled or cost_class == "VERIFIED_FREE")
+    ):
+        strict_free_attestation = StrictFreeEligibilityAttestation(
+            endpoint_profile_id=profile_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            endpoint_id=f"{provider_id}-endpoint-v1",
+            deployment_id=f"{provider_id}-deployment-a",
+            account_scope_id=account_scope_id,
+            credential_scope_id=credential_scope_id,
+            tier_id="free" if tier_verified else "unverified",
+            reference="preflight:synthetic-v1",
+            source="synthetic_test",
+            zero_cost_verified=True,
+            paid_overflow_excluded=True,
+        )
     return EndpointProfile(
         endpoint_profile_id=profile_id,
         profile_version=profile_version,
@@ -92,11 +121,13 @@ def _profile(
         capabilities=capabilities,
         context_limit_tokens=context_limit_tokens,
         max_output_tokens=max_output_tokens,
+        embedding_dimensions=embedding_dimensions,
         data_use_policy=data_use_policy or DataUsePolicy(
             status="approved",
             max_sensitivity="personal",
             policy_reference="policy:synthetic-v1",
         ),
+        strict_free_attestation=strict_free_attestation,
         serializer_id=serializer_id,
         runtime_id="synthetic-runtime-v1",
         max_search_query_chars=max_search_query_chars,
@@ -109,7 +140,75 @@ def _profile(
 
 
 def _requirements(**updates) -> EndpointCandidateRequirements:
-    return EndpointCandidateRequirements(**updates)
+    values = {"input_tokens": 0, "output_tokens": 0}
+    values.update(updates)
+    return EndpointCandidateRequirements(**values)
+
+
+class _SharedRegistryRepository:
+    def __init__(self):
+        self.snapshot = None
+        self.profile_versions: dict[str, int] = {}
+        self.hide_registry_on_load = False
+        self.hide_registry_on_lock = False
+
+    def load(self):
+        if self.hide_registry_on_load:
+            self.hide_registry_on_load = False
+            return None
+        return self.snapshot
+
+    def load_profile_version_history(self):
+        return dict(self.profile_versions)
+
+    def save(self, profiles, *, expected_registry_version):
+        profiles = EndpointRegistry(profiles).profiles
+        if expected_registry_version is None:
+            if self.hide_registry_on_lock:
+                self.hide_registry_on_lock = False
+                raise RegistryConflictError("endpoint registry initialization raced")
+            if self.snapshot is not None:
+                raise RegistryConflictError("endpoint registry already initialized")
+            revision = 1
+        else:
+            if (
+                self.snapshot is None
+                or self.snapshot.registry_version != expected_registry_version
+            ):
+                raise RegistryConflictError("endpoint registry revision changed")
+            revision = self.snapshot.revision + 1
+
+        previous = {
+            profile.endpoint_profile_id: profile
+            for profile in (self.snapshot.profiles if self.snapshot else ())
+        }
+        for profile in profiles:
+            prior = previous.get(profile.endpoint_profile_id)
+            highwater = self.profile_versions.get(profile.endpoint_profile_id, 0)
+            if prior is None and profile.profile_version <= highwater:
+                raise RegistryConflictError("endpoint profile version reused")
+            if prior is not None and (
+                profile.profile_version < prior.profile_version
+                or (profile.profile_version == prior.profile_version and profile != prior)
+            ):
+                raise RegistryConflictError("endpoint profile version did not advance")
+
+        self.snapshot = EndpointRegistrySnapshot(
+            revision=revision,
+            registry_version=compute_registry_version(profiles, revision=revision),
+            profiles=profiles,
+        )
+        for profile in profiles:
+            self.profile_versions[profile.endpoint_profile_id] = max(
+                self.profile_versions.get(profile.endpoint_profile_id, 0),
+                profile.profile_version,
+            )
+        for profile in previous.values():
+            self.profile_versions[profile.endpoint_profile_id] = max(
+                self.profile_versions.get(profile.endpoint_profile_id, 0),
+                profile.profile_version,
+            )
+        return self.snapshot
 
 
 def test_fact_based_guard_admits_unlisted_verified_free_endpoint_without_scores():
@@ -129,8 +228,16 @@ def test_fact_based_guard_admits_unlisted_verified_free_endpoint_without_scores(
         ({"cost_class": "UNKNOWN", "billing_owner": "unknown"}, "cost_not_verified_free"),
         ({"execution_mode": "EXPLICIT_BYOK", "cost_class": "USER_BILLED", "billing_owner": "user", "strict_free_enabled": False}, "explicit_only_endpoint"),
         ({"tier_verified": False}, "account_tier_not_verified"),
-        ({"account_scope_id": None}, "account_scope_unknown"),
-        ({"credential_scope_id": None}, "credential_scope_unknown"),
+        ({
+            "account_scope_id": None, "tier_verified": False,
+            "cost_class": "UNKNOWN", "billing_owner": "unknown",
+            "strict_free_enabled": False,
+        }, "account_scope_unknown"),
+        ({
+            "credential_scope_id": None, "tier_verified": False,
+            "cost_class": "UNKNOWN", "billing_owner": "unknown",
+            "strict_free_enabled": False,
+        }, "credential_scope_unknown"),
         ({"quota_membership": "unknown"}, "quota_bucket_membership_unknown"),
         ({"quota_membership": "ambiguous"}, "quota_bucket_membership_ambiguous"),
     ],
@@ -366,6 +473,7 @@ def test_distinct_account_credential_and_cost_profiles_keep_distinct_eligibility
         execution_mode="EXPLICIT_BYOK",
         cost_class="USER_BILLED",
         billing_owner="user",
+        tier_verified=False,
         strict_free_enabled=False,
         quota_buckets=(_bucket("paid-account-bucket", authority_scope_id="account-b"),),
     )
@@ -430,13 +538,14 @@ def test_lifecycle_updates_and_removals_invalidate_frozen_candidates():
     with pytest.raises(RegistryRevisionChangedError):
         registry.revalidate(updated_candidates, profile.endpoint_profile_id, _requirements())
 
-    registry.upsert(profile)
+    with pytest.raises(RegistryConflictError, match="version_must_increase_after_removal"):
+        registry.upsert(profile)
+    readded = profile.model_copy(update={"profile_version": 3})
+    registry.upsert(readded)
     with pytest.raises(RegistryRevisionChangedError):
         registry.revalidate(candidates, profile.endpoint_profile_id, _requirements())
 
-    registry.upsert(profile)
-    with pytest.raises(RegistryRevisionChangedError):
-        registry.revalidate(candidates, profile.endpoint_profile_id, _requirements())
+    assert registry.profiles == (readded,)
 
 
 def test_profile_version_cannot_be_reused_for_changed_facts():
@@ -458,6 +567,29 @@ def test_over_limit_profile_set_is_rejected_without_candidate_truncation():
     )
 
     with pytest.raises(CandidateSetOverflowError, match="endpoint_candidate_limit_exceeded"):
+        EndpointRegistry(profiles)
+
+
+def test_registry_payload_has_a_conservative_pre_persistence_byte_bound():
+    ordinary = EndpointRegistry((_profile(),)).snapshot
+    assert len(ordinary.model_dump_json().encode("utf-8")) < 16 * 1024
+
+    schemas = tuple(
+        f"schema:{index}:" + "x" * 180
+        for index in range(128)
+    )
+    profiles = tuple(
+        _profile(
+            f"large-profile:{index}",
+            account_scope_id=f"account-{index}",
+            quota_buckets=(
+                _bucket(f"large-bucket:{index}", authority_scope_id=f"account-{index}"),
+            ),
+            structured_schema_ids=schemas,
+        )
+        for index in range(6)
+    )
+    with pytest.raises(RegistryPayloadTooLargeError, match="payload_too_large"):
         EndpointRegistry(profiles)
 
 
@@ -525,6 +657,7 @@ def test_gemini_profile_requires_explicit_account_privacy_counter_and_quota_fact
                 "window_seconds": 60,
                 "source": "provider_contract",
                 "confidence": "verified",
+                "evidence_reference": "quota:gemini-account-a-v1",
             },
         ),
     )
@@ -538,6 +671,8 @@ def test_gemini_profile_requires_explicit_account_privacy_counter_and_quota_fact
 
     assert generation.tier_verified
     assert generation.account_scope_id == "gemini-account-a"
+    assert generation.strict_free_attestation.reference == "preflight:gemini-account-a-v1"
+    assert generation.quota_buckets[0].evidence_reference == "quota:gemini-account-a-v1"
     assert generation.counter is not None and generation.counter.approved
     assert registry.candidates(requirements).assessments[0].eligible
 
@@ -551,6 +686,7 @@ def test_configured_groq_free_generation_profile_still_fails_count_required_task
         "window_seconds": 60,
         "source": "operator_attestation",
         "confidence": "verified",
+        "evidence_reference": "quota:groq-account-a-v1",
     }
     settings = Settings(
         _env_file=None,
@@ -589,3 +725,451 @@ def test_registry_profile_schema_rejects_secret_fields_and_non_symbolic_credenti
     document["credential_reference"] = "env:synthetic-secret-value"
     with pytest.raises(ValidationError, match="credential_reference_must_be_symbolic"):
         EndpointProfile.model_validate(document)
+
+
+def test_candidate_requirements_are_frozen_and_originally_rejected_profiles_stay_rejected():
+    profile = _profile()
+    registry = EndpointRegistry((profile,))
+    requirements = _requirements(sensitivity="personal", input_tokens=128, output_tokens=64)
+    candidates = registry.candidates(requirements)
+
+    with pytest.raises(CandidateRequirementsChangedError):
+        registry.revalidate(
+            candidates,
+            profile.endpoint_profile_id,
+            _requirements(sensitivity="public", input_tokens=128, output_tokens=64),
+        )
+
+    rejected = _profile("disabled:endpoint", enabled=False)
+    rejected_registry = EndpointRegistry((rejected,))
+    rejected_candidates = rejected_registry.candidates(_requirements())
+    with pytest.raises(EndpointNotAdmissibleError) as rejected_error:
+        rejected_registry.revalidate(
+            rejected_candidates, rejected.endpoint_profile_id
+        )
+    assert "endpoint_disabled_or_unconfigured" in rejected_error.value.rejection_reasons
+
+
+def test_candidate_requirements_cannot_drop_count_schema_or_token_bounds():
+    count_profile = _profile(
+        capabilities=frozenset({"bounded_generation", "token_counting"}),
+        quota_buckets=(
+            _bucket("generate", operations=frozenset({"bounded_generation"})),
+            _bucket("count", operations=frozenset({"token_counting"})),
+        ),
+        counter=CounterCompatibility(
+            endpoint_profile_id="synthetic:account-a:key-a:model-a",
+            endpoint_id="synthetic-endpoint-v1",
+            deployment_id="synthetic-deployment-a",
+            credential_scope_id="credential-a",
+            account_scope_id="account-a",
+            provider_id="synthetic",
+            model_id="model-a",
+            serializer_id="synthetic-chat-v1",
+            counter_id="synthetic-counter-v1",
+            confidence="authoritative",
+            approved=True,
+            provenance_reference="preflight:count-v1",
+        ),
+    )
+    count_requirements = _requirements(
+        required_capabilities=frozenset({"bounded_generation", "token_counting"}),
+        input_tokens=4096,
+        output_tokens=1024,
+        count=CountRequirement(minimum_confidence="authoritative"),
+    )
+    count_candidates = EndpointRegistry((count_profile,)).candidates(count_requirements)
+    with pytest.raises(CandidateRequirementsChangedError):
+        EndpointRegistry((count_profile,)).revalidate(
+            count_candidates,
+            count_profile.endpoint_profile_id,
+            _requirements(input_tokens=1, output_tokens=1),
+        )
+
+    structured = _profile(
+        capabilities=frozenset({"structured_generation", "bounded_generation"}),
+        quota_buckets=(
+            _bucket("structured", operations=frozenset({"structured_generation", "bounded_generation"})),
+        ),
+        structured_schema_ids=("schema:a", "schema:b"),
+    )
+    structured_requirements = _requirements(
+        required_capabilities=frozenset({"structured_generation", "bounded_generation"}),
+        structured_schema_id="schema:a",
+    )
+    structured_candidates = EndpointRegistry((structured,)).candidates(structured_requirements)
+    with pytest.raises(CandidateRequirementsChangedError):
+        EndpointRegistry((structured,)).revalidate(
+            structured_candidates,
+            structured.endpoint_profile_id,
+            _requirements(
+                required_capabilities=frozenset({"structured_generation", "bounded_generation"}),
+                structured_schema_id="schema:b",
+            ),
+        )
+
+
+def test_operation_requirements_reject_missing_safety_facts_but_accept_explicit_zero():
+    with pytest.raises(ValidationError, match="prepared_input_bound_required"):
+        EndpointCandidateRequirements()
+    with pytest.raises(ValidationError, match="token_count_requirement_required"):
+        EndpointCandidateRequirements(
+            required_capabilities=frozenset({"bounded_generation", "token_counting"}),
+            input_tokens=0,
+            output_tokens=0,
+        )
+    with pytest.raises(ValidationError, match="embedding_dimensions_required"):
+        EndpointCandidateRequirements(
+            required_capabilities=frozenset({"embeddings"}), input_tokens=0
+        )
+    with pytest.raises(ValidationError, match="search_bounds_required"):
+        EndpointCandidateRequirements(required_capabilities=frozenset({"search"}))
+
+    profile = _profile()
+    assert EndpointRegistry((profile,)).candidates(
+        _requirements(input_tokens=0, output_tokens=0)
+    ).eligible_profiles == (profile,)
+
+
+def test_embedding_dimension_and_explicit_zero_search_bounds_are_checked():
+    embedding = _profile(
+        capabilities=frozenset({"embeddings"}),
+        context_limit_tokens=4096,
+        max_output_tokens=None,
+        embedding_dimensions=768,
+        quota_buckets=(_bucket("embedding", operations=frozenset({"embeddings"})),),
+    )
+    embedding_requirements = _requirements(
+        required_capabilities=frozenset({"embeddings"}),
+        input_tokens=0,
+        embedding_dimensions=768,
+    )
+    assert EndpointRegistry((embedding,)).candidates(embedding_requirements).eligible_profiles == (
+        embedding,
+    )
+
+    search = _profile(
+        capabilities=frozenset({"search"}),
+        context_limit_tokens=None,
+        max_output_tokens=None,
+        max_search_query_chars=1,
+        max_search_results=1,
+        quota_buckets=(_bucket("search-zero", operations=frozenset({"search"})),),
+    )
+    zero_search = _requirements(
+        required_capabilities=frozenset({"search"}),
+        search_query_chars=0,
+        search_results=0,
+    )
+    assert EndpointRegistry((search,)).candidates(zero_search).eligible_profiles == (search,)
+
+
+@pytest.mark.parametrize(
+    ("quota", "exhausted"),
+    [
+        (_bucket("reset-future", remaining=0, reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC)), True),
+        (_bucket("reset-passed", remaining=0, reset_at=datetime(2026, 10, 8, 11, tzinfo=UTC)), False),
+        (
+            _bucket(
+                "fresh-and-reset", remaining=0,
+                reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC),
+                fresh_until=datetime(2026, 10, 8, 12, 30, tzinfo=UTC),
+            ),
+            True,
+        ),
+        (
+            _bucket(
+                "stale-and-reset", remaining=0,
+                reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC),
+                fresh_until=datetime(2026, 10, 8, 11, 59, tzinfo=UTC),
+            ),
+            False,
+        ),
+        (
+            _bucket(
+                "reported-zero", remaining=0,
+                reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC),
+                confidence="reported",
+            ),
+            False,
+        ),
+        (
+            _bucket(
+                "remaining-capacity", remaining=1,
+                reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC),
+            ),
+            False,
+        ),
+    ],
+)
+def test_quota_exhaustion_uses_reset_and_freshness(quota, exhausted):
+    instant = datetime(2026, 10, 8, 12, tzinfo=UTC)
+    profile = _profile(quota_buckets=(quota,))
+    assessment = EndpointRegistry((profile,)).candidates(
+        _requirements(), now=instant
+    ).assessments[0]
+
+    assert ("quota_bucket_exhausted:bounded_generation" in assessment.rejection_reasons) == exhausted
+
+
+@pytest.mark.parametrize(
+    ("source", "reference"),
+    [
+        ("environment", "env:SYNTHETIC_MODEL_KEY"),
+        ("secret_manager", "secret_manager:projects/p/secrets/k/versions/latest"),
+        ("workload_identity", "workload_identity:service-account-a"),
+        ("user_runtime", "user_runtime:owner-a/key-a"),
+        ("none", "none:"),
+    ],
+)
+def test_credential_source_reference_pairs_are_validated(source, reference):
+    document = _profile(
+        tier_verified=False,
+        cost_class="UNKNOWN",
+        billing_owner="unknown",
+        strict_free_enabled=False,
+    ).model_dump(mode="python")
+    document["credential_source"] = source
+    document["credential_reference"] = reference
+    assert EndpointProfile.model_validate(document).credential_reference == reference
+
+
+@pytest.mark.parametrize(
+    ("source", "reference"),
+    [
+        ("environment", "secret_manager:projects/p/secrets/k"),
+        ("secret_manager", "env:SYNTHETIC_MODEL_KEY"),
+        ("workload_identity", "user_runtime:owner-a/key-a"),
+        ("user_runtime", "workload_identity:service-account-a"),
+        ("none", "env:SYNTHETIC_MODEL_KEY"),
+        ("none", "none:extra"),
+    ],
+)
+def test_credential_source_reference_mismatches_are_rejected(source, reference):
+    document = _profile(
+        tier_verified=False,
+        cost_class="UNKNOWN",
+        billing_owner="unknown",
+        strict_free_enabled=False,
+    ).model_dump(mode="python")
+    document["credential_source"] = source
+    document["credential_reference"] = reference
+    with pytest.raises(ValidationError, match="credential_reference_source_mismatch"):
+        EndpointProfile.model_validate(document)
+
+
+def test_strict_free_and_quota_provenance_are_required_and_scope_bound():
+    profile = _profile()
+    without_attestation = profile.model_dump(mode="python")
+    without_attestation.pop("strict_free_attestation")
+    with pytest.raises(ValidationError, match="strict_free_claim_requires_attestation"):
+        EndpointProfile.model_validate(without_attestation)
+
+    changed_scope = profile.model_dump(mode="python")
+    changed_scope["strict_free_attestation"] = profile.strict_free_attestation.model_copy(
+        update={"account_scope_id": "account-b"}
+    )
+    with pytest.raises(ValidationError, match="strict_free_attestation_scope_mismatch"):
+        EndpointProfile.model_validate(changed_scope)
+
+    missing_quota_evidence = profile.model_copy(update={
+        "quota_buckets": (
+            profile.quota_buckets[0].model_copy(update={"evidence_reference": None}),
+        )
+    })
+    with pytest.raises(ValidationError, match="verified_quota_requires_evidence"):
+        EndpointRegistry((missing_quota_evidence,))
+
+
+@pytest.mark.parametrize(
+    "mutated",
+    [
+        lambda profile: profile.model_copy(update={"credential_source": "secret_manager"}),
+        lambda profile: profile.model_copy(update={"context_limit_tokens": 0}),
+        lambda profile: profile.model_copy(update={
+            "quota_membership": "verified", "quota_buckets": ()
+        }),
+    ],
+)
+def test_registry_revalidates_unvalidated_pydantic_copies(mutated):
+    registry = EndpointRegistry((_profile(),))
+    invalid_copy = mutated(_profile())
+
+    with pytest.raises(ValidationError):
+        registry.upsert(invalid_copy)
+
+
+def test_registry_revalidates_counter_identity_on_pydantic_copies():
+    profile = _profile(
+        capabilities=frozenset({"bounded_generation", "token_counting"}),
+        quota_buckets=(
+            _bucket("generate", operations=frozenset({"bounded_generation"})),
+            _bucket("count", operations=frozenset({"token_counting"})),
+        ),
+        counter=CounterCompatibility(
+            endpoint_profile_id="synthetic:account-a:key-a:model-a",
+            endpoint_id="synthetic-endpoint-v1",
+            deployment_id="synthetic-deployment-a",
+            credential_scope_id="credential-a",
+            account_scope_id="account-a",
+            provider_id="synthetic",
+            model_id="model-a",
+            serializer_id="synthetic-chat-v1",
+            counter_id="synthetic-counter-v1",
+            confidence="authoritative",
+            approved=True,
+            provenance_reference="preflight:count-v1",
+        ),
+    )
+    registry = EndpointRegistry((profile,))
+    invalid = profile.model_copy(update={
+        "counter": profile.counter.model_copy(update={"account_scope_id": "account-b"})
+    })
+
+    with pytest.raises(ValidationError, match="counter_endpoint_identity_mismatch"):
+        registry.upsert(invalid)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda profile: profile.model_copy(update={"profile_version": 2, "enabled": False}),
+        lambda profile: profile.model_copy(update={
+            "profile_version": 2,
+            "data_use_policy": DataUsePolicy(status="denied"),
+        }),
+        lambda profile: profile.model_copy(update={
+            "profile_version": 2,
+            "cost_class": "UNKNOWN",
+            "tier_verified": False,
+            "strict_free_enabled": False,
+            "billing_owner": "unknown",
+            "strict_free_attestation": None,
+        }),
+    ],
+)
+def test_durable_revalidation_observes_updates_from_another_registry_instance(change):
+    repository = _SharedRegistryRepository()
+    profile = _profile()
+    first = EndpointRegistry((profile,), repository=repository)
+    second = EndpointRegistry(None, repository=repository)
+    candidates = first.candidates(_requirements())
+
+    second.upsert(change(profile))
+
+    with pytest.raises(RegistryRevisionChangedError):
+        first.revalidate(candidates, profile.endpoint_profile_id)
+
+
+def test_durable_revalidation_observes_removal_and_unchanged_registry():
+    repository = _SharedRegistryRepository()
+    profile = _profile()
+    first = EndpointRegistry((profile,), repository=repository)
+    second = EndpointRegistry(None, repository=repository)
+    candidates = first.candidates(_requirements())
+    assert first.revalidate(candidates, profile.endpoint_profile_id) == profile
+
+    second.remove(profile.endpoint_profile_id)
+    with pytest.raises(RegistryRevisionChangedError):
+        first.revalidate(candidates, profile.endpoint_profile_id)
+
+
+def test_configuration_reconciliation_advances_versions_revokes_and_survives_restart():
+    repository = _SharedRegistryRepository()
+    configured = _profile()
+    initial = EndpointRegistry((configured,), repository=repository)
+    old_candidates = initial.candidates(_requirements())
+
+    changed_config = configured.model_copy(update={"context_limit_tokens": 2048})
+    reconciled = EndpointRegistry((changed_config,), repository=repository)
+    assert reconciled.profiles[0].profile_version == 2
+    assert reconciled.profiles[0].context_limit_tokens == 2048
+    with pytest.raises(RegistryRevisionChangedError):
+        initial.revalidate(old_candidates, configured.endpoint_profile_id)
+
+    restarted = EndpointRegistry((changed_config,), repository=repository)
+    assert restarted.profiles == reconciled.profiles
+    assert restarted.snapshot.revision == reconciled.snapshot.revision
+
+    revoked_config = changed_config.model_copy(update={
+        "enabled": False,
+        "profile_version": 1,
+    })
+    revoked = EndpointRegistry((revoked_config,), repository=repository)
+    assert revoked.profiles[0].profile_version == 3
+    assert not revoked.profiles[0].enabled
+    assert EndpointRegistry(None, repository=repository).profiles[0].profile_version == 3
+
+    removed = EndpointRegistry((), repository=repository)
+    assert removed.profiles == ()
+    with pytest.raises(RegistryConflictError, match="increase_after_removal"):
+        removed.upsert(configured)
+    readded = EndpointRegistry((configured,), repository=repository)
+    assert readded.profiles[0].profile_version == 4
+
+
+def test_configuration_change_uses_stable_builtin_profile_identity_and_version():
+    first_settings = Settings(
+        _env_file=None,
+        ai_provider="gemini",
+        ai_model="gemini-model-a",
+        gemini_account_scope_id="account-a",
+        gemini_credential_scope_id="credential-a",
+    )
+    next_settings = Settings(
+        _env_file=None,
+        ai_provider="gemini",
+        ai_model="gemini-model-b",
+        gemini_account_scope_id="account-b",
+        gemini_credential_scope_id="credential-b",
+    )
+    initial_profiles = build_initial_endpoint_profiles(first_settings)
+    changed_profiles = build_initial_endpoint_profiles(next_settings)
+    assert initial_profiles[0].endpoint_profile_id == changed_profiles[0].endpoint_profile_id
+
+    repository = _SharedRegistryRepository()
+    EndpointRegistry(initial_profiles, repository=repository)
+    changed = EndpointRegistry(changed_profiles, repository=repository)
+    generation = next(
+        profile for profile in changed.profiles if profile.endpoint_profile_id == "gemini:generation"
+    )
+    assert generation.profile_version == 2
+    assert generation.model_id == "gemini-model-b"
+    assert generation.account_scope_id == "account-b"
+    assert generation.credential_scope_id == "credential-b"
+
+    removed = EndpointRegistry((), repository=repository)
+    assert removed.profiles == ()
+    assert EndpointRegistry(None, repository=repository).profiles == ()
+
+
+def test_configuration_removal_and_concurrent_reconciliation_are_explicit():
+    repository = _SharedRegistryRepository()
+    configured = _profile()
+    registry = EndpointRegistry((configured,), repository=repository)
+
+    removed = registry.reconcile(())
+    assert removed.profiles == ()
+    assert EndpointRegistry(None, repository=repository).profiles == ()
+
+    changed = configured.model_copy(update={"context_limit_tokens": 2048})
+    restored = EndpointRegistry((changed,), repository=repository)
+    assert restored.profiles[0].profile_version == 2
+
+    def conflict(*_args, **_kwargs):
+        raise RegistryConflictError("endpoint registry revision changed")
+
+    repository.save = conflict
+    with pytest.raises(RegistryConflictError, match="revision changed"):
+        restored.reconcile((configured.model_copy(update={"context_limit_tokens": 1024}),))
+
+
+def test_initialization_race_does_not_overwrite_a_different_winning_configuration():
+    repository = _SharedRegistryRepository()
+    seeded = _profile()
+    EndpointRegistry((seeded,), repository=repository)
+    repository.hide_registry_on_load = True
+    repository.hide_registry_on_lock = True
+
+    with pytest.raises(RegistryConflictError, match="initialization_conflict"):
+        EndpointRegistry((_profile("different-profile"),), repository=repository)

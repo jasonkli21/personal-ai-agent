@@ -11,17 +11,21 @@ from personal_ai.routing.contracts import (
     EndpointProfile,
     EndpointRegistrySnapshot,
     QuotaBucket,
+    StrictFreeEligibilityAttestation,
     compute_registry_version,
 )
 from personal_ai.routing.registry import (
+    CandidateRequirementsChangedError,
     CandidateSetOverflowError,
     EndpointNotAdmissibleError,
     EndpointRegistry,
     RegistryConflictError,
+    RegistryPayloadTooLargeError,
     RegistryRevisionChangedError,
 )
 
 __all__ = [
+    "CandidateRequirementsChangedError",
     "CandidateSetOverflowError",
     "CountRequirement",
     "CounterCompatibility",
@@ -35,7 +39,9 @@ __all__ = [
     "EndpointRegistrySnapshot",
     "QuotaBucket",
     "RegistryConflictError",
+    "RegistryPayloadTooLargeError",
     "RegistryRevisionChangedError",
+    "StrictFreeEligibilityAttestation",
     "build_initial_endpoint_profiles",
     "compute_registry_version",
 ]

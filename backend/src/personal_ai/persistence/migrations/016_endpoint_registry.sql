@@ -17,3 +17,14 @@ CREATE TABLE IF NOT EXISTS endpoint_registry_snapshots (
 
 CREATE INDEX IF NOT EXISTS endpoint_registry_snapshots_updated_idx
     ON endpoint_registry_snapshots(updated_at, record_id);
+
+-- Profile IDs remain versioned identities after removal. Keeping the high-water
+-- mark outside the bounded active snapshot prevents a deleted ID from being
+-- reused with facts that look like an older endpoint to later evidence.
+CREATE TABLE IF NOT EXISTS endpoint_profile_version_history (
+    scope_id text NOT NULL REFERENCES scope_namespaces(scope_id),
+    endpoint_profile_id text NOT NULL CHECK (length(endpoint_profile_id) BETWEEN 1 AND 200),
+    last_profile_version integer NOT NULL CHECK (last_profile_version BETWEEN 1 AND 2147483647),
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (scope_id, endpoint_profile_id)
+);

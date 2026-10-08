@@ -15,10 +15,14 @@ composition; this phase does not select or dispatch a different provider.
   reference/scope, account/project/tier, execution mode, cost/billing owner,
   capabilities, context/output limits, privacy ceiling, serializer/runtime,
   counter provenance/confidence/schema coverage, and quota authority separate.
-  The schema has no credential-value field and forbids unrecognized fields.
+  Strict-free, tier, and verified quota assertions carry bounded evidence
+  references scoped to the endpoint/account/credential facts. The schema has no
+  credential-value field and forbids unrecognized fields.
 - Quota buckets identify their authority scope, operation coverage, unit,
   window, optional reset/observation/freshness and optional current limit or
-  remaining amount. No provider quota number is an application constant.
+  remaining amount. A verified exhausted bucket blocks until its reset; when a
+  freshness deadline is also present, expired observations are treated as
+  unknown. No provider quota number is an application constant.
   Profiles may reference the same bucket after the registry verifies that the
   account, cost mode, and authority facts agree. A shared bucket cannot join
   independent account scopes or execution modes. Credential rotation under
@@ -61,18 +65,32 @@ composition; this phase does not select or dispatch a different provider.
   required approved exact counter mapping. Fresh known exhaustion rejects the
   affected operation. Unknown or ambiguous bucket membership is not treated as
   a new independent quota pool.
+- `EndpointCandidateRequirements` distinguishes a known zero bound from a
+  missing bound. Generation needs explicit input/output limits, token counting
+  needs a `CountRequirement`, embeddings need dimensions, and search needs both
+  query and result limits. Candidate sets retain the exact immutable
+  requirements used for assessment.
 - `EndpointRegistry.candidates()` returns a complete assessment for every
   configured profile: endpoint facts plus stable rejection codes, with no score
   or provider preference. Registry construction rejects more than 32 profiles
   rather than truncating them. The assessment order follows the configured
   profile order; registry version hashing is order-independent.
-- `upsert()` and `remove()` advance the registry snapshot. `revalidate()`
-  checks the frozen registry version and reruns admission immediately before a
-  future dispatch; stale candidates fail closed. Replacements must increase
-  the profile version.
+- `upsert()` and `remove()` advance the registry snapshot. Repository-backed
+  candidate generation and dispatch revalidation reload durable state, so
+  changes from another process invalidate stale candidates. Revalidation uses
+  the candidate set's original requirements, rejects a changed requirement or
+  originally rejected profile, and reruns time-sensitive quota admission.
+- Supplying profiles to `EndpointRegistry` or calling `reconcile()` treats
+  operator configuration as the desired profile set. Changed facts advance
+  versions automatically; omitted profiles are removed. Built-in profile IDs
+  stay stable as model/account/credential settings change. A separate Postgres
+  high-water table retains profile versions after deletion, and conflicting
+  concurrent reconciliation returns a registry conflict for retry.
 - [`PostgresEndpointRegistryRepository`](../../backend/src/personal_ai/persistence/postgres_routing.py)
   persists one bounded system-owned snapshot with compare-and-swap revision
-  checks. Migration
+  checks and initializes the singleton row atomically. Canonical JSON is
+  limited to 128 KiB before persistence, below migration 016's 256 KiB JSONB
+  bound. Migration
   [`016_endpoint_registry.sql`](../../backend/src/personal_ai/persistence/migrations/016_endpoint_registry.sql)
   places durable registry facts under Phase 10 Postgres ownership. The
   migration must be applied before using this repository; no local/cloud

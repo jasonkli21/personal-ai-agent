@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import re
 from collections.abc import Sequence
 
 from personal_ai.routing.contracts import (
@@ -11,6 +9,7 @@ from personal_ai.routing.contracts import (
     DataUsePolicy,
     EndpointProfile,
     QuotaBucket,
+    StrictFreeEligibilityAttestation,
 )
 from personal_ai.settings import Settings
 
@@ -42,10 +41,9 @@ def build_initial_endpoint_profiles(settings: Settings) -> tuple[EndpointProfile
 
 def _gemini_profile(settings: Settings) -> EndpointProfile:
     account_scope = settings.gemini_account_scope_id.strip() or None
-    profile_id = _profile_id(
-        "gemini", account_scope or "unscoped", settings.gemini_credential_scope_id,
-        "generation", settings.ai_model,
-    )
+    # This is one operator-managed profile slot. Account, credential and model
+    # changes advance its version during registry reconciliation.
+    profile_id = "gemini:generation"
     endpoint_id = "gemini-generate-content-v1beta"
     deployment_id = "generativelanguage.googleapis.com-v1beta"
     verified_free = settings.gemini_free_tier_verified
@@ -85,6 +83,20 @@ def _gemini_profile(settings: Settings) -> EndpointProfile:
             max_sensitivity=settings.gemini_privacy_max_sensitivity,
             policy_reference=(settings.gemini_preflight_reference or None),
         ),
+        strict_free_attestation=(
+            _strict_free_attestation(
+                endpoint_profile_id=profile_id,
+                provider_id="gemini",
+                model_id=settings.ai_model,
+                endpoint_id=endpoint_id,
+                deployment_id=deployment_id,
+                account_scope_id=account_scope,
+                credential_scope_id=settings.gemini_credential_scope_id,
+                tier_id="free",
+                reference=settings.gemini_preflight_reference,
+                verified=verified_free,
+            )
+        ),
         serializer_id="gemini-content-v1",
         runtime_id="litellm-1.102.1",
         structured_schema_ids=(
@@ -115,10 +127,7 @@ def _gemini_profile(settings: Settings) -> EndpointProfile:
 def _gemini_embedding_profile(settings: Settings) -> EndpointProfile:
     """Keep embedding dispatch separately admissible and separately quota scoped."""
     return EndpointProfile(
-        endpoint_profile_id=_profile_id(
-            "google_genai", settings.gemini_account_scope_id.strip() or "unscoped",
-            settings.gemini_credential_scope_id, "embedding", settings.memory_embedding_model,
-        ),
+        endpoint_profile_id="google_genai:embedding",
         profile_version=1,
         provider_id="google_genai",
         model_id=settings.memory_embedding_model,
@@ -152,10 +161,7 @@ def _groq_profile(settings: Settings) -> EndpointProfile:
     structured = settings.groq_structured_output_verified
     model = settings.groq_model
     return EndpointProfile(
-        endpoint_profile_id=_profile_id(
-            "groq", settings.groq_account_scope_id.strip() or "unscoped",
-            settings.groq_credential_scope_id, "generation", model,
-        ),
+        endpoint_profile_id="groq:generation",
         profile_version=1,
         provider_id="groq",
         model_id=model,
@@ -184,6 +190,18 @@ def _groq_profile(settings: Settings) -> EndpointProfile:
             max_sensitivity=settings.groq_privacy_max_sensitivity,
             policy_reference=settings.groq_preflight_reference or None,
         ),
+        strict_free_attestation=_strict_free_attestation(
+            endpoint_profile_id="groq:generation",
+            provider_id="groq",
+            model_id=model,
+            endpoint_id="groq-chat-completions-v1",
+            deployment_id="api.groq.com-openai-v1",
+            account_scope_id=settings.groq_account_scope_id.strip() or None,
+            credential_scope_id=settings.groq_credential_scope_id,
+            tier_id="free",
+            reference=settings.groq_preflight_reference,
+            verified=verified_free,
+        ),
         serializer_id="groq-chat-completions-v1",
         runtime_id="litellm-1.102.1",
         quota_membership=(
@@ -199,10 +217,7 @@ def _cloudflare_profile(settings: Settings) -> EndpointProfile:
     model = settings.cloudflare_model
     account_scope = settings.cloudflare_account_id.strip() or None
     return EndpointProfile(
-        endpoint_profile_id=_profile_id(
-            "cloudflare_workers_ai", account_scope or "unscoped",
-            settings.cloudflare_credential_scope_id, "generation", model,
-        ),
+        endpoint_profile_id="cloudflare_workers_ai:generation",
         profile_version=1,
         provider_id="cloudflare_workers_ai",
         model_id=model,
@@ -232,6 +247,18 @@ def _cloudflare_profile(settings: Settings) -> EndpointProfile:
             max_sensitivity=settings.cloudflare_privacy_max_sensitivity,
             policy_reference=settings.cloudflare_preflight_reference or None,
         ),
+        strict_free_attestation=_strict_free_attestation(
+            endpoint_profile_id="cloudflare_workers_ai:generation",
+            provider_id="cloudflare_workers_ai",
+            model_id=model,
+            endpoint_id="cloudflare-workers-ai-chat-v1",
+            deployment_id="api.cloudflare.com-client-v4-accounts-ai-v1",
+            account_scope_id=account_scope,
+            credential_scope_id=settings.cloudflare_credential_scope_id,
+            tier_id="free",
+            reference=settings.cloudflare_preflight_reference,
+            verified=verified_free,
+        ),
         serializer_id="cloudflare-workers-ai-chat-v1",
         runtime_id="litellm-1.102.1",
         quota_membership=(
@@ -245,15 +272,32 @@ def _parse_buckets(values: Sequence[dict[str, object]]) -> tuple[QuotaBucket, ..
     return tuple(QuotaBucket.model_validate(value) for value in values)
 
 
-def _profile_id(*parts: str) -> str:
-    joined = ":".join(_safe_id_part(part) for part in parts)
-    if len(joined) <= 200:
-        return joined
-    digest = hashlib.sha256(joined.encode("utf-8")).hexdigest()[:24]
-    prefix = re.sub(r"[^A-Za-z0-9._:/@+-]", "_", joined[:160])
-    return f"{prefix}:{digest}"
-
-
-def _safe_id_part(value: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9._/@+-]", "_", value)
-    return normalized or "unconfigured"
+def _strict_free_attestation(
+    *,
+    endpoint_profile_id: str,
+    provider_id: str,
+    model_id: str,
+    endpoint_id: str,
+    deployment_id: str,
+    account_scope_id: str | None,
+    credential_scope_id: str,
+    tier_id: str,
+    reference: str,
+    verified: bool,
+) -> StrictFreeEligibilityAttestation | None:
+    if not verified:
+        return None
+    return StrictFreeEligibilityAttestation(
+        endpoint_profile_id=endpoint_profile_id,
+        provider_id=provider_id,
+        model_id=model_id,
+        endpoint_id=endpoint_id,
+        deployment_id=deployment_id,
+        account_scope_id=account_scope_id,
+        credential_scope_id=credential_scope_id,
+        tier_id=tier_id,
+        reference=reference,
+        source="operator_preflight",
+        zero_cost_verified=True,
+        paid_overflow_excluded=True,
+    )
