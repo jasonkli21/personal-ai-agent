@@ -19,6 +19,7 @@ Renumbered from former Phase 13 with scope preserved. This phase establishes the
 
 - No round-robin or provider-name priority chain exists in generic routing.
 - Privacy, cost/execution mode, authorization, capabilities, context/output bounds, health, and exhaustion precede preference scoring.
+- Required count confidence/serializer compatibility and required measured quality floors are hard eligibility filters applied before every strategy.
 - Known task type does not require an LLM classifier.
 - Every strategy can select only from the deterministic eligible candidate set.
 - Selection is explainable and replayable from bounded versioned facts without retaining raw prompts.
@@ -36,7 +37,7 @@ Current dependency injection selects one Gemini client. Task routing, rejection 
 
 ## Phase 10 storage dependency
 
-DynamoDB turn/runtime records hold actual producing-endpoint attribution and compact actual-build manifests; Postgres owns versioned policy/registry and usage controls. Reference exact versions without duplicating canonical control records. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); existing work packages and acceptance remain unchanged.
+DynamoDB turn/runtime records hold actual producing-endpoint attribution and compact actual-build manifests; Postgres owns versioned policy/registry, invocation/quota controls, and canonical compact routing-decision observations. The D turn references the P decision ID; it does not duplicate the decision record. See the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md).
 
 ## Prerequisites and work ordering
 
@@ -47,6 +48,8 @@ Required phases: 16, 18, 19, and 10. Phase 18 requires completion of Phase 17R, 
 - Known callers pass task type rather than paying for classification.
 - Hard admission is deterministic and outside the strategy seam; strategies cannot widen the candidate set or change execution mode.
 - Strict-free, privacy/sensitivity, authorization, capability, context/output limits, credential/account usability, health/cooldown, and known exhaustion are hard constraints.
+- Required input-count provenance/confidence and endpoint/serializer/schema match are hard constraints. Tasks requiring measured quality admit only fresh, sufficiently covered endpoint evidence at or above their declared floor. Missing, stale, insufficiently covered, or below-floor evidence rejects before strategy input. A task explicitly configured to allow an unmeasured baseline may use fixed priorities without representing quality as measured.
+- Endpoint-specific context fit is finalized after provisional selection. Remote counter/summary work is separately admitted; strategies never call providers. Final policy/source/profile revalidation and all-bucket reservation precede dispatch.
 - Personal AI owns endpoint selection; the Personal AI inference gateway and LiteLLM execute the selected endpoint. LiteLLM Router must not select another provider/model.
 - Strategies do not call providers, mutate orchestration state, own credentials/secrets, or silently switch cost modes.
 - Route decisions reconstruct from the immutable/versioned or bounded decision-time inputs recorded under the [Routing Observation Contract](../../03-free-tier-inference-and-routing.md#routing-observation-contract).
@@ -56,7 +59,7 @@ Required phases: 16, 18, 19, and 10. Phase 18 requires completion of Phase 17R, 
 
 ### P21.0 — Task taxonomy, requirements, and routing contracts
 
-Define a small taxonomy from actual operations: chat, summary, extraction, research synthesis/planning where used, rewrite, structured generation, and embedding through its separate boundary. Callers supply known task type; no LLM classifier. Requirements include capability, privacy/sensitivity, prepared context and output bounds, quality-floor policy, citation/provenance behavior, deterministic validator references, and finite retry/escalation permission.
+Define a small taxonomy from actual operations: chat, summary, extraction, research synthesis/planning where used, rewrite, structured generation, and embedding through its separate boundary. Callers supply known task type; no LLM classifier. Requirements include capability, privacy/sensitivity, endpoint-specific prepared context and output bounds, required count provenance/confidence, mandatory-versus-unmeasured quality-floor policy, citation/provenance behavior, deterministic validator references, and finite retry/escalation permission. Attempt limits count physical sends at every SDK/client layer plus auxiliary count/summary calls under one deadline and root budget. A task profile cannot treat a score preference as a substitute for its mandatory quality floor.
 
 Define repository-equivalent contracts for:
 
@@ -64,6 +67,7 @@ Define repository-equivalent contracts for:
 RoutingStrategyInput
   task/profile identity + version and typed requirements
   eligible endpoint profiles + profile versions
+  admitted count compatibility and mandatory floor-qualified evidence
   decision-time policy context
   applicable quality evidence/references
   latency/reliability inputs when used
@@ -76,11 +80,12 @@ RoutingStrategyResult
   policy/strategy reason
 
 ExecutionPlan
-  task/profile identity and selected endpoint
+  task/profile identity and provisional/final selected endpoint
   permitted alternatives
   execution mode and required capabilities
+  endpoint-specific prepared-input/count identity and final-fit result
   validator policy and escalation/cascade permission
-  attempt/time/token bounds
+  physical-attempt/auxiliary-call/time/token/quota bounds
   registry/policy versions
   routing decision ID, strategy ID/version, and reason
 ```
@@ -91,23 +96,25 @@ Use repository naming conventions, but preserve the seams. A strategy receives o
 
 ### P21.1 — Hard admission and deterministic baseline strategy
 
-Stage 1 filters candidates by requested execution mode, endpoint enabled/configured state, strict-free/cost eligibility, authorization, privacy/sensitivity, required capabilities, context/output limits, credential/account usability, health/cooldown, and known exhaustion. Preserve eligibility/rejection reasons in the decision record. No score or learned strategy can override a failed hard constraint.
+Stage 1 filters candidates by requested execution mode, endpoint enabled/configured state, strict-free/cost eligibility, authorization, privacy/sensitivity, required capabilities, endpoint-specific counter identity/provenance/confidence and structured-schema coverage, declared context/output bounds, credential/account usability, known quota-bucket relationships, health/cooldown, and known exhaustion. Preserve eligibility/rejection reasons in the decision record. No score or learned strategy can override a failed hard constraint.
 
-Stage 2 passes only eligible endpoint profiles to the replaceable `RoutingStrategy`. Implement a deterministic baseline strategy using versioned fixed task priorities and measured quality where available. Phase 22 quality does not exist yet: use explicitly unmeasured configured baseline priorities and never fabricate numeric quality. If a task requires a measured floor with no applicable profile, deny. Use latency/reliability only when configured as decision inputs. Phase 23 may later add typed scarcity inputs or a compatible deterministic strategy without changing orchestration.
+Apply task quality policy before Stage 2. For a measured-only task, reject any candidate whose evidence is missing, stale, below declared coverage/confidence, or below the task floor. Phase 22 defines profile freshness/coverage evidence. Before Phase 22, only tasks explicitly allowing unmeasured baseline operation may proceed on configured fixed priorities; never fabricate numeric quality. The same floor-qualified candidate set is passed to every strategy. Use latency/reliability only when configured as decision inputs. Phase 23 may later add typed scarcity inputs or a compatible deterministic strategy without changing orchestration.
+
+The first eligible strategy result is provisional until endpoint-specific assembly and count prove fit. Persist the provisional decision in `preparing` state before any remote counter, summary, or generation call. Use the selected endpoint's serializer/counter and context/output ceiling. A remote counter or summary call has its own endpoint/privacy/cost/quota admission and Phase 19 attempt identity; if denied it receives zero input. If count evidence is insufficient or the prepared input does not fit, do not dispatch generation to that endpoint; reselect within finite attempt/deadline/auxiliary-call limits, persist a linked decision before any new external call, and recompute assembly/count. Revalidate frozen authorization/source/policy and endpoint versions immediately before reservation and generation. A revoked source may be dropped only when task policy permits narrowing; otherwise abort. Reassembly never silently broadens disclosure.
 
 Consume registered endpoint facts and [execution/cost eligibility](../../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes). Provider/model names may appear in profile configuration and trace identity, but cannot define generic control flow or ordered chains. BYOK/ChatGPT remain outside the automatic strict-free router.
 
 The selected endpoint and permitted alternatives become an `ExecutionPlan`. A separate execution layer revalidates the frozen registry/policy versions as required, performs the selected endpoint through the Personal AI inference gateway, and records invocation lineage. The strategy itself makes no provider calls.
 
-**Acceptance:** Hard filters run first; the deterministic scorer is replaceable and is not scattered through orchestration; unmeasured quality is never represented as measured; unknown-cost, paid, or explicit-only profiles are rejected even when free candidates are exhausted.
+**Acceptance:** Hard filters and mandatory quality floors run before every strategy; below-floor, stale/missing, or insufficiently covered evidence cannot enter any strategy. An explicitly unmeasured baseline task remains usable before Phase 22 without invented quality. The deterministic scorer is replaceable and not scattered through orchestration; count-incompatible, unknown-cost, paid, or explicit-only profiles are rejected even when free candidates are exhausted.
 
 ### P21.2 — Replayable decision observations and integration
 
-Record a bounded privacy-safe decision observation as specified in the [Routing Observation Contract](../../03-free-tier-inference-and-routing.md#routing-observation-contract): decision ID; task/profile and policy versions; strategy ID/version; privacy-safe request characteristics; all considered candidates with endpoint/profile versions and admission result/reasons; exact quality evidence and latency/reliability inputs used; selected endpoint, bounded ranking/reason; and immutable/versioned registry/policy references or decision-time snapshots. Quota/scarcity fields remain optional until Phase 23. Do not retain raw prompts or embeddings for replay.
+Before any external counter, summary, or generation call, persist the canonical bounded privacy-safe decision observation in Postgres as specified in the [Routing Observation Contract](../../03-free-tier-inference-and-routing.md#routing-observation-contract). Its initial `preparing` record includes schema version and decision ID; task/profile, policy, registry, strategy implementation/configuration, and tie-break versions; privacy-safe request facts; every considered candidate with endpoint/profile versions and admission result/reasons; exact quality-floor/evidence and latency/reliability inputs used; provisional selected or no-route outcome; and immutable/versioned references or decision-time snapshots. Append bounded preparation/dispatch outcomes without rewriting decision facts. Respect the 32-candidate/64-KiB bound and 90-day default replay horizon. Record rejected/no-route choices and failures before dispatch. The P observation is advisory history, not an admission grant; P19 reservations remain authoritative quota controls, and durable observation publication is a fail-closed precondition for external calls. If the observation or required reservation cannot be stored, make no external call. A D automatic turn stores the decision ID and actual producing-endpoint attribution only. Re-selection to a different endpoint creates a linked decision ID before its next external call; a physical retry of the identical plan retains its decision ID and uses a distinct P19 attempt ID. Do not retain raw prompts or embeddings for replay.
 
 Route chat and at least two actual non-chat tasks using the shared runtime, existing assembly, and invocation ledger. Persist actual producing provider/model/endpoint and safe routing-decision identity on automatic turns rather than static `AI_MODEL`. Join the decision to Phase 19 invocation IDs and outcomes; later Phase 22 quality, Phase 23 scarcity, and Phase 24 validator/cascade outcomes use the same stable lineage. Conversation persistence follows DynamoDB after Phase 10. Maintain branch/supersession and partial-failure semantics.
 
-**Acceptance:** Chat plus two non-chat tasks route through the runtime and store actual producing-endpoint attribution; historical decision context and strategy/policy versions can be reconstructed without raw prompts; execution follows the plan and cannot silently change endpoint or mode.
+**Acceptance:** Chat plus two non-chat tasks route through the runtime and store actual producing-endpoint attribution; historical decision context and exact strategy/policy versions can be reconstructed within the supported replay horizon without raw prompts; no-route and pre-dispatch failures are recorded; execution follows the plan and cannot silently change endpoint or mode. Cover two endpoints with different serializers/context limits, final-fit failure, denied remote counter with zero disclosure, bounded fit- and reservation-driven linked reselection with recomputed preparation, revocation between preparation/dispatch, and correct final producing-endpoint attribution. Replay a non-chat and no-route decision after registry/evidence updates and optional-artifact loss; expired/deleted inputs return unavailable. Cover cross-owner read denial and crash/partial-publication reconciliation. Phase 24 acceptance covers linked cascade selections. Overflow never silently truncates required replay facts.
 
 ## Requirement coverage
 

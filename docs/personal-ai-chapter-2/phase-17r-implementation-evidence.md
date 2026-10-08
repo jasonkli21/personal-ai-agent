@@ -59,3 +59,13 @@ These are local checks against intercepted transports and the pinned SDK. They d
 ## Remaining gates
 
 No live provider, account/tier eligibility, privacy suitability, strict-free eligibility, paid-path, cloud, or production checks were run. Synthetic intercepted responses prove only local SDK and Personal AI contract behavior. Gemini remains the only provider used by current application workflows; Groq and Cloudflare lack approved authoritative counters. The two date-sensitive `context_sources` failures remain outside this phase and are not counted as passing verification.
+
+## Schema-inclusive context-ceiling follow-up — 2026-10-08
+
+**Tested base revision:** `674008453aa68b1f5d5dcfbc6e80ccae95ccc530`, with the uncommitted regression test in `backend/tests/test_litellm_gateway.py`.
+
+- Added a near-ceiling structured-input check using the exact Gemini LiteLLM-transformed count request, including `response_json_schema`. When the authoritative count exceeds the endpoint input limit by one token, bounded preparation rejects before any generation request is sent.
+- `backend/.venv/bin/python -m pytest -q backend/tests/test_litellm_gateway.py backend/tests/test_endpoint_registry.py backend/tests/test_postgres_routing.py`: **142 passed**, one upstream Pydantic warning.
+- `git diff --check`: passed.
+
+This closes the local regression-test gap for schema-inclusive fit rejection. Live provider counting behavior remains unverified, as recorded above.

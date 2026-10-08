@@ -52,11 +52,11 @@ These three remain the initial live comparison. The harness iterates registered 
 **Acceptance:** Bounded eligible runs store permitted raw artifacts separately from compact summaries; skipped live models have no quality score.
 
 ### P22.2 — Versioned quality profiles and promotion
-Define task quality floors, confidence/sample coverage and profile invalidation when model/config changes. Unrun/skipped endpoints have no measured quality. Require reproducible benefit and no hard-boundary regression; export/publish only permitted artifacts. Domain phases later extend fixtures with their implemented read contracts before optimization consumes those results.
+Define task quality floors, evidence freshness windows, confidence/sample-coverage requirements, and profile invalidation when model/configuration/policy changes. Thresholds and their versions are explicit per task/evidence policy; a required floor with missing thresholds or missing/stale/insufficient evidence makes the endpoint ineligible in Phase 21. A profile must meet, not merely possess, the requested floor. Unrun/skipped endpoints have no measured quality. Require reproducible benefit and no hard-boundary regression; export/publish only permitted artifacts. Domain phases later extend fixtures with their implemented read contracts before optimization consumes those results.
 
 Bind each quality result to provider, endpoint-profile ID/version, logical model, account/configuration scope where material, serializer/runtime version, task-profile ID/version, policy version, tested revision, and counter/seed where applicable. Freeze safe profile/account/execution metadata needed to reproduce eligibility without secrets. When quality evidence affects a route, the [routing observation](../../03-free-tier-inference-and-routing.md#routing-observation-contract) records the exact evidence/profile version used; later results correlate to the invocation/decision they evaluate where applicable. Relevant changes invalidate evidence rather than inheriting another credential/account/profile's eligibility or an obsolete configuration's score.
 
-**Acceptance:** Versioned profiles include coverage/config evidence and cannot promote stale or unrun models.
+**Acceptance:** Versioned profiles include freshness/coverage/configuration evidence; stale, below-floor, insufficiently covered, missing, or unrun profiles cannot satisfy a required Phase 21 quality floor.
 
 **Extension acceptance:** Synthetic profiles use the same run/scoring/artifact paths; changed endpoint/task/policy/configuration identities cannot silently reuse old quality evidence. Skipped live checks remain unmeasured.
 

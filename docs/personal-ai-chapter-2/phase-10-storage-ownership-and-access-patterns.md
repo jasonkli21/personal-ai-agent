@@ -88,6 +88,7 @@ migration/export; absence of `owner_id` is not proof that a row is global.
 | Permission/grant/revocation metadata | P; versioned source/destination scope/purpose, Phase 15/30 contracts |
 | Invocation reservations/settlements/quota/health/cooldown | P; account/provider buckets distinct from attributable owner/app usage, Phase 19 |
 | Retained runtime/model/tool/invocation events | D; scoped aggregate/sequence access, bounded safe metadata and retention |
+| Compact routing-decision observations and decision-time task/strategy facts | P; one canonical owner-scoped record, schema-versioned, at most 32 candidates/64 KiB, 90-day default replay horizon; scoped lookup/list by decision ID/time and indexed joins by request/run, invocation/attempt, and evaluation IDs, Phases 19/21–24/35 |
 | Compact actual-build turn/context manifests and producing-model attribution | D; references immutable P policy/registry/grant versions, Phases 14/21 |
 | External-turn preparation/finalization/replay | D; same conversation/branch contract, Phase 25.2 |
 | Knowledge application receipts for cross-store effects | P; same transaction as canonical effects, not D execution state |
@@ -302,13 +303,27 @@ confirm the pinned extension/version semantics independently.
 | P memory/provenance → D chat | Conversation/turn/user-message IDs, fingerprints, branch/source versions, matching scope and active completed ancestry |
 | D lifecycle job → P knowledge | Candidate memory IDs, policy version and expected lifecycle versions; no copied memory bodies |
 | P lifecycle event/receipt → D job | Job ID, operation identity and execution generation; receipt proves effect, not current job state |
-| D runtime/turn → P policy metadata | Versioned registry/grant/policy refs where later phases require them; no invented grants now |
+| D runtime/turn → P decision/policy metadata | `routing_decision_id` plus versioned policy/registry/grant references where later phases require them; the canonical decision observation remains P-owned and scoped |
 | P artifact metadata → GCS | Object key/generation/hash/readiness, Phase 20 only; operational D pointers are references |
 
 All IDs stay opaque/stable and scoped. P-only groups use P transactions; D-only
 groups use conditional D transactions. Do not route them through cross-store
 coordination. Read-only memory retrieval revalidates D sources and can omit
 unverifiable optional memory; it does not acquire durable write guards.
+
+Routing-decision observations are bounded advisory history, never admission
+grants. Phase 18 versioned endpoint/policy records and Phase 19 Postgres
+reservations/settlements remain authoritative controls. Durable publication of
+the compact P decision row is a fail-closed precondition to any external
+counter, summary, or generation call; if that write or a required reservation
+fails, make no external call. A D turn stores only the scoped decision ID and
+actual producing endpoint. Reconcile partial decision/reservation/attempt/turn publication by
+stable IDs, mark unresolved joins incomplete or unknown, and never reconstruct
+expired/deleted facts from current registry state. Keep all mandatory replay
+inputs resolvable or snapshotted for the same explicit 90-day horizon, shortened
+by owner deletion, source-rights expiry, or earlier dependency expiry; expired
+or deleted inputs make replay unavailable. Include the records and dependencies
+in authorized export/deletion inventory and deny cross-owner reads.
 
 The narrow coordinator is needed only for new memory/effect writes that today
 atomically validate chat ancestry/completed assistant or a lifecycle job in

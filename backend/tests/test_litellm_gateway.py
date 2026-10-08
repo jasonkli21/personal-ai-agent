@@ -28,6 +28,7 @@ from personal_ai.llm import (
 from personal_ai.llm.client import SYSTEM_INSTRUCTION
 from personal_ai.llm.context import GeminiTokenCounter
 from personal_ai.llm.litellm_gateway import LITELLM_VERSION, LiteLLMEmbeddingClient
+from personal_ai.llm.preparation import prepare_bounded_input
 from personal_ai.settings import Settings
 
 
@@ -202,6 +203,40 @@ def test_gemini_count_and_structured_generation_share_pinned_transformation():
     assert generation_body["generationConfig"]["max_output_tokens"] == 20
     assert result.text == '{"ok":true}'
     assert result.metadata.usage is None
+
+
+def test_schema_inclusive_count_over_near_ceiling_blocks_generation():
+    calls = []
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+    def handle(request):
+        calls.append(request)
+        if request.url.path.endswith(":countTokens"):
+            return httpx.Response(200, json={"totalTokens": 41})
+        return httpx.Response(200, json=_response("gemini", text='{"ok":true}'))
+
+    settings = _settings()
+    counter = GeminiTokenCounter(
+        settings, sync_transport_factory=lambda: httpx.MockTransport(handle)
+    )
+    generator = GeminiLLMClient(
+        settings, sync_transport_factory=lambda: httpx.MockTransport(handle)
+    )
+
+    with pytest.raises(LLMInvalidRequestError, match="token budget"):
+        prepare_bounded_input(
+            [ChatMessage("system", "Return strict JSON."), ChatMessage("user", "hello")],
+            counter,
+            generator=generator,
+            input_limit=40,
+            response_schema=schema,
+            inference_context=_context(),
+        )
+
+    assert len(calls) == 1
+    assert calls[0].url.path.endswith(":countTokens")
+    counted = json.loads(calls[0].content)["generateContentRequest"]
+    assert counted["generationConfig"]["response_json_schema"] == schema
 
 
 @pytest.mark.parametrize(

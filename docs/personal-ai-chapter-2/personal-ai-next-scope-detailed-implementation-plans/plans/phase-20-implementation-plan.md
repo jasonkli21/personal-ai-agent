@@ -61,7 +61,7 @@ Wire retained detailed **actual-build** context/routing traces, raw evaluation o
 
 **Acceptance:** Retained consumers, exports/deletion propagation and byte/operation admission share one artifact store; sensitive verbose traces remain off by default.
 
-Routing/evaluation artifacts retain only bounded privacy-safe observations under the [Routing Observation Contract](../../03-free-tier-inference-and-routing.md#routing-observation-contract); do not retain raw prompts or embeddings solely to enable future adaptive routing.
+The compact canonical routing-decision observation remains in Postgres under the [Phase 10 storage contract](../../phase-10-storage-ownership-and-access-patterns.md); GCS routing/debug artifacts are optional supporting bodies only. Their absence cannot remove required replay facts or change admission/quota controls. Preserve the shared schema/candidate/size bounds and 90-day replay horizon, subject to earlier deletion/source-rights expiry. Routing/evaluation artifacts retain only bounded privacy-safe observations under the [Routing Observation Contract](../../03-free-tier-inference-and-routing.md#routing-observation-contract); do not retain raw prompts or embeddings solely to enable future adaptive routing.
 
 ## Requirement coverage
 | Requirement | Work packages |

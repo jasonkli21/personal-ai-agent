@@ -14,6 +14,7 @@ Renumbered from former Phase 27; deterministic hard-filter/rollback requirements
 - Keep strict-free/privacy/capability/context/cooldown hard filters outside learning.
 - Compare quality and quota use.
 - Record stable strategy ID/version and reproducible configuration/model artifact identity.
+- Promote only on supported outcomes; shadow route choices and historical selected-route outcomes do not create counterfactual labels for unexecuted endpoints.
 
 ### Acceptance criteria
 
@@ -41,21 +42,21 @@ Phase 35 consumes privacy-safe, versioned, joinable observations from Phases 19,
 
 ### P35.0 — Offline learning dataset and candidate strategies
 
-Build a privacy-safe dataset from permitted versioned summaries and decision snapshots, then derive feature representations here rather than in Phases 19–24. Use held-out splits and profile validity. Replay historical decisions, compare candidate strategies with the strategy that actually ran, and conduct counterfactual selection comparisons only where recorded evidence supports them. Explore bounded candidate methods only if concrete data supports them; no mandatory external framework/provider expansion.
+Build a privacy-safe dataset from permitted versioned summaries and decision snapshots, then derive feature representations here rather than in Phases 19–24. Define evidence/label coverage before scoring. Group related requests, conversations/sessions, runs, retries, and cascade attempts into the same split; keep duplicate/paired fixture families together. Use held-out groups plus temporal and relevant endpoint/configuration separation so the test set does not share related outcomes or future configuration facts with training. Replay historical decisions and compare candidate choices with the strategy that actually ran. An unexecuted alternate has no observed answer-quality, usage, or latency label; report its counterfactual result as missing unless supported by paired Phase 22 outcomes or a separately bounded and authorized experiment. Historical success on selected routes alone cannot establish adaptive benefit. Explore bounded candidate methods only if concrete data supports them; no mandatory external framework/provider expansion.
 
-**Acceptance:** held-out data reproduces candidate experiments without exposing sensitive raw context.
+**Acceptance:** Group-held-out, temporally/configuration-separated data reproduces candidate experiments without exposing sensitive raw context; related attempts/conversations cannot leak across splits; unsupported counterfactual comparisons remain missing rather than imputed.
 
 ### P35.1 — Shadow and compare behind hard filters
 
-Run interchangeable strategies only after deterministic strict-free/privacy/capability/context/known-exhaustion filters produce the eligible set. Compare replay/shadow results with the deterministic baseline; shadow mode does not affect visible route or dispatch extra provider calls. ChatGPT is never an automatic candidate.
+Run interchangeable strategies only after deterministic strict-free/privacy/capability/context/count/quality-floor/known-exhaustion filters produce the eligible set. Compare replay/shadow choices, admission/rejection agreement, and strategy inference overhead with the deterministic baseline; shadow mode does not affect the visible route, dispatch extra provider calls, or supply quality/usage/latency labels for an unexecuted alternate. Keep route-agreement and shadow-safety metrics separate from supported answer quality and total-pipeline quota/latency. ChatGPT is never an automatic candidate.
 
 **Acceptance:** shadow cannot change visible routes or bypass any hard filter.
 
 ### P35.2 — Promotion evidence and rollback
 
-Compare against deterministic/quota/cascade baselines for supported quality, quota conservation, latency, and uncertainty under endpoint/account/configuration churn. Define task/endpoint coverage, measurable promotion thresholds, and tested deterministic rollback. Promotion, demotion, or removal of a strategy must not require rewriting orchestration or provider transport. Failure cannot silently enable paid paths or alter hard policy.
+Compare against deterministic/quota/cascade baselines for supported quality, quota conservation, end-to-end latency/usage, and uncertainty under endpoint/account/configuration churn. Include strategy inference overhead and all physical attempts, auxiliary count/summary calls, retries, and cascades in total-pipeline cost/latency. Define declared outcome coverage and measurable promotion thresholds by task/endpoint/profile; promotion is denied or restricted to covered tasks/endpoints when evidence is insufficient. A strategy choosing mostly unobserved alternatives cannot be promoted on historical chosen-route success or shadow agreement alone. Test deterministic rollback. Promotion, demotion, or removal of a strategy must not require rewriting orchestration or provider transport. Failure cannot silently enable paid paths or alter hard policy.
 
-**Acceptance:** any promotion has valid evidence and tested rollback.
+**Acceptance:** Any promotion has held-out supported outcomes that establish its claimed quality/quota/latency benefit at the declared coverage, no split leakage, and tested deterministic rollback. If those outcomes do not establish benefit, the strategy remains shadow-only or restricted to the covered task/endpoint subset. Shadow itself performs no dispatch and never invents quality labels.
 
 ## Requirement coverage
 

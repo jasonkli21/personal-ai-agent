@@ -55,3 +55,35 @@ Reviewed revision: `3d49afca6d4e3ebe8c4e22aff223b3c99b93a5b5` plus the documenta
 - Content/diff review: prior security/privacy, scope, provenance, memory/evidence, artifacts, export/deletion, eligibility/quota, exact confirmation, idempotency, embedding compatibility, and bounded-cascade requirements remain. Changes stay in Chapter 2 active planning, navigation, metadata, and this dated validation record; source copies, prior evidence, root/current-state/operating docs, and runtime code are unchanged.
 - Manifest refresh changes byte metadata only, including a pre-existing stale Phase 10 size; Phase 10 plan content is unchanged.
 - `git diff --check`: passed. No provider, engine, emulator, cloud, deployment/IAM, migration-source/no-source, recovery, or account-specific strict-$0 check was run. Existing external gates remain unresolved, and Phase 11 remains future unimplemented work.
+
+## LiteLLM routing review-handoff correction — 2026-10-08
+
+Reviewed tracked HEAD `48ff4d22de49768da7ee14e91c112c01fea0f35a` plus the supplied untracked
+`litellm-routing-review-handoff-2026-10-08.md` and documentation working-tree
+corrections. The handoff findings were rechecked against current code/contracts
+and addressed in the shared inference/routing contract, target architecture,
+Phase 10 storage ownership, Phase 17R, and affected Phase 18–24/35 plans. The
+Phase 17R prerequisite gate and later phase numbering remain unchanged. No
+runtime implementation, dependency, migration, live provider, deployment, or
+completed Phase 16/17 evidence was changed.
+
+- Session-local Python structural validation passed: 34 unique manifest IDs;
+  exact plan-file set and current byte metadata; all prerequisites known and
+  acyclic; phase IDs/order unchanged; `17 < 17R < 18`; Phase 17R still depends
+  on 16/17/10 and Phase 18 still depends on 17R.
+- Session-local local-Markdown link validation passed for the changed planning
+  documents, this validation record, and supplied handoff: 117 local
+  file/anchor targets resolved. No
+  trailing whitespace was found in those files.
+- `git diff --check` passed.
+- Documentation review confirms current callers still require a matching
+  provider-authoritative count; the Phase 17R SDK, transformed request, count,
+  retry, and account-isolation checks remain future acceptance criteria. No
+  LiteLLM version was installed or validated, and no runtime/provider,
+  emulator, cloud, deployment, IAM, or paid-path check was run.
+
+Remaining external and inherited gaps are unchanged: live provider/account/
+tier/privacy compatibility, Phase 14 immutable policy/source references,
+Phase 15 derived-context revocation and authoritative membership, and
+deployment/account-lifecycle acceptance. This documentation correction does
+not establish delivery or acceptance of the planned routing runtime.

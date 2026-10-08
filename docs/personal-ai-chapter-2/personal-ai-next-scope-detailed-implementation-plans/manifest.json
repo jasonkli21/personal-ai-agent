@@ -112,7 +112,7 @@
     "phase": "17R",
     "title": "LiteLLM execution substrate reconciliation",
     "file": "plans/phase-17r-implementation-plan.md",
-    "bytes": 8172,
+    "bytes": 14419,
     "prerequisites": [
       "16",
       "17",
@@ -123,7 +123,7 @@
     "phase": "18",
     "title": "Endpoint registry and strict-free eligibility",
     "file": "plans/phase-18-implementation-plan.md",
-    "bytes": 6922,
+    "bytes": 8879,
     "prerequisites": [
       "15",
       "17R",
@@ -134,7 +134,7 @@
     "phase": "19",
     "title": "Provider usage accounting and quota ledger",
     "file": "plans/phase-19-implementation-plan.md",
-    "bytes": 7438,
+    "bytes": 10493,
     "prerequisites": [
       "18",
       "10"
@@ -144,7 +144,7 @@
     "phase": "20",
     "title": "Cloud Storage artifact tier and retention",
     "file": "plans/phase-20-implementation-plan.md",
-    "bytes": 6998,
+    "bytes": 7442,
     "prerequisites": [
       "1",
       "10",
@@ -156,7 +156,7 @@
     "phase": "21",
     "title": "Deterministic task-aware routing",
     "file": "plans/phase-21-implementation-plan.md",
-    "bytes": 10515,
+    "bytes": 14834,
     "prerequisites": [
       "16",
       "18",
@@ -168,7 +168,7 @@
     "phase": "22",
     "title": "Cross-provider task evaluation matrix",
     "file": "plans/phase-22-implementation-plan.md",
-    "bytes": 6109,
+    "bytes": 6516,
     "prerequisites": [
       "20",
       "21",
@@ -179,7 +179,7 @@
     "phase": "23",
     "title": "Quota-aware routing",
     "file": "plans/phase-23-implementation-plan.md",
-    "bytes": 5166,
+    "bytes": 5616,
     "prerequisites": [
       "22",
       "10"
@@ -189,7 +189,7 @@
     "phase": "24",
     "title": "Bounded cascades and deterministic validation",
     "file": "plans/phase-24-implementation-plan.md",
-    "bytes": 4993,
+    "bytes": 6573,
     "prerequisites": [
       "23",
       "10"
@@ -355,7 +355,7 @@
     "phase": "35",
     "title": "Adaptive routing experiments",
     "file": "plans/phase-35-implementation-plan.md",
-    "bytes": 6042,
+    "bytes": 7930,
     "prerequisites": [
       "22",
       "23",
