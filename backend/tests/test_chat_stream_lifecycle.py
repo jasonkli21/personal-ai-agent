@@ -26,7 +26,13 @@ from personal_ai.auth.scope import RequestScope
 from personal_ai.context import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
-from personal_ai.llm import LLMTimeoutError
+from personal_ai.llm import (
+    GenerationEvent,
+    GenerationMetadata,
+    LLMTimeoutError,
+    ProviderIdentity,
+    UsageMetadata,
+)
 from personal_ai.main import app
 from personal_ai.services import ChatTurnService
 from personal_ai.settings import Settings
@@ -51,17 +57,38 @@ class ControlledLLM:
         self.finalized = False
         self.started = False
 
-    async def stream(self, _: object, *, inference_context=None) -> AsyncIterator[str]:
+    async def stream_events(
+        self,
+        _: object,
+        *,
+        max_output_tokens: int,
+        timeout_seconds: float,
+        inference_context=None,
+    ) -> AsyncIterator[GenerationEvent]:
         del inference_context
+        assert max_output_tokens > 0 and timeout_seconds > 0
         self.started = True
         try:
             if self.fail_after_first:
                 raise LLMTimeoutError("private provider detail")
-            yield "partial"
+            yield GenerationEvent.text_delta("partial")
             if self.wait_after_first:
                 self.waiting.set()
                 await self.release.wait()
-                yield " never"
+                yield GenerationEvent.text_delta(" never")
+            yield GenerationEvent.terminal(
+                GenerationMetadata(
+                    status="success",
+                    identity=ProviderIdentity("synthetic", "test-model", "synthetic-v1"),
+                    usage=UsageMetadata(
+                        input_tokens=3,
+                        output_tokens=2,
+                        total_tokens=5,
+                        source="estimated",
+                        confidence="estimated",
+                    ),
+                )
+            )
         finally:
             await asyncio.sleep(0)
             self.finalized = True

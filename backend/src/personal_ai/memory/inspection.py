@@ -90,6 +90,7 @@ def inspect_records(
         elif (
             memory.embedding_model != settings.memory_embedding_model
             or memory.embedding_dimensions != settings.memory_embedding_dimensions
+            or memory.embedding_space_version != "v1"
         ):
             reason = "incompatible_embedding"
         if state is not None and state.retrieval_status != "active":

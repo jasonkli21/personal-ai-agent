@@ -10,10 +10,12 @@ from typing import Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from personal_ai.auth.scope import STANDALONE_APPLICATION_ID
+from personal_ai.llm.client import EmbeddingResult
 from personal_ai.memory.contracts import (
     DerivedMemory,
     DerivedMemorySource,
     Memory,
+    embedding_space_for,
     normalize,
     vector,
 )
@@ -128,10 +130,7 @@ class DeterministicMemoryConsolidator:
         records.sort(key=lambda item: str(item.id))
         if len({record.memory_type for record in records}) != 1:
             return ConsolidationPlan("no_plan", "mixed_types")
-        if (
-            len({record.embedding_model for record in records}) != 1
-            or len({record.embedding_dimensions for record in records}) != 1
-        ):
+        if len({embedding_space_for(record) for record in records}) != 1:
             return ConsolidationPlan("rejected", "incompatible_embedding")
         if len({normalize(record.content) for record in records}) != 1:
             return ConsolidationPlan("no_plan", "different_assertions")
@@ -196,9 +195,13 @@ class DeterministicMemoryConsolidator:
         if job.candidate_memory_ids != canonical_ids:
             return ConsolidationPlan("rejected", "job_source_mismatch")
         vectors = embedder.embed([content], timeout=remaining())
-        if len(vectors) != 1:
+        if len(vectors) != 1 or not isinstance(vectors[0], EmbeddingResult):
             return ConsolidationPlan("rejected", "embedding_invalid")
-        dimensions = records[0].embedding_dimensions
+        embedding_result = vectors[0]
+        embedding_space = embedding_space_for(records[0])
+        if embedding_result.task != "document" or embedding_result.space != embedding_space:
+            return ConsolidationPlan("rejected", "incompatible_embedding")
+        dimensions = embedding_space.dimensions
         max_importance = max(_importance(record, lifecycle) for record in records)
         confidence = min(record.confidence for record in records)
         effective = max(record.effective_at for record in records)
@@ -215,9 +218,14 @@ class DeterministicMemoryConsolidator:
             importance=min(IMPORTANCE_BY_TYPE[target_type], max_importance),
             effective_at=effective,
             created_at=now.astimezone(UTC),
-            embedding=vector(vectors[0], dimensions),
-            embedding_model=records[0].embedding_model,
+            embedding=vector(embedding_result.values, dimensions),
+            embedding_provider=embedding_space.provider_id,
+            embedding_model=embedding_space.model_id,
             embedding_dimensions=dimensions,
+            embedding_normalization=embedding_space.normalization,
+            embedding_document_task=embedding_space.document_task,
+            embedding_query_task=embedding_space.query_task,
+            embedding_space_version=embedding_space.version,
             source_memory_ids=tuple(item.memory_id for item in source_set),
             sources=source_set,
             source_set_identity=identity,

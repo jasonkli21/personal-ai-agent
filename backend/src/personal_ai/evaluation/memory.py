@@ -108,7 +108,7 @@ def build_fixture(fixture):
         turns,
         candidates,
         pending,
-        FakeEmbedder(vectors),
+        FakeEmbedder(vectors, provider="fake", model=settings.memory_embedding_model),
     )
 
 

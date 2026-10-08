@@ -17,7 +17,7 @@ from personal_ai.context.planner import ContextPlan
 from personal_ai.context.providers import ContextItem, ContextProviderFailure
 from personal_ai.entities import Message
 from personal_ai.entities.conversation import TimestampedRecord
-from personal_ai.llm.client import ChatMessage
+from personal_ai.llm.client import ChatMessage, GenerationMetadata, TokenCount
 
 if TYPE_CHECKING:
     from personal_ai.context.builder import ContextBuildManifest
@@ -31,16 +31,6 @@ class ContextError(Exception):
         super().__init__(code)
 
 
-@dataclass(frozen=True)
-class TokenCount:
-    tokens: int
-    kind: Literal["provider", "estimated"]
-
-    def __post_init__(self) -> None:
-        if self.tokens < 0:
-            raise ValueError("negative token count")
-
-
 class TokenCounter(Protocol):
     def count(self, messages: Sequence[ChatMessage]) -> TokenCount: ...
 
@@ -49,6 +39,7 @@ class TokenCounter(Protocol):
 class SummaryDraft:
     content: str
     model: str
+    attribution: GenerationMetadata | None = None
 
 
 class ConversationSummarizer(Protocol):

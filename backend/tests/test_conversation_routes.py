@@ -347,7 +347,15 @@ def test_regenerate_and_edit_retry_replace_the_active_path(client: TestClient) -
 
 def test_model_failure_is_streamed_once_and_persisted(client: TestClient) -> None:
     class FailingLLM:
-        async def stream(self, _: object, *, inference_context=None):
+        async def stream_events(
+            self,
+            _: object,
+            *,
+            max_output_tokens,
+            timeout_seconds,
+            inference_context=None,
+        ):
+            del max_output_tokens, timeout_seconds
             del inference_context
             raise LLMTimeoutError("provider timeout")
             yield ""  # pragma: no cover
@@ -368,6 +376,12 @@ def test_model_failure_is_streamed_once_and_persisted(client: TestClient) -> Non
 def test_oversized_model_response_is_rejected_without_persisting_it(
     client: TestClient,
 ) -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        ai_provider="fake",
+        ai_model="fake-model",
+        max_context_tokens=70_000,
+        max_response_tokens=MAX_MESSAGE_CONTENT_CHARS,
+    )
     app.dependency_overrides[get_llm_client] = lambda: FakeLLMClient(
         ["partial", "x" * MAX_MESSAGE_CONTENT_CHARS]
     )

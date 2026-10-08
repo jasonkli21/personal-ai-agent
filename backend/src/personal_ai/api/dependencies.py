@@ -24,7 +24,7 @@ from personal_ai.context.contracts import ConversationSummaryRepository
 from personal_ai.context.profile import GlobalProfileContextProviderFactory
 from personal_ai.context.providers import ContextProviderCoordinator
 from personal_ai.context.traces import ContextTraceRepository
-from personal_ai.llm import GeminiLLMClient, LLMClient
+from personal_ai.llm import GeminiLLMClient, GenerationClient
 from personal_ai.llm.context import GeminiConversationSummarizer, GeminiTokenCounter
 from personal_ai.llm.memory import GeminiMemoryAdapter
 from personal_ai.memory.lifecycle_jobs import MemoryLifecycleCoordinator, PubSubMemoryJobPublisher
@@ -142,7 +142,7 @@ def get_conversation_service(
 
 def get_llm_client(
     settings: Annotated[Settings, Depends(get_settings)],
-) -> LLMClient:
+) -> GenerationClient:
     """Build the configured provider behind the replaceable streaming contract."""
     return GeminiLLMClient(settings)
 
@@ -215,7 +215,7 @@ def get_lifecycle_repository(
 def get_chat_turn_service(
     conversations: Annotated[ConversationRepository, Depends(get_conversation_repository)],
     messages: Annotated[MessageRepository, Depends(get_message_repository)],
-    llm: Annotated[LLMClient, Depends(get_llm_client)],
+    llm: Annotated[GenerationClient, Depends(get_llm_client)],
     settings: Annotated[Settings, Depends(get_settings)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
     application_context: Annotated[ApplicationContextRequest, Depends(get_application_context)],

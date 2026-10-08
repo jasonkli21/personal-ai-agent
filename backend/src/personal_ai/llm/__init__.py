@@ -1,27 +1,63 @@
 """Replaceable language-model clients for the chat application."""
 
-from personal_ai.llm.client import ChatMessage, InferenceContext, LLMClient
+from personal_ai.llm.client import (
+    ChatMessage,
+    EmbeddingClient,
+    EmbeddingResult,
+    EmbeddingSpace,
+    GenerationClient,
+    GenerationEvent,
+    GenerationMetadata,
+    GenerationResult,
+    GenerationStatus,
+    InferenceContext,
+    LLMClient,
+    ProviderCapabilities,
+    ProviderIdentity,
+    TokenCount,
+    TokenCountingClient,
+    UsageMetadata,
+)
 from personal_ai.llm.errors import (
     LLMError,
+    LLMIncompleteGenerationError,
     LLMInvalidConfigurationError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
+    LLMRejectedError,
     LLMTimeoutError,
     LLMUnavailableError,
+    LLMUnsupportedCapabilityError,
 )
 from personal_ai.llm.fake import FakeLLMClient
 from personal_ai.llm.gemini import GeminiLLMClient
 
 __all__ = [
     "ChatMessage",
+    "EmbeddingClient",
+    "EmbeddingResult",
+    "EmbeddingSpace",
     "FakeLLMClient",
     "GeminiLLMClient",
+    "GenerationClient",
+    "GenerationEvent",
+    "GenerationMetadata",
+    "GenerationResult",
+    "GenerationStatus",
     "InferenceContext",
     "LLMClient",
     "LLMError",
+    "LLMIncompleteGenerationError",
     "LLMInvalidConfigurationError",
     "LLMInvalidRequestError",
     "LLMInvalidResponseError",
+    "LLMRejectedError",
     "LLMTimeoutError",
     "LLMUnavailableError",
+    "LLMUnsupportedCapabilityError",
+    "ProviderCapabilities",
+    "ProviderIdentity",
+    "TokenCount",
+    "TokenCountingClient",
+    "UsageMetadata",
 ]

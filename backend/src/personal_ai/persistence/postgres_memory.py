@@ -378,6 +378,11 @@ class PostgresMemoryRepository:
         embedding,
         model: str,
         dimensions: int,
+        provider: str = "google_genai",
+        normalization: str = "l2",
+        document_task: str = "RETRIEVAL_DOCUMENT",
+        query_task: str = "RETRIEVAL_QUERY",
+        embedding_space_version: str = "v1",
         limit: int,
         timeout: float = 5,
         memory_type: str | None = None,
@@ -388,6 +393,11 @@ class PostgresMemoryRepository:
             embedding=embedding,
             model=model,
             dimensions=dimensions,
+            provider=provider,
+            normalization=normalization,
+            document_task=document_task,
+            query_task=query_task,
+            embedding_space_version=embedding_space_version,
             limit=limit,
             timeout=timeout,
             memory_type=memory_type,
@@ -401,6 +411,11 @@ class PostgresMemoryRepository:
         embedding,
         model: str,
         dimensions: int,
+        provider: str = "google_genai",
+        normalization: str = "l2",
+        document_task: str = "RETRIEVAL_DOCUMENT",
+        query_task: str = "RETRIEVAL_QUERY",
+        embedding_space_version: str = "v1",
         limit: int,
         timeout: float = 5,
     ) -> list[ScoredMemory]:
@@ -410,6 +425,11 @@ class PostgresMemoryRepository:
             embedding=embedding,
             model=model,
             dimensions=dimensions,
+            provider=provider,
+            normalization=normalization,
+            document_task=document_task,
+            query_task=query_task,
+            embedding_space_version=embedding_space_version,
             limit=limit,
             timeout=timeout,
             memory_type=None,
@@ -424,6 +444,11 @@ class PostgresMemoryRepository:
         embedding,
         model: str,
         dimensions: int,
+        provider: str,
+        normalization: str,
+        document_task: str,
+        query_task: str,
+        embedding_space_version: str,
         limit: int,
         timeout: float,
         memory_type: str | None,
@@ -444,12 +469,13 @@ class PostgresMemoryRepository:
             owner_id,
             scope.application_id,
             scope.workspace_id,
-            "google_genai",
+            provider,
             model,
             dimensions,
-            "l2",
-            "RETRIEVAL_DOCUMENT",
-            "RETRIEVAL_QUERY",
+            normalization,
+            document_task,
+            query_task,
+            embedding_space_version,
         ]
         if memory_type is not None and not derived:
             params.append(memory_type)
@@ -476,7 +502,9 @@ class PostgresMemoryRepository:
                 "AND application_id=%s AND workspace_id IS NOT DISTINCT FROM %s "
                 "AND status='active' AND embedding_provider=%s AND embedding_model=%s "
                 "AND embedding_dimensions=%s AND embedding_normalization=%s "
-                "AND document_task=%s AND query_task=%s" + extra_filter + lifecycle_filter + derived_filter,
+                "AND document_task=%s AND query_task=%s "
+                "AND COALESCE(payload->>'embedding_space_version','v1')=%s"
+                + extra_filter + lifecycle_filter + derived_filter,
                 params,
             ).fetchone()[0]
             if count > self.search_scan_limit:
@@ -486,7 +514,8 @@ class PostgresMemoryRepository:
                 f"FROM {table} WHERE scope_id=%s AND owner_id=%s AND application_id=%s "
                 "AND workspace_id IS NOT DISTINCT FROM %s AND status='active' "
                 "AND embedding_provider=%s AND embedding_model=%s AND embedding_dimensions=%s "
-                "AND embedding_normalization=%s AND document_task=%s AND query_task=%s"
+                "AND embedding_normalization=%s AND document_task=%s AND query_task=%s "
+                "AND COALESCE(payload->>'embedding_space_version','v1')=%s"
                 + extra_filter
                 + lifecycle_filter
                 + derived_filter

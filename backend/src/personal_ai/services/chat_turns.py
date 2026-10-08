@@ -29,12 +29,14 @@ from personal_ai.context.traces import ContextTraceManifest, ContextTraceReposit
 from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
 from personal_ai.llm import (
     ChatMessage,
+    GenerationClient,
     InferenceContext,
-    LLMClient,
     LLMError,
     LLMInvalidResponseError,
     LLMTimeoutError,
 )
+from personal_ai.llm.client import GenerationEvent, GenerationMetadata, GenerationResult
+from personal_ai.llm.errors import LLMIncompleteGenerationError
 from personal_ai.storage import ConversationConflictError
 from personal_ai.storage.async_io import io_call
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
@@ -52,6 +54,7 @@ class _PreparedTurn:
     assistant: Message
     history: tuple[ChatMessage, ...]
     request_id: str
+    deadline: float
     selected_memory_ids: tuple[UUID, ...] = ()
     inference_context: InferenceContext | None = None
 
@@ -111,7 +114,7 @@ class ChatTurnService:
         self,
         conversations: ConversationRepository,
         messages: MessageRepository,
-        llm: LLMClient,
+        llm: GenerationClient,
         *,
         owner_id: str,
         application_context: ApplicationContextRequest | None = None,
@@ -364,6 +367,7 @@ class ChatTurnService:
                 persisted_assistant[0],
                 assembled.messages,
                 request_id,
+                deadline,
                 assembled.selected_memory_ids,
                 inference_context,
             )
@@ -436,16 +440,20 @@ class ChatTurnService:
             # while sending either event must fail the already-persisted turn.
             for message in turn.created:
                 yield _sse("message.created", SSEMessageCreated(message=message).model_dump_json())
-            events: asyncio.Queue[str | Exception | None] = asyncio.Queue(maxsize=1)
+            events: asyncio.Queue[GenerationEvent | Exception | None] = asyncio.Queue(maxsize=1)
             demand = asyncio.Semaphore(0)
-            provider_iterator = self._llm.stream(
-                turn.history, inference_context=turn.inference_context
+            provider_iterator = self._llm.stream_events(
+                turn.history,
+                max_output_tokens=self._context.settings.max_response_tokens,
+                timeout_seconds=remaining(turn.deadline),
+                inference_context=turn.inference_context,
             ).__aiter__()
             # One task owns the entire iterator: SDK timeout scopes and cleanup
             # may depend on task identity remaining stable across every yield.
             provider_task = asyncio.create_task(
                 _produce_deltas(provider_iterator, events, demand, request_id=turn.request_id)
             )
+            generation_metadata: GenerationMetadata | None = None
             try:
                 while True:
                     demand.release()
@@ -454,7 +462,18 @@ class ChatTurnService:
                         break
                     if isinstance(event, Exception):
                         raise event
-                    delta = event
+                    if event.kind == "terminal":
+                        generation_metadata = event.metadata
+                        tail = await events.get()
+                        if isinstance(tail, Exception):
+                            raise tail
+                        if tail is not None:
+                            raise LLMInvalidResponseError(
+                                "language model emitted data after its terminal event"
+                            )
+                        GenerationResult("", generation_metadata).require_success()
+                        break
+                    delta = event.delta
                     if not delta:
                         continue
                     if content_length + len(delta) > MAX_MESSAGE_CONTENT_CHARS:
@@ -473,6 +492,10 @@ class ChatTurnService:
                 await _cancel_provider_task(provider_task, request_id=turn.request_id)
 
             content = "".join(parts)
+            if generation_metadata is None:
+                raise LLMIncompleteGenerationError(
+                    "language model ended without a terminal result"
+                )
             if not content.strip():
                 raise LLMInvalidResponseError("language model response was empty")
             completed = await io_call(
@@ -492,6 +515,17 @@ class ChatTurnService:
                 return
             terminal = True
             completed_turn.append(completed)
+            usage = generation_metadata.usage
+            logger.info(
+                "Chat generation completed request_id=%s provider=%s model=%s "
+                "input_tokens=%s output_tokens=%s usage_confidence=%s",
+                turn.request_id,
+                generation_metadata.identity.provider_id,
+                generation_metadata.identity.model_id,
+                usage.input_tokens if usage else None,
+                usage.output_tokens if usage else None,
+                usage.confidence if usage else "unavailable",
+            )
             yield _sse(
                 "response.completed", SSEResponseCompleted(message=completed).model_dump_json()
             )
@@ -595,28 +629,36 @@ class ChatTurnService:
 
 
 async def _produce_deltas(
-    iterator: AsyncIterator[str],
-    events: asyncio.Queue[str | Exception | None],
+    iterator: AsyncIterator[GenerationEvent],
+    events: asyncio.Queue[GenerationEvent | Exception | None],
     demand: asyncio.Semaphore,
     *,
     request_id: str,
 ) -> None:
     """Own provider iteration and teardown in a single task with backpressure."""
     failure: Exception | None = None
+    saw_terminal = False
     try:
         while True:
             await demand.acquire()
             try:
-                delta = await anext(iterator)
+                event = await anext(iterator)
             except StopAsyncIteration:
                 break
-            await events.put(delta)
+            await events.put(event)
+            if event.kind == "terminal":
+                saw_terminal = True
+                break
     except asyncio.CancelledError:
         raise
     # The consumer applies the normal safe model/storage error mapping.
     except Exception as error:  # noqa: BLE001
         failure = error
     finally:
+        if failure is None and not saw_terminal:
+            failure = LLMIncompleteGenerationError(
+                "language model ended without a terminal result"
+            )
         close = getattr(iterator, "aclose", None)
         if close is not None:
             with anyio.CancelScope(shield=True):

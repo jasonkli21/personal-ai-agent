@@ -71,7 +71,22 @@ class InMemoryMemoryRepository:
             raise ResourceNotFoundError("memory not found")
         return record
 
-    def search(self, *, owner_id, embedding, model, dimensions, limit, timeout=5, memory_type=None):
+    def search(
+        self,
+        *,
+        owner_id,
+        embedding,
+        model,
+        dimensions,
+        provider="google_genai",
+        normalization="l2",
+        document_task="RETRIEVAL_DOCUMENT",
+        query_task="RETRIEVAL_QUERY",
+        embedding_space_version="v1",
+        limit,
+        timeout=5,
+        memory_type=None,
+    ):
         query = vector(embedding, dimensions)
         with self._lock:
             scores = [
@@ -85,6 +100,11 @@ class InMemoryMemoryRepository:
                 and m.status == "active"
                 and m.embedding_model == model
                 and m.embedding_dimensions == dimensions
+                and m.embedding_provider == provider
+                and m.embedding_normalization == normalization
+                and m.embedding_document_task == document_task
+                and m.embedding_query_task == query_task
+                and m.embedding_space_version == embedding_space_version
                 and (memory_type is None or m.memory_type == memory_type)
             ]
         return sorted(scores, key=lambda s: (-s.similarity, str(s.memory.id)))[:limit]
@@ -95,7 +115,21 @@ class InMemoryMemoryRepository:
             raise ResourceNotFoundError("memory not found")
         return record
 
-    def search_derived(self, *, owner_id, embedding, model, dimensions, limit, timeout=5):
+    def search_derived(
+        self,
+        *,
+        owner_id,
+        embedding,
+        model,
+        dimensions,
+        provider="google_genai",
+        normalization="l2",
+        document_task="RETRIEVAL_DOCUMENT",
+        query_task="RETRIEVAL_QUERY",
+        embedding_space_version="v1",
+        limit,
+        timeout=5,
+    ):
         query = vector(embedding, dimensions)
         with self._lock:
             scores = [
@@ -111,5 +145,10 @@ class InMemoryMemoryRepository:
                 and scope_matches(record)
                 and record.embedding_model == model
                 and record.embedding_dimensions == dimensions
+                and record.embedding_provider == provider
+                and record.embedding_normalization == normalization
+                and record.embedding_document_task == document_task
+                and record.embedding_query_task == query_task
+                and record.embedding_space_version == embedding_space_version
             ]
         return sorted(scores, key=lambda s: (-s.similarity, str(s.memory.id)))[:limit]

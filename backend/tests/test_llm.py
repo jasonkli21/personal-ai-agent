@@ -12,10 +12,13 @@ from personal_ai.llm import (
     FakeLLMClient,
     GeminiLLMClient,
     InferenceContext,
+    LLMIncompleteGenerationError,
     LLMInvalidConfigurationError,
     LLMInvalidRequestError,
+    LLMRejectedError,
     LLMTimeoutError,
     LLMUnavailableError,
+    LLMUnsupportedCapabilityError,
 )
 from personal_ai.settings import Settings
 
@@ -53,6 +56,74 @@ def test_fake_client_preserves_delta_and_request_order() -> None:
 
     assert deltas == ["one", " two", " three"]
     assert client.requests == [tuple(_messages())]
+
+
+def test_synthetic_provider_uses_distinct_neutral_identity_and_reports_terminal_usage():
+    client = FakeLLMClient(
+        ["answer"], provider_id="synthetic-provider", model_id="synthetic-model-v9"
+    )
+
+    events = asyncio.run(_collect(client.stream_events(
+        _messages(), max_output_tokens=10, timeout_seconds=2
+    )))
+
+    assert events[0].delta == "answer"
+    terminal = events[-1].metadata
+    assert terminal.status == "success"
+    assert terminal.identity.provider_id == "synthetic-provider"
+    assert terminal.identity.model_id == "synthetic-model-v9"
+    assert terminal.usage.source == "estimated"
+    assert terminal.usage.confidence == "estimated"
+    assert client.capabilities.supports("structured_generation")
+    with pytest.raises(LLMUnsupportedCapabilityError):
+        client.capabilities.require("token_counting")
+    with pytest.raises(LLMUnsupportedCapabilityError):
+        FakeLLMClient(supports_structured=False).capabilities.require("structured_generation")
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("incomplete", LLMIncompleteGenerationError),
+        ("failure", LLMUnavailableError),
+        ("rejected", LLMRejectedError),
+    ],
+)
+def test_fake_text_compatibility_facade_rejects_non_success_terminal(status, expected):
+    client = FakeLLMClient(["partial"], terminal_status=status)
+    with pytest.raises(expected):
+        asyncio.run(_collect(client.stream(_messages())))
+
+
+def test_fake_stream_requires_terminal_and_enforces_output_bound():
+    missing = FakeLLMClient(["partial"], include_terminal=False)
+    with pytest.raises(LLMIncompleteGenerationError):
+        asyncio.run(_collect(missing.stream(_messages())))
+
+    bounded = FakeLLMClient(["abcdefgh"])
+    events = asyncio.run(_collect(bounded.stream_events(
+        _messages(), max_output_tokens=1, timeout_seconds=2
+    )))
+    assert events[0].delta == "abcd"
+    assert events[-1].metadata.status == "incomplete"
+
+
+def test_fake_structured_generation_returns_terminal_attribution_and_checks_capability():
+    client = FakeLLMClient(complete_text='{"ok":true}')
+    result = client.generate_structured(
+        _messages(), response_schema={"type": "object"},
+        max_output_tokens=10, timeout_seconds=2,
+    )
+    assert result.text == '{"ok":true}'
+    assert result.metadata.status == "success"
+    assert result.metadata.identity.provider_id == "fake"
+
+    unsupported = FakeLLMClient(supports_structured=False)
+    with pytest.raises(LLMUnsupportedCapabilityError):
+        unsupported.generate_structured(
+            _messages(), response_schema={"type": "object"},
+            max_output_tokens=10, timeout_seconds=2,
+        )
 
 
 class _ProviderError(Exception):
@@ -171,6 +242,42 @@ def test_closing_gemini_stream_closes_provider_iterator_but_not_injected_client(
 
     assert provider_stream.finalized
     assert not injected_client.closed
+
+
+def test_gemini_stream_events_return_provider_finish_and_usage_metadata():
+    class Models:
+        async def generate_content_stream(self, **_: object) -> AsyncIterator[object]:
+            async def chunks():
+                yield SimpleNamespace(
+                    text="partial",
+                    candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")],
+                    usage_metadata=SimpleNamespace(
+                        prompt_token_count=31,
+                        candidates_token_count=5,
+                        total_token_count=36,
+                    ),
+                )
+
+            return chunks()
+
+    class Client:
+        class aio:
+            models = Models()
+
+    client = GeminiLLMClient(_settings(), client=Client())
+    events = asyncio.run(_collect(client.stream_events(
+        _messages(),
+        max_output_tokens=1,
+        timeout_seconds=2,
+        inference_context=_inference_context(),
+    )))
+    metadata = events[-1].metadata
+    assert metadata.status == "incomplete"
+    assert metadata.identity.provider_id == "gemini"
+    assert metadata.identity.model_id == "test-model"
+    assert metadata.usage.input_tokens == 31
+    assert metadata.usage.output_tokens == 5
+    assert metadata.usage.confidence == "reported"
 
 
 def test_closing_gemini_stream_closes_per_request_owned_client(monkeypatch) -> None:

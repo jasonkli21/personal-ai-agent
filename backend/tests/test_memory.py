@@ -83,6 +83,10 @@ def test_repository_idempotency_owner_status_dimension_and_provenance():
     memory = next(iter(repo.records.values()))
     assert repo.create(memory) == (memory, False)
     assert repo.get(owner_id="local", memory_id=memory.id).source_message_ids
+    assert memory.embedding_space_version == "v1"
+    legacy_payload = memory.model_dump()
+    legacy_payload.pop("embedding_space_version")
+    assert type(memory).model_validate(legacy_payload).embedding_space_version == "v1"
     with pytest.raises(ResourceNotFoundError):
         repo.get(owner_id="foreign", memory_id=memory.id)
     assert not repo.search(
@@ -90,6 +94,15 @@ def test_repository_idempotency_owner_status_dimension_and_provenance():
     )
     assert not repo.search(
         owner_id="local", embedding=[1, 0, 0], model="different", dimensions=3, limit=20
+    )
+    assert not repo.search(
+        owner_id="local",
+        embedding=[1, 0, 0],
+        model="fake-v1",
+        dimensions=3,
+        provider="fake",
+        embedding_space_version="v2",
+        limit=20,
     )
     with pytest.raises(ValueError):
         repo.search(owner_id="local", embedding=[1, 0], model="fake-v1", dimensions=3, limit=20)

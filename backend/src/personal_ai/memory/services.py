@@ -6,11 +6,13 @@ from datetime import UTC, datetime
 from time import monotonic
 
 from personal_ai.context.contracts import complete_turns, fingerprint
+from personal_ai.llm.client import EmbeddingResult
 from personal_ai.memory.contracts import (
     DerivedMemory,
     ExtractionResult,
     Memory,
     RetrievalResult,
+    embedding_space_for,
     identity,
     normalize,
     vector,
@@ -36,6 +38,22 @@ def source_messages(memory, messages, *, timeout=5):
     return source if set(memory.source_message_ids) <= completed_users else None
 
 
+def _validate_embedding_result(result, settings, *, task):
+    if not isinstance(result, EmbeddingResult) or result.task != task:
+        raise ValueError("embedding_invalid")
+    space = result.space
+    if (
+        space.model_id != settings.memory_embedding_model
+        or space.dimensions != settings.memory_embedding_dimensions
+        or space.normalization != "l2"
+        or space.document_task != "RETRIEVAL_DOCUMENT"
+        or space.query_task != "RETRIEVAL_QUERY"
+        or space.version != "v1"
+    ):
+        raise ValueError("embedding_space_mismatch")
+    return vector(result.values, space.dimensions), space
+
+
 class MemoryExtractionService:
     def __init__(self, settings, repository, messages, extractor, embedder, *, clock=None):
         self.settings, self.repository, self.messages = settings, repository, messages
@@ -47,6 +65,7 @@ class MemoryExtractionService:
             return ExtractionResult(reasons=("disabled",))
         deadline = monotonic() + self.settings.memory_timeout_seconds
         created, skipped, reasons = [], [], []
+        attributions = []
         stage = "storage"
 
         def remaining():
@@ -69,7 +88,11 @@ class MemoryExtractionService:
             ):
                 return ExtractionResult(reasons=("sensitive_or_external",))
             stage = "extraction"
-            candidates = self.extractor.extract(turn, timeout=remaining())
+            extraction = self.extractor.extract(turn, timeout=remaining())
+            candidates = getattr(extraction, "candidates", extraction)
+            attribution = getattr(extraction, "attribution", None)
+            if attribution is not None:
+                attributions.append(attribution)
             for candidate in candidates[: self.settings.memory_max_candidates_per_turn]:
                 remaining()
                 reason = candidate_reason(candidate, turn, self.settings)
@@ -94,6 +117,9 @@ class MemoryExtractionService:
                 embeddings = self.embedder.embed([candidate.content], timeout=remaining())
                 if len(embeddings) != 1:
                     raise ValueError("embedding_invalid")
+                embedding_values, embedding_space = _validate_embedding_result(
+                    embeddings[0], self.settings, task="document"
+                )
                 memory = Memory(
                     **candidate.model_dump(exclude={"effective_at"}),
                     id=memory_id,
@@ -105,9 +131,14 @@ class MemoryExtractionService:
                     observed_at=source[-1].created_at,
                     effective_at=candidate.effective_at or source[-1].created_at,
                     created_at=self.clock(),
-                    embedding=vector(embeddings[0], self.settings.memory_embedding_dimensions),
-                    embedding_model=self.settings.memory_embedding_model,
-                    embedding_dimensions=self.settings.memory_embedding_dimensions,
+                    embedding=embedding_values,
+                    embedding_provider=embedding_space.provider_id,
+                    embedding_model=embedding_space.model_id,
+                    embedding_dimensions=embedding_space.dimensions,
+                    embedding_normalization=embedding_space.normalization,
+                    embedding_document_task=embedding_space.document_task,
+                    embedding_query_task=embedding_space.query_task,
+                    embedding_space_version=embedding_space.version,
                 )
                 remaining()
                 stage = "storage"
@@ -118,7 +149,9 @@ class MemoryExtractionService:
                 (created if fresh else skipped).append(memory.id)
         except Exception as error:  # noqa: BLE001 - optional work must never affect chat
             reasons.append("timeout" if isinstance(error, TimeoutError) else stage + "_failed")
-        result = ExtractionResult(tuple(created), tuple(skipped), tuple(reasons))
+        result = ExtractionResult(
+            tuple(created), tuple(skipped), tuple(reasons), tuple(attributions)
+        )
         logger.info(
             "Memory extraction created=%s skipped=%s reasons=%s",
             len(created),
@@ -174,6 +207,7 @@ class MemoryRetriever:
                 or memory.source_conversation_id != source.source_conversation_id
                 or memory.source_turn_id != source.source_turn_id
                 or memory.source_message_ids != source.source_message_ids
+                or embedding_space_for(memory) != embedding_space_for(record)
                 or memory.memory_type not in ("preference", "episodic_observation")
                 or content_reason(memory.content, self.settings)
             ):
@@ -213,13 +247,20 @@ class MemoryRetriever:
             )
             if len(embeddings) != 1:
                 raise ValueError("embedding_invalid")
-            embedding = vector(embeddings[0], self.settings.memory_embedding_dimensions)
+            embedding, embedding_space = _validate_embedding_result(
+                embeddings[0], self.settings, task="query"
+            )
             originals = tuple(
                 self.repository.search(
                     owner_id=owner_id,
                     embedding=embedding,
-                    model=self.settings.memory_embedding_model,
-                    dimensions=self.settings.memory_embedding_dimensions,
+                    model=embedding_space.model_id,
+                    dimensions=embedding_space.dimensions,
+                    provider=embedding_space.provider_id,
+                    normalization=embedding_space.normalization,
+                    document_task=embedding_space.document_task,
+                    query_task=embedding_space.query_task,
+                    embedding_space_version=embedding_space.version,
                     limit=self.settings.memory_retrieval_candidate_limit,
                     timeout=max(0.001, deadline - monotonic()),
                 )
@@ -230,8 +271,13 @@ class MemoryRetriever:
                     self.repository.search_derived(
                         owner_id=owner_id,
                         embedding=embedding,
-                        model=self.settings.memory_embedding_model,
-                        dimensions=self.settings.memory_embedding_dimensions,
+                        model=embedding_space.model_id,
+                        dimensions=embedding_space.dimensions,
+                        provider=embedding_space.provider_id,
+                        normalization=embedding_space.normalization,
+                        document_task=embedding_space.document_task,
+                        query_task=embedding_space.query_task,
+                        embedding_space_version=embedding_space.version,
                         limit=self.settings.memory_retrieval_candidate_limit,
                         timeout=max(0.001, deadline - monotonic()),
                     )
@@ -253,8 +299,7 @@ class MemoryRetriever:
                 elif getattr(m, "status", "active") != "active":
                     reason = "inactive"
                 elif (
-                    m.embedding_model != self.settings.memory_embedding_model
-                    or m.embedding_dimensions != self.settings.memory_embedding_dimensions
+            embedding_space_for(m) != embedding_space
                 ):
                     reason = "incompatible_embedding"
                 elif (

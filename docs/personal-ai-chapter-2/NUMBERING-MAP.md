@@ -11,7 +11,7 @@
 | 5 | 13 | deterministic context planner |
 | 6 | 14 | provenance/context inspection |
 | 7 | 15 | permissions/sensitivity policy |
-| 8 | 16 | provider-neutral inference/embedding |
+| 8 | 16 | provider-neutral inference/embedding — implemented locally |
 | 9 | 17 | Gemini/Groq/Cloudflare adapters |
 | 10 | 18 | provider/model registry |
 | 11 | 19 | usage/quota ledger |

@@ -161,9 +161,14 @@ def build_fixture(fixture, variant="fixed"):
         def embed(self, texts, *, query=False, timeout=None):
             if query and fixture.get("query_failure"):
                 raise TimeoutError("synthetic_query_failure")
-            return [(1.0, 0.0, 0.0) for _ in texts]
+            from personal_ai.llm.client import EmbeddingResult
 
-    embedder = SyntheticEmbedder({})
+            task = "query" if query else "document"
+            return tuple(
+                EmbeddingResult((1.0, 0.0, 0.0), self.space, task) for _ in texts
+            )
+
+    embedder = SyntheticEmbedder({}, provider="google_genai", model=settings.memory_embedding_model)
     coordinator = MemoryLifecycleCoordinator(settings, lifecycle, memories)
     worker = MemoryLifecycleWorker(
         settings, lifecycle, memories, messages, embedder, clock=lambda: NOW

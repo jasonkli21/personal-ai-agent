@@ -35,3 +35,21 @@ class LLMInvalidResponseError(LLMError):
     """The provider returned output that violates application safety limits."""
 
     code = "llm_invalid_response"
+
+
+class LLMIncompleteGenerationError(LLMError):
+    """The provider ended a generation without a usable terminal success."""
+
+    code = "llm_incomplete"
+
+
+class LLMRejectedError(LLMError):
+    """The provider explicitly rejected or blocked a generation request."""
+
+    code = "llm_rejected"
+
+
+class LLMUnsupportedCapabilityError(LLMError):
+    """The selected provider runtime does not declare the requested operation."""
+
+    code = "llm_unsupported_capability"

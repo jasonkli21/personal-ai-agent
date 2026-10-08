@@ -17,6 +17,7 @@ from personal_ai.auth.scope import (
     current_application_scope,
 )
 from personal_ai.entities import Message
+from personal_ai.llm.client import EmbeddingResult, EmbeddingSpace, GenerationMetadata
 
 MemoryType = Literal[
     "preference", "episodic_observation", "semantic_summary", "explicit_correction"
@@ -76,12 +77,13 @@ class Memory(MemoryCandidate, ApplicationScopedRecord):
     effective_at: datetime
     created_at: datetime
     embedding: tuple[float, ...]
-    embedding_provider: Literal["google_genai"] = "google_genai"
+    embedding_provider: str = Field(default="google_genai", min_length=1, max_length=200)
     embedding_model: str = Field(min_length=1, max_length=200)
     embedding_dimensions: int = Field(gt=0, le=2048)
     embedding_normalization: Literal["l2"] = "l2"
     embedding_document_task: Literal["RETRIEVAL_DOCUMENT"] = "RETRIEVAL_DOCUMENT"
     embedding_query_task: Literal["RETRIEVAL_QUERY"] = "RETRIEVAL_QUERY"
+    embedding_space_version: str = Field(default="v1", min_length=1, max_length=100)
     schema_version: Literal[1] = 1
 
     @field_validator("embedding", mode="before")
@@ -134,12 +136,13 @@ class DerivedMemory(ApplicationScopedRecord):
     effective_at: datetime
     created_at: datetime
     embedding: tuple[float, ...]
-    embedding_provider: Literal["google_genai"] = "google_genai"
+    embedding_provider: str = Field(default="google_genai", min_length=1, max_length=200)
     embedding_model: str = Field(min_length=1, max_length=200)
     embedding_dimensions: int = Field(gt=0, le=2048)
     embedding_normalization: Literal["l2"] = "l2"
     embedding_document_task: Literal["RETRIEVAL_DOCUMENT"] = "RETRIEVAL_DOCUMENT"
     embedding_query_task: Literal["RETRIEVAL_QUERY"] = "RETRIEVAL_QUERY"
+    embedding_space_version: str = Field(default="v1", min_length=1, max_length=100)
     source_memory_ids: tuple[UUID, ...] = Field(min_length=2, max_length=4)
     sources: tuple[DerivedMemorySource, ...] = Field(min_length=2, max_length=4)
     source_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -186,6 +189,18 @@ class DerivedMemory(ApplicationScopedRecord):
             raise ValueError("unsupported_derivation")
         vector(self.embedding, self.embedding_dimensions)
         return self
+
+
+def embedding_space_for(record: Memory | DerivedMemory) -> EmbeddingSpace:
+    return EmbeddingSpace(
+        provider_id=record.embedding_provider,
+        model_id=record.embedding_model,
+        dimensions=record.embedding_dimensions,
+        normalization=record.embedding_normalization,
+        document_task=record.embedding_document_task,
+        query_task=record.embedding_query_task,
+        version=record.embedding_space_version,
+    )
 
 
 def identity(
@@ -244,18 +259,25 @@ class ExtractionResult:
     created: tuple[UUID, ...] = ()
     skipped: tuple[UUID, ...] = ()
     reasons: tuple[str, ...] = ()
+    attributions: tuple[GenerationMetadata, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryCandidateExtraction:
+    candidates: tuple[MemoryCandidate, ...]
+    attribution: GenerationMetadata
 
 
 class Embedder(Protocol):
     def embed(
         self, texts: Sequence[str], *, query: bool = False, timeout: float | None = None
-    ) -> Sequence[tuple[float, ...]]: ...
+    ) -> Sequence[EmbeddingResult]: ...
 
 
 class MemoryExtractor(Protocol):
     def extract(
         self, source_turn: Sequence[Message], *, timeout: float
-    ) -> Sequence[MemoryCandidate]: ...
+    ) -> Sequence[MemoryCandidate] | MemoryCandidateExtraction: ...
 
 
 class MemoryRepository(Protocol):
@@ -268,6 +290,11 @@ class MemoryRepository(Protocol):
         embedding: Sequence[float],
         model: str,
         dimensions: int,
+        provider: str = "google_genai",
+        normalization: str = "l2",
+        document_task: str = "RETRIEVAL_DOCUMENT",
+        query_task: str = "RETRIEVAL_QUERY",
+        embedding_space_version: str = "v1",
         limit: int,
         timeout: float = 5,
     ) -> Sequence[ScoredMemory]: ...

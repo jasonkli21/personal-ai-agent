@@ -39,6 +39,10 @@ def test_authoritative_counter_counts_exact_system_and_summary_request_shape_via
         )
         count = GeminiTokenCounter(fixture_settings(), client).count(messages)
         assert count.tokens == 123 and count.kind == "provider"
+        assert count.provider_id == "gemini"
+        assert count.model_id == "fixture-model"
+        assert count.serializer_id == "gemini-content-v1"
+        assert count.confidence == "authoritative"
         request = captured[0]
         assert request.url.path.endswith("/models/fixture-model:countTokens")
         body = json.loads(request.content)["generateContentRequest"]
@@ -82,6 +86,9 @@ def test_summary_generation_adapter_sets_output_ceiling_and_preserves_prompt_ins
             ),
         )
         assert draft.content == "Launch color is amber."
+        assert draft.attribution.identity.provider_id == "gemini"
+        assert draft.attribution.identity.model_id == settings.ai_model
+        assert draft.attribution.status == "success"
         assert captured[0]["generationConfig"]["maxOutputTokens"] == settings.max_summary_tokens
         system = captured[0]["systemInstruction"]["parts"][0]["text"]
         assert SUMMARY_INSTRUCTION in system

@@ -14,7 +14,7 @@ from personal_ai.auth.scope import (
     scoped_record,
 )
 from personal_ai.entities import MessageRole, MessageStatus
-from personal_ai.memory.contracts import DerivedMemory, Memory
+from personal_ai.memory.contracts import DerivedMemory, Memory, embedding_space_for
 from personal_ai.memory.lifecycle import (
     MemoryJob,
     MemoryLifecycleEvent,
@@ -60,6 +60,8 @@ def _compatible_derivation(derived, sources):
     )
     return (
         all(record.memory_type == source_type for record in records)
+        and len({embedding_space_for(record) for record in records}) == 1
+        and embedding_space_for(derived) == embedding_space_for(records[0])
         and len({record.normalized_content for record in records}) == 1
         and derived.memory_type == target_type
         and derived.importance <= importance
@@ -472,6 +474,7 @@ class InMemoryMemoryLifecycleRepository:
                 and record.id != memory_id
                 and record.embedding_model == anchor.embedding_model
                 and record.embedding_dimensions == anchor.embedding_dimensions
+                and embedding_space_for(record) == embedding_space_for(anchor)
                 and self._valid_source(record)
             ]
             from personal_ai.memory.contracts import vector
@@ -539,6 +542,7 @@ class InMemoryMemoryLifecycleRepository:
                 or source.source_message_ids != provenance.source_message_ids
                 or source.embedding_model != derived.embedding_model
                 or source.embedding_dimensions != derived.embedding_dimensions
+                or embedding_space_for(source) != embedding_space_for(derived)
                 for source, provenance in zip(source_records, derived.sources, strict=True)
             ):
                 return "source_mismatch"
