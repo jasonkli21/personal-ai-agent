@@ -4,6 +4,7 @@ OWNER_DATA_COLLECTIONS = (
     "conversations",
     "messages",
     "conversation_summaries",
+    "context_traces",
     "research_sessions",
     "research_request_keys",
     "itinerary_proposals",

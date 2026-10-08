@@ -6,6 +6,7 @@ from dataclasses import asdict
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.contracts import BudgetReport, ContextError, ConversationSummaryRepository
 from personal_ai.context.tokens import EstimatedTokenCounter
+from personal_ai.context.traces import ContextTraceManifest
 from personal_ai.entities import Message
 from personal_ai.llm.client import ChatMessage
 from personal_ai.settings import Settings
@@ -16,11 +17,24 @@ class ContextInspector:
         self.settings = settings
         self.summaries = summaries
 
-    def inspect(self, active: Sequence[Message], retrieval=None) -> dict:
+    def inspect(
+        self,
+        active: Sequence[Message],
+        retrieval=None,
+        *,
+        trace: ContextTraceManifest | None = None,
+        inspection_request_id: str | None = None,
+    ) -> dict:
         report = {
             "counter_kind": "estimated",
             "view_kind": "estimated_current_view",
             "historical_reconstruction": False,
+            "inspection_request_id": inspection_request_id,
+            "trace_state": "available" if trace is not None else "manifest_missing",
+            "trace_missing_reason": (
+                None if trace is not None else "no_retained_manifest_for_latest_user_turn"
+            ),
+            "actual_build_trace": trace.model_dump(mode="json") if trace is not None else None,
             "selected": [],
             "excluded": [],
             "summary": None,

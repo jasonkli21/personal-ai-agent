@@ -38,6 +38,7 @@ records/bytes rather than extrapolate quotas.
 | `conversations` | D | Scoped get/recent list/create/touch; revision/token-conditioned mutations; strong directory | One per conversation; retain; parent of messages/summaries and P memory sources |
 | `messages` | D | Scoped ID/history/active branch; atomic preparation/root cut/terminal transition; timestamp + ID order | Per turn/replacement; retain superseded records and parent/supersedes links |
 | `conversation_summaries` | D | Append/newest compatible; ordered prefix query, hash-valid manifest/chunks | Per refresh, coverage grows with history; retain source/coverage IDs, fingerprints and model |
+| `context_traces` | D | Owner/app/workspace-scoped conversation-partition query by turn; actual-build metadata only | Serialized payload capped at 48 KiB and latest 32 per conversation; no prompts or provider values; included in export inventory |
 | `memory_lifecycle_jobs` | D | Create/replay/get/claim/fail/complete/republish; live token/generation conditions; sparse publication GSI | Bounded candidate sets/attempts, per job; retain replay/recovery policy; references P memory/effect IDs |
 | `rate_limit_windows` | D | Account-wide owner/window get + conditional increment; no app-split counter | Per owner/minute; numeric epoch-second TTL expiry; legacy owner attribution requires validation |
 | `memories` | P | Scoped get/compatible cosine search/idempotent create; source guard + unique identity | Per accepted extraction; retain; D conversation/turn/user-source IDs; embedding space |
@@ -119,6 +120,7 @@ break. Do not sort mixed native/ISO timestamp representations lexically.
 | Root cut | Conditional update of canonical root message/cut status plus metadata revision; reconstruct descendant effective status from ancestry |
 | Summary selection | Same PK, `SK=SUM#created_at#summary_id`, newest-first query |
 | Large summary provenance | Same PK, `SK=SC#summary_id#kind#chunk_sequence`; bounded chunk manifest/hash/count |
+| Actual context inspection | Same PK, `SK=CTX#recorded_at#assistant_message_id`; a scoped `CTX_STATE` sequence condition serializes appends and removes the record outside the latest 32; inspection is a bounded read-only lookup by active user turn |
 | Recent conversations | `PK=N#CATALOG`, `SK=CONV#updated_at#conversation_id`, descending query |
 | Scoped job inventory | Same catalog PK, `SK=JOB#job_id` |
 | Owner namespace inventory | `PK=OWNER#owner_id`, `SK=NS#encoded_application_workspace` |

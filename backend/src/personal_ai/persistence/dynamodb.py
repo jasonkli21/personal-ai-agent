@@ -20,6 +20,11 @@ from personal_ai.auth.scope import (
 )
 from personal_ai.context.contracts import ConversationSummary, fingerprint
 from personal_ai.context.repositories import newest_compatible
+from personal_ai.context.traces import (
+    MAX_CONTEXT_TRACE_BYTES,
+    MAX_CONTEXT_TRACE_RETENTION,
+    ContextTraceManifest,
+)
 from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
 from personal_ai.persistence.postgres_memory import EffectGuardToken
 from personal_ai.storage.branches import active_path, descendant_ids, effective_message
@@ -1239,6 +1244,148 @@ class DynamoDBSummaryRepository:
                     current = self.table.get({"PK": item["PK"], "SK": item["SK"]})
                     if current is None or current.get("chunk_sha256") != item["chunk_sha256"]:
                         raise ConversationConflictError("summary chunk identity conflict") from error
+
+
+class DynamoDBContextTraceRepository:
+    """Compact actual-build manifests in the scoped conversation partition."""
+
+    def __init__(self, table: DynamoDBRuntimeTable) -> None:
+        self.table = table
+
+    def put(self, *, owner_id: str, trace: ContextTraceManifest) -> None:
+        try:
+            scope = ApplicationScope(
+                application_id=trace.application_id,
+                workspace_id=trace.workspace_id,
+            )
+            keys = _conversation_keys_for(owner_id, scope, trace.conversation_id)
+            conversation = self.table.get(keys.meta)
+            if conversation is None or not _authorized(conversation, owner_id, scope):
+                raise ResourceNotFoundError("resource not found")
+            payload = trace.model_dump_json()
+            if len(payload.encode("utf-8")) > MAX_CONTEXT_TRACE_BYTES:
+                raise StorageUnavailableError("context trace exceeds size limit")
+            state_key = {"PK": keys.partition, "SK": "CTX_STATE"}
+            item = {
+                "PK": keys.partition,
+                "SK": f"CTX#{_timestamp(trace.recorded_at)}#{trace.assistant_message_id}",
+                "kind": "context-trace",
+                "owner_id": owner_id,
+                "application_id": scope.application_id,
+                "workspace_id_present": scope.workspace_id is not None,
+                "workspace_id": scope.workspace_id or "",
+                "conversation_id": str(trace.conversation_id),
+                "user_message_id": str(trace.user_message_id),
+                "assistant_message_id": str(trace.assistant_message_id),
+                "request_id": trace.request_id,
+                "recorded_at": _timestamp(trace.recorded_at),
+                "payload": payload,
+            }
+            for attempt in range(3):
+                state = self.table.get(state_key)
+                if state is not None and not _authorized(state, owner_id, scope):
+                    raise StorageUnavailableError("context trace state scope mismatch")
+                previous_sequence = int(state.get("sequence", 0)) if state else 0
+                sequence = previous_sequence + 1
+                if sequence > MAX_CONTEXT_TRACE_RETENTION:
+                    retained = self.table.query(
+                        partition=keys.partition,
+                        sort_prefix="CTX#",
+                        consistent=True,
+                        descending=False,
+                        deadline=monotonic() + 5,
+                        limit=MAX_CONTEXT_TRACE_RETENTION,
+                    )
+                    obsolete = next(
+                        (row for row in retained if int(row.get("sequence", -1)) == sequence - MAX_CONTEXT_TRACE_RETENTION),
+                        None,
+                    )
+                else:
+                    obsolete = None
+                if state is None:
+                    next_state = {
+                        **state_key,
+                        "kind": "context-trace-state",
+                        "owner_id": owner_id,
+                        "application_id": scope.application_id,
+                        "workspace_id_present": scope.workspace_id is not None,
+                        "workspace_id": scope.workspace_id or "",
+                        "sequence": sequence,
+                    }
+                    operations = [_put(next_state, condition="attribute_not_exists(PK)")]
+                else:
+                    operations = [
+                        _update(
+                            state_key,
+                            "SET #sequence = :next",
+                            names={"#sequence": "sequence"},
+                            values={":next": sequence, ":previous": previous_sequence},
+                            condition="#sequence = :previous",
+                        )
+                    ]
+                item["sequence"] = sequence
+                operations.append(_put(item, condition="attribute_not_exists(PK)"))
+                if obsolete is not None:
+                    operations.append(_delete({"PK": obsolete["PK"], "SK": obsolete["SK"]}))
+                try:
+                    self.table.transact(operations)
+                    return
+                except Exception as error:
+                    if not _conditional_failure(error) or attempt == 2:
+                        raise
+            raise StorageUnavailableError("context trace write conflict")
+        except (ResourceNotFoundError, StorageUnavailableError):
+            raise
+        except Exception as error:
+            raise StorageUnavailableError("context trace persistence unavailable") from error
+
+    def latest_for_user_turn(
+        self,
+        *,
+        owner_id: str,
+        scope: ApplicationScope,
+        conversation_id: UUID,
+        user_message_id: UUID,
+    ) -> ContextTraceManifest | None:
+        keys = _conversation_keys_for(owner_id, scope, conversation_id)
+        try:
+            items = self.table.query(
+                partition=keys.partition,
+                sort_prefix="CTX#",
+                consistent=True,
+                descending=True,
+                deadline=monotonic() + 5,
+                limit=MAX_CONTEXT_TRACE_RETENTION,
+            )
+            latest: ContextTraceManifest | None = None
+            latest_sequence = -1
+            for item in items:
+                if not _authorized(item, owner_id, scope):
+                    raise ResourceNotFoundError("resource not found")
+                if (
+                    item.get("conversation_id") != str(conversation_id)
+                    or item.get("user_message_id") != str(user_message_id)
+                ):
+                    continue
+                trace = ContextTraceManifest.model_validate_json(item["payload"])
+                if (
+                    trace.conversation_id != conversation_id
+                    or trace.user_message_id != user_message_id
+                    or trace.assistant_message_id != UUID(item["assistant_message_id"])
+                    or trace.request_id != item.get("request_id")
+                    or trace.application_id != scope.application_id
+                    or trace.workspace_id != scope.workspace_id
+                ):
+                    raise StorageUnavailableError("context trace identity mismatch")
+                sequence = int(item.get("sequence", -1))
+                if sequence > latest_sequence:
+                    latest = trace
+                    latest_sequence = sequence
+            return latest
+        except (ResourceNotFoundError, StorageUnavailableError):
+            raise
+        except Exception as error:
+            raise StorageUnavailableError("context trace lookup unavailable") from error
 
 
 class DynamoDBMemoryEffectGuard:

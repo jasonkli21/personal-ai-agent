@@ -19,8 +19,11 @@ from personal_ai.api.schemas import (
     SSEResponseError,
 )
 from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.auth.scope import ApplicationScope
 from personal_ai.context import ContextAssembler
+from personal_ai.context.contracts import ContextError
 from personal_ai.context.deadline import remaining
+from personal_ai.context.traces import ContextTraceManifest, ContextTraceRepository
 from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
 from personal_ai.llm import ChatMessage, LLMClient, LLMError, LLMInvalidResponseError
 from personal_ai.storage import ConversationConflictError
@@ -105,6 +108,7 @@ class ChatTurnService:
         model: str,
         stale_stream_after_seconds: float = 360,
         context_assembler: ContextAssembler,
+        context_traces: ContextTraceRepository | None = None,
         memory_retriever=None,
         memory_extraction=None,
         memory_lifecycle=None,
@@ -115,6 +119,7 @@ class ChatTurnService:
         self._owner_id = owner_id
         self._application_context = application_context
         self._context = context_assembler
+        self._context_traces = context_traces
         self._memory_retriever = memory_retriever
         self._memory_extraction = memory_extraction
         self._memory_lifecycle = memory_lifecycle
@@ -268,6 +273,26 @@ class ChatTurnService:
                 parent_message_id=user.id,
                 supersedes_message_id=assistant_supersedes,
             )
+            if self._context_traces is not None:
+                if assembled.manifest is None:
+                    raise ContextError("actual_context_manifest_unavailable")
+                trace = ContextTraceManifest.from_build(
+                    assembled.manifest,
+                    request_id=request_id,
+                    conversation_id=user.conversation_id,
+                    user_message_id=user.id,
+                    assistant_message_id=assistant.id,
+                    scope=(
+                        self._application_context.scope
+                        if self._application_context is not None
+                        else ApplicationScope(
+                            application_id=user.application_id,
+                            workspace_id=user.workspace_id,
+                        )
+                    ),
+                    context_plan=context_plan,
+                )
+                self._context_traces.put(owner_id=self._owner_id, trace=trace)
             persisted_assistant = self._messages.prepare_message_turn(
                 owner_id=self._owner_id,
                 conversation_id=user.conversation_id,

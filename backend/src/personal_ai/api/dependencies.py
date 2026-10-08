@@ -23,6 +23,7 @@ from personal_ai.context.adapters import (
 from personal_ai.context.contracts import ConversationSummaryRepository
 from personal_ai.context.profile import GlobalProfileContextProviderFactory
 from personal_ai.context.providers import ContextProviderCoordinator
+from personal_ai.context.traces import ContextTraceRepository
 from personal_ai.llm import GeminiLLMClient, LLMClient
 from personal_ai.llm.context import GeminiConversationSummarizer, GeminiTokenCounter
 from personal_ai.llm.memory import GeminiMemoryAdapter
@@ -152,6 +153,12 @@ def get_summary_repository(
     return persistence_factory(settings).summary_repository()
 
 
+def get_context_trace_repository(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ContextTraceRepository:
+    return persistence_factory(settings).context_trace_repository()
+
+
 def get_global_profile_repository(
     settings: Annotated[Settings, Depends(get_settings)],
 ):
@@ -213,6 +220,7 @@ def get_chat_turn_service(
     owner_id: Annotated[str, Depends(get_current_owner_id)],
     application_context: Annotated[ApplicationContextRequest, Depends(get_application_context)],
     context: Annotated[ContextAssembler, Depends(get_context_assembler)],
+    context_traces: Annotated[ContextTraceRepository, Depends(get_context_trace_repository)],
     memory_repository: Annotated[object, Depends(get_memory_repository)],
     memory_adapter: Annotated[object, Depends(get_memory_adapter)],
     lifecycle_repository: Annotated[object, Depends(get_lifecycle_repository)],
@@ -243,6 +251,7 @@ def get_chat_turn_service(
         owner_id=owner_id,
         application_context=application_context,
         context_assembler=context,
+        context_traces=context_traces,
         memory_retriever=retriever,
         memory_extraction=None if lifecycle_coordinator is not None else extraction,
         memory_lifecycle=lifecycle_coordinator,

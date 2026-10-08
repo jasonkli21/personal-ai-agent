@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from personal_ai.booking_extractions.repositories import BookingExtractionRepository
     from personal_ai.context.contracts import ConversationSummaryRepository
     from personal_ai.context.profile import GlobalProfileRepository
+    from personal_ai.context.traces import ContextTraceRepository
     from personal_ai.decisions.repositories import DecisionRepository
     from personal_ai.domains.repositories import DomainRepository
     from personal_ai.itinerary_proposals.repositories import ItineraryProposalRepository
@@ -32,6 +33,7 @@ class PersistenceFactory(Protocol):
     def conversation_repository(self) -> ConversationRepository: ...
     def message_repository(self) -> MessageRepository: ...
     def summary_repository(self) -> ConversationSummaryRepository: ...
+    def context_trace_repository(self) -> ContextTraceRepository: ...
     def global_profile_repository(self) -> GlobalProfileRepository: ...
     def memory_repository(self) -> MemoryRepository: ...
     def memory_lifecycle_repository(
@@ -70,6 +72,11 @@ class PostgresDynamoPersistenceFactory:
         from personal_ai.persistence.dynamodb import DynamoDBSummaryRepository
 
         return DynamoDBSummaryRepository(self.runtime_table, self.conversation_repository())
+
+    def context_trace_repository(self):
+        from personal_ai.persistence.dynamodb import DynamoDBContextTraceRepository
+
+        return DynamoDBContextTraceRepository(self.runtime_table)
 
     def global_profile_repository(self):
         from personal_ai.persistence.postgres_context import PostgresGlobalProfileRepository

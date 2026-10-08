@@ -4,7 +4,7 @@ This directory contains 33 implementation plans for the regenerated chapter. `ma
 
 ## Plan authority
 
-This is an index of plans, not a living implementation-status record. See [current state](../../current-state.md) for delivered work and remaining acceptance gates. Phases 11–13 are implemented locally; Phases 14–36 remain future work under the preserved-scope [numbering map](../NUMBERING-MAP.md). Reading a plan does not authorize implementation.
+This is an index of plans, not a living implementation-status record. See [current state](../../current-state.md) for delivered work and remaining acceptance gates. Phases 11–14 are implemented locally; Phases 15–36 remain future work under the preserved-scope [numbering map](../NUMBERING-MAP.md). Reading a plan does not authorize implementation.
 
 See [ADR 0021](../../decisions/0021-polyglot-persistence-foundation.md), the [Phase 10 storage contract](../phase-10-storage-ownership-and-access-patterns.md) and [migration/verification plan](../phase-10-migration-cutover-and-verification-plan.md) for the reviewed foundation.
 

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from personal_ai.api.dependencies import (
     get_context_assembler,
+    get_context_trace_repository,
     get_conversation_repository,
     get_current_owner_id,
     get_llm_client,
@@ -17,6 +18,7 @@ from personal_ai.api.dependencies import (
 from personal_ai.context import ContextAssembler
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import FakeTokenCounter
+from personal_ai.context.traces import InMemoryContextTraceRepository
 from personal_ai.entities import Conversation
 from personal_ai.evaluation.context import (
     FactSummarizer,
@@ -40,6 +42,7 @@ def environment():
     llm = FakeLLMClient(["bounded answer"])
     summarizer = FactSummarizer()
     context = ContextAssembler(settings, FakeTokenCounter(), summaries, summarizer)
+    traces = InMemoryContextTraceRepository()
     previous = app.dependency_overrides.copy()
     app.dependency_overrides = {
         get_settings: lambda: settings,
@@ -49,6 +52,7 @@ def environment():
         get_summary_repository: lambda: summaries,
         get_llm_client: lambda: llm,
         get_context_assembler: lambda: context,
+        get_context_trace_repository: lambda: traces,
     }
     with TestClient(app) as client:
         yield client, conversations, messages, summaries, llm, context
@@ -92,6 +96,17 @@ def test_summary_backed_streaming_is_bounded_and_success_event_order_unchanged(e
     assert llm.requests[0][0].role == "system"
     assert "Launch color is amber" in llm.requests[0][0].content
     assert context.counter.count(llm.requests[0]).tokens <= context.input_budget()
+    trace_response = client.get(
+        f"/v1/conversations/{pending.conversation_id}/context",
+        headers={"X-Request-ID": "inspect-context-14"},
+    )
+    trace_report = trace_response.json()
+    assert trace_report["trace_state"] == "available"
+    assert trace_report["actual_build_trace"]["view_kind"] == "actual_build"
+    assert trace_report["actual_build_trace"]["request_id"] == response.headers["X-Request-ID"]
+    assert trace_report["inspection_request_id"] == "inspect-context-14"
+    assert trace_report["view_kind"] == "estimated_current_view"
+    assert "bounded answer" not in str(trace_report)
 
 
 def test_mandatory_overflow_keeps_user_without_placeholder_and_can_be_edited(environment):
@@ -180,6 +195,7 @@ def test_inspector_enabled_is_read_only_estimated_metadata_without_provider_call
     assert report["historical_reconstruction"] is False
     assert report["manifest"]["actual_build"] is False
     assert report["manifest"]["view_kind"] == "estimated_current_view"
+    assert report["trace_state"] == "manifest_missing"
     assert report["selected"] and report["excluded"]
     assert "content" not in str(report) and "test-key" not in str(report)
     assert not llm.requests and not context.summarizer.calls and not summaries.records

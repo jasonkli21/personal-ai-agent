@@ -12,9 +12,11 @@ from fastapi.responses import StreamingResponse
 
 from personal_ai.api.dependencies import (
     get_chat_turn_service,
+    get_context_trace_repository,
     get_conversation_service,
     get_lifecycle_repository,
     get_memory_repository,
+    get_request_scope,
     get_summary_repository,
 )
 from personal_ai.api.schemas import (
@@ -25,8 +27,10 @@ from personal_ai.api.schemas import (
     EditAndRetryRequest,
     ErrorResponse,
 )
+from personal_ai.auth.scope import RequestScope
 from personal_ai.context.contracts import ConversationSummaryRepository
 from personal_ai.context.inspection import ContextInspector
+from personal_ai.context.traces import ContextTraceRepository
 from personal_ai.entities import Conversation
 from personal_ai.services import ChatTurnService, ConversationService
 from personal_ai.settings import Settings, get_settings
@@ -201,18 +205,43 @@ def _inspection_enabled(settings: Annotated[Settings, Depends(get_settings)]) ->
 @router.get("/{conversation_id}/context", responses={404: {"model": ErrorResponse}})
 def inspect_context(
     conversation_id: UUID,
+    http_request: Request,
     settings: Annotated[Settings, Depends(_inspection_enabled)],
     service: Annotated[ConversationService, Depends(get_conversation_service)],
     summaries: Annotated[ConversationSummaryRepository, Depends(get_summary_repository)],
+    traces: Annotated[ContextTraceRepository, Depends(get_context_trace_repository)],
+    scope: Annotated[RequestScope, Depends(get_request_scope)],
     memories: Annotated[object, Depends(get_memory_repository)],
     lifecycle: Annotated[object, Depends(get_lifecycle_repository)],
     memory_ids: Annotated[list[UUID] | None, Query(max_length=20)] = None,
 ) -> dict:
     """Read-only planning estimate: never call counting/generation provider APIs."""
     _, active = service.get_conversation(conversation_id)
+    latest_user = next(
+        (
+            message for message in reversed(active)
+            if message.role.value == "user" and message.status.value == "completed"
+        ),
+        None,
+    )
+    trace = (
+        traces.latest_for_user_turn(
+            owner_id=scope.owner_id,
+            scope=scope,
+            conversation_id=conversation_id,
+            user_message_id=latest_user.id,
+        )
+        if latest_user is not None
+        else None
+    )
     retrieval = None
     if memory_ids:
         retrieval = service.inspect_memories(
             settings, memories, memory_ids, lifecycle_repository=lifecycle
         )
-    return ContextInspector(settings, summaries).inspect(active, retrieval)
+    return ContextInspector(settings, summaries).inspect(
+        active,
+        retrieval,
+        trace=trace,
+        inspection_request_id=_request_id(http_request),
+    )

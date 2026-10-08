@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from personal_ai.api.dependencies import (
     get_chat_turn_service,
     get_context_assembler,
+    get_context_trace_repository,
     get_conversation_repository,
     get_lifecycle_repository,
     get_memory_adapter,
@@ -29,6 +30,7 @@ from personal_ai.context.adapters import (
 from personal_ai.context.providers import ContextProviderCoordinator
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import FakeTokenCounter
+from personal_ai.context.traces import InMemoryContextTraceRepository
 from personal_ai.entities import MessageStatus
 from personal_ai.evaluation.memory import build_fixture, load_fixtures
 from personal_ai.llm import FakeLLMClient, LLMUnavailableError
@@ -53,6 +55,7 @@ def environment():
     extraction.run(turns[0][1])
     llm = FakeLLMClient(["Synthetic answer."])
     summaries = InMemorySummaryRepository()
+    traces = InMemoryContextTraceRepository()
     registry = default_application_registry()
     registration = registry.registration("personal_ai")
     application_context = ApplicationContextRequest(
@@ -82,6 +85,7 @@ def environment():
         application_context=application_context,
         model="fake",
         context_assembler=context,
+        context_traces=traces,
         memory_retriever=retriever,
         memory_extraction=extraction,
     )
@@ -90,6 +94,7 @@ def environment():
         get_conversation_repository: lambda: conversations,
         get_message_repository: lambda: messages,
         get_summary_repository: lambda: summaries,
+        get_context_trace_repository: lambda: traces,
         get_context_assembler: lambda: context,
         get_memory_repository: lambda: repo,
         get_memory_adapter: lambda: embedder,

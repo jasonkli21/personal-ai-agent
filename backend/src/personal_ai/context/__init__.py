@@ -27,6 +27,7 @@ from personal_ai.context.providers import (
     ContextSelection,
     ContextSourceReference,
 )
+from personal_ai.context.traces import ContextTraceManifest, ContextTraceRepository
 
 __all__ = [
     "ContextAssembler",
@@ -50,4 +51,6 @@ __all__ = [
     "ContextProviderSpec",
     "ContextSelection",
     "ContextSourceReference",
+    "ContextTraceManifest",
+    "ContextTraceRepository",
 ]

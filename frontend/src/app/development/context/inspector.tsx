@@ -4,10 +4,15 @@ import { authenticatedFetch } from "../../../lib/auth";
 import { FormEvent, useState } from "react";
 
 type Metadata = { id: string; role: string; characters: number; reason?: string };
+type TraceDecision = { stage: string; source_id: string | null; source_id_hash: string | null; item_id_hash: string | null; provider_id: string | null; source_version: string | null; operation: string | null; category: string; disposition: string; fields: string[]; field_count: number; fields_truncated: boolean; authority: string | null; sensitivity: string | null; token_count: number | null; reason: string | null };
+type ActualBuildTrace = { request_id: string; conversation_id: string; user_message_id: string; assistant_message_id: string; recorded_at: string; build_schema_version: string; policy_version: string; planner_version: string | null; counter_kind: string; counter_version: string; global_input_tokens: number; actual_input_tokens: number; effective_sensitivity: string; requested_sources: { provider_id: string; operation: string; fields: string[]; field_count: number; fields_truncated: boolean; max_results: number; max_bytes: number; max_tokens: number | null; required: boolean }[]; requested_source_count: number; requested_sources_truncated: boolean; planning_decisions: TraceDecision[]; planning_decision_count: number; planning_decisions_truncated: boolean; source_decisions: TraceDecision[]; source_decision_count: number; source_decisions_truncated: boolean; source_budgets: { category: string; token_limit: number; token_count: number; counter_kind: string; injected_item_count: number; omitted_item_count: number }[]; provider_failures: { provider_id: string; operation: string; reason: string }[]; provider_failure_count: number; provider_failures_truncated: boolean; selected_message_ids: string[]; selected_message_count: number; selected_messages_truncated: boolean; excluded_messages: { message_id: string; reason: string }[]; excluded_message_count: number; excluded_messages_truncated: boolean };
 type MemorySource = { memory_id: string; conversation_id: string; turn_id: string; message_ids: string[] };
 type MemoryEvent = { id: string; type: string; reason_code: string; policy_version: string; occurred_at: string; related_memory_ids: string[] };
 type Lifecycle = { status: string; state_version: number; retrieval_count: number; importance: number | null; superseded_by_memory_id: string | null; consolidated_into_memory_ids: string[]; last_retrieved_at: string | null };
 type Report = {
+  inspection_request_id: string | null;
+  trace_state: "available" | "manifest_missing";
+  actual_build_trace: ActualBuildTrace | null;
   memory?: { mode: string; tokens: number; requested_variant: string | null; applied_variant: string | null; policy_version: string | null; lifecycle_event_ids: string[]; records: { id: string; type: string; source_conversation_id: string | null; source_message_ids: string[]; source_records: MemorySource[]; effective_at: string; selected: boolean; selection_kind: string; reason: string | null; similarity: number | null; score: number | null; score_reason: string | null; score_components: { importance: number | null; recency: number | null; frequency: number | null; confidence: number | null } | null; lifecycle?: Lifecycle; events?: MemoryEvent[]; estimated_tokens: number }[] };
   counter_kind: string;
   budget: { capacity: number; response_reserve: number; safety_margin: number; input_budget: number; selected_total: number } | null;
@@ -24,17 +29,23 @@ export default function ContextInspector({ enabled = false, memoryEnabled = fals
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [inspectionRequestId, setInspectionRequestId] = useState<string | null>(null);
   if (!enabled) return null;
 
   async function inspect(event: FormEvent) {
     event.preventDefault();
-    setPending(true); setError(null); setReport(null);
+    setPending(true); setError(null); setReport(null); setInspectionRequestId(null);
     try {
       const search = new URLSearchParams();
       memoryIds.split(",").map(id => id.trim()).filter(Boolean).forEach(id => search.append("memory_ids", id));
       const suffix = search.size ? `?${search.toString()}` : "";
-      const response = await authenticatedFetch(`/api/conversations/${encodeURIComponent(conversationId.trim())}/context${suffix}`, { cache: "no-store" });
+      const requestId = crypto.randomUUID();
+      const response = await authenticatedFetch(`/api/conversations/${encodeURIComponent(conversationId.trim())}/context${suffix}`, {
+        cache: "no-store",
+        headers: { "X-Application-ID": "personal_ai", "X-Request-ID": requestId },
+      });
       if (!response.ok) throw new Error("Context inspection is unavailable for this conversation.");
+      setInspectionRequestId(response.headers.get("X-Request-ID") ?? requestId);
       setReport(await response.json() as Report);
     } catch { setError("Context inspection is unavailable for this conversation."); }
     finally { setPending(false); }
@@ -51,7 +62,26 @@ export default function ContextInspector({ enabled = false, memoryEnabled = fals
     </form>
     {error && <p role="alert">{error}</p>}
     {report && <section aria-live="polite">
-      <h2>Selection report</h2>
+      <h2>Context inspection</h2>
+      <p>Inspection request ID: {inspectionRequestId ?? report.inspection_request_id ?? "unavailable"}.</p>
+      {report.actual_build_trace ? <section>
+        <h3>Retained actual build</h3>
+        <p>Generation request ID: {report.actual_build_trace.request_id}. Turn {report.actual_build_trace.user_message_id} → {report.actual_build_trace.assistant_message_id}.</p>
+        <p>Schema {report.actual_build_trace.build_schema_version}; policy {report.actual_build_trace.policy_version}; planner {report.actual_build_trace.planner_version ?? "not used"}.</p>
+        <p>{report.actual_build_trace.actual_input_tokens} / {report.actual_build_trace.global_input_tokens} {report.actual_build_trace.counter_kind} tokens; counter version {report.actual_build_trace.counter_version}; effective sensitivity {report.actual_build_trace.effective_sensitivity}.</p>
+        <h4>Requested sources</h4>
+        {report.actual_build_trace.requested_sources.length ? <><ul>{report.actual_build_trace.requested_sources.map((source, index) => <li key={`${source.provider_id}:${source.operation}:${index}`}>{source.provider_id}.{source.operation}; fields {source.fields.join(", ") || "none"}{source.fields_truncated ? ` (showing ${source.fields.length} of ${source.field_count})` : ""}; limits {source.max_results} results, {source.max_bytes} bytes, {source.max_tokens ?? "no operation token limit"} tokens{source.required ? "; required" : ""}.</li>)}</ul>{report.actual_build_trace.requested_sources_truncated && <p>Showing {report.actual_build_trace.requested_sources.length} of {report.actual_build_trace.requested_source_count} requested source operations.</p>}</> : <p>No provider source operations were requested.</p>}
+        {!!report.actual_build_trace.planning_decisions.length && <><h4>Planning decisions</h4><ul>{report.actual_build_trace.planning_decisions.map((decision, index) => <li key={`${decision.source_id ?? decision.provider_id ?? decision.category}:${index}`}>{decision.category} {decision.source_id ?? decision.provider_id ?? "source"}: {decision.disposition}{decision.reason ? ` (${decision.reason})` : ""}; fields {decision.fields.join(", ") || "none"}{decision.fields_truncated ? ` (showing ${decision.fields.length} of ${decision.field_count})` : ""}.</li>)}</ul>{report.actual_build_trace.planning_decisions_truncated && <p>Showing {report.actual_build_trace.planning_decisions.length} of {report.actual_build_trace.planning_decision_count} planning decisions.</p>}</>}
+        <h4>Built source decisions</h4>
+        {report.actual_build_trace.source_decisions.length ? <ul>{report.actual_build_trace.source_decisions.map((decision, index) => <li key={`${decision.item_id_hash ?? decision.source_id_hash ?? index}:${index}`}>{decision.category} {decision.provider_id ?? "source"} ({decision.source_id_hash ?? decision.source_id ?? "identifier unavailable"}){decision.item_id_hash ? ` / item ${decision.item_id_hash}` : ""}{decision.source_version ? `; source version ${decision.source_version}` : ""}: {decision.disposition}; {decision.authority ?? "authority unknown"} authority, {decision.sensitivity ?? "sensitivity unknown"} sensitivity, {decision.token_count ?? "unavailable"} tokens{decision.reason ? ` (${decision.reason})` : ""}.</li>)}</ul> : <p>No source items were built.</p>}
+        {report.actual_build_trace.source_decisions_truncated && <p>Showing {report.actual_build_trace.source_decisions.length} of {report.actual_build_trace.source_decision_count} source decisions; the trace is bounded.</p>}
+        <h4>Per-source budgets</h4><ul>{report.actual_build_trace.source_budgets.map(source => <li key={source.category}>{source.category}: {source.token_count} / {source.token_limit} {source.counter_kind} tokens; {source.injected_item_count} included, {source.omitted_item_count} omitted.</li>)}</ul>
+        {!!report.actual_build_trace.provider_failures.length && <><h4>Provider outcomes</h4><ul>{report.actual_build_trace.provider_failures.map((failure, index) => <li key={`${failure.provider_id}:${failure.operation}:${index}`}>{failure.provider_id}.{failure.operation}: {failure.reason}.</li>)}</ul>{report.actual_build_trace.provider_failures_truncated && <p>Showing {report.actual_build_trace.provider_failures.length} of {report.actual_build_trace.provider_failure_count} provider failures.</p>}</>}
+        <p>Selected conversation messages: {report.actual_build_trace.selected_message_count}{report.actual_build_trace.selected_messages_truncated ? ` (first ${report.actual_build_trace.selected_message_ids.length} retained)` : ""}.</p>
+        {!!report.actual_build_trace.excluded_messages.length && <><p>Excluded messages</p><ul>{report.actual_build_trace.excluded_messages.map(item => <li key={item.message_id}>{item.message_id}: {item.reason}</li>)}</ul></>}
+        {report.actual_build_trace.excluded_messages_truncated && <p>Excluded-message list is bounded ({report.actual_build_trace.excluded_message_count} total).</p>}
+      </section> : <p>No retained actual-build manifest matches the latest user turn. The view below is a current estimate and may differ from what an earlier request used.</p>}
+      <h3>Estimated current view</h3>
       <p>Counter: {report.counter_kind}. Estimates can differ from provider-authoritative counts used for model requests.</p>
       {report.overflow && <p role="alert">Rejected: {report.overflow}. Edit the newest message to fit.</p>}
       {report.budget && <dl>

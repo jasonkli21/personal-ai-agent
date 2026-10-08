@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from personal_ai.api.dependencies import (
     get_context_assembler,
+    get_context_trace_repository,
     get_conversation_repository,
     get_current_owner_id,
     get_llm_client,
@@ -20,6 +21,7 @@ from personal_ai.applications.registry import ApplicationRegistry
 from personal_ai.context import ContextAssembler
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import EstimatedTokenCounter
+from personal_ai.context.traces import InMemoryContextTraceRepository
 from personal_ai.entities import (
     MAX_MESSAGE_CONTENT_CHARS,
     Conversation,
@@ -41,8 +43,10 @@ def client() -> Iterator[TestClient]:
     messages = InMemoryMessageRepository(conversations)
     llm = FakeLLMClient(["Hello", " there"])
     summaries = InMemorySummaryRepository()
+    traces = InMemoryContextTraceRepository()
     app.dependency_overrides = {
         get_summary_repository: lambda: summaries,
+        get_context_trace_repository: lambda: traces,
         get_context_assembler: lambda: ContextAssembler(
             app.dependency_overrides[get_settings](), EstimatedTokenCounter(), summaries,
         ),

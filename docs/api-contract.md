@@ -1,4 +1,4 @@
-# API contract (Phases 1–12 local implementation)
+# API contract (Phases 1–14 local implementation)
 
 This document defines the implemented HTTP boundary. All `/v1` routes require an application principal. Staging/production verify
 Google OIDC and resolve an opaque owner from issuer and stable subject; client
@@ -27,7 +27,7 @@ web-to-API boundary. See the [authorization matrix](phase-9-authorization-matrix
 | `POST` | `/v1/conversations` | Optional `title` | A `Conversation` |
 | `GET` | `/v1/conversations` | — | `{"conversations": [Conversation]}` |
 | `GET` | `/v1/conversations/{conversation_id}` | — | `{"conversation": Conversation, "messages": [Message]}` |
-| `GET` | `/v1/conversations/{conversation_id}/context` | — | Development-only read-only selection report; 404 when disabled |
+| `GET` | `/v1/conversations/{conversation_id}/context` | Optional repeated `memory_ids=UUID` | Development-only read-only estimate plus a retained actual-build trace for the latest user turn, when available; 404 when disabled |
 | `POST` | `/v1/conversations/{conversation_id}/messages` | `{"content": "..."}` | SSE stream |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/regenerate` | — | SSE stream replacing a completed assistant message |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/edit-and-retry` | `{"content": "..."}` | SSE stream after replacing a user message |
@@ -108,11 +108,22 @@ provider counting failure returns a safe HTTP 503 provider code. The persisted
 user remains editable. Summary refresh failure falls back to smaller recent
 context when it fits. Successful SSE event names/order remain unchanged.
 
-The inspector reconstructs the latest completed user's possible input. It
-reports capacity/reserves/margins, selected/excluded metadata and reasons,
-summary provenance, aggregate estimated token counts, diagnostics, and overflow.
-It never invokes a provider or changes storage/timestamps. It omits raw content,
-settings secrets, and provider objects; normal deployments return 404.
+The inspector reconstructs the latest completed user's possible input and labels
+that report `estimated_current_view`. For a matching retained trace it also
+returns a separate `actual_build` record captured during that turn's preparation;
+it does not infer a past build from current state. Actual traces include request,
+conversation, and turn IDs, planner/policy/source-version labels, source selection
+and exclusion decisions, authority/sensitivity, bounded token counts and reasons.
+Provider-supplied source and item identifiers are fingerprinted before storage;
+prompts, provider values, credentials, and hidden reasoning are omitted. The
+system retains at most 32 traces per conversation, with a 48 KiB serialized
+payload ceiling per trace. Missing or expired traces return `manifest_missing`
+and leave the estimate explicitly labeled. The inspector performs no provider
+calls, writes, or retention actions; normal deployments return 404.
+
+The development inspector sends an `X-Request-ID`; the proxy forwards the
+validated ID and returns the API correlation header. The actual trace separately
+shows the correlation ID from the generation request that built that context.
 
 ## Server-sent events
 

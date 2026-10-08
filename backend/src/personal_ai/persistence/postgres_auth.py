@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from personal_ai.auth.account_data import (
     AccountDataUnavailable,
@@ -189,7 +189,9 @@ class PostgresAccountLifecycleRepository:
             ExportTooLarge,
             _portable,
         )
+        from personal_ai.context.traces import ContextTraceManifest
         from personal_ai.persistence.dynamodb import (
+            MAX_CONTEXT_TRACE_RETENTION,
             MAX_CONVERSATION_MESSAGES,
             DynamoDBSummaryRepository,
             _authorized,
@@ -389,6 +391,7 @@ class PostgresAccountLifecycleRepository:
                 raise ExportTooLarge
             conversation_keys = []
             summary_directory = {}
+            trace_directory = {}
             for entry in conversation_entries:
                 if not _authorized(entry, owner_id, scope):
                     raise AccountDataUnavailable("conversation directory scope mismatch")
@@ -442,6 +445,32 @@ class PostgresAccountLifecycleRepository:
                     }
                     d_count += 1
 
+                trace_items = self.runtime_table.query(
+                    partition=partition, sort_prefix="CTX#", consistent=True,
+                    deadline=deadline, limit=MAX_CONTEXT_TRACE_RETENTION + 1,
+                )
+                if len(trace_items) > MAX_CONTEXT_TRACE_RETENTION:
+                    raise AccountDataUnavailable("context trace retention bound exceeded")
+                trace_directory[conversation_id] = [item["SK"] for item in trace_items]
+                for item in trace_items:
+                    if not _authorized(item, owner_id, scope):
+                        raise AccountDataUnavailable("context trace scope mismatch")
+                    trace = ContextTraceManifest.model_validate_json(item["payload"])
+                    if (
+                        trace.conversation_id != UUID(conversation_id)
+                        or trace.assistant_message_id != UUID(item["assistant_message_id"])
+                        or trace.user_message_id != UUID(item["user_message_id"])
+                        or trace.request_id != item.get("request_id")
+                        or trace.application_id != scope.application_id
+                        or trace.workspace_id != scope.workspace_id
+                    ):
+                        raise AccountDataUnavailable("context trace identity mismatch")
+                    add("context_traces", trace.assistant_message_id, trace.model_dump(mode="json"))
+                    dynamo_revisions[f"context_trace:{trace.assistant_message_id}"] = item[
+                        "recorded_at"
+                    ]
+                    d_count += 1
+
             job_keys = []
             for entry in job_entries:
                 if not _authorized(entry, owner_id, scope):
@@ -476,6 +505,12 @@ class PostgresAccountLifecycleRepository:
                 )
                 if [item["SK"] for item in current_summaries] != summary_directory[conversation_id]:
                     raise AccountDataUnavailable("summary directory changed during export")
+                current_traces = self.runtime_table.query(
+                    partition=partition, sort_prefix="CTX#", consistent=True,
+                    deadline=deadline, limit=MAX_CONTEXT_TRACE_RETENTION + 1,
+                )
+                if [item["SK"] for item in current_traces] != trace_directory[conversation_id]:
+                    raise AccountDataUnavailable("conversation context traces changed during export")
             final_conversations = self.runtime_table.query(
                 partition=catalog_partition, sort_prefix="CONV#", consistent=True,
                 deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
