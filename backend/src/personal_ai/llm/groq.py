@@ -1,50 +1,26 @@
-"""Groq reference adapter over its OpenAI-compatible chat endpoint."""
+"""Groq compatibility name for the Personal AI LiteLLM gateway."""
 
-from collections.abc import Mapping
+from collections.abc import Callable
 
 import httpx
 
-from personal_ai.llm.openai_compatible import OpenAICompatibleGenerationClient
+from personal_ai.llm.litellm_gateway import LiteLLMGenerationClient
 from personal_ai.settings import Settings
 
 
-class GroqLLMClient(OpenAICompatibleGenerationClient):
-    """Bounded streaming and structured generation for a preflighted Groq model."""
+class GroqLLMClient(LiteLLMGenerationClient):
+    """Groq generation facade; eligibility remains a Personal AI policy."""
 
     def __init__(
         self,
         settings: Settings,
         *,
-        client: httpx.Client | None = None,
-        async_client: httpx.AsyncClient | None = None,
+        async_transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
+        sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
     ) -> None:
         super().__init__(
             settings,
-            provider_id="groq",
-            model_id=settings.groq_model,
-            serializer_id="groq-chat-completions-v1",
-            endpoint="https://api.groq.com/openai/v1/chat/completions",
-            api_key=settings.groq_api_key.get_secret_value(),
-            adapter_enabled=settings.groq_adapter_enabled,
-            free_tier_verified=settings.groq_free_tier_verified,
-            privacy_approved=settings.groq_privacy_approved,
-            privacy_max_sensitivity=settings.groq_privacy_max_sensitivity,
-            approved_model_aliases=settings.groq_approved_model_aliases,
-            structured_output_verified=settings.groq_structured_output_verified,
-            preflight_reference=settings.groq_preflight_reference,
-            client=client,
-            async_client=async_client,
+            "groq",
+            async_transport_factory=async_transport_factory,
+            sync_transport_factory=sync_transport_factory,
         )
-
-    def _max_output_field(self) -> str:
-        return "max_completion_tokens"
-
-    def _structured_format(self, schema: Mapping[str, object]) -> Mapping[str, object]:
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "personal_ai_response",
-                "strict": False,
-                "schema": dict(schema),
-            },
-        }
