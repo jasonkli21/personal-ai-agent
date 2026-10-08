@@ -503,7 +503,7 @@ def test_real_provider_chat_requires_application_context_before_reserving_turn()
         id=uuid4(), owner_id="local", title="unscoped", created_at=now, updated_at=now
     )
     conversations.create(conversation)
-    llm = GeminiLLMClient(settings, client=object())
+    llm = GeminiLLMClient(settings)
     service = ChatTurnService(
         conversations,
         messages,

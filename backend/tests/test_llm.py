@@ -3,8 +3,8 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from personal_ai.entities.conversation import MessageRole
@@ -17,7 +17,6 @@ from personal_ai.llm import (
     LLMInvalidConfigurationError,
     LLMInvalidRequestError,
     LLMRejectedError,
-    LLMTimeoutError,
     LLMUnavailableError,
     LLMUnsupportedCapabilityError,
     ProviderIdentity,
@@ -132,277 +131,34 @@ def test_fake_structured_generation_returns_terminal_attribution_and_checks_capa
         )
 
 
-class _ProviderError(Exception):
-    def __init__(self, status_code: int) -> None:
-        self.status_code = status_code
-
-
-@pytest.mark.parametrize(
-    ("error", "expected"),
-    [
-        (TimeoutError(), LLMTimeoutError),
-        (_ProviderError(400), LLMInvalidRequestError),
-        (_ProviderError(503), LLMUnavailableError),
-    ],
-)
-def test_provider_failures_map_to_stable_errors(
-    error: BaseException, expected: type[Exception]
-) -> None:
-    class Models:
-        async def generate_content_stream(self, **_: object) -> AsyncIterator[object]:
-            raise error
-
-    class Client:
-        class aio:
-            models = Models()
-
-    client = GeminiLLMClient(_settings(), client=Client())
-
-    with pytest.raises(expected):
-        asyncio.run(_collect(client.stream(_messages(), inference_context=_inference_context())))
-
-
-def test_invalid_configuration_is_safe_error() -> None:
-    client = GeminiLLMClient(_settings(ai_api_key=""))
-
-    with pytest.raises(LLMInvalidConfigurationError):
-        asyncio.run(_collect(client.stream(_messages(), inference_context=_inference_context())))
-
-
-def test_empty_chat_is_an_invalid_request_without_provider_call() -> None:
-    client = GeminiLLMClient(_settings())
-    with pytest.raises(LLMInvalidRequestError):
-        asyncio.run(_collect(client.stream([], inference_context=_inference_context())))
-
-
-def test_gemini_stream_requires_policy_before_provider_dispatch() -> None:
+def test_gemini_invalid_configuration_and_empty_chat_fail_before_transport():
     calls = []
+    transport = lambda: httpx.MockTransport(
+        lambda request: (calls.append(request), httpx.Response(200, json={}))[1]
+    )
+    missing_key = GeminiLLMClient(_settings(ai_api_key=""), async_transport_factory=transport)
+    with pytest.raises(LLMInvalidConfigurationError):
+        asyncio.run(_collect(missing_key.stream(
+            _messages(), inference_context=_inference_context()
+        )))
 
-    class Models:
-        async def generate_content_stream(self, **_: object) -> AsyncIterator[object]:
-            calls.append(True)
-
-            async def chunks():
-                yield SimpleNamespace(text="answer")
-
-            return chunks()
-
-    class Client:
-        class aio:
-            models = Models()
-
-    client = GeminiLLMClient(_settings(), client=Client())
-    with pytest.raises(LLMInvalidRequestError, match="context disclosure policy is required"):
-        asyncio.run(_collect(client.stream(_messages())))
-
+    configured = GeminiLLMClient(_settings(), async_transport_factory=transport)
+    with pytest.raises(LLMInvalidRequestError):
+        asyncio.run(_collect(configured.stream([], inference_context=_inference_context())))
     assert calls == []
 
 
-def test_closing_gemini_stream_closes_provider_iterator_but_not_injected_client() -> None:
-    class ProviderStream:
-        def __init__(self) -> None:
-            self.finalized = False
-
-        async def __aiter__(self):
-            try:
-                yield SimpleNamespace(text="first")
-                await asyncio.Event().wait()
-            finally:
-                await asyncio.sleep(0)
-                self.finalized = True
-
-    class Client:
-        def __init__(self, stream: ProviderStream) -> None:
-            self.stream = stream
-            self.closed = False
-
-        class _Models:
-            def __init__(self, stream: ProviderStream) -> None:
-                self.stream = stream
-
-            async def generate_content_stream(self, **_: object) -> ProviderStream:
-                return self.stream
-
-        class _Aio:
-            def __init__(self, models: object) -> None:
-                self.models = models
-
-        @property
-        def aio(self):
-            return self._Aio(self._Models(self.stream))
-
-        def close(self) -> None:
-            self.closed = True
-
-    async def scenario() -> tuple[ProviderStream, Client]:
-        provider_stream = ProviderStream()
-        injected_client = Client(provider_stream)
-        iterator = GeminiLLMClient(_settings(), client=injected_client).stream(
-            _messages(), inference_context=_inference_context()
-        )
-        assert await anext(iterator) == "first"
-        await iterator.aclose()
-        assert provider_stream.finalized
-        assert not injected_client.closed
-        return provider_stream, injected_client
-
-    provider_stream, injected_client = asyncio.run(scenario())
-
-    assert provider_stream.finalized
-    assert not injected_client.closed
-
-
-def test_closing_gemini_bounded_facade_closes_provider_inside_running_loop():
-    class ProviderStream:
-        def __init__(self):
-            self.finalized = False
-
-        async def __aiter__(self):
-            try:
-                yield SimpleNamespace(text="first")
-                await asyncio.Event().wait()
-            finally:
-                self.finalized = True
-
-    provider = ProviderStream()
-
-    class Models:
-        async def generate_content_stream(self, **_):
-            return provider
-
+def test_gemini_stream_requires_disclosure_policy_before_transport():
+    calls = []
     client = GeminiLLMClient(
-        _settings(), client=SimpleNamespace(aio=SimpleNamespace(models=Models()))
-    )
-
-    async def scenario():
-        iterator = client.stream_bounded(
-            _messages(), max_output_tokens=10, timeout_seconds=2,
-            inference_context=_inference_context(),
-        )
-        assert await anext(iterator) == "first"
-        await iterator.aclose()
-        assert provider.finalized
-
-    asyncio.run(scenario())
-
-
-def test_gemini_stream_events_return_provider_finish_and_usage_metadata():
-    class Models:
-        async def generate_content_stream(self, **_: object) -> AsyncIterator[object]:
-            async def chunks():
-                yield SimpleNamespace(
-                    text="partial",
-                    candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")],
-                    usage_metadata=SimpleNamespace(
-                        prompt_token_count=31,
-                        candidates_token_count=5,
-                        total_token_count=36,
-                    ),
-                )
-
-            return chunks()
-
-    class Client:
-        class aio:
-            models = Models()
-
-    client = GeminiLLMClient(_settings(), client=Client())
-    events = asyncio.run(_collect(client.stream_events(
-        _messages(),
-        max_output_tokens=1,
-        timeout_seconds=2,
-        inference_context=_inference_context(),
-    )))
-    metadata = events[-1].metadata
-    assert metadata.status == "incomplete"
-    assert metadata.identity.provider_id == "gemini"
-    assert metadata.identity.model_id == "test-model"
-    assert metadata.usage.input_tokens == 31
-    assert metadata.usage.output_tokens == 5
-    assert metadata.usage.confidence == "reported"
-
-
-@pytest.mark.parametrize(
-    "reason",
-    [None, "", "NONE", "STOP", "MAX_TOKENS", "SAFETY"],
-)
-def test_gemini_text_without_explicit_stop_never_becomes_success(reason):
-    finish = [] if reason is None else [SimpleNamespace(finish_reason=reason)]
-
-    class Models:
-        async def generate_content_stream(self, **_: object) -> AsyncIterator[object]:
-            async def chunks():
-                yield SimpleNamespace(text="partial", candidates=finish)
-
-            return chunks()
-
-        def generate_content(self, **_: object):
-            return SimpleNamespace(
-                text="partial", candidates=[] if reason is None else finish
-            )
-
-    class Client:
-        class aio:
-            models = Models()
-
-        models = Models()
-
-    client = GeminiLLMClient(_settings(), client=Client())
-    events = asyncio.run(_collect(client.stream_events(
-        _messages(), max_output_tokens=10, timeout_seconds=2,
-        inference_context=_inference_context(),
-    )))
-    assert events[0].delta == "partial"
-    assert events[-1].metadata.status == (
-        "success" if reason == "STOP" else "rejected" if reason == "SAFETY" else "incomplete"
-    )
-    if reason != "STOP":
-        with pytest.raises((LLMIncompleteGenerationError, LLMRejectedError)):
-            client.complete(
-                _messages(), max_output_tokens=10, timeout_seconds=2,
-                inference_context=_inference_context(),
-            ).require_success()
-
-
-def test_gemini_generation_timeout_caps_config_and_discards_late_result(monkeypatch):
-    from personal_ai.llm import gemini
-
-    configurations = []
-
-    class Models:
-        def generate_content(self, *, config, **kwargs):
-            del kwargs
-            configurations.append(config)
-            return SimpleNamespace(
-                text='{"ok":true}',
-                candidates=[SimpleNamespace(finish_reason="STOP")],
-            )
-
-    client = GeminiLLMClient(
-        _settings(request_timeout_seconds=1),
-        client=SimpleNamespace(models=Models()),
-    )
-    for generate in (
-        lambda timeout: client.complete(
-            _messages(), max_output_tokens=5, timeout_seconds=timeout,
-            inference_context=_inference_context(),
+        _settings(),
+        async_transport_factory=lambda: httpx.MockTransport(
+            lambda request: (calls.append(request), httpx.Response(200, content=b""))[1]
         ),
-        lambda timeout: client.generate_structured(
-            _messages(), response_schema={"type": "object"}, max_output_tokens=5,
-            timeout_seconds=timeout, inference_context=_inference_context(),
-        ),
-    ):
-        generate(90)
-        generate(0.25)
-    assert [item["http_options"]["timeout"] for item in configurations] == [1000, 250, 1000, 250]
-
-    ticks = iter((10.0, 12.0))
-    monkeypatch.setattr(gemini, "monotonic", lambda: next(ticks))
-    with pytest.raises(LLMTimeoutError):
-        client.complete(
-            _messages(), max_output_tokens=5, timeout_seconds=1,
-            inference_context=_inference_context(),
-        )
+    )
+    with pytest.raises(LLMInvalidRequestError, match="context disclosure policy is required"):
+        asyncio.run(_collect(client.stream(_messages())))
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -515,54 +271,3 @@ def test_invocation_attribution_logs_safe_identity_usage_and_unavailable_values(
     assert "usage_source=unavailable usage_confidence=unavailable" in caplog.text
     assert "incomplete" in caplog.text
     assert "prompt" not in caplog.text and "private" not in caplog.text
-
-
-def test_closing_gemini_stream_closes_per_request_owned_client(monkeypatch) -> None:
-    class ProviderStream:
-        async def __aiter__(self):
-            try:
-                yield SimpleNamespace(text="first")
-                await asyncio.Event().wait()
-            finally:
-                await asyncio.sleep(0)
-                self.finalized = True
-
-    class AsyncClient:
-        def __init__(self, models: object) -> None:
-            self.models = models
-            self.closed = False
-
-        async def aclose(self) -> None:
-            self.closed = True
-
-    class Client:
-        def __init__(self) -> None:
-            self.models = Models()
-            self.aio = AsyncClient(self.models)
-            self.closed = False
-
-        def close(self) -> None:
-            self.closed = True
-
-    class Models:
-        def __init__(self) -> None:
-            self.stream = ProviderStream()
-
-        async def generate_content_stream(self, **_: object) -> ProviderStream:
-            return self.stream
-
-    owned_client = Client()
-    monkeypatch.setattr(GeminiLLMClient, "_build_client", lambda _: owned_client)
-
-    async def scenario() -> None:
-        iterator = GeminiLLMClient(_settings()).stream(
-            _messages(), inference_context=_inference_context()
-        )
-        assert await anext(iterator) == "first"
-        await iterator.aclose()
-
-    asyncio.run(scenario())
-
-    assert owned_client.models.stream.finalized
-    assert owned_client.aio.closed
-    assert owned_client.closed

@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from google import genai
+from pydantic import SecretStr
 
 from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.applications.registry import default_application_registry
@@ -54,7 +54,10 @@ def _context(completed, *, deny_disclosure=False, maximum="sensitive", version="
 
 def _fixture():
     fixture = next(item for item in load_fixtures() if item["name"] == "later-preference")
-    return build_fixture(fixture)
+    values = list(build_fixture(fixture))
+    values[0].ai_api_key = SecretStr("offline-fake")
+    values[0].ai_model = "gemini-2.5-flash"
+    return tuple(values)
 
 
 class _RemoteSpy:
@@ -127,6 +130,7 @@ def test_allowed_policy_reaches_count_structured_generation_and_embedding_with_a
         requests.append(("generation", json.loads(request.content)))
         text = json.dumps({"candidates": [candidates[0].model_dump(mode="json")]})
         return httpx.Response(200, json={
+            "modelVersion": settings.ai_model,
             "candidates": [{
                 "content": {"role": "model", "parts": [{"text": text}]},
                 "finishReason": "STOP",
@@ -138,11 +142,9 @@ def test_allowed_policy_reaches_count_structured_generation_and_embedding_with_a
             },
         })
 
-    client = genai.Client(
-        api_key="offline-fake",
-        http_options={"client_args": {"transport": httpx.MockTransport(handler)}},
+    adapter = GeminiMemoryAdapter(
+        settings, sync_transport_factory=lambda: httpx.MockTransport(handler)
     )
-    adapter = GeminiMemoryAdapter(settings, client)
     used_contexts = []
     original_extract, original_embed = adapter.extract, adapter.embed
 
@@ -157,12 +159,9 @@ def test_allowed_policy_reaches_count_structured_generation_and_embedding_with_a
     adapter.extract = record_extract
     adapter.embed = record_embed
     context = _context(turns[0][1], version="allowed-memory-policy-v4")
-    try:
-        result = MemoryExtractionService(
-            settings, memories, messages, adapter, adapter
-        ).run(turns[0][1], application_context=context)
-    finally:
-        client.close()
+    result = MemoryExtractionService(
+        settings, memories, messages, adapter, adapter
+    ).run(turns[0][1], application_context=context)
 
     assert result.created
     assert {context.policy_version for context in used_contexts} == {"allowed-memory-policy-v4"}

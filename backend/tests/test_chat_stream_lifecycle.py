@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier, Lock
 from uuid import uuid4
 
+import httpx
 import pytest
 from starlette.requests import ClientDisconnect
 
@@ -550,37 +552,52 @@ def test_streaming_body_has_no_provider_exception_detail() -> None:
 
 
 def test_gemini_timeout_after_first_delta_finalizes_partial_turn() -> None:
-    """SDK timeout scopes must remain in one task across service-driven yields."""
-    from types import SimpleNamespace
-
+    """Pinned SDK streaming timeout finalizes a partial application turn."""
     from personal_ai.llm import GeminiLLMClient
     from personal_ai.llm.context import GeminiTokenCounter
+    from personal_ai.llm.litellm_gateway import _load_litellm
 
-    class ProviderStream:
-        finalized = False
+    # Keep one-time SDK import/setup outside the request deadline under test.
+    _load_litellm()
 
+    finalized = []
+
+    class SlowResponseStream(httpx.AsyncByteStream):
         async def __aiter__(self):
             try:
-                yield SimpleNamespace(text="partial")
+                payload = {
+                    "modelVersion": "gemini-2.5-flash",
+                    "candidates": [{
+                        "content": {"role": "model", "parts": [{"text": "partial"}]},
+                        "finishReason": None,
+                    }],
+                }
+                yield b"data: " + json.dumps(payload).encode() + b"\n\n"
                 await asyncio.Event().wait()
             finally:
-                await asyncio.sleep(0)
-                self.finalized = True
+                finalized.append(True)
 
-    provider = ProviderStream()
+        async def aclose(self):
+            finalized.append(True)
 
-    class Models:
-        async def generate_content_stream(self, **_: object) -> ProviderStream:
-            return provider
+    async def provider_transport(_request):
+        return httpx.Response(
+            200,
+            stream=SlowResponseStream(),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    def counter_transport(_request):
+        return httpx.Response(200, json={"totalTokens": 3})
 
     llm = GeminiLLMClient(
         Settings(
             ai_provider="gemini",
-            ai_model="test",
+            ai_model="gemini-2.5-flash",
             ai_api_key="test-key",
-            request_timeout_seconds=0.02,
+            request_timeout_seconds=0.5,
         ),
-        client=SimpleNamespace(aio=SimpleNamespace(models=Models())),
+        async_transport_factory=lambda: httpx.MockTransport(provider_transport),
     )
     conversations = InMemoryConversationRepository()
     messages = InMemoryMessageRepository(conversations)
@@ -603,22 +620,22 @@ def test_gemini_timeout_after_first_delta_finalizes_partial_turn() -> None:
         context_provider_capabilities=registration.context_providers,
         tool_capabilities=registration.tools,
     )
-    class Api:
-        def request(self, *args, **kwargs):
-            del args, kwargs
-            return SimpleNamespace(body='{"totalTokens":3}')
-
-    test_settings = Settings(ai_provider="gemini", ai_model="test")
+    test_settings = Settings(
+        ai_provider="gemini", ai_model="gemini-2.5-flash", ai_api_key="test-key"
+    )
     service = ChatTurnService(
         conversations,
         messages,
         llm,
         owner_id="local",
         application_context=application_context,
-        model="test",
+        model="gemini-2.5-flash",
         context_assembler=ContextAssembler(
             test_settings,
-            GeminiTokenCounter(test_settings, client=SimpleNamespace(_api_client=Api())),
+            GeminiTokenCounter(
+                test_settings,
+                sync_transport_factory=lambda: httpx.MockTransport(counter_transport),
+            ),
         ),
     )
 
@@ -643,7 +660,7 @@ def test_gemini_timeout_after_first_delta_finalizes_partial_turn() -> None:
     assert assistant.status is MessageStatus.FAILED
     assert assistant.content == "partial"
     assert assistant.error_code == "llm_timeout"
-    assert provider.finalized
+    assert finalized
 
 
 @pytest.mark.parametrize("violation", ["trailing_delta", "duplicate_terminal", "exception", "stalled"])
