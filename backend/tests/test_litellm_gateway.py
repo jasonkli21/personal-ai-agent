@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -254,8 +255,25 @@ def test_openai_compatible_providers_use_explicit_sdk_endpoint_and_schema(
     assert request.headers[auth_header] == auth_value
     assert body["model"] == _model(provider)
     assert body[token_field] == 19
+    if provider == "cloudflare_workers_ai":
+        assert body["response_format"] == {
+            "type": "json_schema",
+            "json_schema": schema,
+        }
+        assert "tools" not in body
+    else:
+        assert body["tools"] == [{
+            "type": "function",
+            "function": {
+                "name": "json_tool_call",
+                "parameters": schema,
+            },
+        }]
+        assert body["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "json_tool_call"},
+        }
     serialized = json.dumps(body)
-    assert schema["properties"]["ok"]["type"] in serialized
     assert "Only return JSON." in serialized
     assert "fixture-groq-key" not in serialized
     assert "fixture-cloudflare-token" not in serialized
@@ -370,6 +388,37 @@ def _stream_payload(provider, *, include_done=True):
         b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events)
         + b"data: [DONE]\n\n"
     )
+
+
+class _ChunkedAsyncByteStream(httpx.AsyncByteStream):
+    def __init__(self, chunks, *, block_after=False):
+        self.chunks = chunks
+        self.block_after = block_after
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+        if self.block_after:
+            await asyncio.Event().wait()
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _openai_stream_event(model, content=None, finish_reason=None):
+    delta = {} if content is None else {"content": content}
+    return {
+        "id": "fixture-chunk",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+
+
+def _sse(payload):
+    return b"data: " + json.dumps(payload).encode() + b"\n\n"
 
 
 @pytest.mark.parametrize("provider", ["gemini", "groq", "cloudflare_workers_ai"])
@@ -764,3 +813,572 @@ def test_gemini_embeddings_use_litellm_and_preserve_persisted_space():
     assert documents[0].space.version == "v1"
     assert documents[0].task == "document"
     assert query[0].task == "query"
+
+
+@pytest.mark.parametrize("provider", ["gemini", "groq", "cloudflare_workers_ai"])
+def test_chunked_streams_drain_to_eof_and_allow_split_done_and_usage(provider):
+    import personal_ai.llm.litellm_gateway as gateway
+
+    body = _stream_payload(provider)
+    if provider != "gemini":
+        done_marker = b"data: [DONE]\n\n"
+        usage = _sse({
+            "id": "usage",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": _model(provider),
+            "choices": [],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+        })
+        body = body.replace(done_marker, usage + done_marker)
+    if provider == "gemini":
+        midpoint = len(body) // 2
+        chunks = [body[:midpoint], body[midpoint:]]
+    else:
+        head, _ = body.rsplit(b"data: [DONE]\n\n", 1)
+        chunks = [head, b"data: [DO", b"NE]\n\n"]
+    source = _ChunkedAsyncByteStream(chunks)
+    adapter = _adapter(
+        provider,
+        lambda: httpx.MockTransport(
+            lambda _: httpx.Response(
+                200, stream=source, headers={"content-type": "text/event-stream"}
+            )
+        ),
+        async_mode=True,
+    )
+
+    async def collect():
+        return [event async for event in adapter.stream_events(
+            [ChatMessage("user", "hello")], max_output_tokens=20,
+            timeout_seconds=3, inference_context=_context(),
+        )]
+
+    events = asyncio.run(collect())
+    terminal = events[-1]
+    assert terminal.kind == "terminal"
+    assert terminal.metadata.status == "success"
+    assert terminal.metadata.identity.model_id == _model(provider)
+    assert sum(event.kind == "terminal" for event in events) == 1
+    assert source.closed
+    if provider != "gemini":
+        assert terminal.metadata.usage.confidence == "reported"
+    assert gateway._MAX_STREAM_RESPONSE_BYTES > len(body)
+
+
+@pytest.mark.parametrize("provider", ["groq", "cloudflare_workers_ai"])
+def test_stream_deadline_closes_a_reader_blocked_after_done(provider):
+    source = _ChunkedAsyncByteStream([_stream_payload(provider)], block_after=True)
+    adapter = _adapter(
+        provider,
+        lambda: httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                stream=source,
+                headers={"content-type": "text/event-stream"},
+            )
+        ),
+        async_mode=True,
+    )
+
+    async def collect():
+        return [event async for event in adapter.stream_events(
+            [ChatMessage("user", "hello")], max_output_tokens=20,
+            timeout_seconds=0.1, inference_context=_context(),
+        )]
+
+    with pytest.raises(LLMTimeoutError):
+        asyncio.run(collect())
+    assert source.closed
+
+
+@pytest.mark.parametrize("provider", ["groq", "cloudflare_workers_ai"])
+@pytest.mark.parametrize("terminal_suffix", [b"data: [DONE]\n\ndata: [DONE]\n\n", b"data: [DONE]\n\ndata: {\"model\":\"fixture-model\",\"choices\":[]}\n\n"])
+def test_chunked_openai_stream_rejects_duplicate_or_trailing_data(provider, terminal_suffix):
+    body = _stream_payload(provider).replace(b"data: [DONE]\n\n", terminal_suffix)
+    chunks = [body[index : index + 30] for index in range(0, len(body), 30)]
+    adapter = _adapter(
+        provider,
+        lambda: httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                stream=_ChunkedAsyncByteStream(chunks),
+                headers={"content-type": "text/event-stream"},
+            )
+        ),
+        async_mode=True,
+    )
+
+    async def collect():
+        return [event async for event in adapter.stream_events(
+            [ChatMessage("user", "hello")], max_output_tokens=20,
+            timeout_seconds=3, inference_context=_context(),
+        )]
+
+    with pytest.raises(LLMInvalidResponseError):
+        asyncio.run(collect())
+
+
+@pytest.mark.parametrize("provider", ["gemini", "groq", "cloudflare_workers_ai"])
+def test_unapproved_stream_identity_is_rejected_before_any_text(provider):
+    if provider == "gemini":
+        payload = {
+            "modelVersion": "unapproved-model",
+            "candidates": [{"content": {"parts": [{"text": "secret"}]}}],
+        }
+    else:
+        payload = _openai_stream_event("unapproved-model", "secret")
+    adapter = _adapter(
+        provider,
+        lambda: httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                stream=_ChunkedAsyncByteStream([_sse(payload)]),
+                headers={"content-type": "text/event-stream"},
+            )
+        ),
+        async_mode=True,
+    )
+    deltas = []
+
+    async def consume():
+        async for event in adapter.stream_events(
+            [ChatMessage("user", "hello")], max_output_tokens=20,
+            timeout_seconds=3, inference_context=_context(),
+        ):
+            if event.kind == "delta":
+                deltas.append(event.delta)
+
+    with pytest.raises(LLMInvalidResponseError):
+        asyncio.run(consume())
+    assert deltas == []
+
+
+@pytest.mark.parametrize("provider", ["groq", "cloudflare_workers_ai"])
+def test_conflicting_stream_identity_withholds_that_events_text(provider):
+    alias = "fixture-model-rev2" if provider == "groq" else "@cf/meta/llama-fixture-v2"
+    body = (
+        _sse(_openai_stream_event(_model(provider), "hello"))
+        + _sse(_openai_stream_event(alias, "secret"))
+        + b"data: [DONE]\n\n"
+    )
+    # The approved alias is still a conflicting identity within this response.
+    adapter = _adapter(
+        provider,
+        lambda: httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                stream=_ChunkedAsyncByteStream([body[: len(_sse(_openai_stream_event(_model(provider), "hello")))], body[len(_sse(_openai_stream_event(_model(provider), "hello"))) :]]),
+                headers={"content-type": "text/event-stream"},
+            )
+        ),
+        async_mode=True,
+    )
+    deltas = []
+
+    async def consume():
+        async for event in adapter.stream_events(
+            [ChatMessage("user", "hello")], max_output_tokens=20,
+            timeout_seconds=3, inference_context=_context(),
+        ):
+            if event.kind == "delta":
+                deltas.append(event.delta)
+
+    with pytest.raises(LLMInvalidResponseError):
+        asyncio.run(consume())
+    assert deltas == ["hello"]
+
+
+@pytest.mark.parametrize("cache_loaded", [False, True])
+def test_ambient_litellm_retries_fail_closed_before_dispatch(cache_loaded, monkeypatch):
+    import personal_ai.llm.litellm_gateway as gateway
+
+    sdk = gateway._load_litellm()
+    monkeypatch.setattr(sdk, "num_retries", 1)
+    monkeypatch.setattr(gateway, "_SDK", sdk if cache_loaded else None)
+    calls = []
+    adapter = GeminiLLMClient(
+        _settings(),
+        sync_transport_factory=lambda: httpx.MockTransport(
+            lambda request: (calls.append(request), httpx.Response(503, json={}))[-1]
+        ),
+    )
+    with pytest.raises(LLMInvalidConfigurationError, match="runtime settings"):
+        adapter.complete(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=2, inference_context=_context(),
+        )
+    assert calls == []
+
+
+def test_generation_transport_fences_sdk_replay_even_if_global_changes_mid_call(monkeypatch):
+    import personal_ai.llm.litellm_gateway as gateway
+
+    sdk = gateway._load_litellm()
+    monkeypatch.setattr(sdk, "num_retries", 1)
+    monkeypatch.setattr(gateway, "_assert_litellm_runtime_safe", lambda: None)
+    calls = []
+
+    def unavailable(request):
+        calls.append(request)
+        return httpx.Response(503, json={"error": {"message": "private"}})
+
+    adapter = GeminiLLMClient(
+        _settings(), sync_transport_factory=lambda: httpx.MockTransport(unavailable)
+    )
+    with pytest.raises(LLMUnavailableError):
+        adapter.complete(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=2, inference_context=_context(),
+        )
+    assert len(calls) == 1
+
+
+def test_async_generation_transport_fences_sdk_replay(monkeypatch):
+    import personal_ai.llm.litellm_gateway as gateway
+
+    sdk = gateway._load_litellm()
+    monkeypatch.setattr(sdk, "num_retries", 1)
+    monkeypatch.setattr(gateway, "_assert_litellm_runtime_safe", lambda: None)
+    calls = []
+
+    def unavailable(request):
+        calls.append(request)
+        return httpx.Response(503, json={"error": {"message": "private"}})
+
+    adapter = GeminiLLMClient(
+        _settings(),
+        async_transport_factory=lambda: httpx.MockTransport(unavailable),
+    )
+
+    async def consume():
+        return [event async for event in adapter.stream_events(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=2, inference_context=_context(),
+        )]
+
+    with pytest.raises(LLMUnavailableError):
+        asyncio.run(consume())
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("provider", ["gemini", "groq", "cloudflare_workers_ai"])
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [(429, LLMRateLimitedError), (503, LLMUnavailableError)],
+)
+def test_async_generation_status_failures_make_one_physical_send(provider, status, error_type):
+    calls = []
+
+    def fail(request):
+        calls.append(request)
+        return httpx.Response(
+            status,
+            headers={"retry-after": "2"},
+            json={"error": {"message": "private provider detail"}},
+        )
+
+    adapter = _adapter(
+        provider,
+        lambda: httpx.MockTransport(fail),
+        async_mode=True,
+    )
+
+    async def consume():
+        return [event async for event in adapter.stream_events(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=2, inference_context=_context(),
+        )]
+
+    with pytest.raises(error_type) as raised:
+        asyncio.run(consume())
+    assert len(calls) == 1
+    assert "private provider detail" not in str(raised.value)
+
+
+@pytest.mark.parametrize("provider", ["gemini", "groq", "cloudflare_workers_ai"])
+@pytest.mark.parametrize("exception_type", [httpx.ReadTimeout, httpx.ConnectError])
+def test_async_transport_failures_make_one_physical_send(provider, exception_type):
+    calls = []
+
+    def fail(request):
+        calls.append(request)
+        raise exception_type("private transport detail", request=request)
+
+    adapter = _adapter(
+        provider,
+        lambda: httpx.MockTransport(fail),
+        async_mode=True,
+    )
+
+    async def consume():
+        return [event async for event in adapter.stream_events(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=2, inference_context=_context(),
+        )]
+
+    expected = LLMTimeoutError if exception_type is httpx.ReadTimeout else LLMUnavailableError
+    with pytest.raises(expected) as raised:
+        asyncio.run(consume())
+    assert len(calls) == 1
+    assert "private transport detail" not in str(raised.value)
+
+
+@pytest.mark.parametrize("provider", ["gemini", "groq", "cloudflare_workers_ai"])
+def test_sync_generation_deadline_rejects_slow_success(provider):
+    def slow_success(request):
+        time.sleep(0.08)
+        return httpx.Response(200, json=_response(provider))
+
+    adapter = _adapter(
+        provider,
+        lambda: httpx.MockTransport(slow_success),
+    )
+    with pytest.raises(LLMTimeoutError):
+        adapter.complete(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=0.05, inference_context=_context(),
+        )
+    with pytest.raises(LLMTimeoutError):
+        adapter.generate_structured(
+            [ChatMessage("user", "hello")],
+            response_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
+            max_output_tokens=10,
+            timeout_seconds=0.05,
+            inference_context=_context(),
+        )
+
+
+def test_sync_generation_deadline_bounds_trickle_reads_and_parsing(monkeypatch):
+    import personal_ai.llm.litellm_gateway as gateway
+
+    class TrickleStream(httpx.SyncByteStream):
+        def __iter__(self):
+            for chunk in (b'{"modelVersion":', b'"gemini-2.5-flash",', b'"candidates":[]}'):
+                time.sleep(0.01)
+                yield chunk
+
+        def close(self):
+            pass
+
+    adapter = GeminiLLMClient(
+        _settings(),
+        sync_transport_factory=lambda: httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=TrickleStream())
+        ),
+    )
+    with pytest.raises(LLMTimeoutError):
+        adapter.complete(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=0.02, inference_context=_context(),
+        )
+
+    sent = []
+    adapter = GeminiLLMClient(
+        _settings(),
+        sync_transport_factory=lambda: httpx.MockTransport(
+            lambda request: (sent.append(request), httpx.Response(200, json=_response("gemini")))[-1]
+        ),
+    )
+    original_arguments = gateway.LiteLLMGenerationClient._completion_arguments
+
+    def slow_setup(self, *args, **kwargs):
+        time.sleep(0.03)
+        return original_arguments(self, *args, **kwargs)
+
+    monkeypatch.setattr(gateway.LiteLLMGenerationClient, "_completion_arguments", slow_setup)
+    with pytest.raises(LLMTimeoutError):
+        adapter.complete(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=0.02, inference_context=_context(),
+        )
+    assert sent == []
+
+    adapter = GeminiLLMClient(
+        _settings(),
+        sync_transport_factory=lambda: httpx.MockTransport(
+            lambda _: httpx.Response(200, json=_response("gemini"))
+        ),
+    )
+    original_parse = gateway._parse_generation_wire
+
+    def slow_parse(*args, **kwargs):
+        time.sleep(0.03)
+        return original_parse(*args, **kwargs)
+
+    monkeypatch.setattr(gateway, "_parse_generation_wire", slow_parse)
+    with pytest.raises(LLMTimeoutError):
+        adapter.complete(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=0.02, inference_context=_context(),
+        )
+
+
+def test_embedding_text_prefixes_remain_literal_and_never_trigger_file_reads():
+    texts = [
+        "gs://bucket/example.pdf",
+        "files/example-id",
+        "data:image/png;base64,aaaa",
+        "data:not-a-valid-media-uri",
+        "ordinary prose",
+    ]
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"embeddings": [{"values": [3, 0, 0]} for _ in body["requests"]]},
+        )
+
+    embedder = LiteLLMEmbeddingClient(
+        _settings(memory_embedding_dimensions=3, memory_embedding_batch_size=5),
+        sync_transport_factory=lambda: httpx.MockTransport(handle),
+    )
+    embedder.embed(texts, inference_context=_context())
+    embedder.embed(texts, query=True, inference_context=_context())
+
+    assert len(requests) == 2
+    assert all(request.method == "POST" for request in requests)
+    for request in requests:
+        body = json.loads(request.content)
+        assert [item["content"]["parts"] for item in body["requests"]] == [
+            [{"text": text}] for text in texts
+        ]
+    document_body, query_body = [json.loads(request.content) for request in requests]
+    assert document_body["requests"][0]["taskType"] == "RETRIEVAL_DOCUMENT"
+    assert query_body["requests"][0]["taskType"] == "RETRIEVAL_QUERY"
+
+
+def test_embedding_batch_response_limits_are_per_response_and_reset(monkeypatch):
+    import personal_ai.llm.litellm_gateway as gateway
+
+    monkeypatch.setattr(gateway, "_MAX_EMBEDDING_RESPONSE_BYTES", 64)
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json={"embeddings": [{"values": [1, 0, 0]}]})
+
+    embedder = LiteLLMEmbeddingClient(
+        _settings(memory_embedding_dimensions=3, memory_embedding_batch_size=1),
+        sync_transport_factory=lambda: httpx.MockTransport(handle),
+    )
+    results = embedder.embed(["one", "two", "three"], inference_context=_context())
+    assert len(results) == len(requests) == 3
+    assert len(json.dumps({"embeddings": [{"values": [1, 0, 0]}]}).encode()) < 64
+    assert 3 * len(json.dumps({"embeddings": [{"values": [1, 0, 0]}]}).encode()) > 64
+
+    calls = []
+
+    def oversized_second(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(200, json={"embeddings": [{"values": [1, 0, 0]}]})
+        return httpx.Response(
+            200,
+            json={"embeddings": [{"values": [1, 0, 0], "padding": "x" * 128}]},
+        )
+
+    failing_embedder = LiteLLMEmbeddingClient(
+        _settings(memory_embedding_dimensions=3, memory_embedding_batch_size=1),
+        sync_transport_factory=lambda: httpx.MockTransport(oversized_second),
+    )
+    with pytest.raises(LLMInvalidResponseError, match="size limit"):
+        failing_embedder.embed(["one", "two", "three"], inference_context=_context())
+    assert len(calls) == 2
+
+
+def test_embedding_deadline_is_forwarded_to_each_batch_and_stops_late_work():
+    captured_timeouts = []
+    calls = []
+
+    def delayed(request):
+        calls.append(request)
+        captured_timeouts.append(request.extensions["timeout"]["read"])
+        if len(calls) == 1:
+            time.sleep(0.04)
+        return httpx.Response(200, json={"embeddings": [{"values": [1, 0, 0]}]})
+
+    embedder = LiteLLMEmbeddingClient(
+        _settings(memory_embedding_dimensions=3, memory_embedding_batch_size=1),
+        sync_transport_factory=lambda: httpx.MockTransport(delayed),
+    )
+    embedder.embed(["one", "two"], timeout=0.5, inference_context=_context())
+    assert len(captured_timeouts) == 2
+    assert captured_timeouts[1] < captured_timeouts[0]
+    assert captured_timeouts[0] <= 0.5
+
+    calls.clear()
+
+    def exhaust_deadline(request):
+        calls.append(request)
+        if len(calls) == 1:
+            time.sleep(0.22)
+        return httpx.Response(200, json={"embeddings": [{"values": [1, 0, 0]}]})
+
+    late_embedder = LiteLLMEmbeddingClient(
+        _settings(memory_embedding_dimensions=3, memory_embedding_batch_size=1),
+        sync_transport_factory=lambda: httpx.MockTransport(exhaust_deadline),
+    )
+    with pytest.raises(LLMTimeoutError):
+        late_embedder.embed(
+            ["one", "two", "three"], timeout=0.2, inference_context=_context()
+        )
+    assert len(calls) == 1
+
+    class StalledBatch(httpx.SyncByteStream):
+        def __iter__(self):
+            time.sleep(0.2)
+            yield b'{"embeddings":[{"values":[1,0,0]}]}'
+
+        def close(self):
+            pass
+
+    calls.clear()
+    second_batch_timeouts = []
+
+    def stall_later_batch(request):
+        calls.append(request)
+        second_batch_timeouts.append(request.extensions["timeout"]["read"])
+        if len(calls) == 1:
+            return httpx.Response(200, json={"embeddings": [{"values": [1, 0, 0]}]})
+        return httpx.Response(200, stream=StalledBatch())
+
+    stalled_embedder = LiteLLMEmbeddingClient(
+        _settings(memory_embedding_dimensions=3, memory_embedding_batch_size=1),
+        sync_transport_factory=lambda: httpx.MockTransport(stall_later_batch),
+    )
+    with pytest.raises(LLMTimeoutError):
+        stalled_embedder.embed(
+            ["one", "two", "three"], timeout=0.15, inference_context=_context()
+        )
+    assert len(calls) == 2
+    assert second_batch_timeouts[1] < second_batch_timeouts[0]
+
+
+def test_cloudflare_schema_guard_rejects_openai_wrapped_shape():
+    import personal_ai.llm.litellm_gateway as gateway
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    profile = gateway._provider_profile(_cloudflare_settings(), "cloudflare_workers_ai")
+    assert gateway._request_preserves_schema(
+        {"response_format": {"type": "json_schema", "json_schema": schema}},
+        profile,
+        schema,
+    )
+    assert not gateway._request_preserves_schema(
+        {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "personal_ai_response",
+                    "strict": False,
+                    "schema": schema,
+                },
+            }
+        },
+        profile,
+        schema,
+    )

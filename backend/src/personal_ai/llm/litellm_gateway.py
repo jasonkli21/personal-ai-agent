@@ -103,7 +103,8 @@ class _TransportState:
     request_count: int = 0
     response_complete: bool = False
     violation: Literal[
-        "endpoint", "request_size", "response_size", "response_encoding", "required_parameter"
+        "endpoint", "request_size", "response_size", "response_encoding", "required_parameter",
+        "generation_replay",
     ] | None = None
     line_bytes: int = 0
     event_bytes: int = 0
@@ -111,6 +112,15 @@ class _TransportState:
     request_model_id: str | None = None
     sdk_usage_supplemented: bool = False
     required_schema: Mapping[str, object] | None = None
+    deadline: float | None = None
+    embedding_texts: tuple[str, ...] | None = None
+    sse_line_buffer: bytearray = field(default_factory=bytearray)
+    sse_data_lines: list[bytes] = field(default_factory=list)
+    sse_model_id: str | None = None
+    sse_finish_reason: str | None = None
+    sse_done: bool = False
+    async_stream: Any | None = None
+    stream_error: LLMError | None = None
 
     def record_request(self, request: httpx.Request) -> None:
         if not _request_is_approved(
@@ -118,6 +128,13 @@ class _TransportState:
         ):
             self.violation = "endpoint"
             raise _TransportFault("endpoint")
+        if self.operation == "generation" and self.request_count:
+            self.violation = "generation_replay"
+            raise _TransportFault("generation_replay")
+        if self.operation == "embeddings":
+            self._reset_response_evidence()
+            self._rewrite_embedding_request(request)
+        self._apply_deadline_to_request(request)
         content_length = _parse_non_negative_int(request.headers.get("content-length"))
         if content_length is not None and content_length > _MAX_REQUEST_BYTES:
             self.violation = "request_size"
@@ -128,10 +145,56 @@ class _TransportState:
             except (UnicodeDecodeError, json.JSONDecodeError, httpx.RequestNotRead):
                 self.violation = "required_parameter"
                 raise _TransportFault("required_parameter") from None
-            if not _contains_schema_value(request_body, self.required_schema):
+            if not _request_preserves_schema(request_body, self.profile, self.required_schema):
                 self.violation = "required_parameter"
                 raise _TransportFault("required_parameter")
         self.request_count += 1
+
+    def _reset_response_evidence(self) -> None:
+        self.response_status = None
+        self.response_headers.clear()
+        self.raw_body.clear()
+        self.response_complete = False
+        self.violation = None
+        self.line_bytes = 0
+        self.event_bytes = 0
+        self.line_ends_with_cr = False
+        self.sse_line_buffer.clear()
+        self.sse_data_lines.clear()
+        self.sse_model_id = None
+        self.sse_finish_reason = None
+        self.sse_done = False
+
+    def _rewrite_embedding_request(self, request: httpx.Request) -> None:
+        texts = self.embedding_texts
+        if texts is None:
+            self.violation = "required_parameter"
+            raise _TransportFault("required_parameter")
+        try:
+            payload = json.loads(request.content)
+            items = payload["requests"]
+            if not isinstance(items, list) or len(items) != len(texts):
+                raise ValueError
+            for item, text in zip(items, texts, strict=True):
+                content = item.get("content")
+                if not isinstance(content, dict):
+                    raise TypeError
+                content["parts"] = [{"text": text}]
+            body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self.violation = "required_parameter"
+            raise _TransportFault("required_parameter") from None
+        request.headers["content-length"] = str(len(body))
+        request._content = body
+        request.stream = httpx.ByteStream(body)
+
+    def _apply_deadline_to_request(self, request: httpx.Request) -> None:
+        if self.deadline is None:
+            return
+        remaining = self.deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("request deadline expired")
+        request.extensions["timeout"] = httpx.Timeout(remaining).as_dict()
 
     def record_response(self, response: httpx.Response) -> None:
         self.response_status = response.status_code
@@ -143,6 +206,11 @@ class _TransportState:
             raise _TransportFault("response_size")
         if self.streaming:
             self._record_sse_bounds(chunk)
+            try:
+                self._validate_sse_chunk(chunk)
+            except LLMError as error:
+                self.stream_error = error
+                raise
         self.raw_body.extend(chunk)
 
     def _record_sse_bounds(self, chunk: bytes) -> None:
@@ -172,6 +240,78 @@ class _TransportState:
         if self.streaming and self.line_bytes - int(self.line_ends_with_cr) > _MAX_STREAM_LINE_BYTES:
             self.violation = "response_size"
             raise _TransportFault("response_size")
+        if self.streaming:
+            try:
+                if self.sse_line_buffer:
+                    self._consume_sse_line(bytes(self.sse_line_buffer).removesuffix(b"\r"))
+                    self.sse_line_buffer.clear()
+                self._consume_sse_event()
+            except LLMError as error:
+                self.stream_error = error
+                raise
+
+    def _validate_sse_chunk(self, chunk: bytes) -> None:
+        for byte in chunk:
+            if byte == 0x0A:
+                line = bytes(self.sse_line_buffer).removesuffix(b"\r")
+                self.sse_line_buffer.clear()
+                self._consume_sse_line(line)
+            else:
+                self.sse_line_buffer.append(byte)
+
+    def _consume_sse_line(self, line: bytes) -> None:
+        if not line:
+            self._consume_sse_event()
+        elif line.startswith(b"data:"):
+            self.sse_data_lines.append(line[5:].lstrip(b" "))
+
+    def _consume_sse_event(self) -> None:
+        if not self.sse_data_lines:
+            return
+        raw_data = b"\n".join(self.sse_data_lines)
+        self.sse_data_lines.clear()
+        try:
+            data = raw_data.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            raise LLMInvalidResponseError("language model stream was invalid") from None
+        if data.strip() == "[DONE]":
+            if self.sse_done:
+                raise LLMInvalidResponseError("language model emitted duplicate terminal markers")
+            self.sse_done = True
+            return
+        if self.sse_done:
+            raise LLMInvalidResponseError("language model emitted data after stream completion")
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            raise LLMInvalidResponseError("language model emitted malformed stream data") from None
+        if not isinstance(payload, Mapping):
+            raise LLMInvalidResponseError("language model emitted an invalid stream event")
+        if payload.get("error") is not None:
+            raise LLMUnavailableError("language model stream failed")
+        raw_model = (
+            payload.get("modelVersion", payload.get("model_version", payload.get("model")))
+            if self.profile.provider == "gemini"
+            else payload.get("model")
+        )
+        if raw_model is not None:
+            self.sse_model_id = _merge_model_identity(
+                self.profile, self.sse_model_id, raw_model
+            )
+        has_text = _sse_payload_has_text(payload, self.profile.provider)
+        if has_text and self.sse_model_id is None:
+            raise LLMInvalidResponseError("language model response omitted its model identity")
+        if has_text and self.sse_finish_reason is not None:
+            raise LLMInvalidResponseError("language model emitted text after terminal metadata")
+        reason = _sse_finish_reason(payload, self.profile.provider)
+        if reason is not None:
+            if self.sse_finish_reason is not None and self.sse_finish_reason != reason:
+                raise LLMInvalidResponseError("language model emitted conflicting terminal metadata")
+            self.sse_finish_reason = reason
+
+    def _check_deadline(self) -> None:
+        if self.deadline is not None and monotonic() >= self.deadline:
+            raise TimeoutError("request deadline expired")
 
 
 class _TransportFault(Exception):
@@ -186,8 +326,9 @@ class _BoundedAsyncByteStream(httpx.AsyncByteStream):
     def __init__(self, response: httpx.Response, state: _TransportState):
         self._response = response
         self._state = state
+        self._iterator: Any | None = None
 
-    async def __aiter__(self):
+    async def _iterate(self):
         try:
             buffered: list[bytes] = []
             async for chunk in self._response.aiter_raw():
@@ -205,7 +346,32 @@ class _BoundedAsyncByteStream(httpx.AsyncByteStream):
         finally:
             await self._response.aclose()
 
+    def __aiter__(self):
+        if self._iterator is None:
+            self._iterator = self._iterate()
+        return self._iterator
+
+    async def drain(self, deadline: float) -> None:
+        if self._iterator is None:
+            self._iterator = self._iterate()
+        while not self._state.response_complete:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError("generation deadline expired")
+            try:
+                async with asyncio.timeout(remaining):
+                    await anext(self._iterator)
+            except StopAsyncIteration:
+                return
+
+    async def force_close(self) -> None:
+        if self._iterator is not None:
+            await self._iterator.aclose()
+        await self._response.aclose()
+
     async def aclose(self) -> None:
+        if self._state.streaming and self._state.sse_done and not self._state.response_complete:
+            return
         await self._response.aclose()
 
 
@@ -256,10 +422,12 @@ class _BoundedAsyncTransport(httpx.AsyncBaseTransport):
         if not self._state.streaming:
             headers = httpx.Headers(headers)
             headers.pop("content-length", None)
+        stream = _BoundedAsyncByteStream(response, self._state)
+        self._state.async_stream = stream
         return httpx.Response(
             response.status_code,
             headers=headers,
-            stream=_BoundedAsyncByteStream(response, self._state),
+            stream=stream,
             extensions=response.extensions,
             request=request,
         )
@@ -286,7 +454,14 @@ class _BoundedSyncByteStream(httpx.SyncByteStream):
     def __iter__(self):
         try:
             buffered: list[bytes] = []
-            for chunk in self._response.iter_raw():
+            iterator = iter(self._response.iter_raw())
+            while True:
+                _apply_deadline_to_response(self._response, self._state)
+                try:
+                    chunk = next(iterator)
+                except StopIteration:
+                    break
+                self._state._check_deadline()
                 self._state.record_chunk(chunk)
                 if self._state.streaming:
                     yield chunk
@@ -313,6 +488,11 @@ class _BoundedSyncTransport(httpx.BaseTransport):
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         self._state.record_request(request)
         response = self._inner.handle_request(request)
+        try:
+            self._state._check_deadline()
+        except TimeoutError:
+            response.close()
+            raise
         self._state.record_response(response)
         if _is_non_success_or_redirect(response.status_code):
             safe_headers = _safe_rate_headers(response.headers)
@@ -336,6 +516,7 @@ class _BoundedSyncTransport(httpx.BaseTransport):
         if response.is_stream_consumed:
             content = response.content
             try:
+                self._state._check_deadline()
                 self._state.record_chunk(content)
                 self._state.finish_response()
                 self._state.response_complete = True
@@ -354,6 +535,8 @@ class _BoundedSyncTransport(httpx.BaseTransport):
                 request=request,
             )
         headers = response.headers
+        if self._state.deadline is not None:
+            response.extensions["timeout"] = request.extensions.get("timeout")
         if not self._state.streaming:
             headers = httpx.Headers(headers)
             headers.pop("content-length", None)
@@ -479,6 +662,8 @@ class LiteLLMGenerationClient:
                 for delta in _sdk_text_deltas(chunk):
                     has_non_whitespace_text = has_non_whitespace_text or bool(delta.strip())
                     yield GenerationEvent.text_delta(delta)
+            if state.async_stream is not None:
+                await state.async_stream.drain(deadline)
             wire = _parse_generation_wire(
                 self._profile,
                 bytes(state.raw_body),
@@ -507,6 +692,8 @@ class LiteLLMGenerationClient:
         finally:
             if stream is not None:
                 await _close_sdk_stream(stream)
+            if state.async_stream is not None:
+                await state.async_stream.force_close()
             if context_token is not None:
                 _cloudflare_http_context.reset(context_token)
             await _close_async_client(client)
@@ -559,12 +746,14 @@ class LiteLLMGenerationClient:
         self.capabilities.require("bounded_generation")
         self._validate_request(messages, inference_context)
         duration = _bounded_timeout(max_output_tokens, timeout_seconds, self._settings)
+        deadline = monotonic() + duration
         state = _TransportState(
             self._profile,
             "generation",
             False,
             _MAX_COMPLETION_RESPONSE_BYTES,
             required_schema=response_schema,
+            deadline=deadline,
         )
         handler, client = self._make_sync_handler(state, duration)
         context_token = self._set_cloudflare_context(handler)
@@ -573,11 +762,13 @@ class LiteLLMGenerationClient:
             arguments = self._completion_arguments(
                 messages,
                 max_output_tokens=max_output_tokens,
-                timeout_seconds=duration,
+                timeout_seconds=_sync_remaining(deadline),
                 stream=False,
                 response_schema=response_schema,
             )
+            _sync_remaining(deadline)
             response = sdk.completion(**arguments, client=handler)
+            _sync_remaining(deadline)
             wire = _parse_generation_wire(
                 self._profile,
                 bytes(state.raw_body),
@@ -591,7 +782,7 @@ class LiteLLMGenerationClient:
             refusal = _sdk_refusal(response) or wire.refused
             if refusal:
                 status = "rejected"
-            return GenerationResult(
+            result = GenerationResult(
                 text=text,
                 metadata=GenerationMetadata(
                     status=status,
@@ -610,6 +801,8 @@ class LiteLLMGenerationClient:
                     rate_limits=_rate_limit_metadata(state.response_headers),
                 ),
             )
+            _sync_remaining(deadline)
+            return result
         except LLMError:
             raise
         except Exception as error:  # noqa: BLE001 - LiteLLM exceptions can contain provider payloads.
@@ -648,7 +841,9 @@ class LiteLLMGenerationClient:
             "no-log": True,
         }
         if response_schema is not None:
-            arguments["response_format"] = _response_format(response_schema)
+            arguments["response_format"] = _response_format(
+                response_schema, self._profile.provider
+            )
         return arguments
 
     def _validate_request(
@@ -919,6 +1114,7 @@ class LiteLLMEmbeddingClient:
             False,
             _MAX_EMBEDDING_RESPONSE_BYTES,
             request_model_id=self.settings.memory_embedding_model,
+            deadline=deadline,
         )
         handler_type = _sdk_http_handler_types(_load_litellm())[1]
         handler = handler_type(timeout=duration)
@@ -956,12 +1152,13 @@ class LiteLLMEmbeddingClient:
                 if remaining <= 0:
                     raise LLMTimeoutError("embedding request timed out")
                 batch = list(texts[start : start + batch_size])
+                state.embedding_texts = tuple(batch)
                 response = sdk.embedding(
                     model=f"gemini/{self.settings.memory_embedding_model}",
                     custom_llm_provider="gemini",
                     api_base=self._profile.api_base,
                     api_key=self._profile.api_key,
-                    input=batch,
+                    input=[f"personal-ai-text-placeholder-{index}" for index in range(len(batch))],
                     dimensions=self.settings.memory_embedding_dimensions,
                     task_type=space.query_task if query else space.document_task,
                     timeout=remaining,
@@ -986,6 +1183,8 @@ class LiteLLMEmbeddingClient:
                         space=space,
                         task=task,
                     ))
+                if monotonic() >= deadline:
+                    raise LLMTimeoutError("embedding request timed out")
             if monotonic() > deadline:
                 raise LLMTimeoutError("embedding request timed out")
             return tuple(results)
@@ -1141,7 +1340,11 @@ def _sdk_messages(
     ]
 
 
-def _response_format(schema: Mapping[str, object]) -> dict[str, Any]:
+def _response_format(
+    schema: Mapping[str, object], provider: str
+) -> dict[str, Any]:
+    if provider == "cloudflare_workers_ai":
+        return {"type": "json_schema", "json_schema": dict(schema)}
     return {
         "type": "json_schema",
         "json_schema": {
@@ -1150,6 +1353,115 @@ def _response_format(schema: Mapping[str, object]) -> dict[str, Any]:
             "schema": dict(schema),
         },
     }
+
+
+def _request_preserves_schema(
+    request_body: Any, profile: _ProviderProfile, schema: Mapping[str, object]
+) -> bool:
+    if profile.provider == "cloudflare_workers_ai":
+        response_format = _field(request_body, "response_format")
+        return response_format == {
+            "type": "json_schema",
+            "json_schema": dict(schema),
+        }
+    if profile.provider == "groq":
+        tools = _field(request_body, "tools")
+        choice = _field(request_body, "tool_choice")
+        expected_function = {
+            "name": "json_tool_call",
+            "parameters": dict(schema),
+        }
+        return (
+            isinstance(tools, list)
+            and any(
+                _field(tool, "type") == "function"
+                and _field(tool, "function") == expected_function
+                for tool in tools
+            )
+            and choice == {
+                "type": "function",
+                "function": {"name": "json_tool_call"},
+            }
+        )
+    return _contains_schema_value(request_body, schema)
+
+
+def _sse_payload_has_text(payload: Mapping[str, Any], provider: str) -> bool:
+    if provider == "gemini":
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list):
+            return False
+        for candidate in candidates:
+            content = _field(candidate, "content")
+            parts = _field(content, "parts")
+            if isinstance(parts, list) and any(
+                isinstance(_field(part, "text"), str) and _field(part, "text")
+                for part in parts
+            ):
+                return True
+        return False
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, Mapping):
+            continue
+        for name in ("delta", "message"):
+            content = _field(_field(choice, name), "content")
+            if isinstance(content, str) and content:
+                return True
+    return False
+
+
+def _sse_finish_reason(payload: Mapping[str, Any], provider: str) -> str | None:
+    if provider == "gemini":
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list):
+            return None
+        reason: str | None = None
+        for candidate in candidates:
+            raw_reason = _gemini_reason(_field(candidate, "finishReason"))
+            if raw_reason is None:
+                continue
+            if reason is not None and reason != raw_reason:
+                raise LLMInvalidResponseError(
+                    "language model emitted conflicting terminal metadata"
+                )
+            reason = raw_reason
+        return reason
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return None
+    reason = None
+    for choice in choices:
+        if not isinstance(choice, Mapping):
+            raise LLMInvalidResponseError("language model stream choice was invalid")
+        raw_reason = choice.get("finish_reason")
+        if raw_reason is None:
+            continue
+        if not isinstance(raw_reason, str) or not raw_reason:
+            raise LLMInvalidResponseError("language model terminal metadata was invalid")
+        if reason is not None and reason != raw_reason:
+            raise LLMInvalidResponseError(
+                "language model emitted conflicting terminal metadata"
+            )
+        reason = raw_reason
+    return reason
+
+
+def _sync_remaining(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError("request deadline expired")
+    return remaining
+
+
+def _apply_deadline_to_response(response: httpx.Response, state: _TransportState) -> None:
+    if state.deadline is None:
+        return
+    response.extensions["timeout"] = httpx.Timeout(
+        _sync_remaining(state.deadline)
+    ).as_dict()
 
 
 def _bounded_timeout(
@@ -1536,6 +1848,10 @@ def _raise_for_status(
 
 
 def _raise_safe_error(error: BaseException, state: _TransportState) -> None:
+    if state.stream_error is not None:
+        raise state.stream_error from None
+    if state.deadline is not None and monotonic() >= state.deadline:
+        raise LLMTimeoutError("language model request timed out") from None
     if state.violation == "endpoint":
         raise LLMInvalidConfigurationError("provider endpoint was not approved") from None
     if state.violation == "required_parameter":
@@ -1548,17 +1864,39 @@ def _raise_safe_error(error: BaseException, state: _TransportState) -> None:
         raise LLMInvalidResponseError("language model response exceeded the size limit") from None
     if state.violation == "response_encoding":
         raise LLMInvalidResponseError("language model response encoding was invalid") from None
+    if state.violation == "generation_replay":
+        raise LLMUnavailableError("language model request could not be safely retried") from None
     if state.response_status is not None and _is_non_success_or_redirect(state.response_status):
         _raise_for_status(
             state.response_status, _rate_limit_metadata(state.response_headers)
         )
-    if isinstance(error, (TimeoutError, httpx.TimeoutException)) or type(error).__name__ in {
-        "Timeout", "APITimeoutError", "ReadTimeout", "ConnectTimeout"
-    }:
+    if _exception_chain_contains_timeout(error):
         raise LLMTimeoutError("language model request timed out") from None
     if isinstance(error, (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError)):
         raise LLMInvalidResponseError("language model response was invalid") from None
     raise LLMUnavailableError("language model is unavailable") from None
+
+
+def _exception_chain_contains_timeout(error: BaseException) -> bool:
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, (TimeoutError, httpx.TimeoutException)) or type(current).__name__ in {
+            "Timeout", "APITimeoutError", "ReadTimeout", "ConnectTimeout"
+        }:
+            return True
+        for name in ("__cause__", "__context__", "original_exception"):
+            nested = getattr(current, name, None)
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+        nested_errors = getattr(current, "exceptions", ())
+        if isinstance(nested_errors, Sequence) and not isinstance(nested_errors, (str, bytes)):
+            pending.extend(item for item in nested_errors if isinstance(item, BaseException))
+    return False
 
 
 def _request_is_approved(
@@ -1678,7 +2016,11 @@ def _gemini_generation_body(
         from litellm.utils import get_optional_params
 
         model = profile.model_id.removeprefix("models/")
-        response_format = _response_format(response_schema) if response_schema is not None else None
+        response_format = (
+            _response_format(response_schema, "gemini")
+            if response_schema is not None
+            else None
+        )
         optional_params = get_optional_params(
             model=model,
             custom_llm_provider="gemini",
@@ -1812,6 +2154,7 @@ def _assert_litellm_runtime_safe() -> None:
         or getattr(sdk, "drop_params", False)
         or getattr(sdk, "modify_params", False)
         or getattr(sdk, "num_retries_per_request", None) not in {None, 0}
+        or getattr(sdk, "num_retries", None) not in {None, 0}
     ):
         raise LLMInvalidConfigurationError("LiteLLM runtime settings are not safe")
 
