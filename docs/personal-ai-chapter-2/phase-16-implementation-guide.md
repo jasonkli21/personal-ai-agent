@@ -3,7 +3,8 @@
 Phase 16 is implemented locally. Current runtime support remains Gemini plus
 deterministic fakes; this phase adds capability contracts without provider
 routing or provider selection. The [implementation evidence](phase-16-implementation-evidence.md)
-records the tested tree and the remaining live-provider checks.
+records the tested tree, resolution of the 2026-10-07 independent review, and
+the remaining live-provider checks.
 
 ## Runtime contracts
 
@@ -34,7 +35,9 @@ records the tested tree and the remaining live-provider checks.
 - [`memory/extraction.py`](../../backend/src/personal_ai/memory/extraction.py)
   owns memory extraction instructions, exact user-source projection, bounded
   input preparation, structured-result parsing, and existing service-level
-  validation. Its Gemini adapter returns per-invocation attribution; chat
+  validation. Application policy authorizes memory counting, extraction, and
+  embeddings before remote disclosure, including query retrieval and background
+  consolidation. Its Gemini adapter returns per-invocation attribution; chat
   extraction remains advisory and runs after a completed turn.
 - [`llm/memory.py`](../../backend/src/personal_ai/llm/memory.py) exposes
   embeddings as a separate capability. Each result includes provider, model,
@@ -45,12 +48,13 @@ records the tested tree and the remaining live-provider checks.
   compatible `v1` space; no re-index or vector rewrite is performed.
 - [`services/chat_turns.py`](../../backend/src/personal_ai/services/chat_turns.py)
   consumes explicit stream events, requires terminal success before completion,
-  preserves partial output on failure, and logs bounded provider/model/usage
-  attribution without prompt or provider payload data. Summary, research,
-  iterative synthesis, itinerary proposal, and booking extraction continue to
-  use task-owned validation through the safe bounded text facade. Memory
-  extraction uses neutral structured generation and retains its exact-source
-  parsing and validation in the memory service.
+  observes normal stream exhaustion after a terminal event, preserves partial
+  output on failure, and logs bounded provider/model/usage attribution without
+  prompt or provider payload data. Summary, research, iterative synthesis,
+  itinerary proposal, and booking extraction retain safe per-invocation
+  attribution through the bounded text facade and keep task-owned validation.
+  Memory extraction uses neutral structured generation, counts its exact schema,
+  and retains exact-source parsing and validation in the memory service.
 
 Only Gemini is configured in the current application. Higher-level paths import
 neutral contracts or the adapter at composition boundaries; provider SDK imports

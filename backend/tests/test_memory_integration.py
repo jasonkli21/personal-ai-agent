@@ -193,9 +193,9 @@ def test_successful_post_completion_extraction_and_failure_isolated(environment,
     original_run = service._memory_extraction.run
 
     def signal_completion(event):
-        def run(completed):
+        def run(completed, *, application_context=None):
             try:
-                return original_run(completed)
+                return original_run(completed, application_context=application_context)
             finally:
                 event.set()
 
@@ -243,7 +243,7 @@ def test_lifecycle_accounting_receives_only_injected_ids_after_terminal_send(env
     finished = Event()
 
     class LifecycleRecorder:
-        def after_completed(self, completed, selected_memory_ids):
+        def after_completed(self, completed, selected_memory_ids, *, application_context=None):
             received.append((completed, tuple(selected_memory_ids)))
             finished.set()
 
@@ -423,8 +423,8 @@ def test_terminal_frame_cancellation_still_runs_bounded_extraction(environment):
     extraction = MemoryExtractionService(settings, repo, messages, CurrentExtractor(), embedder)
 
     class RecordingExtraction:
-        def run(self, completed):
-            result = extraction.run(completed)
+        def run(self, completed, *, application_context=None):
+            result = extraction.run(completed, application_context=application_context)
             outcomes.append(result)
             finished.set()
             return result

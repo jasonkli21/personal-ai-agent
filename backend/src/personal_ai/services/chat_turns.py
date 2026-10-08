@@ -32,11 +32,13 @@ from personal_ai.llm import (
     GenerationClient,
     InferenceContext,
     LLMError,
+    LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMTimeoutError,
 )
 from personal_ai.llm.client import GenerationEvent, GenerationMetadata, GenerationResult
 from personal_ai.llm.errors import LLMIncompleteGenerationError
+from personal_ai.llm.preparation import require_matching_endpoint
 from personal_ai.storage import ConversationConflictError
 from personal_ai.storage.async_io import io_call
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
@@ -231,6 +233,11 @@ class ChatTurnService:
             and getattr(self._llm, "requires_inference_context", True)
         ):
             raise ContextPreparationError("application_context_required")
+        if getattr(self._llm, "requires_inference_context", False):
+            try:
+                require_matching_endpoint(self._llm, self._context.counter)
+            except LLMInvalidRequestError as error:
+                raise ContextPreparationError("generation_counter_endpoint_mismatch") from error
         reservation = uuid4()
         deadline = monotonic() + self._context.settings.request_timeout_seconds
         persisted_users = self._messages.prepare_message_turn(
@@ -275,11 +282,17 @@ class ChatTurnService:
                         self._context.settings.memory_timeout_seconds,
                         remaining(deadline),
                     ),
+                    application_context=self._application_context,
                 )
             assembled = self._context.assemble(
                 post_active[:-1], post_active[-1], deadline=deadline, retrieval=retrieval,
                 application_context=self._application_context,
                 context_plan=context_plan,
+                expected_counter_identity=(
+                    self._llm.identity
+                    if getattr(self._llm, "requires_inference_context", False)
+                    else None
+                ),
             )
             remaining(deadline)
             assistant_id = uuid4()
@@ -391,12 +404,18 @@ class ChatTurnService:
             try:
                 if self._memory_lifecycle is not None:
                     await anyio.to_thread.run_sync(
-                        self._memory_lifecycle.after_completed,
-                        completed[0],
-                        turn.selected_memory_ids,
+                        lambda: self._memory_lifecycle.after_completed(
+                            completed[0],
+                            turn.selected_memory_ids,
+                            application_context=self._application_context,
+                        )
                     )
                 elif self._memory_extraction is not None:
-                    await anyio.to_thread.run_sync(self._memory_extraction.run, completed[0])
+                    await anyio.to_thread.run_sync(
+                        lambda: self._memory_extraction.run(
+                            completed[0], application_context=self._application_context
+                        )
+                    )
             except Exception as error:  # noqa: BLE001 - optional post-completion work
                 logger.info(
                     "Memory post-turn failed request_id=%s error_class=%s",
@@ -457,14 +476,17 @@ class ChatTurnService:
             try:
                 while True:
                     demand.release()
-                    event = await events.get()
+                    event = await _next_provider_event(events, turn.deadline)
                     if event is None:
                         break
                     if isinstance(event, Exception):
                         raise event
                     if event.kind == "terminal":
                         generation_metadata = event.metadata
-                        tail = await events.get()
+                        # Ask the producer to advance once more so terminal success
+                        # is accepted only after the adapter reaches normal exhaustion.
+                        demand.release()
+                        tail = await _next_provider_event(events, turn.deadline)
                         if isinstance(tail, Exception):
                             raise tail
                         if tail is not None:
@@ -648,7 +670,6 @@ async def _produce_deltas(
             await events.put(event)
             if event.kind == "terminal":
                 saw_terminal = True
-                break
     except asyncio.CancelledError:
         raise
     # The consumer applies the normal safe model/storage error mapping.
@@ -677,6 +698,13 @@ async def _produce_deltas(
     # Never queue a terminal event on cancellation: the disconnected consumer
     # may no longer be draining the queue. The finally block above still runs.
     await events.put(failure)
+
+
+async def _next_provider_event(events, deadline: float):
+    try:
+        return await asyncio.wait_for(events.get(), timeout=remaining(deadline))
+    except TimeoutError as error:
+        raise LLMTimeoutError("language model request timed out") from error
 
 
 async def _cancel_provider_task(task: asyncio.Task[None], *, request_id: str) -> None:

@@ -41,7 +41,9 @@ from personal_ai.itinerary_proposals.repositories import (
     ProposalRecord,
     proposal_id_for,
 )
+from personal_ai.llm.attribution import log_generation_attribution
 from personal_ai.llm.errors import LLMError, LLMTimeoutError
+from personal_ai.llm.preparation import require_matching_endpoint
 from personal_ai.search.policy import canonical_url
 from personal_ai.storage.async_io import io_call, sync_call
 from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
@@ -191,6 +193,7 @@ class ItineraryProposalService:
                 fields=("evidence_record",),
             ),
         ))
+        require_matching_endpoint(self.llm, self.context.counter)
         timeout = self.settings.itinerary_proposal_timeout_seconds
         operation_deadline = monotonic() + timeout
         terminal_reserve = min(MAX_TERMINAL_WRITE_RESERVE_SECONDS, timeout * 0.1)
@@ -502,6 +505,11 @@ class ItineraryProposalService:
                 },
             },
             application_context=self.application_context,
+            expected_counter_identity=(
+                self.llm.identity
+                if getattr(self.llm, "requires_inference_context", False)
+                else None
+            ),
             clock=self.clock,
         )
         item_reports = assembled.manifest.items if assembled.manifest else ()
@@ -631,6 +639,12 @@ class ItineraryProposalService:
                             await close()
                         except (Exception, asyncio.CancelledError):  # noqa: BLE001
                             logger.debug("Proposal provider stream close failed")
+            log_generation_attribution(
+                logger,
+                "itinerary_proposal",
+                getattr(stream, "metadata", None),
+                fallback_identity=getattr(self.llm, "identity", None),
+            )
 
 
 def _remaining(deadline: float) -> float:

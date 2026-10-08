@@ -229,6 +229,29 @@ def authorize_effective_sensitivity(
         raise ContextPreparationError("context_model_disclosure_denied")
 
 
+def authorize_memory_disclosure(
+    context: ApplicationContextRequest,
+) -> InferenceContext:
+    """Authorize the shared memory read/disclosure path before auxiliary inference."""
+    selection = ContextSelection(
+        provider_id="ai_memory",
+        operation="search",
+        fields=("content",),
+    )
+    return make_inference_context(context, authorize_context_selection(context, selection))
+
+
+def make_context_inference_context(
+    context: ApplicationContextRequest,
+    selections: Sequence[ContextSelection],
+) -> InferenceContext:
+    """Join server policy for all selected context before counting or generation."""
+    sensitivities = [authorize_base_disclosure(context)]
+    sensitivities.extend(authorize_context_selection(context, item) for item in selections)
+    sensitivity = max(sensitivities, key=lambda value: SENSITIVITY_RANK[value])
+    return make_inference_context(context, sensitivity)
+
+
 def make_inference_context(
     context: ApplicationContextRequest, sensitivity: ContextSensitivity
 ) -> InferenceContext:

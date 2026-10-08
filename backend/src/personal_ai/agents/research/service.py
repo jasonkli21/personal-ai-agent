@@ -18,9 +18,13 @@ from personal_ai.context.authorization import (
 from personal_ai.context.providers import ContextPreparationError, ContextSelection
 from personal_ai.evidence.contracts import AdapterAttempt, SearchQuery
 from personal_ai.evidence.pipeline import extract_evidence, select_evidence, validate_synthesis
+from personal_ai.llm.attribution import log_generation_attribution
+from personal_ai.llm.preparation import require_matching_endpoint
 from personal_ai.search.contracts import SearchResult
 from personal_ai.search.policy import DeterministicPlanner, SnippetExtractor, planned_queries
 from personal_ai.storage.async_io import io_call
+
+logger = logging.getLogger(__name__)
 
 
 def event(name, **data):
@@ -261,6 +265,11 @@ class ResearchService:
                     self.reranker,
                     clock=self.clock,
                     application_context=self.application_context,
+                    expected_counter_identity=(
+                        self.llm.identity
+                        if getattr(self.llm, "requires_inference_context", False)
+                        else None
+                    ),
                 )
                 await save(selection=selection)
                 yield event(
@@ -282,12 +291,38 @@ class ResearchService:
                     await save(state="insufficient", failure_code=code)
                 else:
                     output = ""
-                    async for delta in self.llm.stream(
-                        messages, inference_context=inference_context
-                    ):
-                        if not isinstance(delta, str) or len(output) + len(delta) > 20000:
-                            raise ResearchError("synthesis_oversized")
-                        output += delta
+                    bounded = getattr(self.llm, "stream_bounded", None)
+                    stream = (
+                        bounded(
+                            messages,
+                            max_output_tokens=self.context.settings.max_response_tokens,
+                            timeout_seconds=max(0.01, min(
+                                self.context.settings.request_timeout_seconds,
+                                deadline - monotonic(),
+                            )),
+                            inference_context=inference_context,
+                        )
+                        if bounded is not None
+                        else self.llm.stream(messages, inference_context=inference_context)
+                    )
+                    try:
+                        async for delta in stream:
+                            if not isinstance(delta, str) or len(output) + len(delta) > 20000:
+                                raise ResearchError("synthesis_oversized")
+                            output += delta
+                    finally:
+                        close = getattr(stream, "aclose", None)
+                        if close is not None:
+                            try:
+                                await close()
+                            except (Exception, asyncio.CancelledError):  # noqa: BLE001
+                                logger.info("Research synthesis stream cleanup failed")
+                        log_generation_attribution(
+                            logger,
+                            "research_synthesis",
+                            getattr(stream, "metadata", None),
+                            fallback_identity=getattr(self.llm, "identity", None),
+                        )
                     try:
                         answer, citations = validate_synthesis(current, output)
                     except ResearchError:
@@ -338,6 +373,7 @@ class ResearchService:
         if self.application_context is None:
             raise ContextPreparationError("application_context_required")
         authorize_base_disclosure(self.application_context)
+        require_matching_endpoint(self.llm, self.context.counter)
         authorize_context_selection(
             self.application_context,
             ContextSelection(

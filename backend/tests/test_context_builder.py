@@ -21,8 +21,8 @@ from personal_ai.context.deadline import DeadlineCounter
 from personal_ai.context.providers import ContextPermissionDependency
 from personal_ai.context.tokens import FakeTokenCounter
 from personal_ai.entities import Message, MessageRole, MessageStatus
-from personal_ai.llm import ChatMessage
-from personal_ai.llm.errors import LLMTimeoutError
+from personal_ai.llm import ChatMessage, ProviderIdentity, TokenCount
+from personal_ai.llm.errors import LLMInvalidRequestError, LLMTimeoutError
 from personal_ai.settings import Settings
 
 NOW = datetime(2026, 10, 7, tzinfo=UTC)
@@ -313,6 +313,36 @@ def test_deadline_counter_forwards_the_shortest_nested_timeout_and_checks_fallba
     with pytest.raises(LLMTimeoutError):
         DeadlineCounter(BlockingCounter(), monotonic() + 0.001).count(
             (ChatMessage("user", "hello"),)
+        )
+
+
+def test_context_assembly_rejects_count_result_from_another_generation_endpoint():
+    class MismatchedCounter:
+        def count(self, messages):
+            del messages
+            return TokenCount(
+                1,
+                "provider",
+                provider_id="other-provider",
+                model_id="other-model",
+                serializer_id="other-serializer",
+                confidence="authoritative",
+            )
+
+    settings = Settings(ai_provider="fake", ai_model="fake")
+    pending = Message(
+        id=uuid4(),
+        conversation_id=uuid4(),
+        owner_id="local",
+        role=MessageRole.USER,
+        content="synthetic input",
+        status=MessageStatus.COMPLETED,
+        created_at=NOW,
+    )
+    with pytest.raises(LLMInvalidRequestError, match="endpoint mismatch"):
+        ContextAssembler(settings, MismatchedCounter()).assemble(
+            (), pending,
+            expected_counter_identity=ProviderIdentity("gemini", "model-a", "serializer-a"),
         )
 
 

@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
+from time import monotonic
 from typing import Any
 
 import anyio
@@ -9,6 +10,7 @@ import anyio
 from personal_ai.entities.conversation import MessageRole
 from personal_ai.llm.client import (
     SYSTEM_INSTRUCTION,
+    BoundedTextStream,
     ChatMessage,
     GenerationEvent,
     GenerationMetadata,
@@ -20,7 +22,6 @@ from personal_ai.llm.client import (
 )
 from personal_ai.llm.errors import (
     LLMError,
-    LLMIncompleteGenerationError,
     LLMInvalidConfigurationError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
@@ -50,15 +51,19 @@ class GeminiLLMClient:
         inference_context: InferenceContext | None = None,
     ) -> AsyncIterator[str]:
         """Compatibility text stream that requires explicit terminal success."""
-        async for delta in self.stream_bounded(
+        bounded = self.stream_bounded(
             messages,
             max_output_tokens=self._settings.max_response_tokens,
             timeout_seconds=self._settings.request_timeout_seconds,
             inference_context=inference_context,
-        ):
-            yield delta
+        )
+        try:
+            async for delta in bounded:
+                yield delta
+        finally:
+            await bounded.aclose()
 
-    async def stream_bounded(
+    def stream_bounded(
         self,
         messages: Sequence[ChatMessage],
         *,
@@ -66,20 +71,12 @@ class GeminiLLMClient:
         timeout_seconds: float,
         inference_context: InferenceContext | None = None,
     ) -> AsyncIterator[str]:
-        terminal: GenerationMetadata | None = None
-        async for event in self.stream_events(
+        return BoundedTextStream(self.stream_events(
             messages,
             max_output_tokens=max_output_tokens,
             timeout_seconds=timeout_seconds,
             inference_context=inference_context,
-        ):
-            if event.kind == "delta":
-                yield event.delta
-            else:
-                terminal = event.metadata
-        if terminal is None:
-            raise LLMIncompleteGenerationError("language model ended without a terminal result")
-        GenerationResult("", terminal).require_success()
+        ))
 
     async def stream_events(
         self,
@@ -210,6 +207,8 @@ class GeminiLLMClient:
         )
         if max_output_tokens < 1 or timeout_seconds <= 0:
             raise LLMInvalidRequestError("generation bounds are invalid")
+        timeout_seconds = min(timeout_seconds, self._settings.request_timeout_seconds)
+        deadline = monotonic() + timeout_seconds
         client = self._client
         owns_client = client is None
         try:
@@ -222,12 +221,14 @@ class GeminiLLMClient:
             }
             if response_schema is not None:
                 config["response_mime_type"] = "application/json"
-                config["response_schema"] = dict(response_schema)
+                config["response_json_schema"] = dict(response_schema)
             response = client.models.generate_content(
                 model=self._settings.ai_model,
                 contents=_gemini_contents(messages),
                 config=config,
             )
+            if monotonic() > deadline:
+                raise LLMTimeoutError("language model request timed out")
             text = _response_text(response)
             status = _terminal_status(_finish_reason(response), bool(text.strip()))
             return GenerationResult(
@@ -346,6 +347,16 @@ def _response_text(response: Any) -> str:
 
 def _finish_reason(response: Any) -> str | None:
     try:
+        prompt_feedback = response.prompt_feedback
+        block_reason = prompt_feedback.block_reason
+    except (AttributeError, ValueError):
+        block_reason = None
+    if block_reason is not None:
+        name = getattr(block_reason, "name", None)
+        normalized_block = str(name if name is not None else block_reason).upper().split(".")[-1]
+        if normalized_block not in {"", "NONE", "0"}:
+            return "BLOCKED"
+    try:
         candidates = response.candidates
     except (AttributeError, ValueError):
         candidates = None
@@ -365,7 +376,7 @@ def _finish_reason(response: Any) -> str | None:
 
 def _terminal_status(reason: str | None, has_text: bool):
     if reason is None:
-        return "success" if has_text else "incomplete"
+        return "incomplete"
     if reason in {"STOP", "FINISH_REASON_STOP"}:
         return "success"
     if reason in {"MAX_TOKENS", "FINISH_REASON_MAX_TOKENS"}:

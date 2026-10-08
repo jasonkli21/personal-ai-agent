@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -10,6 +11,8 @@ from hashlib import sha256
 from time import monotonic
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4, uuid5
+
+import anyio
 
 from personal_ai.agents.research.contracts import (
     ResearchError,
@@ -48,6 +51,8 @@ from personal_ai.decisions.service import DecisionService
 from personal_ai.entities.research import MoneyValue
 from personal_ai.evidence.contracts import AdapterAttempt, EvidenceSelection, SearchQuery
 from personal_ai.evidence.pipeline import extract_evidence, select_evidence, validate_synthesis
+from personal_ai.llm.attribution import log_generation_attribution
+from personal_ai.llm.preparation import require_matching_endpoint
 from personal_ai.search.contracts import SearchResult
 from personal_ai.search.policy import SnippetExtractor, canonical_url
 from personal_ai.settings import Settings
@@ -55,6 +60,7 @@ from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import ResourceNotFoundError
 
 TERMINAL_STATES = {RunState.COMPLETED, RunState.INSUFFICIENT, RunState.FAILED, RunState.CANCELLED}
+logger = logging.getLogger(__name__)
 GAP_PRIORITY = {
     EvidenceGapClass.REQUIRED_FACT_MISSING: 0,
     EvidenceGapClass.EVIDENCE_STALE: 1,
@@ -978,6 +984,11 @@ class IterativeResearchService:
             self.reranker,
             clock=self.clock,
             application_context=self.application_context,
+            expected_counter_identity=(
+                self.llm.identity
+                if getattr(self.llm, "requires_inference_context", False)
+                else None
+            ),
         )
         return selection, messages, inference_context
 
@@ -1560,6 +1571,7 @@ class IterativeResearchService:
             ),
         )
         response = ""
+        iterator = None
         try:
             synth_timeout = min(
                 run.budget.provider_timeout_seconds,
@@ -1597,6 +1609,22 @@ class IterativeResearchService:
                 session_state="insufficient", uncertain=True,
             )
             return
+        finally:
+            if iterator is not None:
+                close = getattr(iterator, "aclose", None)
+                if close is not None:
+                    with anyio.CancelScope(shield=True):
+                        with anyio.move_on_after(1):
+                            try:
+                                await close()
+                            except (Exception, asyncio.CancelledError):  # noqa: BLE001
+                                logger.info("Iterative synthesis stream cleanup failed")
+            log_generation_attribution(
+                logger,
+                "iterative_research_synthesis",
+                getattr(iterator, "metadata", None),
+                fallback_identity=getattr(self.llm, "identity", None),
+            )
         if any(citation.expires_at <= self.clock() for citation in citations):
             await self._stop(run, session, StopReason.EVIDENCE_INSUFFICIENT, RunState.INSUFFICIENT)
             return
@@ -1872,6 +1900,7 @@ class IterativeResearchService:
         if self.application_context is None:
             raise ContextPreparationError("application_context_required")
         authorize_base_disclosure(self.application_context)
+        require_matching_endpoint(self.llm, self.context.counter)
         authorize_context_selection(
             self.application_context,
             ContextSelection(

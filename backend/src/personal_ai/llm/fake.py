@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator, Sequence
 
 from personal_ai.llm.client import (
+    BoundedTextStream,
     ChatMessage,
     GenerationEvent,
     GenerationMetadata,
@@ -13,7 +14,7 @@ from personal_ai.llm.client import (
     ProviderIdentity,
     UsageMetadata,
 )
-from personal_ai.llm.errors import LLMIncompleteGenerationError, LLMInvalidRequestError
+from personal_ai.llm.errors import LLMInvalidRequestError
 
 
 class FakeLLMClient:
@@ -105,22 +106,19 @@ class FakeLLMClient:
         inference_context: InferenceContext | None = None,
     ) -> AsyncIterator[str]:
         """Compatibility stream that requires an explicit successful terminal event."""
-        terminal: GenerationMetadata | None = None
-        async for event in self.stream_events(
+        bounded = self.stream_bounded(
             messages,
             max_output_tokens=2**31 - 1,
             timeout_seconds=300,
             inference_context=inference_context,
-        ):
-            if event.kind == "delta":
-                yield event.delta
-            else:
-                terminal = event.metadata
-        if terminal is None:
-            raise LLMIncompleteGenerationError("language model ended without a terminal result")
-        GenerationResult("", terminal).require_success()
+        )
+        try:
+            async for delta in bounded:
+                yield delta
+        finally:
+            await bounded.aclose()
 
-    async def stream_bounded(
+    def stream_bounded(
         self,
         messages: Sequence[ChatMessage],
         *,
@@ -128,20 +126,12 @@ class FakeLLMClient:
         timeout_seconds: float,
         inference_context: InferenceContext | None = None,
     ) -> AsyncIterator[str]:
-        terminal: GenerationMetadata | None = None
-        async for event in self.stream_events(
+        return BoundedTextStream(self.stream_events(
             messages,
             max_output_tokens=max_output_tokens,
             timeout_seconds=timeout_seconds,
             inference_context=inference_context,
-        ):
-            if event.kind == "delta":
-                yield event.delta
-            else:
-                terminal = event.metadata
-        if terminal is None:
-            raise LLMIncompleteGenerationError("language model ended without a terminal result")
-        GenerationResult("", terminal).require_success()
+        ))
 
     def complete(
         self,

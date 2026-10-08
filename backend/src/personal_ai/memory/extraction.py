@@ -27,7 +27,13 @@ class MemoryCandidateExtractor:
         self.generator = generator
         self.counter = counter
 
-    def extract(self, source_turn: Sequence[Message], *, timeout: float):
+    def extract(
+        self,
+        source_turn: Sequence[Message],
+        *,
+        timeout: float,
+        inference_context: InferenceContext | None = None,
+    ):
         if timeout <= 0:
             raise TimeoutError("memory_timeout")
         deadline = monotonic() + timeout
@@ -58,25 +64,25 @@ class MemoryCandidateExtractor:
             ChatMessage("system", instruction),
             ChatMessage("user", json.dumps(source, ensure_ascii=False, separators=(",", ":"))),
         )
+        response_schema = MemoryCandidateResponse.model_json_schema()
         prepared = prepare_bounded_input(
             messages,
             self.counter,
+            generator=self.generator,
             input_limit=self.settings.memory_max_context_tokens,
             timeout_seconds=timeout,
+            response_schema=response_schema,
+            inference_context=inference_context,
         )
         left = deadline - monotonic()
         if left <= 0:
             raise TimeoutError("memory_timeout")
         result = self.generator.generate_structured(
             prepared.messages,
-            response_schema=MemoryCandidateResponse.model_json_schema(),
+            response_schema=response_schema,
             max_output_tokens=min(2048, self.settings.max_response_tokens),
             timeout_seconds=left,
-            inference_context=InferenceContext(
-                effective_sensitivity="personal",
-                maximum_sensitivity="personal",
-                policy_version="memory-extraction-policy-v1",
-            ),
+            inference_context=inference_context,
         ).require_success()
         if not result.text or len(result.text) > 20_000:
             raise LLMInvalidResponseError("memory provider response invalid")

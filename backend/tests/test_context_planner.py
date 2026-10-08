@@ -1311,8 +1311,9 @@ def test_chat_plans_before_memory_retrieval_and_caps_its_timeout(
             self.queries = []
             self.timeouts = []
 
-        def retrieve(self, owner_id, query, active, *, timeout):
+        def retrieve(self, owner_id, query, active, *, timeout, application_context=None):
             del owner_id, active
+            assert application_context is not None
             assert planned_intents[-1] == query
             self.queries.append(query)
             self.timeouts.append(timeout)

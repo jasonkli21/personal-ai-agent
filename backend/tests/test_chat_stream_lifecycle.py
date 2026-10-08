@@ -554,6 +554,7 @@ def test_gemini_timeout_after_first_delta_finalizes_partial_turn() -> None:
     from types import SimpleNamespace
 
     from personal_ai.llm import GeminiLLMClient
+    from personal_ai.llm.context import GeminiTokenCounter
 
     class ProviderStream:
         finalized = False
@@ -602,6 +603,12 @@ def test_gemini_timeout_after_first_delta_finalizes_partial_turn() -> None:
         context_provider_capabilities=registration.context_providers,
         tool_capabilities=registration.tools,
     )
+    class Api:
+        def request(self, *args, **kwargs):
+            del args, kwargs
+            return SimpleNamespace(body='{"totalTokens":3}')
+
+    test_settings = Settings(ai_provider="gemini", ai_model="test")
     service = ChatTurnService(
         conversations,
         messages,
@@ -610,7 +617,8 @@ def test_gemini_timeout_after_first_delta_finalizes_partial_turn() -> None:
         application_context=application_context,
         model="test",
         context_assembler=ContextAssembler(
-            Settings(ai_provider="gemini", ai_model="test"), EstimatedTokenCounter()
+            test_settings,
+            GeminiTokenCounter(test_settings, client=SimpleNamespace(_api_client=Api())),
         ),
     )
 
@@ -636,6 +644,75 @@ def test_gemini_timeout_after_first_delta_finalizes_partial_turn() -> None:
     assert assistant.content == "partial"
     assert assistant.error_code == "llm_timeout"
     assert provider.finalized
+
+
+@pytest.mark.parametrize("violation", ["trailing_delta", "duplicate_terminal", "exception", "stalled"])
+def test_chat_rejects_data_or_errors_after_terminal_without_persisting_success(violation):
+    class MalformedLLM:
+        requires_inference_context = False
+
+        def __init__(self):
+            self.finalized = False
+
+        async def stream_events(
+            self, messages, *, max_output_tokens, timeout_seconds, inference_context=None
+        ):
+            del messages, max_output_tokens, timeout_seconds, inference_context
+            metadata = GenerationMetadata(
+                status="success",
+                identity=ProviderIdentity("synthetic", "malformed-stream", "fixture-v1"),
+            )
+            try:
+                yield GenerationEvent.text_delta("partial")
+                yield GenerationEvent.terminal(metadata)
+                if violation == "trailing_delta":
+                    yield GenerationEvent.text_delta("tail")
+                elif violation == "duplicate_terminal":
+                    yield GenerationEvent.terminal(metadata)
+                elif violation == "exception":
+                    raise RuntimeError("private provider error")
+                elif violation == "stalled":
+                    await asyncio.Event().wait()
+            finally:
+                self.finalized = True
+
+    llm = MalformedLLM()
+    conversations = InMemoryConversationRepository()
+    messages = InMemoryMessageRepository(conversations)
+    now = datetime.now(UTC)
+    conversation = Conversation(
+        id=uuid4(), owner_id="local", title="Protocol test", created_at=now, updated_at=now
+    )
+    conversations.create(conversation)
+    settings = Settings(ai_provider="fake", ai_model="test", request_timeout_seconds=0.05)
+    service = ChatTurnService(
+        conversations,
+        messages,
+        llm,
+        owner_id="local",
+        model="test",
+        context_assembler=ContextAssembler(settings, EstimatedTokenCounter()),
+    )
+
+    async def collect():
+        return [
+            frame
+            async for frame in service.send(
+                conversation.id, "hello", request_id=f"protocol-{violation}"
+            )
+        ]
+
+    frames = asyncio.run(collect())
+    assistant = _active_assistant(messages, conversation.id)
+    assert llm.finalized
+    if violation == "stalled":
+        assert '"code":"llm_timeout"' in frames[-1]
+    elif violation == "exception":
+        assert '"code":"llm_unavailable"' in frames[-1]
+    else:
+        assert '"code":"llm_invalid_response"' in frames[-1]
+    assert assistant.status is MessageStatus.FAILED
+    assert assistant.content == "partial"
 
 
 @pytest.mark.parametrize("provider_fails", [False, True])

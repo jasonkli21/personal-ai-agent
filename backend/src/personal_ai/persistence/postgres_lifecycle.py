@@ -14,7 +14,7 @@ from personal_ai.auth.scope import (
     scoped_record,
 )
 from personal_ai.entities import MessageRole, MessageStatus
-from personal_ai.memory.contracts import DerivedMemory, Memory
+from personal_ai.memory.contracts import DerivedMemory, Memory, embedding_space_for
 from personal_ai.memory.lifecycle import (
     MemoryJob,
     MemoryLifecycleEvent,
@@ -375,14 +375,27 @@ class PostgresMemoryLifecycleRepository:
         if not 1 <= limit <= 4:
             raise ValueError("candidate_limit_invalid")
         anchor = self._get_record(owner_id=owner_id, memory_id=memory_id)
+        space = embedding_space_for(anchor)
         matches = self.memories.search(
-            owner_id=owner_id, embedding=anchor.embedding, model=anchor.embedding_model,
-            dimensions=anchor.embedding_dimensions, limit=limit + 1,
+            owner_id=owner_id,
+            embedding=anchor.embedding,
+            model=space.model_id,
+            dimensions=space.dimensions,
+            provider=space.provider_id,
+            normalization=space.normalization,
+            document_task=space.document_task,
+            query_task=space.query_task,
+            embedding_space_version=space.version,
+            limit=limit + 1,
             memory_type=anchor.memory_type,
         )
         found = []
         for item in matches:
-            if item.memory.id == memory_id or item.memory.memory_type != anchor.memory_type:
+            if (
+                item.memory.id == memory_id
+                or item.memory.memory_type != anchor.memory_type
+                or embedding_space_for(item.memory) != space
+            ):
                 continue
             if self._source_is_valid(owner_id, item.memory):
                 found.append(item.memory.id)

@@ -2,7 +2,7 @@
 
 from time import monotonic
 
-from personal_ai.llm.errors import LLMTimeoutError
+from personal_ai.llm.errors import LLMInvalidRequestError, LLMTimeoutError
 
 
 def remaining(deadline: float | None) -> float | None:
@@ -15,9 +15,13 @@ def remaining(deadline: float | None) -> float | None:
 
 
 class DeadlineCounter:
-    def __init__(self, counter, deadline: float | None) -> None:
+    def __init__(
+        self, counter, deadline: float | None, inference_context=None, expected_identity=None
+    ) -> None:
         self.counter = counter
         self.deadline = deadline
+        self.inference_context = inference_context
+        self.expected_identity = expected_identity
 
     def count(self, messages):
         return self.count_with_timeout(messages, None)
@@ -33,8 +37,26 @@ class DeadlineCounter:
             )
         seconds = remaining(call_deadline)
         timed = getattr(self.counter, "count_with_timeout", None)
-        result = timed(messages, seconds) if timed else self.counter.count(messages)
+        if getattr(self.counter, "requires_inference_context", False):
+            if timed:
+                result = timed(
+                    messages, seconds, inference_context=self.inference_context
+                )
+            else:
+                result = self.counter.count(
+                    messages, inference_context=self.inference_context
+                )
+        else:
+            result = timed(messages, seconds) if timed else self.counter.count(messages)
         remaining(call_deadline)
+        if self.expected_identity is not None and (
+            getattr(result, "kind", None) != "provider"
+            or getattr(result, "confidence", None) != "authoritative"
+            or getattr(result, "provider_id", None) != self.expected_identity.provider_id
+            or getattr(result, "model_id", None) != self.expected_identity.model_id
+            or getattr(result, "serializer_id", None) != self.expected_identity.serializer_id
+        ):
+            raise LLMInvalidRequestError("model input counter endpoint mismatch")
         return result
 
 

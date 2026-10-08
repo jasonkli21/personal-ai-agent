@@ -2,7 +2,7 @@
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from personal_ai.context.assembler import summary_request
@@ -27,28 +27,64 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiTokenCounter:
+    requires_inference_context = True
+    count_confidence = "authoritative"
+
     def __init__(self, settings: Settings, client: Any = None) -> None:
         self.settings = settings
         self.client = client
         self._owned_client = None
-        self._cache: dict[tuple[ChatMessage, ...], TokenCount] = {}
+        self._cache: dict[tuple[tuple[ChatMessage, ...], str | None], TokenCount] = {}
         self.identity = ProviderIdentity("gemini", settings.ai_model, "gemini-content-v1")
         self.capabilities = ProviderCapabilities(frozenset({"token_counting"}))
 
-    def count(self, messages: Sequence[ChatMessage]) -> TokenCount:
-        return self.count_with_timeout(messages, None)
+    def count(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        response_schema: Mapping[str, object] | None = None,
+        inference_context: InferenceContext | None = None,
+    ) -> TokenCount:
+        return self.count_with_timeout(
+            messages,
+            None,
+            response_schema=response_schema,
+            inference_context=inference_context,
+        )
 
     def count_with_timeout(
-        self, messages: Sequence[ChatMessage], timeout_seconds: float | None,
+        self,
+        messages: Sequence[ChatMessage],
+        timeout_seconds: float | None,
+        *,
+        response_schema: Mapping[str, object] | None = None,
+        inference_context: InferenceContext | None = None,
     ) -> TokenCount:
-        key = tuple(messages)
+        adapter = GeminiLLMClient(self.settings, self.client)
+        adapter._validate_request(
+            messages,
+            inference_context=inference_context,
+            require_inference_context=True,
+        )
+        if response_schema is not None and (
+            not isinstance(response_schema, Mapping) or not response_schema
+        ):
+            raise ValueError("structured response schema is required")
+        try:
+            schema_key = (
+                json.dumps(response_schema, sort_keys=True, separators=(",", ":"))
+                if response_schema is not None
+                else None
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("structured response schema is invalid") from error
+        key = (tuple(messages), schema_key)
         if key in self._cache:
             return self._cache[key]
         try:
             client = self.client or self._owned_client
             if client is None:
                 adapter = GeminiLLMClient(self.settings)
-                adapter._validate_request(messages)
                 client = adapter._build_client()
                 self._owned_client = client
             model = self.settings.ai_model.removeprefix("models/")
@@ -57,16 +93,20 @@ class GeminiTokenCounter:
             options = {"retry_options": {"attempts": 1}}
             if timeout_seconds is not None:
                 options["timeout"] = max(1, int(timeout_seconds * 1000))
+            generate_request = {
+                "model": f"models/{model}",
+                "contents": _gemini_contents(messages),
+                "systemInstruction": {"parts": [{"text": _system_instruction(messages)}]},
+            }
+            if response_schema is not None:
+                generate_request["generationConfig"] = {
+                    "responseMimeType": "application/json",
+                    "responseJsonSchema": dict(response_schema),
+                }
             result = client._api_client.request(
                 "post",
                 f"models/{model}:countTokens",
-                {
-                    "generateContentRequest": {
-                        "model": f"models/{model}",
-                        "contents": _gemini_contents(messages),
-                        "systemInstruction": {"parts": [{"text": _system_instruction(messages)}]},
-                    }
-                },
+                {"generateContentRequest": generate_request},
                 http_options=options,
             )
             count = json.loads(result.body)["totalTokens"]

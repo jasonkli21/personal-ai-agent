@@ -5,7 +5,10 @@ import math
 from datetime import UTC, datetime
 from time import monotonic
 
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.context.authorization import authorize_memory_disclosure
 from personal_ai.context.contracts import complete_turns, fingerprint
+from personal_ai.context.providers import ContextPreparationError
 from personal_ai.llm.client import EmbeddingResult
 from personal_ai.memory.contracts import (
     DerivedMemory,
@@ -60,9 +63,32 @@ class MemoryExtractionService:
         self.extractor, self.embedder = extractor, embedder
         self.clock = clock or (lambda: datetime.now(UTC))
 
-    def run(self, completed):
+    def run(
+        self,
+        completed,
+        *,
+        application_context: ApplicationContextRequest | None = None,
+    ):
         if not self.settings.memory_enabled or not self.settings.memory_extraction_enabled:
             return ExtractionResult(reasons=("disabled",))
+        inference_context = None
+        if application_context is not None:
+            scope = application_context.scope
+            if (
+                scope.owner_id != completed.owner_id
+                or scope.application_id != completed.application_id
+                or scope.workspace_id != completed.workspace_id
+            ):
+                return ExtractionResult(reasons=("policy_denied",))
+            try:
+                inference_context = authorize_memory_disclosure(application_context)
+            except ContextPreparationError:
+                return ExtractionResult(reasons=("policy_denied",))
+        elif any(
+            getattr(component, "requires_inference_context", False)
+            for component in (self.extractor, self.embedder)
+        ):
+            return ExtractionResult(reasons=("policy_denied",))
         deadline = monotonic() + self.settings.memory_timeout_seconds
         created, skipped, reasons = [], [], []
         attributions = []
@@ -88,7 +114,12 @@ class MemoryExtractionService:
             ):
                 return ExtractionResult(reasons=("sensitive_or_external",))
             stage = "extraction"
-            extraction = self.extractor.extract(turn, timeout=remaining())
+            if getattr(self.extractor, "requires_inference_context", False):
+                extraction = self.extractor.extract(
+                    turn, timeout=remaining(), inference_context=inference_context
+                )
+            else:
+                extraction = self.extractor.extract(turn, timeout=remaining())
             candidates = getattr(extraction, "candidates", extraction)
             attribution = getattr(extraction, "attribution", None)
             if attribution is not None:
@@ -114,7 +145,16 @@ class MemoryExtractionService:
                 except ResourceNotFoundError:
                     pass
                 stage = "embedding"
-                embeddings = self.embedder.embed([candidate.content], timeout=remaining())
+                if getattr(self.embedder, "requires_inference_context", False):
+                    embeddings = self.embedder.embed(
+                        [candidate.content],
+                        timeout=remaining(),
+                        inference_context=inference_context,
+                    )
+                else:
+                    embeddings = self.embedder.embed(
+                        [candidate.content], timeout=remaining()
+                    )
                 if len(embeddings) != 1:
                     raise ValueError("embedding_invalid")
                 embedding_values, embedding_space = _validate_embedding_result(
@@ -124,6 +164,9 @@ class MemoryExtractionService:
                     **candidate.model_dump(exclude={"effective_at"}),
                     id=memory_id,
                     owner_id=completed.owner_id,
+                    application_id=completed.application_id,
+                    workspace_id=completed.workspace_id,
+                    scope_version=2,
                     normalized_content=normalize(candidate.content),
                     source_conversation_id=completed.conversation_id,
                     source_turn_id=completed.id,
@@ -225,13 +268,35 @@ class MemoryRetriever:
                 return False, "branch_mismatch"
         return True, None
 
-    def retrieve(self, owner_id, query, active_messages, *, timeout=None):
+    def retrieve(
+        self,
+        owner_id,
+        query,
+        active_messages,
+        *,
+        timeout=None,
+        application_context: ApplicationContextRequest | None = None,
+    ):
         from personal_ai.memory.deadlines import lifecycle_deadline
 
         with lifecycle_deadline(timeout or self.settings.memory_timeout_seconds):
-            return self._retrieve(owner_id, query, active_messages, timeout=timeout)
+            return self._retrieve(
+                owner_id,
+                query,
+                active_messages,
+                timeout=timeout,
+                application_context=application_context,
+            )
 
-    def _retrieve(self, owner_id, query, active_messages, *, timeout=None):
+    def _retrieve(
+        self,
+        owner_id,
+        query,
+        active_messages,
+        *,
+        timeout=None,
+        application_context: ApplicationContextRequest | None = None,
+    ):
         if not self.settings.memory_enabled:
             return RetrievalResult(diagnostics=("disabled",))
         deadline = monotonic() + min(
@@ -239,12 +304,35 @@ class MemoryRetriever:
         )
         requested = self.settings.memory_experiment_variant
         try:
+            inference_context = None
+            if application_context is not None:
+                scope = application_context.scope
+                if scope.owner_id != owner_id or any(
+                    message.owner_id != scope.owner_id
+                    or message.application_id != scope.application_id
+                    or message.workspace_id != scope.workspace_id
+                    for message in active_messages
+                ):
+                    return RetrievalResult(diagnostics=("policy_denied",))
+                try:
+                    inference_context = authorize_memory_disclosure(application_context)
+                except ContextPreparationError:
+                    return RetrievalResult(diagnostics=("policy_denied",))
+            elif getattr(self.embedder, "requires_inference_context", False):
+                return RetrievalResult(diagnostics=("policy_denied",))
             # Sensitive queries are not sent to an embedding provider either.
             if content_reason(query, self.settings):
                 return RetrievalResult(diagnostics=("query_policy",))
-            embeddings = self.embedder.embed(
-                [query], query=True, timeout=max(0.001, deadline - monotonic())
-            )
+            if getattr(self.embedder, "requires_inference_context", False):
+                embeddings = self.embedder.embed(
+                    [query], query=True,
+                    timeout=max(0.001, deadline - monotonic()),
+                    inference_context=inference_context,
+                )
+            else:
+                embeddings = self.embedder.embed(
+                    [query], query=True, timeout=max(0.001, deadline - monotonic())
+                )
             if len(embeddings) != 1:
                 raise ValueError("embedding_invalid")
             embedding, embedding_space = _validate_embedding_result(

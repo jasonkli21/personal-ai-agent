@@ -90,17 +90,25 @@ class MemoryLifecycleCoordinator:
         self.extraction = extraction
         self.publisher = publisher
 
-    def after_completed(self, completed, selected_memory_ids=()):
+    def after_completed(
+        self,
+        completed,
+        selected_memory_ids=(),
+        *,
+        application_context=None,
+    ):
         # Discovery/accounting can perform several bounded RPCs per candidate.
         # Their combined work also needs a ceiling, beyond individual RPC limits.
         with lifecycle_deadline(self.settings.memory_job_execution_seconds):
-            self._after_completed(completed, selected_memory_ids)
+            self._after_completed(completed, selected_memory_ids, application_context)
 
-    def _after_completed(self, completed, selected_memory_ids):
+    def _after_completed(self, completed, selected_memory_ids, application_context):
         extraction_result = None
         if self.extraction is not None:
             try:
-                extraction_result = self.extraction.run(completed)
+                extraction_result = self.extraction.run(
+                    completed, application_context=application_context
+                )
             except Exception as error:  # noqa: BLE001 - post-turn memory is optional
                 logger.info("Memory extraction failed error_class=%s", type(error).__name__)
         if self.settings.memory_enabled and self.settings.memory_lifecycle_worker_enabled:
@@ -194,6 +202,9 @@ class MemoryLifecycleCoordinator:
         job = MemoryJob(
             id=job_idempotency_id(key),
             owner_id=completed.owner_id,
+            application_id=completed.application_id,
+            workspace_id=completed.workspace_id,
+            scope_version=2,
             job_type=job_type,
             candidate_memory_ids=candidate_ids,
             policy_version=self.settings.memory_scoring_policy_version,
@@ -275,7 +286,16 @@ class MemoryLifecycleWorker:
     """Bounded processor that derives all authority from durable job/source state."""
 
     def __init__(
-        self, settings, lifecycle, memories, messages, embedder, *, clock=None, consolidator=None
+        self,
+        settings,
+        lifecycle,
+        memories,
+        messages,
+        embedder,
+        *,
+        clock=None,
+        consolidator=None,
+        application_context_resolver=None,
     ):
         self.settings, self.lifecycle, self.memories, self.messages = (
             settings,
@@ -286,6 +306,7 @@ class MemoryLifecycleWorker:
         self.embedder = embedder
         self.clock = clock or (lambda: datetime.now(UTC))
         self.consolidator = consolidator or DeterministicMemoryConsolidator()
+        self.application_context_resolver = application_context_resolver
 
     def process(
         self,
@@ -331,7 +352,10 @@ class MemoryLifecycleWorker:
             if claimed.policy_version != "score-v1":
                 raise ValueError("unsupported_job_policy")
             if claimed.job_type == "consolidation":
-                result = self._consolidate(claimed, token, deadline)
+                application_context = self._resolve_application_context(claimed)
+                result = self._consolidate(
+                    claimed, token, deadline, application_context=application_context
+                )
             else:
                 result = self._maintenance(claimed, token, deadline)
             if result == "stale_lease":
@@ -375,9 +399,46 @@ class MemoryLifecycleWorker:
             raise TimeoutError("memory_job_timeout")
         return remaining
 
-    def _consolidate(self, job, token, deadline):
+    def _resolve_application_context(self, job):
+        if self.application_context_resolver is not None:
+            context = self.application_context_resolver(
+                owner_id=job.owner_id,
+                application_id=job.application_id,
+                workspace_id=job.workspace_id,
+                request_id=f"memory-lifecycle-{job.id}",
+            )
+        else:
+            from personal_ai.applications.contracts import ApplicationContextRequest
+            from personal_ai.applications.registry import default_application_registry
+            from personal_ai.auth.scope import RequestScope
+
+            registry = default_application_registry()
+            registration = registry.registration(job.application_id)
+            context = ApplicationContextRequest(
+                definition=registration.definition,
+                scope=RequestScope(
+                    owner_id=job.owner_id,
+                    request_id=f"memory-lifecycle-{job.id}",
+                    application_id=job.application_id,
+                    workspace_id=job.workspace_id,
+                ),
+                context_provider_capabilities=registration.context_providers,
+                tool_capabilities=registration.tools,
+            )
+        if (
+            context.scope.owner_id != job.owner_id
+            or context.scope.application_id != job.application_id
+            or context.scope.workspace_id != job.workspace_id
+        ):
+            raise ValueError("memory_lifecycle_policy_scope_mismatch")
+        return context
+
+    def _consolidate(self, job, token, deadline, *, application_context):
         if not self.settings.memory_consolidation_enabled:
             return "disabled"
+        from personal_ai.context.authorization import authorize_memory_disclosure
+
+        inference_context = authorize_memory_disclosure(application_context)
         plan = self.consolidator.plan(
             owner_id=job.owner_id,
             source_ids=job.candidate_memory_ids,
@@ -387,6 +448,7 @@ class MemoryLifecycleWorker:
             messages=self.messages,
             lifecycle=self.lifecycle,
             embedder=self.embedder,
+            inference_context=inference_context,
             now=self.clock(),
             timeout=self._remaining(deadline),
         )

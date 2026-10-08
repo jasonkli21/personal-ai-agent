@@ -9,6 +9,7 @@ from personal_ai.llm.client import (
     ChatMessage,
     EmbeddingResult,
     EmbeddingSpace,
+    InferenceContext,
     ProviderCapabilities,
     ProviderIdentity,
 )
@@ -28,6 +29,8 @@ EMBEDDING_SPACE_VERSION = "v1"
 class GeminiEmbeddingClient:
     """Gemini embedding adapter returning vectors with immutable space metadata."""
 
+    requires_inference_context = True
+
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         self.settings = settings
         self.client = client
@@ -42,6 +45,7 @@ class GeminiEmbeddingClient:
         *,
         query: bool = False,
         timeout: float | None = None,
+        inference_context: InferenceContext | None = None,
     ) -> tuple[EmbeddingResult, ...]:
         self.capabilities.require("embeddings")
         if not texts or any(not text.strip() or len(text) > 20_000 for text in texts):
@@ -54,7 +58,11 @@ class GeminiEmbeddingClient:
         owns = client is None
         try:
             adapter = GeminiLLMClient(self.settings, client)
-            adapter._validate_request([ChatMessage("user", "embedding")])
+            adapter._validate_request(
+                [ChatMessage("user", texts[0])],
+                inference_context=inference_context,
+                require_inference_context=True,
+            )
             if client is None:
                 client = adapter._build_client()
             results: list[EmbeddingResult] = []
@@ -115,6 +123,8 @@ class GeminiEmbeddingClient:
 class GeminiMemoryAdapter:
     """Compatibility composition of neutral generation, count, and embedding seams."""
 
+    requires_inference_context = True
+
     def __init__(self, settings: Settings, client: Any | None = None):
         self.settings = settings
         self.client = client
@@ -123,11 +133,22 @@ class GeminiMemoryAdapter:
         self.embedder = GeminiEmbeddingClient(settings, client)
         self.extractor = MemoryCandidateExtractor(settings, self.generator, self.counter)
 
-    def embed(self, texts: Sequence[str], *, query: bool = False, timeout: float | None = None):
-        return self.embedder.embed(texts, query=query, timeout=timeout)
+    def embed(
+        self,
+        texts: Sequence[str],
+        *,
+        query: bool = False,
+        timeout: float | None = None,
+        inference_context: InferenceContext | None = None,
+    ):
+        return self.embedder.embed(
+            texts, query=query, timeout=timeout, inference_context=inference_context
+        )
 
-    def extract(self, source_turn, *, timeout):
+    def extract(self, source_turn, *, timeout, inference_context: InferenceContext | None = None):
         try:
-            return self.extractor.extract(source_turn, timeout=timeout)
+            return self.extractor.extract(
+                source_turn, timeout=timeout, inference_context=inference_context
+            )
         finally:
             self.counter.close()

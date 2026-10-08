@@ -8,6 +8,9 @@ import httpx
 import pytest
 from google import genai
 
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import default_application_registry
+from personal_ai.auth.scope import RequestScope
 from personal_ai.context.assembler import SUMMARY_INSTRUCTION, summary_request
 from personal_ai.evaluation.context import build_fixture, fixture_settings, load_fixtures
 from personal_ai.llm import (
@@ -19,6 +22,14 @@ from personal_ai.llm import (
 )
 from personal_ai.llm.client import SYSTEM_INSTRUCTION
 from personal_ai.llm.context import GeminiConversationSummarizer, GeminiTokenCounter
+
+
+def _inference_context():
+    return InferenceContext(
+        effective_sensitivity="personal",
+        maximum_sensitivity="sensitive",
+        policy_version="test-policy-v1",
+    )
 
 
 def test_authoritative_counter_counts_exact_system_and_summary_request_shape_via_sdk_transport():
@@ -37,7 +48,9 @@ def test_authoritative_counter_counts_exact_system_and_summary_request_shape_via
             ChatMessage("system", "Historical working summary: synthetic fact"),
             ChatMessage("user", "newest"),
         )
-        count = GeminiTokenCounter(fixture_settings(), client).count(messages)
+        count = GeminiTokenCounter(fixture_settings(), client).count(
+            messages, inference_context=_inference_context()
+        )
         assert count.tokens == 123 and count.kind == "provider"
         assert count.provider_id == "gemini"
         assert count.model_id == "fixture-model"
@@ -64,7 +77,10 @@ def test_summary_generation_adapter_sets_output_ceiling_and_preserves_prompt_ins
             200,
             json={
                 "candidates": [
-                    {"content": {"role": "model", "parts": [{"text": "Launch color is amber."}]}}
+                    {
+                        "content": {"role": "model", "parts": [{"text": "Launch color is amber."}]},
+                        "finishReason": "STOP",
+                    }
                 ]
             },
         )
@@ -136,7 +152,9 @@ def test_provider_count_failure_is_translated_without_leaking_response():
     )
     try:
         with pytest.raises(LLMUnavailableError) as error:
-            GeminiTokenCounter(fixture_settings(), client).count([ChatMessage("user", "test")])
+            GeminiTokenCounter(fixture_settings(), client).count(
+                [ChatMessage("user", "test")], inference_context=_inference_context()
+            )
         assert "private" not in str(error.value)
     finally:
         client.close()
@@ -150,7 +168,9 @@ def test_stream_adapter_keeps_summary_in_system_context_and_enforces_response_re
             captured.append(kwargs)
 
             async def chunks():
-                yield SimpleNamespace(text="answer")
+                yield SimpleNamespace(
+                    text="answer", candidates=[SimpleNamespace(finish_reason="STOP")]
+                )
 
             return chunks()
 
@@ -195,7 +215,16 @@ def test_counting_reuses_owned_client_limits_calls_and_closes_at_assembly_end(mo
     monkeypatch.setattr(client, 'close', lambda: (closes.append(True), close()))
     settings = fixture_settings(ai_api_key='offline-fake')
     active, pending, _ = build_fixture({**load_fixtures()[0], 'turns': 100, 'words_per_message': 1})
-    result = ContextAssembler(settings, GeminiTokenCounter(settings)).assemble(active, pending)
+    registration = default_application_registry().registration("personal_ai")
+    app_context = ApplicationContextRequest(
+        definition=registration.definition,
+        scope=RequestScope(owner_id="local", request_id="counter-test", application_id="personal_ai"),
+        context_provider_capabilities=registration.context_providers,
+        tool_capabilities=registration.tools,
+    )
+    result = ContextAssembler(settings, GeminiTokenCounter(settings)).assemble(
+        active, pending, application_context=app_context
+    )
     assert len(result.selected_message_ids) == 201
     assert len(captured) == 2
     assert len(builds) == len(closes) == 1
@@ -208,5 +237,8 @@ def test_count_deadline_is_forwarded_to_transport_without_sdk_retries():
             calls.append(kwargs['http_options'])
             return SimpleNamespace(body=json.dumps({'totalTokens': 20}))
     counter = GeminiTokenCounter(fixture_settings(), client=SimpleNamespace(_api_client=Api()))
-    counter.count_with_timeout([ChatMessage('user', 'synthetic')], 0.25)
+    counter.count_with_timeout(
+        [ChatMessage('user', 'synthetic')], 0.25,
+        inference_context=_inference_context(),
+    )
     assert calls == [{'timeout': 250, 'retry_options': {'attempts': 1}}]

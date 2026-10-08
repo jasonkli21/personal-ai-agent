@@ -13,6 +13,7 @@ from personal_ai.context.authorization import (
     authorize_context_selection,
     authorize_context_selections,
     authorize_effective_sensitivity,
+    make_context_inference_context,
     make_inference_context,
 )
 from personal_ai.context.builder import (
@@ -151,6 +152,7 @@ class ContextAssembler:
         application_context: ApplicationContextRequest | None = None,
         context_selections: Sequence[ContextSelection] = (),
         context_plan: ContextPlan | None = None,
+        expected_counter_identity=None,
         evidence_records: Sequence[object] = (),
         tool_results: dict[str, object] | None = None,
         manifest_view_kind: str = "actual_build",
@@ -193,9 +195,16 @@ class ContextAssembler:
             # retrieval adapters, or provider factories can perform work.
             authorize_context_selections(application_context, effective_selections)
 
+        counter_context = (
+            make_context_inference_context(application_context, effective_selections)
+            if application_context is not None
+            else None
+        )
         scoped = ContextAssembler(
             self.settings,
-            DeadlineCounter(self.counter, deadline),
+            DeadlineCounter(
+                self.counter, deadline, counter_context, expected_counter_identity
+            ),
             self.summaries,
             DeadlineSummarizer(self.summarizer, deadline) if self.summarizer else None,
             self.context_provider_coordinator,
@@ -728,6 +737,7 @@ class ContextAssembler:
         source_selections: Mapping[str, ContextSelection] | None = None,
         source_token_limits: Mapping[str, int] | None = None,
         application_context: ApplicationContextRequest | None = None,
+        expected_counter_identity=None,
         clock=None,
     ) -> AssembledContext:
         try:
@@ -743,6 +753,7 @@ class ContextAssembler:
                 source_selections=source_selections,
                 source_token_limits=source_token_limits,
                 application_context=application_context,
+                expected_counter_identity=expected_counter_identity,
                 clock=clock,
             )
         finally:
@@ -764,6 +775,7 @@ class ContextAssembler:
         source_selections: Mapping[str, ContextSelection] | None = None,
         source_token_limits: Mapping[str, int] | None = None,
         application_context: ApplicationContextRequest | None = None,
+        expected_counter_identity=None,
         clock=None,
     ) -> AssembledContext:
         """Build standalone evidence input through the shared source-budget seam."""
@@ -780,6 +792,7 @@ class ContextAssembler:
 
         base_sensitivity = "personal"
         source_sensitivities = {}
+        counter_sensitivity = base_sensitivity
         if application_context is not None:
             base_sensitivity = authorize_base_disclosure(application_context)
             selections = dict(source_selections or {})
@@ -799,16 +812,18 @@ class ContextAssembler:
                     (declared, source_sensitivity),
                     key=lambda value: SENSITIVITY_RANK[value],
                 ))
-            authorize_effective_sensitivity(
-                application_context,
-                max(all_sensitivities, key=lambda value: SENSITIVITY_RANK[value]),
+            counter_sensitivity = max(
+                all_sensitivities, key=lambda value: SENSITIVITY_RANK[value]
             )
+            authorize_effective_sensitivity(application_context, counter_sensitivity)
         elif source_selections:
             raise ContextPreparationError("application_context_required")
 
         base = self.assemble(
             (), pending, refresh=False, deadline=deadline,
-            application_context=application_context, emit_manifest=False,
+            application_context=application_context,
+            expected_counter_identity=expected_counter_identity,
+            emit_manifest=False,
         )
         input_budget = self.input_budget()
         if input_token_limit is not None:
@@ -859,7 +874,17 @@ class ContextAssembler:
                 source_max_tokens=limits,
                 source_priorities=dict(policy.source_priorities),
             )
-        built = ContextBuilder(DeadlineCounter(self.counter, deadline), clock=clock).build(
+        counter_context = (
+            make_inference_context(application_context, counter_sensitivity)
+            if application_context is not None
+            else None
+        )
+        built = ContextBuilder(
+            DeadlineCounter(
+                self.counter, deadline, counter_context, expected_counter_identity
+            ),
+            clock=clock,
+        ).build(
             base.messages,
             entries,
             policy,

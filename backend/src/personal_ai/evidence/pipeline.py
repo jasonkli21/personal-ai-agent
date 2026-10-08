@@ -111,7 +111,15 @@ def extract_evidence(session, results, attempt, extractor, now, settings):
 
 
 def select_evidence(
-    session, context, now, deadline, reranker=None, clock=None, *, application_context=None
+    session,
+    context,
+    now,
+    deadline,
+    reranker=None,
+    clock=None,
+    *,
+    application_context=None,
+    expected_counter_identity=None,
 ):
     excluded, scores, eligible = {}, {}, []
     words = set(re.findall(r"\w+", session.request.question.lower()))
@@ -235,6 +243,7 @@ def select_evidence(
         source_metadata=source_metadata,
         source_selections=source_selections if application_context is not None else None,
         application_context=application_context,
+        expected_counter_identity=expected_counter_identity,
         clock=clock,
     )
     item_reports = assembled.manifest.items if assembled.manifest else ()

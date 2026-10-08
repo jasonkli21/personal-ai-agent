@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from time import monotonic
 
+import anyio
 from pydantic import ValidationError
 
 from personal_ai.applications.contracts import ApplicationContextRequest
@@ -31,7 +33,9 @@ from personal_ai.context.builder import ContextBuildSourceMetadata
 from personal_ai.context.contracts import ContextError
 from personal_ai.context.providers import ContextPreparationError, ContextSelection
 from personal_ai.entities.conversation import Message, MessageRole, MessageStatus
+from personal_ai.llm.attribution import log_generation_attribution
 from personal_ai.llm.errors import LLMTimeoutError
+from personal_ai.llm.preparation import require_matching_endpoint
 from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import StorageUnavailableError
 
@@ -52,6 +56,7 @@ URLs, links, or extra fields."""
 
 MAX_EXECUTION_SECONDS = 35.0
 MAX_OUTPUT_BYTES = 32_768
+logger = logging.getLogger(__name__)
 
 
 def _reject_duplicate_pairs(pairs):
@@ -204,6 +209,7 @@ class BookingExtractionService:
                     required=True,
                 )
                 authorize_context_selection(self.application_context, source_selection)
+                require_matching_endpoint(self.llm, self.context.counter)
                 now = self.clock().astimezone(UTC)
                 record, created = await io_call(
                     self.repository.begin,
@@ -254,6 +260,11 @@ class BookingExtractionService:
                     },
                     source_selections={request.source_sha256: source_selection},
                     application_context=self.application_context,
+                    expected_counter_identity=(
+                        self.llm.identity
+                        if getattr(self.llm, "requires_inference_context", False)
+                        else None
+                    ),
                     clock=self.clock,
                 )
                 if assembled.budget.selected_total > self.settings.booking_extraction_max_input_tokens:
@@ -270,10 +281,26 @@ class BookingExtractionService:
                     timeout_seconds=max(0.01, _remaining(operation_deadline)),
                     inference_context=inference_context,
                 )
-                async for delta in stream:
-                    output += delta
-                    if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
-                        raise ValueError("invalid_model_output")
+                try:
+                    async for delta in stream:
+                        output += delta
+                        if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
+                            raise ValueError("invalid_model_output")
+                finally:
+                    close = getattr(stream, "aclose", None)
+                    if close is not None:
+                        with anyio.CancelScope(shield=True):
+                            with anyio.move_on_after(1):
+                                try:
+                                    await close()
+                                except (Exception, asyncio.CancelledError):  # noqa: BLE001
+                                    logger.info("Booking extraction stream cleanup failed")
+                    log_generation_attribution(
+                        logger,
+                        "booking_extraction",
+                        getattr(stream, "metadata", None),
+                        fallback_identity=getattr(self.llm, "identity", None),
+                    )
                 candidates = _model_output(output, request.document_text)
                 result = BookingExtractionResult(
                     extraction_id=record.extraction_id,

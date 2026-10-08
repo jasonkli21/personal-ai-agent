@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import math
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+import anyio
+
 from personal_ai.entities.conversation import MessageRole
 from personal_ai.llm.errors import (
     LLMIncompleteGenerationError,
+    LLMInvalidResponseError,
     LLMRejectedError,
     LLMUnavailableError,
     LLMUnsupportedCapabilityError,
@@ -108,6 +113,72 @@ class GenerationResult:
         if self.metadata.status == "rejected":
             raise LLMRejectedError("language model rejected the request")
         return self
+
+
+class BoundedTextStream(AsyncIterator[str]):
+    """Text facade that retains terminal attribution and owns its event iterator."""
+
+    def __init__(self, events: AsyncIterator[GenerationEvent], *, cleanup_seconds: float = 1):
+        self._events = events.__aiter__()
+        self._cleanup_seconds = cleanup_seconds
+        self._closed = False
+        self.metadata: GenerationMetadata | None = None
+
+    def __aiter__(self) -> BoundedTextStream:
+        return self
+
+    async def __anext__(self) -> str:
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            event = await anext(self._events)
+        except StopAsyncIteration as error:
+            self._closed = True
+            raise LLMIncompleteGenerationError(
+                "language model ended without a terminal result"
+            ) from error
+        if not isinstance(event, GenerationEvent):
+            await self.aclose()
+            raise LLMInvalidResponseError("language model emitted an invalid event")
+        if event.kind == "delta":
+            return event.delta
+
+        self.metadata = event.metadata
+        try:
+            GenerationResult("", event.metadata).require_success()
+            try:
+                await anext(self._events)
+            except StopAsyncIteration:
+                self._closed = True
+                raise StopAsyncIteration
+            await self.aclose()
+            raise LLMInvalidResponseError(
+                "language model emitted data after its terminal event"
+            )
+        except StopAsyncIteration:
+            raise
+        except Exception:
+            await self.aclose()
+            raise
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(self._events, "aclose", None)
+        if close is None:
+            return
+        with anyio.CancelScope(shield=True):
+            with anyio.move_on_after(self._cleanup_seconds) as timeout_scope:
+                try:
+                    await close()
+                except (Exception, asyncio.CancelledError) as error:  # noqa: BLE001
+                    logging.getLogger(__name__).debug(
+                        "Generation stream cleanup failed error_class=%s",
+                        type(error).__name__,
+                    )
+            if timeout_scope.cancel_called:
+                logging.getLogger(__name__).debug("Generation stream cleanup timed out")
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,18 +351,31 @@ class GenerationClient(LLMClient, Protocol):
 
 
 class TokenCountingClient(Protocol):
+    requires_inference_context: bool
     identity: ProviderIdentity
     capabilities: ProviderCapabilities
 
-    def count(self, messages: Sequence[ChatMessage]) -> TokenCount: ...
+    def count(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        response_schema: Mapping[str, object] | None = None,
+        inference_context: InferenceContext | None = None,
+    ) -> TokenCount: ...
 
 
 class EmbeddingClient(Protocol):
+    requires_inference_context: bool
     identity: ProviderIdentity
     capabilities: ProviderCapabilities
 
     def embed(
-        self, texts: Sequence[str], *, query: bool = False, timeout: float | None = None
+        self,
+        texts: Sequence[str],
+        *,
+        query: bool = False,
+        timeout: float | None = None,
+        inference_context: InferenceContext | None = None,
     ) -> Sequence[EmbeddingResult]: ...
 
 

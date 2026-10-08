@@ -10,7 +10,7 @@ from typing import Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from personal_ai.auth.scope import STANDALONE_APPLICATION_ID
-from personal_ai.llm.client import EmbeddingResult
+from personal_ai.llm.client import EmbeddingResult, InferenceContext
 from personal_ai.memory.contracts import (
     DerivedMemory,
     DerivedMemorySource,
@@ -75,6 +75,7 @@ class DeterministicMemoryConsolidator:
         messages,
         lifecycle: MemoryLifecycleRepository,
         embedder,
+        inference_context: InferenceContext | None = None,
         now: datetime,
         timeout: float,
     ) -> ConsolidationPlan:
@@ -194,7 +195,12 @@ class DeterministicMemoryConsolidator:
         canonical_ids = tuple(sorted((record.id for record in records), key=str))
         if job.candidate_memory_ids != canonical_ids:
             return ConsolidationPlan("rejected", "job_source_mismatch")
-        vectors = embedder.embed([content], timeout=remaining())
+        if getattr(embedder, "requires_inference_context", False):
+            vectors = embedder.embed(
+                [content], timeout=remaining(), inference_context=inference_context
+            )
+        else:
+            vectors = embedder.embed([content], timeout=remaining())
         if len(vectors) != 1 or not isinstance(vectors[0], EmbeddingResult):
             return ConsolidationPlan("rejected", "embedding_invalid")
         embedding_result = vectors[0]
