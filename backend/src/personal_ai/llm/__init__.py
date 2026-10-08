@@ -18,12 +18,14 @@ from personal_ai.llm.client import (
     TokenCountingClient,
     UsageMetadata,
 )
+from personal_ai.llm.cloudflare import CloudflareWorkersAILLMClient
 from personal_ai.llm.errors import (
     LLMError,
     LLMIncompleteGenerationError,
     LLMInvalidConfigurationError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
+    LLMRateLimitedError,
     LLMRejectedError,
     LLMTimeoutError,
     LLMUnavailableError,
@@ -31,9 +33,13 @@ from personal_ai.llm.errors import (
 )
 from personal_ai.llm.fake import FakeLLMClient
 from personal_ai.llm.gemini import GeminiLLMClient
+from personal_ai.llm.groq import GroqLLMClient
+from personal_ai.llm.metadata import ProviderRateLimitMetadata
+from personal_ai.llm.providers import build_generation_adapter
 
 __all__ = [
     "ChatMessage",
+    "CloudflareWorkersAILLMClient",
     "EmbeddingClient",
     "EmbeddingResult",
     "EmbeddingSpace",
@@ -44,6 +50,7 @@ __all__ = [
     "GenerationMetadata",
     "GenerationResult",
     "GenerationStatus",
+    "GroqLLMClient",
     "InferenceContext",
     "LLMClient",
     "LLMError",
@@ -51,13 +58,16 @@ __all__ = [
     "LLMInvalidConfigurationError",
     "LLMInvalidRequestError",
     "LLMInvalidResponseError",
+    "LLMRateLimitedError",
     "LLMRejectedError",
     "LLMTimeoutError",
     "LLMUnavailableError",
     "LLMUnsupportedCapabilityError",
     "ProviderCapabilities",
     "ProviderIdentity",
+    "ProviderRateLimitMetadata",
     "TokenCount",
     "TokenCountingClient",
     "UsageMetadata",
+    "build_generation_adapter",
 ]

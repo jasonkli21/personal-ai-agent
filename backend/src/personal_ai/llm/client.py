@@ -21,6 +21,7 @@ from personal_ai.llm.errors import (
     LLMUnavailableError,
     LLMUnsupportedCapabilityError,
 )
+from personal_ai.llm.metadata import ProviderRateLimitMetadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +99,7 @@ class GenerationMetadata:
     identity: ProviderIdentity
     usage: UsageMetadata | None = None
     error_code: str | None = None
+    rate_limits: ProviderRateLimitMetadata | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -117,7 +117,7 @@ Domain applications integrate over explicit HTTP contracts rather than importing
 - Python 3.11+
 - FastAPI
 - Uvicorn
-- Google Gen AI SDK behind an application-level provider abstraction
+- Google Gen AI SDK for Gemini, plus HTTPX-based Groq and Workers AI reference adapters behind neutral generation contracts
 - psycopg and boto3 adapters behind repository contracts
 
 ### Cloud
@@ -230,6 +230,8 @@ AI_API_KEY=
 Leave `AI_API_KEY` empty for offline/fake-backed testing.
 
 For a real streamed model response, set the key only in the untracked local environment file or Secret Manager in cloud deployments.
+
+Gemini remains the only provider wired into the current chat, research, and memory workflows. The Phase 17 Groq and Cloudflare Workers AI adapters are available for bounded generation and model-gated structured output; both live gates default off and require account/model-specific free-tier, privacy, and compatibility preflight evidence. They do not provide authoritative endpoint token counting, which current workflows require before dispatch, so enabling their adapter flags alone does not switch application traffic.
 
 Research, memory, decision, travel, shopping, proposal, and extraction capabilities each have independent gates. Enable only the specific path you are testing and preserve its provider/storage policy controls.
 

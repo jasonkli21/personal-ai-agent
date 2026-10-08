@@ -30,6 +30,23 @@ class Settings(BaseSettings):
     ai_provider: str = Field(min_length=1)
     ai_model: str = Field(min_length=1)
     ai_api_key: SecretStr = Field(default=SecretStr(""))
+    # Phase 17 reference adapters stay inactive until an operator records
+    # account/model-specific cost, privacy, and compatibility preflight evidence.
+    groq_adapter_enabled: bool = False
+    groq_model: str = Field(default="", max_length=200)
+    groq_api_key: SecretStr = Field(default=SecretStr(""))
+    groq_free_tier_verified: bool = False
+    groq_privacy_approved: bool = False
+    groq_structured_output_verified: bool = False
+    groq_preflight_reference: str = Field(default="", max_length=500)
+    cloudflare_adapter_enabled: bool = False
+    cloudflare_account_id: str = Field(default="", max_length=64)
+    cloudflare_model: str = Field(default="", max_length=200)
+    cloudflare_api_token: SecretStr = Field(default=SecretStr(""))
+    cloudflare_free_tier_verified: bool = False
+    cloudflare_privacy_approved: bool = False
+    cloudflare_structured_output_verified: bool = False
+    cloudflare_preflight_reference: str = Field(default="", max_length=500)
     gcp_project_id: str = Field(default="", max_length=200)
     persistence_local_postgres_dsn: SecretStr = Field(
         default=SecretStr(
@@ -220,6 +237,23 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
+        if self.groq_adapter_enabled and (
+            not self.groq_model
+            or not self.groq_api_key.get_secret_value()
+            or not self.groq_free_tier_verified
+            or not self.groq_privacy_approved
+            or not self.groq_preflight_reference.strip()
+        ):
+            raise ValueError("groq_provider_preflight_required")
+        if self.cloudflare_adapter_enabled and (
+            not self.cloudflare_account_id
+            or not self.cloudflare_model
+            or not self.cloudflare_api_token.get_secret_value()
+            or not self.cloudflare_free_tier_verified
+            or not self.cloudflare_privacy_approved
+            or not self.cloudflare_preflight_reference.strip()
+        ):
+            raise ValueError("cloudflare_provider_preflight_required")
         if self.p10_cloud_adapters_configured:
             if self.app_environment not in {"staging", "production"}:
                 raise ValueError("p10_cloud_adapters_require_deployed_environment")
