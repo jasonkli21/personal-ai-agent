@@ -17,6 +17,23 @@ web-to-API boundary. See the [authorization matrix](phase-9-authorization-matrix
   only its active message branch; superseded records remain auditable in
   persistence.
 
+## Current direct Travel capability scope
+
+The application registry includes a first-class `travel` application
+definition, but that metadata does not change the scope of the direct capability
+endpoints currently consumed by `travel-app`. Research, booking-document
+extraction, itinerary proposals, and travel comparison are called in standalone
+`personal_ai` application scope with no workspace. The Travel client omits
+`X-Application-ID`; adding `X-Application-ID: travel` to these calls is not a
+valid cleanup and would select a different persisted scope (or be rejected by
+the endpoint's standalone-scope guard).
+
+Move these direct calls to Travel application scope only when Personal AI
+exposes the relevant capabilities through its supported application-integration
+contract. A registered manifest alone does not implement or authorize that
+migration. Until then, preserve standalone scope and do not infer a workspace
+identity for Travel.
+
 ## Routes
 
 | Method | Route | Request body | Response |
@@ -61,15 +78,16 @@ See the [Phase 11 guide](personal-ai-chapter-2/phase-11-implementation-guide.md)
 [Phase 12 guide](personal-ai-chapter-2/phase-12-implementation-guide.md), and
 [Phase 12 evidence](personal-ai-chapter-2/phase-12-implementation-evidence.md).
 
-### Proposed upstream itinerary proposal (pending independent review)
+### Itinerary proposal capability (accepted for local integration)
 
-This branch contains a separately versioned proposal capability for review;
-the route below is **not yet an accepted inter-repository contract**. Travel
-consumers must not depend on it until the coordinator accepts and pins a
-reviewed upstream revision. Its normative proposed schema, limits, examples,
-gates, and lifecycle are in [itinerary-proposal-contract.md](itinerary-proposal-contract.md).
+The separately versioned proposal capability is accepted for local Travel
+integration at the revision pinned in ADR 0010 of the Travel repository. Its
+normative schema, limits, examples, gates, and lifecycle are in
+[itinerary-proposal-contract.md](itinerary-proposal-contract.md). Local
+implementation acceptance does not mean the capability gate is enabled in a
+deployment.
 
-| Method | Proposed route | Request body | Response |
+| Method | Route | Request body | Response |
 | --- | --- | --- | --- |
 | `POST` | `/v1/travel/itinerary-proposals` | `itinerary-proposal-v1` with a bounded typed trip projection and separate instruction | Immutable owner-scoped result; local fake mode is credential-free |
 | `GET` | `/v1/travel/itinerary-proposals/{proposal_id}` | — | The same immutable result for reconciliation |
