@@ -90,7 +90,7 @@ The **Application Integration Contract** is the evolving logical typed interface
 | 1 (implemented) | Authenticated `RequestScope` with application/workspace identity. |
 | 2 (implemented) | `ApplicationDefinition`, workspace semantics, and capability registration metadata. |
 | 11 (future) | First runtime integration seam: scope + definition + registered typed `ContextProvider` capabilities. |
-| 15 (future) | Typed application policy/sensitivity declarations. |
+| 15 (partially implemented) | Typed application/provider/operation/field policy, sensitivity declarations, and local pre-retrieval/model-disclosure enforcement. End-to-end revocation through derived context and immutable Postgres policy/source references remain open. |
 | 25.4 (future) | Optional shared sidecar/host launch and action hooks. |
 | 30 (future) | Optional scoped export/federation declarations and authorization dependencies. |
 | 31 (future) | Optional versioned typed mutation capabilities. |
@@ -122,7 +122,7 @@ Before retrieval: authenticate/authorize owner/app/workspace, provider/field/cro
 
 Before model/auxiliary disclosure: verify provider privacy/data policy, strict-free eligibility when applicable, and capability/context fit. Explicit ChatGPT selection does not bypass these checks.
 
-Typed application policy/capability configuration may narrow disclosure and sensitivity without separate planner, builder, inference, or sidecar forks. Registration still grants no permission; neither explicit BYOK nor same-owner cross-app access waives authorization.
+Typed application policy/capability configuration narrows disclosure and sensitivity without separate planner, builder, inference, or sidecar forks. The Phase 15 local contract implements server-owned provider/operation/field rules and passes effective sensitivity to the internal inference boundary; immutable policy-version references and revocation through all derived-context surfaces remain open. Registration still grants no permission; neither explicit BYOK nor same-owner cross-app access waives authorization.
 
 Before mutation: require a typed proposal, domain validation, exact user confirmation, idempotency, and authoritative post-state.
 

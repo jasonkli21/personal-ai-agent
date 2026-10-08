@@ -73,6 +73,19 @@ class ContextPermissionDependency(BaseModel):
     permission_id: str = Field(min_length=1, max_length=100)
     version: str = Field(min_length=1, max_length=100)
     purpose: str = Field(min_length=1, max_length=160)
+    source_application_id: str | None = Field(default=None, min_length=2, max_length=42)
+    destination_application_id: str | None = Field(default=None, min_length=2, max_length=42)
+
+    @model_validator(mode="after")
+    def grant_scopes_are_paired(self) -> ContextPermissionDependency:
+        if (self.source_application_id is None) != (self.destination_application_id is None):
+            raise ValueError("context_permission_grant_scopes_incomplete")
+        if (
+            self.source_application_id is not None
+            and self.source_application_id == self.destination_application_id
+        ):
+            raise ValueError("context_permission_grant_scopes_must_differ")
+        return self
 
 
 class ContextFieldSensitivity(BaseModel):
@@ -508,10 +521,20 @@ class ContextProviderCoordinator:
         *,
         deadline: float | None = None,
     ) -> ContextProviderResult:
+        from personal_ai.context.authorization import (
+            apply_item_policy,
+            authorize_context_selections,
+        )
+
         if len(selections) > self.MAX_SELECTIONS:
             raise ContextPreparationError("context_selection_limit_exceeded")
         if inputs.scope != context.scope:
             raise ContextPreparationError("context_provider_scope_mismatch")
+
+        # Authorization runs before resolving or constructing any provider, and
+        # validates the complete set so one allowed source cannot run before a
+        # different source is denied.
+        authorize_context_selections(context, selections)
 
         expected_scope = ApplicationScope(
             application_id=context.scope.application_id,
@@ -679,6 +702,7 @@ class ContextProviderCoordinator:
                 if len(records) > min(selection.max_results, provider.spec.maximum_items_per_call):
                     raise ContextPreparationError("context_provider_result_limit_exceeded")
                 call_bytes = 0
+                authorized_records = []
                 for item in records:
                     if not isinstance(item, ContextItem) or not isinstance(item.payload, BaseModel):
                         raise ContextPreparationError("context_provider_item_invalid")
@@ -713,8 +737,11 @@ class ContextProviderCoordinator:
                         for reference in item.entity_refs
                     ):
                         raise ContextPreparationError("context_provider_entity_selection_violation")
+                    item = apply_item_policy(context, selection, item)
                     encoded_size = len(item.model_dump_json().encode("utf-8"))
                     call_bytes += encoded_size
+                    authorized_records.append(item)
+                records = tuple(authorized_records)
                 if call_bytes > selection.max_bytes:
                     raise ContextPreparationError("context_provider_response_too_large")
                 total_bytes += call_bytes

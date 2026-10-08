@@ -1,6 +1,6 @@
 """Replaceable language-model clients for the chat application."""
 
-from personal_ai.llm.client import ChatMessage, LLMClient
+from personal_ai.llm.client import ChatMessage, InferenceContext, LLMClient
 from personal_ai.llm.errors import (
     LLMError,
     LLMInvalidConfigurationError,
@@ -16,6 +16,7 @@ __all__ = [
     "ChatMessage",
     "FakeLLMClient",
     "GeminiLLMClient",
+    "InferenceContext",
     "LLMClient",
     "LLMError",
     "LLMInvalidConfigurationError",

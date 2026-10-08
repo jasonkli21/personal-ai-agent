@@ -347,7 +347,8 @@ def test_regenerate_and_edit_retry_replace_the_active_path(client: TestClient) -
 
 def test_model_failure_is_streamed_once_and_persisted(client: TestClient) -> None:
     class FailingLLM:
-        async def stream(self, _: object):
+        async def stream(self, _: object, *, inference_context=None):
+            del inference_context
             raise LLMTimeoutError("provider timeout")
             yield ""  # pragma: no cover
 

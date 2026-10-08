@@ -7,7 +7,7 @@ from typing import Any
 import anyio
 
 from personal_ai.entities.conversation import MessageRole
-from personal_ai.llm.client import SYSTEM_INSTRUCTION, ChatMessage
+from personal_ai.llm.client import SYSTEM_INSTRUCTION, ChatMessage, InferenceContext
 from personal_ai.llm.errors import (
     LLMError,
     LLMInvalidConfigurationError,
@@ -25,7 +25,12 @@ class GeminiLLMClient:
         self._settings = settings
         self._client = client
 
-    async def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        inference_context: InferenceContext | None = None,
+    ) -> AsyncIterator[str]:
         """Yield Gemini text chunks, translating provider errors to safe codes.
 
         Cancelling this iterator cancels the timeout scope and stops consuming the
@@ -35,6 +40,7 @@ class GeminiLLMClient:
             messages,
             max_output_tokens=self._settings.max_response_tokens,
             timeout_seconds=self._settings.request_timeout_seconds,
+            inference_context=inference_context,
         )
         try:
             async for item in bounded:
@@ -43,9 +49,14 @@ class GeminiLLMClient:
             await _close_async_resource(bounded)
 
     async def stream_bounded(
-        self, messages: Sequence[ChatMessage], *, max_output_tokens: int, timeout_seconds: float
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        max_output_tokens: int,
+        timeout_seconds: float,
+        inference_context: InferenceContext | None = None,
     ) -> AsyncIterator[str]:
-        self._validate_request(messages)
+        self._validate_request(messages, inference_context=inference_context)
         client = self._client
         owns_client = client is None
         try:
@@ -76,7 +87,12 @@ class GeminiLLMClient:
             if owns_client and client is not None:
                 await _close_owned_client(client)
 
-    def _validate_request(self, messages: Sequence[ChatMessage]) -> None:
+    def _validate_request(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        inference_context: InferenceContext | None = None,
+    ) -> None:
         if self._settings.ai_provider.lower() != "gemini":
             raise LLMInvalidConfigurationError("AI_PROVIDER must be 'gemini'")
         if not self._settings.ai_api_key.get_secret_value():
@@ -85,6 +101,15 @@ class GeminiLLMClient:
             raise LLMInvalidRequestError("at least one chat message is required")
         if any(not message.content.strip() for message in messages):
             raise LLMInvalidRequestError("chat messages must not be empty")
+        if inference_context is not None:
+            try:
+                InferenceContext(
+                    effective_sensitivity=inference_context.effective_sensitivity,
+                    maximum_sensitivity=inference_context.maximum_sensitivity,
+                    policy_version=inference_context.policy_version,
+                )
+            except (AttributeError, TypeError, ValueError) as error:
+                raise LLMInvalidRequestError("context disclosure policy denied") from error
 
     def _build_client(self) -> Any:
         try:

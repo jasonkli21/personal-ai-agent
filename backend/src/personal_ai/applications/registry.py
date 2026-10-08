@@ -7,10 +7,14 @@ from types import MappingProxyType
 from typing import Protocol
 
 from personal_ai.applications.contracts import (
+    ApplicationContextPolicy,
     ApplicationDefinition,
     ApplicationRegistryError,
     CapabilityKind,
     CapabilityRegistration,
+    ContextFieldPolicy,
+    ContextOperationPolicy,
+    ContextProviderPolicy,
 )
 
 SHARED_CONTEXT_PROVIDER_IDS = (
@@ -236,6 +240,47 @@ def _capability(
     )
 
 
+def _domain_context_policy(
+    version: str, declarations: tuple[ContextProviderPolicy, ...]
+) -> ApplicationContextPolicy:
+    """Compose explicit app-owned source rules with shared context policies."""
+    shared = ApplicationContextPolicy()
+    return ApplicationContextPolicy(
+        version=version,
+        provider_policies=(*shared.provider_policies, *declarations),
+        maximum_model_sensitivity=shared.maximum_model_sensitivity,
+        cross_application="deny",
+    )
+
+
+def _field_policy(
+    name: str, *, sensitivity: str = "sensitive", model_disclosure: bool = True
+) -> ContextFieldPolicy:
+    return ContextFieldPolicy(
+        field=name, sensitivity=sensitivity, model_disclosure=model_disclosure
+    )
+
+
+def _operation_policy(
+    operation: str,
+    fields: tuple[str, ...],
+    *,
+    restricted_fields: tuple[str, ...] = (),
+) -> ContextOperationPolicy:
+    return ContextOperationPolicy(
+        operation=operation,
+        fields=tuple(
+            _field_policy(
+                field,
+                sensitivity="restricted" if field in restricted_fields else "sensitive",
+                model_disclosure=field not in restricted_fields,
+            )
+            for field in fields
+        ),
+        sensitivity="sensitive",
+    )
+
+
 @lru_cache(maxsize=1)
 def default_application_registry() -> ApplicationRegistry:
     """Build initial manifests with common chat context and comparison modules."""
@@ -287,6 +332,25 @@ def default_application_registry() -> ApplicationRegistry:
                     "domain_context": "sensitive",
                     "client_context": "personal",
                 },
+                context_policy=_domain_context_policy(
+                    "travel-context-policy-v1",
+                    (
+                        ContextProviderPolicy(
+                            provider_id="travel.trip_context",
+                            operations=(_operation_policy(
+                                "current",
+                                ("city", "start_date", "end_date", "payment_details"),
+                                restricted_fields=("payment_details",),
+                            ),),
+                        ),
+                        ContextProviderPolicy(
+                            provider_id="travel.research_context",
+                            operations=(_operation_policy(
+                                "search", ("passage", "observed_at", "expires_at")
+                            ),),
+                        ),
+                    ),
+                ),
                 comparison_domain_ids=("travel",),
             ),
             ApplicationDefinition(
@@ -302,6 +366,25 @@ def default_application_registry() -> ApplicationRegistry:
                     "domain_context": "sensitive",
                     "client_context": "personal",
                 },
+                context_policy=_domain_context_policy(
+                    "shopping-context-policy-v1",
+                    (
+                        ContextProviderPolicy(
+                            provider_id="shopping.product_context",
+                            operations=(_operation_policy(
+                                "current", ("product_name", "price", "tax_id"),
+                                restricted_fields=("tax_id",),
+                            ),),
+                        ),
+                        ContextProviderPolicy(
+                            provider_id="shopping.catalog_search",
+                            operations=(_operation_policy(
+                                "search", ("product_name", "price", "tax_id"),
+                                restricted_fields=("tax_id",),
+                            ),),
+                        ),
+                    ),
+                ),
                 comparison_domain_ids=("shopping",),
             ),
             ApplicationDefinition(
@@ -317,6 +400,25 @@ def default_application_registry() -> ApplicationRegistry:
                     "domain_context": "restricted",
                     "client_context": "sensitive",
                 },
+                context_policy=_domain_context_policy(
+                    "finance-context-policy-v1",
+                    (
+                        ContextProviderPolicy(
+                            provider_id="finance.account_context",
+                            operations=(_operation_policy(
+                                "current", ("balance", "currency", "tax_id"),
+                                restricted_fields=("tax_id",),
+                            ),),
+                        ),
+                        ContextProviderPolicy(
+                            provider_id="finance.portfolio_context",
+                            operations=(_operation_policy(
+                                "current", ("ticker", "shares", "market_value", "tax_id"),
+                                restricted_fields=("tax_id",),
+                            ),),
+                        ),
+                    ),
+                ),
             ),
             ApplicationDefinition(
                 application_id="health",
@@ -331,6 +433,32 @@ def default_application_registry() -> ApplicationRegistry:
                     "domain_context": "restricted",
                     "client_context": "sensitive",
                 },
+                context_policy=_domain_context_policy(
+                    "health-context-policy-v1",
+                    (
+                        ContextProviderPolicy(
+                            provider_id="health.profile_context",
+                            operations=(
+                                _operation_policy(
+                                    "profile", ("medication_name", "dose", "diagnosis"),
+                                    restricted_fields=("diagnosis",),
+                                ),
+                                _operation_policy(
+                                    "current", ("medication_name", "dose", "diagnosis"),
+                                    restricted_fields=("diagnosis",),
+                                ),
+                            ),
+                        ),
+                        ContextProviderPolicy(
+                            provider_id="health.history_context",
+                            operations=(_operation_policy(
+                                "history",
+                                ("medication_name", "dose", "observed_at", "diagnosis"),
+                                restricted_fields=("diagnosis",),
+                            ),),
+                        ),
+                    ),
+                ),
             ),
         ),
         capabilities,

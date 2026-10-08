@@ -8,7 +8,13 @@ from time import monotonic
 from uuid import UUID, uuid4
 
 from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.context.authorization import (
+    authorize_base_disclosure,
+    authorize_context_selections,
+    authorize_effective_sensitivity,
+)
 from personal_ai.context.builder import (
+    SENSITIVITY_RANK,
     ContextBuilder,
     ContextBuildItem,
     ContextBuildPolicy,
@@ -112,7 +118,7 @@ class ContextAssembler:
                 )
                 for provider_id in provider_ids
             }
-        return self.context_planner.plan(
+        plan = self.context_planner.plan(
             intent,
             application_context,
             capabilities,
@@ -120,6 +126,8 @@ class ContextAssembler:
             candidate_entities=candidate_entities,
             now=now,
         )
+        authorize_context_selections(application_context, plan.selections)
+        return plan
 
     def input_budget(self, output_reserve: int | None = None) -> int:
         reserve = self.settings.max_response_tokens if output_reserve is None else output_reserve
@@ -151,6 +159,7 @@ class ContextAssembler:
 
         if application_context is not None:
             scope = application_context.scope
+            authorize_base_disclosure(application_context)
             messages = (*active_messages, pending_user_message)
             if any(
                 message.owner_id != scope.owner_id
@@ -176,6 +185,11 @@ class ContextAssembler:
             effective_selections = context_plan.selections
         else:
             effective_selections = tuple(context_selections)
+
+        if application_context is not None:
+            # This happens before summary compatibility/refresh, token counting,
+            # retrieval adapters, or provider factories can perform work.
+            authorize_context_selections(application_context, effective_selections)
 
         scoped = ContextAssembler(
             self.settings,
@@ -266,6 +280,11 @@ class ContextAssembler:
                 )
 
         scope = application_context.scope if application_context is not None else None
+        base_sensitivity = (
+            application_context.definition.sensitivity_defaults.conversation
+            if application_context is not None
+            else "personal"
+        )
         required_selections = {
             (selection.provider_id, selection.operation)
             for selection in context_selections
@@ -297,6 +316,13 @@ class ContextAssembler:
                 )
             )
 
+        projected_sensitivity = base_sensitivity
+        for entry in entries:
+            if SENSITIVITY_RANK[entry.sensitivity] > SENSITIVITY_RANK[projected_sensitivity]:
+                projected_sensitivity = entry.sensitivity
+        if application_context is not None:
+            authorize_effective_sensitivity(application_context, projected_sensitivity)
+
         source_counters = {}
         if any(item.source_class == "ai_memory" for item in entries):
             left = remaining(deadline)
@@ -308,11 +334,6 @@ class ContextAssembler:
                 self.counter, monotonic() + optional_seconds
             )
 
-        base_sensitivity = (
-            application_context.definition.sensitivity_defaults.conversation
-            if application_context is not None
-            else "personal"
-        )
         policy = ContextBuildPolicy.for_settings(self.settings, result.budget.input_budget)
         if context_plan is not None and context_plan.source_token_budgets:
             limits = dict(policy.source_max_tokens)
@@ -339,6 +360,14 @@ class ContextAssembler:
                 result.budget.selected_total, result.budget.counter_kind
             ),
         )
+        if application_context is not None:
+            built = built.model_copy(update={
+                "manifest": built.manifest.model_copy(update={
+                    "context_policy_version": (
+                        application_context.definition.context_policy.version
+                    ),
+                })
+            })
         memory_reports = tuple(
             item
             for item in built.manifest.items
@@ -410,6 +439,10 @@ class ContextAssembler:
             context_plan=context_plan,
             manifest=manifest,
         )
+        if application_context is not None:
+            authorize_effective_sensitivity(
+                application_context, assembled.manifest.effective_sensitivity
+            )
         if emit_manifest:
             logger.debug("Context input build manifest=%s", manifest.model_dump(mode="json"))
         return assembled

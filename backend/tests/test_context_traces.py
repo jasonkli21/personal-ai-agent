@@ -34,6 +34,7 @@ def _trace(*, user_id=None, assistant_id=None, recorded_at=None, app="personal_a
         global_input_tokens=400,
         actual_input_tokens=170,
         effective_sensitivity="sensitive",
+        context_policy_version="test-context-policy-v1",
         selected_message_ids=("selected-message",),
         excluded_messages=(("excluded-message", "summary_covered"),),
         items=(
@@ -116,6 +117,7 @@ def test_actual_trace_is_versioned_bounded_and_excludes_source_values():
 
     assert trace.view_kind == "actual_build"
     assert trace.policy_version == "context-build-policy-v1"
+    assert trace.context_policy_version == "test-context-policy-v1"
     assert trace.planner_version == "deterministic-context-planner-v1"
     assert trace.requested_sources[0].provider_id == "global_profile"
     assert [item.disposition for item in trace.source_decisions] == ["selected", "omitted"]

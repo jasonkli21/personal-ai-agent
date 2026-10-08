@@ -107,6 +107,7 @@ class ContextTraceManifest(BaseModel):
     recorded_at: datetime
     build_schema_version: str = Field(min_length=1, max_length=64)
     policy_version: str = Field(min_length=1, max_length=64)
+    context_policy_version: str | None = Field(default=None, max_length=100)
     planner_version: str | None = Field(default=None, max_length=100)
     counter_kind: str = Field(min_length=1, max_length=32)
     counter_version: str = Field(min_length=1, max_length=200)
@@ -221,6 +222,7 @@ class ContextTraceManifest(BaseModel):
             recorded_at=recorded_at or datetime.now(UTC),
             build_schema_version=manifest.schema_version,
             policy_version=CONTEXT_BUILD_POLICY_VERSION,
+            context_policy_version=manifest.context_policy_version,
             planner_version=manifest.planner_version,
             counter_kind=manifest.counter_kind,
             counter_version=manifest.counter_version,

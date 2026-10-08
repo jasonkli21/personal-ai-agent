@@ -17,6 +17,7 @@ from personal_ai.applications.contracts import (
     ApplicationDefinition,
     CapabilityRegistration,
 )
+from personal_ai.applications.registry import default_application_registry
 from personal_ai.auth.scope import RequestScope, bind_request_scope, reset_request_scope
 from personal_ai.context.adapters import (
     BuiltInContextPermissionRevalidator,
@@ -353,6 +354,9 @@ def _run_fixture(fixture: dict, *, counter=None) -> dict:
         display_name=fixture["application_id"].title(),
         memory_namespace=fixture["application_id"],
         context_provider_ids=tuple(provider_ids),
+        context_policy=default_application_registry().get(
+            fixture["application_id"]
+        ).context_policy,
     )
     context = ApplicationContextRequest(
         definition=definition,

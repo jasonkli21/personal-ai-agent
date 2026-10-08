@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator, Sequence
 
-from personal_ai.llm.client import ChatMessage
+from personal_ai.llm.client import ChatMessage, InferenceContext
 
 
 class FakeLLMClient:
@@ -11,14 +11,24 @@ class FakeLLMClient:
     def __init__(self, deltas: Sequence[str] = ()) -> None:
         self.deltas = tuple(deltas)
         self.requests: list[tuple[ChatMessage, ...]] = []
+        self.inference_contexts: list[InferenceContext | None] = []
 
-    async def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        inference_context: InferenceContext | None = None,
+    ) -> AsyncIterator[str]:
         self.requests.append(tuple(messages))
+        self.inference_contexts.append(inference_context)
         for delta in self.deltas:
             yield delta
 
-    async def stream_bounded(self, messages, *, max_output_tokens: int, timeout_seconds: float):
-        async for delta in self.stream(messages):
+    async def stream_bounded(
+        self, messages, *, max_output_tokens: int, timeout_seconds: float,
+        inference_context: InferenceContext | None = None,
+    ):
+        async for delta in self.stream(messages, inference_context=inference_context):
             yield delta
 
 

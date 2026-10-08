@@ -262,6 +262,7 @@ class ContextBuildManifest(BaseModel):
     global_input_tokens: int = Field(ge=1)
     actual_input_tokens: int = Field(ge=0)
     effective_sensitivity: ContextSensitivity
+    context_policy_version: str | None = Field(default=None, max_length=100)
     selected_message_ids: tuple[str, ...] = ()
     excluded_messages: tuple[tuple[str, str], ...] = ()
     summary_id: str | None = None

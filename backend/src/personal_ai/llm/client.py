@@ -15,10 +15,29 @@ class ChatMessage:
     content: str
 
 
+@dataclass(frozen=True, slots=True)
+class InferenceContext:
+    """Server-computed sensitivity decision carried to the inference boundary."""
+
+    effective_sensitivity: Literal["public", "personal", "sensitive", "restricted", "unknown"]
+    maximum_sensitivity: Literal["public", "personal", "sensitive", "restricted"]
+    policy_version: str
+
+    def __post_init__(self) -> None:
+        rank = {"public": 0, "personal": 1, "sensitive": 2, "restricted": 3, "unknown": 4}
+        if not self.policy_version or rank[self.effective_sensitivity] > rank[self.maximum_sensitivity]:
+            raise ValueError("inference_context_not_authorized")
+
+
 class LLMClient(Protocol):
     """Stream provider-neutral text deltas for an ordered chat history."""
 
-    def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
+    def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        inference_context: InferenceContext | None = None,
+    ) -> AsyncIterator[str]:
         """Yield text deltas in provider order."""
 
 

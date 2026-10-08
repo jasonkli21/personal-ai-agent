@@ -27,6 +27,7 @@ from personal_ai.context.traces import ContextTraceManifest, ContextTraceReposit
 from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
 from personal_ai.llm import (
     ChatMessage,
+    InferenceContext,
     LLMClient,
     LLMError,
     LLMInvalidResponseError,
@@ -50,6 +51,7 @@ class _PreparedTurn:
     history: tuple[ChatMessage, ...]
     request_id: str
     selected_memory_ids: tuple[UUID, ...] = ()
+    inference_context: InferenceContext | None = None
 
 
 class _ManagedStream:
@@ -297,6 +299,20 @@ class ChatTurnService:
                 except TimeoutError as error:
                     raise LLMTimeoutError("context preparation timed out") from error
                 remaining(deadline)
+            if assembled.manifest is None:
+                raise ContextError("actual_context_manifest_unavailable")
+            policy = (
+                self._application_context.definition.context_policy
+                if self._application_context is not None
+                else None
+            )
+            inference_context = InferenceContext(
+                effective_sensitivity=assembled.manifest.effective_sensitivity,
+                maximum_sensitivity=(
+                    policy.maximum_model_sensitivity if policy is not None else "sensitive"
+                ),
+                policy_version=policy.version if policy is not None else "unscoped-local-v1",
+            )
             assistant = self._new_message(
                 conversation_id=user.conversation_id,
                 role=MessageRole.ASSISTANT,
@@ -347,6 +363,7 @@ class ChatTurnService:
                 assembled.messages,
                 request_id,
                 assembled.selected_memory_ids,
+                inference_context,
             )
         )
 
@@ -419,7 +436,9 @@ class ChatTurnService:
                 yield _sse("message.created", SSEMessageCreated(message=message).model_dump_json())
             events: asyncio.Queue[str | Exception | None] = asyncio.Queue(maxsize=1)
             demand = asyncio.Semaphore(0)
-            provider_iterator = self._llm.stream(turn.history).__aiter__()
+            provider_iterator = self._llm.stream(
+                turn.history, inference_context=turn.inference_context
+            ).__aiter__()
             # One task owns the entire iterator: SDK timeout scopes and cleanup
             # may depend on task identity remaining stable across every yield.
             provider_task = asyncio.create_task(

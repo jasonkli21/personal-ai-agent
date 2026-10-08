@@ -9,9 +9,19 @@ from personal_ai.auth.scope import RequestScope
 
 ApplicationId = str
 Sensitivity = Literal["public", "personal", "sensitive", "restricted"]
+ContextSensitivity = Literal["public", "personal", "sensitive", "restricted", "unknown"]
+ContextOperation = Literal["profile", "current", "entity", "history", "search"]
 CapabilityKind = Literal["context_provider", "tool"]
 _APPLICATION_ID_PATTERN = r"^[a-z][a-z0-9_-]{1,40}$"
 _CAPABILITY_ID_PATTERN = r"^[a-z][a-z0-9_.-]{1,80}$"
+
+SENSITIVITY_RANK: dict[ContextSensitivity, int] = {
+    "public": 0,
+    "personal": 1,
+    "sensitive": 2,
+    "restricted": 3,
+    "unknown": 4,
+}
 
 
 class ApplicationRegistryError(ValueError):
@@ -31,6 +41,140 @@ class SensitivityDefaults(BaseModel):
     memory: Sensitivity = "personal"
     domain_context: Sensitivity = "sensitive"
     client_context: Sensitivity = "personal"
+
+
+class ContextFieldPolicy(BaseModel):
+    """Server-owned classification and disclosure decision for one field."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
+    sensitivity: ContextSensitivity
+    source_access: bool = True
+    model_disclosure: bool = True
+
+
+class ContextOperationPolicy(BaseModel):
+    """Provider operation allowlist plus field and default sensitivity rules."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation: ContextOperation
+    fields: tuple[ContextFieldPolicy, ...] = Field(default=(), max_length=32)
+    allow_dynamic_fields: bool = False
+    dynamic_sensitivity: ContextSensitivity | None = None
+    allow_empty_fields: bool = False
+    sensitivity: ContextSensitivity = "unknown"
+    source_access: bool = True
+    model_disclosure: bool = True
+
+    @model_validator(mode="after")
+    def validate_field_policy(self) -> "ContextOperationPolicy":
+        names = [item.field for item in self.fields]
+        if len(names) != len(set(names)):
+            raise ValueError("context_policy_fields_must_be_unique")
+        if self.allow_dynamic_fields != (self.dynamic_sensitivity is not None):
+            raise ValueError("context_policy_dynamic_sensitivity_required")
+        return self
+
+
+class ContextProviderPolicy(BaseModel):
+    """The operations an application may read and disclose for one provider."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider_id: str = Field(pattern=_CAPABILITY_ID_PATTERN, min_length=2, max_length=81)
+    operations: tuple[ContextOperationPolicy, ...] = Field(min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def operations_are_unique(self) -> "ContextProviderPolicy":
+        operations = [item.operation for item in self.operations]
+        if len(operations) != len(set(operations)):
+            raise ValueError("context_policy_operations_must_be_unique")
+        return self
+
+
+def _default_context_provider_policies() -> tuple[ContextProviderPolicy, ...]:
+    """Policies for the bounded shared context adapters already in the runtime."""
+
+    def fields(names: tuple[str, ...], sensitivity: ContextSensitivity):
+        return tuple(ContextFieldPolicy(field=name, sensitivity=sensitivity) for name in names)
+
+    return (
+        ContextProviderPolicy(
+            provider_id="conversation_history",
+            operations=(ContextOperationPolicy(
+                operation="history",
+                fields=fields(("content", "role", "created_at", "id", "source_message_ids"), "sensitive"),
+                sensitivity="sensitive",
+            ),),
+        ),
+        ContextProviderPolicy(
+            provider_id="ai_memory",
+            operations=(ContextOperationPolicy(
+                operation="search",
+                fields=fields(("content", "memory_type", "effective_at"), "sensitive"),
+                sensitivity="sensitive",
+            ),),
+        ),
+        ContextProviderPolicy(
+            provider_id="global_profile",
+            operations=(ContextOperationPolicy(
+                operation="profile",
+                fields=fields(("preferred_units", "locale", "response_style", "answer_length"), "personal"),
+                sensitivity="personal",
+            ),),
+        ),
+        ContextProviderPolicy(
+            provider_id="client_context",
+            operations=(ContextOperationPolicy(
+                operation="profile",
+                allow_dynamic_fields=True,
+                dynamic_sensitivity="sensitive",
+                sensitivity="sensitive",
+            ),),
+        ),
+        ContextProviderPolicy(
+            provider_id="external_research",
+            operations=(ContextOperationPolicy(
+                operation="search",
+                fields=fields(("passage", "observed_at", "expires_at"), "sensitive"),
+                sensitivity="sensitive",
+            ),),
+        ),
+    )
+
+
+class ApplicationContextPolicy(BaseModel):
+    """Versioned server policy for context reads, disclosure, and inference."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["application-context-policy-v1"] = "application-context-policy-v1"
+    version: str = Field(default="application-context-policy-v1", min_length=1, max_length=100)
+    provider_policies: tuple[ContextProviderPolicy, ...] = Field(
+        default_factory=_default_context_provider_policies, max_length=32
+    )
+    maximum_model_sensitivity: ContextSensitivity = "sensitive"
+    unknown_sensitivity: Literal["deny"] = "deny"
+    cross_application: Literal["deny"] = "deny"
+
+    @model_validator(mode="after")
+    def providers_are_unique(self) -> "ApplicationContextPolicy":
+        providers = [item.provider_id for item in self.provider_policies]
+        if len(providers) != len(set(providers)):
+            raise ValueError("context_policy_providers_must_be_unique")
+        if self.maximum_model_sensitivity == "unknown":
+            raise ValueError("unknown_model_sensitivity_cannot_be_allowed")
+        return self
+
+    def operation(self, provider_id: str, operation: ContextOperation) -> ContextOperationPolicy | None:
+        provider = next(
+            (item for item in self.provider_policies if item.provider_id == provider_id), None
+        )
+        if provider is None:
+            return None
+        return next((item for item in provider.operations if item.operation == operation), None)
 
 
 class CrossApplicationDeclaration(BaseModel):
@@ -84,6 +228,7 @@ class ApplicationDefinition(BaseModel):
     tool_ids: tuple[str, ...] = Field(default=(), max_length=16)
     memory_namespace: str = Field(pattern=_APPLICATION_ID_PATTERN, min_length=2, max_length=42)
     sensitivity_defaults: SensitivityDefaults = Field(default_factory=SensitivityDefaults)
+    context_policy: ApplicationContextPolicy = Field(default_factory=ApplicationContextPolicy)
     cross_application: CrossApplicationDeclaration = Field(
         default_factory=CrossApplicationDeclaration
     )

@@ -46,7 +46,8 @@ class ControlledLLM:
         self.finalized = False
         self.started = False
 
-    async def stream(self, _: object) -> AsyncIterator[str]:
+    async def stream(self, _: object, *, inference_context=None) -> AsyncIterator[str]:
+        del inference_context
         self.started = True
         try:
             if self.fail_after_first:

@@ -9,9 +9,13 @@ import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from personal_ai.applications.contracts import (
+    ApplicationContextPolicy,
     ApplicationContextRequest,
     ApplicationDefinition,
     CapabilityRegistration,
+    ContextFieldPolicy,
+    ContextOperationPolicy,
+    ContextProviderPolicy,
 )
 from personal_ai.applications.registry import ApplicationRegistry, default_application_registry
 from personal_ai.auth.scope import ApplicationScope, RequestScope
@@ -156,12 +160,57 @@ class SyntheticContextProvider:
 
 
 def synthetic_context(*provider_ids: str, tools=(), scope=None):
+    policy_provider_ids = (*provider_ids, *(item.capability_id for item in tools))
+    synthetic_policies = tuple(
+        ContextProviderPolicy(
+            provider_id=provider_id,
+            operations=(
+                ContextOperationPolicy(
+                    operation="current",
+                    fields=(
+                        ContextFieldPolicy(field="name", sensitivity="personal"),
+                        ContextFieldPolicy(field="availability", sensitivity="sensitive"),
+                    ),
+                    allow_dynamic_fields=True,
+                    dynamic_sensitivity="sensitive",
+                    allow_empty_fields=True,
+                    sensitivity="personal",
+                ),
+                ContextOperationPolicy(
+                    operation="history",
+                    fields=(
+                        ContextFieldPolicy(field="name", sensitivity="personal"),
+                        ContextFieldPolicy(field="availability", sensitivity="sensitive"),
+                    ),
+                    allow_dynamic_fields=True,
+                    dynamic_sensitivity="sensitive",
+                    allow_empty_fields=True,
+                    sensitivity="personal",
+                ),
+            ) if provider_id == "synthetic.context" else tuple(
+                ContextOperationPolicy(
+                    operation=operation,
+                    allow_dynamic_fields=True,
+                    dynamic_sensitivity="sensitive",
+                    allow_empty_fields=True,
+                    sensitivity="sensitive",
+                )
+                for operation in ("profile", "current", "entity", "history", "search")
+            ),
+        )
+        for provider_id in policy_provider_ids
+    )
+    base_policy = ApplicationContextPolicy()
     definition = ApplicationDefinition(
         application_id="synthetic",
         display_name="Synthetic",
         memory_namespace="synthetic",
         context_provider_ids=provider_ids,
         tool_ids=tuple(item.capability_id for item in tools),
+        context_policy=ApplicationContextPolicy(
+            version="synthetic-test-context-policy-v1",
+            provider_policies=(*base_policy.provider_policies, *synthetic_policies),
+        ),
     )
     provider_capabilities = tuple(
         CapabilityRegistration(
@@ -584,6 +633,7 @@ def test_unknown_authority_and_timestamps_remain_explicit():
                     source_refs=(
                         ContextSourceReference(kind="record", reference_id="unknown-source-v1"),
                     ),
+                    sensitivity="personal",
                     payload=SyntheticDomainPayload(name="Unknown", availability="unknown"),
                 ),
             )

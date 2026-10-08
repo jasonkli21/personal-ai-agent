@@ -8,9 +8,13 @@ import pytest
 from pydantic import ConfigDict, create_model
 
 from personal_ai.applications.contracts import (
+    ApplicationContextPolicy,
     ApplicationContextRequest,
     ApplicationDefinition,
     CapabilityRegistration,
+    ContextFieldPolicy,
+    ContextOperationPolicy,
+    ContextProviderPolicy,
 )
 from personal_ai.auth.scope import RequestScope, bind_request_scope, reset_request_scope
 from personal_ai.context.adapters import (
@@ -164,11 +168,37 @@ class MultiOperationFixtureProvider:
 
 
 def _context(provider: FixtureProvider, application_id: str) -> ApplicationContextRequest:
+    base_policy = ApplicationContextPolicy()
+    provider_policy = ContextProviderPolicy(
+        provider_id=provider.spec.provider_id,
+        operations=tuple(
+            ContextOperationPolicy(
+                operation=operation.operation,
+                fields=tuple(
+                    ContextFieldPolicy(field=field, sensitivity="sensitive")
+                    for field in operation.allowed_fields
+                ),
+                allow_dynamic_fields=operation.dynamic_fields,
+                dynamic_sensitivity="sensitive" if operation.dynamic_fields else None,
+                allow_empty_fields=not operation.fields_required,
+                sensitivity="sensitive",
+            )
+            for operation in provider.spec.operations
+        ),
+    )
     definition = ApplicationDefinition(
         application_id=application_id,
         display_name=application_id.title(),
         memory_namespace=application_id,
         context_provider_ids=(provider.spec.provider_id,),
+        context_policy=ApplicationContextPolicy(
+            version="synthetic-test-context-policy-v1",
+            provider_policies=(
+                *(item for item in base_policy.provider_policies
+                  if item.provider_id != provider_policy.provider_id),
+                provider_policy,
+            ),
+        ),
     )
     capability = CapabilityRegistration(
         capability_id=provider.spec.provider_id,
@@ -190,12 +220,41 @@ def _context(provider: FixtureProvider, application_id: str) -> ApplicationConte
 
 def _context_for_providers(providers, application_id: str) -> ApplicationContextRequest:
     provider_ids = tuple(provider.spec.provider_id for provider in providers)
+    base_policy = ApplicationContextPolicy()
+    provider_policies = tuple(
+        ContextProviderPolicy(
+            provider_id=provider.spec.provider_id,
+            operations=tuple(
+                ContextOperationPolicy(
+                    operation=operation.operation,
+                    fields=tuple(
+                        ContextFieldPolicy(field=field, sensitivity="sensitive")
+                        for field in operation.allowed_fields
+                    ),
+                    allow_dynamic_fields=operation.dynamic_fields,
+                    dynamic_sensitivity="sensitive" if operation.dynamic_fields else None,
+                    allow_empty_fields=not operation.fields_required,
+                    sensitivity="sensitive",
+                )
+                for operation in provider.spec.operations
+            ),
+        )
+        for provider in providers
+    )
     return ApplicationContextRequest(
         definition=ApplicationDefinition(
             application_id=application_id,
             display_name=application_id.title(),
             memory_namespace=application_id,
             context_provider_ids=provider_ids,
+            context_policy=ApplicationContextPolicy(
+                version="synthetic-test-context-policy-v1",
+                provider_policies=(
+                    *(item for item in base_policy.provider_policies
+                      if item.provider_id not in set(provider_ids)),
+                    *provider_policies,
+                ),
+            ),
         ),
         scope=RequestScope(
             owner_id="owner-1",
@@ -1312,3 +1371,85 @@ def test_chat_plans_before_memory_retrieval_and_caps_its_timeout(
         request_id="unplanned-memory",
     )
     assert retriever.queries == ["What did I tell you to remember about travel?"]
+
+
+def test_memory_policy_denial_happens_before_retriever_call():
+    settings = Settings(
+        ai_provider="fake", ai_model="fake-model", memory_enabled=True,
+    )
+    base_policy = ApplicationContextPolicy()
+    memory_policy = ContextProviderPolicy(
+        provider_id="ai_memory",
+        operations=(ContextOperationPolicy(
+            operation="search",
+            fields=(
+                ContextFieldPolicy(field="content", sensitivity="sensitive", model_disclosure=False),
+                ContextFieldPolicy(field="memory_type", sensitivity="sensitive"),
+                ContextFieldPolicy(field="effective_at", sensitivity="sensitive"),
+            ),
+            sensitivity="sensitive",
+        ),),
+    )
+    definition = ApplicationDefinition(
+        application_id="personal_ai",
+        display_name="Personal AI",
+        memory_namespace="personal_ai",
+        context_provider_ids=("ai_memory",),
+        context_policy=ApplicationContextPolicy(
+            version="memory-denial-test-v1",
+            provider_policies=(
+                *(item for item in base_policy.provider_policies if item.provider_id != "ai_memory"),
+                memory_policy,
+            ),
+        ),
+    )
+    application_context = ApplicationContextRequest(
+        definition=definition,
+        scope=RequestScope(owner_id="local", request_id="request-denied", application_id="personal_ai"),
+        context_provider_capabilities=(CapabilityRegistration(
+            capability_id="ai_memory", kind="context_provider", available=True,
+        ),),
+    )
+    assembler = ContextAssembler(
+        settings,
+        FakeTokenCounter(),
+        InMemorySummaryRepository(),
+        context_provider_coordinator=ContextProviderCoordinator(
+            {"ai_memory": MemoryContextProviderFactory(settings)},
+            feature_flags={"memory_enabled": True},
+        ),
+    )
+
+    class Retriever:
+        calls = 0
+
+        def retrieve(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("denied memory must not be retrieved")
+
+    retriever = Retriever()
+    conversations = InMemoryConversationRepository()
+    messages = InMemoryMessageRepository(conversations)
+    conversation = Conversation(
+        id=uuid4(), owner_id="local", title="denied-memory", created_at=NOW, updated_at=NOW,
+    )
+    conversations.create(conversation)
+    service = ChatTurnService(
+        conversations,
+        messages,
+        FakeLLMClient(),
+        owner_id="local",
+        application_context=application_context,
+        model="fixture-model",
+        context_assembler=assembler,
+        memory_retriever=retriever,
+    )
+
+    with pytest.raises(ContextPreparationError, match="context_field_policy_denied"):
+        service.send(
+            conversation.id,
+            "What do you remember about me?",
+            request_id="memory-denied",
+        )
+
+    assert retriever.calls == 0
