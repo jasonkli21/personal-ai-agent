@@ -56,3 +56,31 @@ changed, so frontend tests, lint, typecheck, and builds were not run.
 - No real Travel, Shopping, Finance, or Health provider is implemented or
   verified. The internal inference sensitivity envelope is checked locally;
   no external provider privacy/data-use review was performed.
+
+## Independent-review follow-up
+
+The independent review of commit `97cd92e8ce592dddfee538b98021dae94193ebf1`
+identified three P1 gaps: populated provider payloads could exceed the selected
+field projection, baseline conversation/summary disclosure did not use the
+conversation-history policy, and standalone generation paths did not propagate
+application policy into source preparation and inference. The correction tree
+below addresses those three findings. P15.2 lineage and immutable Phase 14
+policy/source references remain open, so Phase 15 remains partial. The review
+record is [`docs/phase-15-independent-review-2026-10-07.md`](../phase-15-independent-review-2026-10-07.md)
+and is intentionally uncommitted.
+
+Checks were run on the working tree based on commit
+`97cd92e8ce592dddfee538b98021dae94193ebf1`, with the follow-up source and test
+changes present before their separate commit:
+
+| Command | Result |
+| --- | --- |
+| `source backend/.venv/bin/activate && make backend-test` | Passed: 732 passed, 26 skipped, 1 warning (758 collected). |
+| `source backend/.venv/bin/activate && make backend-lint` | Passed. |
+| `source backend/.venv/bin/activate && make context-eval context-plan-eval memory-eval research-eval domain-eval` | All five deterministic evaluation targets exited successfully; research and domain outputs are synthetic. |
+| `git diff --check` | Passed after the follow-up documentation edit. |
+
+The focused and full checks use fake/offline context, repository, and model
+adapters. They verify local contracts only and do not establish provider,
+emulator, cloud, deployed membership, IAM, production-security, or regulatory
+behavior. The 26 skipped tests were not represented as passed.

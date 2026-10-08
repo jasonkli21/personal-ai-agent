@@ -10,6 +10,7 @@ from time import monotonic
 
 from pydantic import ValidationError
 
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.booking_extractions.contracts import (
     BookingCandidate,
     BookingExtractionRequest,
@@ -21,8 +22,14 @@ from personal_ai.booking_extractions.repositories import (
     ExtractionError,
 )
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.authorization import (
+    authorize_base_disclosure,
+    authorize_context_selection,
+    make_inference_context,
+)
 from personal_ai.context.builder import ContextBuildSourceMetadata
 from personal_ai.context.contracts import ContextError
+from personal_ai.context.providers import ContextPreparationError, ContextSelection
 from personal_ai.entities.conversation import Message, MessageRole, MessageStatus
 from personal_ai.llm.errors import LLMTimeoutError
 from personal_ai.storage.async_io import io_call
@@ -164,10 +171,12 @@ class BookingExtractionService:
         llm,
         *,
         owner_id: str,
+        application_context: ApplicationContextRequest | None = None,
         clock=None,
     ) -> None:
         self.settings, self.repository, self.context, self.llm = settings, repository, context, llm
         self.owner_id = owner_id
+        self.application_context = application_context
         self.clock = clock or (lambda: datetime.now(UTC))
 
     async def create(
@@ -185,6 +194,16 @@ class BookingExtractionService:
         record = None
         try:
             async with asyncio.timeout(_remaining(operation_deadline)):
+                if self.application_context is None:
+                    raise ContextPreparationError("application_context_required")
+                authorize_base_disclosure(self.application_context)
+                source_selection = ContextSelection(
+                    provider_id="booking.document_extraction",
+                    operation="current",
+                    fields=("document_text", "media_type"),
+                    required=True,
+                )
+                authorize_context_selection(self.application_context, source_selection)
                 now = self.clock().astimezone(UTC)
                 record, created = await io_call(
                     self.repository.begin,
@@ -233,15 +252,23 @@ class BookingExtractionService:
                     source_token_limits={
                         "client_context": self.settings.booking_extraction_max_input_tokens,
                     },
+                    source_selections={request.source_sha256: source_selection},
+                    application_context=self.application_context,
                     clock=self.clock,
                 )
                 if assembled.budget.selected_total > self.settings.booking_extraction_max_input_tokens:
                     raise ValueError("context_too_large")
                 output = ""
+                if assembled.manifest is None:
+                    raise ContextPreparationError("actual_context_manifest_unavailable")
+                inference_context = make_inference_context(
+                    self.application_context, assembled.manifest.effective_sensitivity
+                )
                 stream = self.llm.stream_bounded(
                     assembled.messages,
                     max_output_tokens=self.settings.booking_extraction_max_output_tokens,
                     timeout_seconds=max(0.01, _remaining(operation_deadline)),
+                    inference_context=inference_context,
                 )
                 async for delta in stream:
                     output += delta

@@ -10,6 +10,9 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import default_application_registry
+from personal_ai.auth.scope import RequestScope
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.itinerary_proposals.contracts import ItineraryProposalRequest
@@ -20,6 +23,18 @@ from personal_ai.settings import Settings
 
 FIXTURE = Path(__file__).resolve().parents[3] / "tests/fixtures/itinerary-proposal-example.json"
 NOW = datetime(2026, 10, 3, 12, tzinfo=UTC)
+
+
+def _application_context(owner_id="local"):
+    registry = default_application_registry()
+    return ApplicationContextRequest(
+        definition=registry.get("personal_ai"),
+        scope=RequestScope(
+            owner_id=owner_id, request_id="proposal-eval", application_id="personal_ai"
+        ),
+        context_provider_capabilities=registry.registration("personal_ai").context_providers,
+        tool_capabilities=registry.registration("personal_ai").tools,
+    )
 
 
 def load_fixture() -> dict:
@@ -114,6 +129,7 @@ async def evaluate() -> dict:
                 ContextAssembler(settings, EstimatedTokenCounter()),
                 llm,
                 owner_id="local",
+                application_context=_application_context(),
                 clock=lambda: NOW,
             )
             result = await service.create(request)

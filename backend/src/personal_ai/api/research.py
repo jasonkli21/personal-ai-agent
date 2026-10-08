@@ -12,8 +12,9 @@ from personal_ai.agents.research.repositories import (
     InMemoryResearchRepository,
 )
 from personal_ai.agents.research.service import ResearchService
-from personal_ai.api.dependencies import get_current_owner_id
+from personal_ai.api.dependencies import get_application_context, get_current_owner_id
 from personal_ai.api.routes import SSE_RESPONSES, _LifecycleStreamingResponse
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.llm.context import GeminiTokenCounter
@@ -49,6 +50,7 @@ def research_service(
     settings: Annotated[Settings, Depends(research_settings)],
     repository: Annotated[object, Depends(research_repository)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
+    application_context: Annotated[ApplicationContextRequest, Depends(get_application_context)],
 ):
     if settings.research_search_adapter == "fake":
         adapter = FakeSearchAdapter(
@@ -66,7 +68,13 @@ def research_service(
         adapter = BraveSearchAdapter(settings)
         counter, llm = GeminiTokenCounter(settings), GeminiLLMClient(settings)
     return ResearchService(
-        settings, repository, adapter, ContextAssembler(settings, counter), llm, owner_id=owner_id
+        settings,
+        repository,
+        adapter,
+        ContextAssembler(settings, counter),
+        llm,
+        owner_id=owner_id,
+        application_context=application_context,
     )
 
 

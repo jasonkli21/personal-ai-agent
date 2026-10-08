@@ -56,6 +56,8 @@ class ConversationSummarizer(Protocol):
         self,
         source_messages: Sequence[Message],
         prior_summary: ConversationSummary | None,
+        *,
+        inference_context=None,
     ) -> SummaryDraft: ...
 
 

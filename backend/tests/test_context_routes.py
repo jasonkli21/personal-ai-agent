@@ -165,7 +165,8 @@ def test_summary_failure_falls_back_to_recent_context(environment):
     _, pending = install(environment)
 
     class FailedSummary:
-        def summarize(self, source, prior):
+        def summarize(self, source, prior, *, inference_context=None):
+            del inference_context
             raise LLMUnavailableError("private summary failure")
 
     context.summarizer = FailedSummary()

@@ -10,8 +10,10 @@ from uuid import UUID, uuid4
 from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.context.authorization import (
     authorize_base_disclosure,
+    authorize_context_selection,
     authorize_context_selections,
     authorize_effective_sensitivity,
+    make_inference_context,
 )
 from personal_ai.context.builder import (
     SENSITIVITY_RANK,
@@ -201,7 +203,12 @@ class ContextAssembler:
             self.context_planner,
         )
         try:
-            result = scoped._assemble(active_messages, pending_user_message, refresh=refresh)
+            result = scoped._assemble(
+                active_messages,
+                pending_user_message,
+                refresh=refresh,
+                application_context=application_context,
+            )
             if effective_selections:
                 if scoped.context_provider_coordinator is None or application_context is None:
                     raise ContextPreparationError("context_provider_unavailable")
@@ -281,7 +288,7 @@ class ContextAssembler:
 
         scope = application_context.scope if application_context is not None else None
         base_sensitivity = (
-            application_context.definition.sensitivity_defaults.conversation
+            authorize_base_disclosure(application_context)
             if application_context is not None
             else "personal"
         )
@@ -518,6 +525,7 @@ class ContextAssembler:
         pending_user_message: Message,
         *,
         refresh: bool = True,
+        application_context: ApplicationContextRequest | None = None,
     ) -> AssembledContext:
         pending = pending_user_message
         if pending.role is not MessageRole.USER or pending.status is not MessageStatus.COMPLETED:
@@ -540,7 +548,13 @@ class ContextAssembler:
                 diagnostics.append("summary_unavailable")
         result = self._select(history, pending, summary, diagnostics)
         if refresh and self.summarizer and self.summaries:
-            refreshed = self._refresh(history, result, summary, diagnostics)
+            refreshed = self._refresh(
+                history,
+                result,
+                summary,
+                diagnostics,
+                application_context=application_context,
+            )
             if refreshed:
                 result = self._select(history, pending, refreshed, diagnostics)
             elif diagnostics:
@@ -630,6 +644,8 @@ class ContextAssembler:
         selected: AssembledContext,
         prior: ConversationSummary | None,
         diagnostics: list[str],
+        *,
+        application_context: ApplicationContextRequest | None = None,
     ) -> ConversationSummary | None:
         selected_ids = set(selected.selected_message_ids)
         cutoff = next((i for i, m in enumerate(history) if m.id in selected_ids), len(history))
@@ -655,7 +671,15 @@ class ContextAssembler:
             if not bounded:
                 diagnostics.append("summary_input_too_large")
                 return None
-            draft = self.summarizer.summarize(bounded, prior)  # type: ignore[union-attr]
+            inference_context = None
+            if application_context is not None:
+                inference_context = make_inference_context(
+                    application_context,
+                    authorize_base_disclosure(application_context),
+                )
+            draft = self.summarizer.summarize(  # type: ignore[union-attr]
+                bounded, prior, inference_context=inference_context
+            )
             if not isinstance(draft.content, str) or not draft.content.strip():
                 diagnostics.append("summary_invalid_output")
                 return None
@@ -701,7 +725,9 @@ class ContextAssembler:
         input_token_limit: int | None = None,
         required_source_ids: Sequence[str] = (),
         source_metadata: Mapping[str, ContextBuildSourceMetadata] | None = None,
+        source_selections: Mapping[str, ContextSelection] | None = None,
         source_token_limits: Mapping[str, int] | None = None,
+        application_context: ApplicationContextRequest | None = None,
         clock=None,
     ) -> AssembledContext:
         try:
@@ -714,7 +740,9 @@ class ContextAssembler:
                 input_token_limit=input_token_limit,
                 required_source_ids=required_source_ids,
                 source_metadata=source_metadata,
+                source_selections=source_selections,
                 source_token_limits=source_token_limits,
+                application_context=application_context,
                 clock=clock,
             )
         finally:
@@ -733,21 +761,14 @@ class ContextAssembler:
         input_token_limit: int | None = None,
         required_source_ids: Sequence[str] = (),
         source_metadata: Mapping[str, ContextBuildSourceMetadata] | None = None,
+        source_selections: Mapping[str, ContextSelection] | None = None,
         source_token_limits: Mapping[str, int] | None = None,
+        application_context: ApplicationContextRequest | None = None,
         clock=None,
     ) -> AssembledContext:
         """Build standalone evidence input through the shared source-budget seam."""
         from personal_ai.context.deadline import DeadlineCounter
 
-        base = self.assemble(
-            (), pending, refresh=False, deadline=deadline, emit_manifest=False
-        )
-        input_budget = self.input_budget()
-        if input_token_limit is not None:
-            if input_token_limit <= 0:
-                raise ContextError("context_budget_invalid")
-            input_budget = min(input_budget, input_token_limit)
-        policy = ContextBuildPolicy.for_settings(self.settings, input_budget)
         rows = tuple(evidence_blocks)
         ids = [str(source_id) for source_id, _ in rows]
         if len(ids) != len(set(ids)):
@@ -756,6 +777,45 @@ class ContextAssembler:
             raise ContextError("context_source_unavailable")
         if set(source_metadata or ()) - set(ids):
             raise ContextError("context_source_identity_invalid")
+
+        base_sensitivity = "personal"
+        source_sensitivities = {}
+        if application_context is not None:
+            base_sensitivity = authorize_base_disclosure(application_context)
+            selections = dict(source_selections or {})
+            if set(selections) != set(ids):
+                raise ContextPreparationError("context_source_policy_required")
+            source_sensitivities = {
+                source_id: authorize_context_selection(application_context, selection)
+                for source_id, selection in selections.items()
+            }
+            all_sensitivities = [base_sensitivity]
+            metadata_by_id = source_metadata or {}
+            for source_id in ids:
+                metadata = metadata_by_id.get(source_id)
+                declared = source_sensitivities[source_id]
+                source_sensitivity = metadata.sensitivity if metadata is not None else "public"
+                all_sensitivities.append(max(
+                    (declared, source_sensitivity),
+                    key=lambda value: SENSITIVITY_RANK[value],
+                ))
+            authorize_effective_sensitivity(
+                application_context,
+                max(all_sensitivities, key=lambda value: SENSITIVITY_RANK[value]),
+            )
+        elif source_selections:
+            raise ContextPreparationError("application_context_required")
+
+        base = self.assemble(
+            (), pending, refresh=False, deadline=deadline,
+            application_context=application_context, emit_manifest=False,
+        )
+        input_budget = self.input_budget()
+        if input_token_limit is not None:
+            if input_token_limit <= 0:
+                raise ContextError("context_budget_invalid")
+            input_budget = min(input_budget, input_token_limit)
+        policy = ContextBuildPolicy.for_settings(self.settings, input_budget)
         required = set(required_source_ids)
         default_metadata = ContextBuildSourceMetadata(
             source_class="external_research",
@@ -770,7 +830,15 @@ class ContextAssembler:
                 item_id=str(source_id),
                 content=text,
                 authority=(source_metadata or {}).get(str(source_id), default_metadata).authority,
-                sensitivity=(source_metadata or {}).get(str(source_id), default_metadata).sensitivity,
+                sensitivity=max(
+                    (
+                        (source_metadata or {}).get(
+                            str(source_id), default_metadata
+                        ).sensitivity,
+                        source_sensitivities.get(str(source_id), "public"),
+                    ),
+                    key=lambda value: SENSITIVITY_RANK[value],
+                ),
                 source_refs=(
                     ContextSourceReference(kind="evidence", reference_id=str(source_id)),
                 ),
@@ -796,7 +864,7 @@ class ContextAssembler:
             entries,
             policy,
             prefix_messages=(ChatMessage("system", instruction),),
-            base_sensitivity="personal",
+            base_sensitivity=base_sensitivity,
         )
         manifest = built.manifest.model_copy(
             update={
@@ -805,6 +873,11 @@ class ContextAssembler:
                     (str(identifier), reason) for identifier, reason in base.excluded
                 ),
                 "summary_id": str(base.summary.id) if base.summary else None,
+                "context_policy_version": (
+                    application_context.definition.context_policy.version
+                    if application_context is not None
+                    else None
+                ),
             }
         )
         assembled = replace(

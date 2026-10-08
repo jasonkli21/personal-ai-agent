@@ -6,7 +6,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
-from personal_ai.api.dependencies import get_current_owner_id, require_standalone_application_scope
+from personal_ai.api.dependencies import (
+    get_application_context,
+    get_current_owner_id,
+    require_standalone_application_scope,
+)
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.itinerary_proposals.contracts import (
@@ -62,6 +67,7 @@ def proposal_service(
     settings: Annotated[Settings, Depends(proposal_settings)],
     repository: Annotated[object, Depends(proposal_repository)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
+    application_context: Annotated[ApplicationContextRequest, Depends(get_application_context)],
 ) -> ItineraryProposalService:
     if settings.itinerary_proposal_generator == "fake":
         llm = FakeItineraryProposalLLMClient()
@@ -75,6 +81,7 @@ def proposal_service(
         ContextAssembler(settings, counter),
         llm,
         owner_id=owner_id,
+        application_context=application_context,
         research_repository_factory=research_repository_factory(settings),
     )
 

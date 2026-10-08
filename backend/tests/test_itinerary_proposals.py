@@ -16,8 +16,12 @@ from starlette.requests import Request
 
 from personal_ai.api.dependencies import get_settings
 from personal_ai.api.itinerary_proposals import proposal_service as proposal_service_dependency
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import default_application_registry
+from personal_ai.auth.scope import RequestScope
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.contracts import TokenCount
+from personal_ai.context.providers import ContextPreparationError
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.evaluation.itinerary_proposals import evaluate as evaluate_itinerary_proposals
 from personal_ai.evaluation.research import build_fixture, load_fixtures
@@ -83,6 +87,30 @@ def fixture_request() -> ItineraryProposalRequest:
     return ItineraryProposalRequest.model_validate_json(json.dumps(fixture_payload()["request"]))
 
 
+def application_context(owner_id: str = "local") -> ApplicationContextRequest:
+    registry = default_application_registry()
+    return ApplicationContextRequest(
+        definition=registry.get("personal_ai"),
+        scope=RequestScope(
+            owner_id=owner_id, request_id="proposal-test", application_id="personal_ai"
+        ),
+        context_provider_capabilities=registry.registration("personal_ai").context_providers,
+        tool_capabilities=registry.registration("personal_ai").tools,
+    )
+
+
+def without_policy_provider(context: ApplicationContextRequest, provider_id: str):
+    policy = context.definition.context_policy
+    definition = context.definition.model_copy(update={
+        "context_policy": policy.model_copy(update={
+            "provider_policies": tuple(
+                item for item in policy.provider_policies if item.provider_id != provider_id
+            ),
+        }),
+    })
+    return context.model_copy(update={"definition": definition})
+
+
 def build_service(
     *,
     llm=None,
@@ -90,6 +118,7 @@ def build_service(
     research_repository_factory=None,
     clock=None,
     settings_overrides=None,
+    resolved_context=None,
     **overrides,
 ):
     configured = settings(**(settings_overrides or {}), **overrides)
@@ -99,9 +128,26 @@ def build_service(
         ContextAssembler(configured, EstimatedTokenCounter()),
         llm or FakeItineraryProposalLLMClient(),
         owner_id="local",
+        application_context=resolved_context or application_context(),
         research_repository_factory=research_repository_factory,
         clock=clock or (lambda: NOW),
     )
+
+
+@pytest.mark.anyio
+async def test_itinerary_policy_denial_precedes_repository_and_model_calls():
+    repository = InMemoryItineraryProposalRepository()
+    llm = FakeItineraryProposalLLMClient()
+    denied_context = without_policy_provider(
+        application_context(), "travel.itinerary_context"
+    )
+    service = build_service(repository=repository, llm=llm, resolved_context=denied_context)
+
+    with pytest.raises(ContextPreparationError, match="context_policy_denied"):
+        await service.create(fixture_request())
+
+    assert repository._records == {}
+    assert not llm.requests
 
 
 @pytest.mark.anyio
@@ -258,6 +304,7 @@ async def test_shared_context_keeps_ids_urls_and_private_fields_out_of_model_inp
         ContextAssembler(configured, EstimatedTokenCounter()),
         proposal_llm,
         owner_id="local",
+        application_context=application_context(),
         research_repository_factory=lambda: research.repository,
         clock=lambda: datetime(2026, 10, 2, 0, 0, 1, tzinfo=UTC),
     )
@@ -302,6 +349,7 @@ async def test_research_session_expiry_caps_proposal_evidence_lifetime():
         ContextAssembler(configured, EstimatedTokenCounter()),
         FakeItineraryProposalLLMClient(),
         owner_id="local",
+        application_context=application_context(),
         research_repository_factory=ShortLivedResearchRepository,
         clock=lambda: proposal_now,
     )
@@ -344,6 +392,7 @@ async def test_cross_owner_research_observation_is_rejected_before_generation():
         ContextAssembler(configured, EstimatedTokenCounter()),
         llm,
         owner_id="local",
+        application_context=application_context(),
         research_repository_factory=ForeignObservationRepository,
         clock=lambda: datetime(2026, 10, 2, 0, 0, 1, tzinfo=UTC),
     )
@@ -378,11 +427,13 @@ async def test_concurrent_replay_is_fenced_and_dispatches_only_one_model_call():
     release = asyncio.Event()
 
     class BlockingLLM(FakeItineraryProposalLLMClient):
-        async def stream(self, messages):
+        async def stream(self, messages, *, inference_context=None):
             self.requests.append(tuple(messages))
             started.set()
             await release.wait()
-            async for delta in FakeItineraryProposalLLMClient().stream(messages):
+            async for delta in FakeItineraryProposalLLMClient().stream(
+                messages, inference_context=inference_context
+            ):
                 yield delta
 
     llm = BlockingLLM()
@@ -403,7 +454,8 @@ async def test_concurrent_replay_is_fenced_and_dispatches_only_one_model_call():
 @pytest.mark.anyio
 async def test_timeout_and_oversized_output_are_terminal_for_the_same_key():
     class SlowLLM(FakeItineraryProposalLLMClient):
-        async def stream(self, messages):
+        async def stream(self, messages, *, inference_context=None):
+            del inference_context
             self.requests.append(tuple(messages))
             await asyncio.sleep(0.3)
             yield "{}"
@@ -441,9 +493,9 @@ async def test_one_deadline_covers_slow_claim_count_and_stream_with_terminal_res
             self.closed = False
 
         async def stream_bounded(
-            self, messages, *, max_output_tokens, timeout_seconds
+            self, messages, *, max_output_tokens, timeout_seconds, inference_context=None
         ):
-            del max_output_tokens
+            del max_output_tokens, inference_context
             self.requests.append(tuple(messages))
             self.stream_timeout = timeout_seconds
             try:
@@ -574,9 +626,9 @@ async def test_provider_stream_closes_on_non_text_and_oversized_output(bad_delta
             self.closed = False
 
         async def stream_bounded(
-            self, messages, *, max_output_tokens, timeout_seconds
+            self, messages, *, max_output_tokens, timeout_seconds, inference_context=None
         ):
-            del messages, max_output_tokens, timeout_seconds
+            del messages, max_output_tokens, timeout_seconds, inference_context
             try:
                 yield bad_delta
             finally:
@@ -601,9 +653,9 @@ async def test_cancellation_closes_stream_and_keeps_running_fence():
             self.closed = False
 
         async def stream_bounded(
-            self, messages, *, max_output_tokens, timeout_seconds
+            self, messages, *, max_output_tokens, timeout_seconds, inference_context=None
         ):
-            del messages, max_output_tokens, timeout_seconds
+            del messages, max_output_tokens, timeout_seconds, inference_context
             self.requests += 1
             try:
                 started.set()
@@ -646,6 +698,7 @@ async def test_external_evidence_requires_citations_for_every_operation():
         ContextAssembler(configured, EstimatedTokenCounter()),
         uncited_llm,
         owner_id="local",
+        application_context=application_context(),
         research_repository_factory=lambda: research.repository,
         clock=lambda: datetime(2026, 10, 2, 0, 0, 1, tzinfo=UTC),
     )
@@ -675,6 +728,7 @@ async def test_expired_research_evidence_stops_before_model_call():
         ContextAssembler(configured, EstimatedTokenCounter()),
         llm,
         owner_id="local",
+        application_context=application_context(),
         research_repository_factory=lambda: research.repository,
         clock=lambda: completed.expires_at + timedelta(seconds=1),
     )
@@ -805,6 +859,7 @@ def test_partial_time_field_presence_survives_http_and_replay(time_fields):
         ContextAssembler(configured, EstimatedTokenCounter()),
         llm,
         owner_id="local",
+        application_context=application_context(),
         clock=lambda: NOW,
     )
     previous = app.dependency_overrides.copy()

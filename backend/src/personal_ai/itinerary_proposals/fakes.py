@@ -15,7 +15,10 @@ class FakeItineraryProposalLLMClient:
         self.deltas = tuple(deltas) if deltas is not None else None
         self.requests: list[tuple[ChatMessage, ...]] = []
 
-    async def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
+    async def stream(
+        self, messages: Sequence[ChatMessage], *, inference_context=None
+    ) -> AsyncIterator[str]:
+        del inference_context
         self.requests.append(tuple(messages))
         if self.deltas is not None:
             for delta in self.deltas:
@@ -80,7 +83,8 @@ class FakeItineraryProposalLLMClient:
         *,
         max_output_tokens: int,
         timeout_seconds: float,
+        inference_context=None,
     ) -> AsyncIterator[str]:
-        del max_output_tokens, timeout_seconds
+        del max_output_tokens, timeout_seconds, inference_context
         async for delta in self.stream(messages):
             yield delta

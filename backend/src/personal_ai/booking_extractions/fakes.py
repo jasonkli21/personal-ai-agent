@@ -77,7 +77,10 @@ class FakeBookingExtractionLLMClient:
         }
         yield json.dumps(result, separators=(",", ":"))
 
-    async def stream_bounded(self, messages, *, max_output_tokens: int, timeout_seconds: float):
-        del max_output_tokens, timeout_seconds
+    async def stream_bounded(
+        self, messages, *, max_output_tokens: int, timeout_seconds: float,
+        inference_context=None,
+    ):
+        del max_output_tokens, timeout_seconds, inference_context
         async for delta in self.stream(messages):
             yield delta

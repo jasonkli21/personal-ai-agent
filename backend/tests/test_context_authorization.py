@@ -45,6 +45,11 @@ class Payload(BaseModel):
     value: str
 
 
+class OverbroadPayload(BaseModel):
+    value: str
+    diagnosis: str
+
+
 class Source:
     spec = ContextProviderSpec(
         provider_id="synthetic.health",
@@ -78,6 +83,29 @@ class Source:
                 sensitivity=self.sensitivity,
                 source_refs=(ContextSourceReference(kind="record", reference_id="item-1"),),
                 payload=Payload(value="synthetic"),
+            ),
+        )
+
+
+class OverbroadSource(Source):
+    def fetch(self, selection, scope, *, deadline):
+        del selection, deadline
+        self.calls += 1
+        return (
+            ContextItem(
+                source_class="domain_current",
+                provider_id=self.spec.provider_id,
+                source_id="fixture-record",
+                source_version="fixture-v1",
+                item_id="item-1",
+                owner_id=scope.owner_id,
+                application_id=scope.application_id,
+                workspace_id=scope.workspace_id,
+                authority="authoritative",
+                observed_at=datetime(2026, 10, 7, tzinfo=UTC),
+                sensitivity="personal",
+                source_refs=(ContextSourceReference(kind="record", reference_id="item-1"),),
+                payload=OverbroadPayload(value="allowed", diagnosis="private diagnosis"),
             ),
         )
 
@@ -201,6 +229,104 @@ def test_server_policy_sensitivity_is_joined_with_provider_label():
     assert result.items[0].sensitivity == "sensitive"
     assert {item.sensitivity for item in result.items[0].field_sensitivity} == {"sensitive"}
     assert source.calls == 1
+
+
+def test_unselected_payload_field_is_denied_from_model_input():
+    source = OverbroadSource()
+    context = _context(_policy())
+
+    class Counter(FakeTokenCounter):
+        def __init__(self):
+            self.calls = 0
+            self.seen_messages = []
+
+        def count(self, messages):
+            self.calls += 1
+            self.seen_messages.extend(messages)
+            return super().count(messages)
+
+    counter = Counter()
+    assembler = ContextAssembler(
+        Settings(
+            ai_provider="fake", ai_model="fake-model", max_context_tokens=4_096,
+            max_response_tokens=128, context_safety_margin_tokens=32,
+            summary_trigger_tokens=512, max_summary_tokens=256,
+        ),
+        counter,
+        context_provider_coordinator=ContextProviderCoordinator({
+            "synthetic.health": source,
+        }),
+    )
+    pending = Message(
+        id=uuid4(), conversation_id=uuid4(), owner_id=context.scope.owner_id,
+        role=MessageRole.USER, content="Use only the allowed field.",
+        status=MessageStatus.COMPLETED, created_at=datetime(2026, 10, 7, tzinfo=UTC),
+        application_id="health", workspace_id="workspace-1",
+    )
+
+    with pytest.raises(
+        ContextPreparationError, match="context_provider_projection_violation"
+    ):
+        assembler.assemble(
+            (), pending, application_context=context, context_selections=(_selection(),)
+        )
+
+    assert source.calls == 1
+    assert counter.calls > 0
+    assert "private diagnosis" not in "\n".join(
+        message.content for message in counter.seen_messages
+    )
+
+
+def test_denied_conversation_policy_fails_before_history_summary_and_counting():
+    context = _context(ApplicationContextPolicy(provider_policies=()))
+
+    class Counter(FakeTokenCounter):
+        calls = 0
+
+        def count(self, messages):
+            self.calls += 1
+            return super().count(messages)
+
+    class SummaryRepository(InMemorySummaryRepository):
+        calls = 0
+
+        def compatible(self, **kwargs):
+            self.calls += 1
+            return super().compatible(**kwargs)
+
+    counter = Counter()
+    summaries = SummaryRepository()
+    assembler = ContextAssembler(
+        Settings(ai_provider="fake", ai_model="fake-model"), counter, summaries
+    )
+    now = datetime(2026, 10, 7, tzinfo=UTC)
+    pending = Message(
+        id=uuid4(), conversation_id=uuid4(), owner_id=context.scope.owner_id,
+        role=MessageRole.USER, content="Private new message",
+        status=MessageStatus.COMPLETED, created_at=now,
+        application_id="health", workspace_id="workspace-1",
+    )
+    history = (
+        Message(
+            id=uuid4(), conversation_id=pending.conversation_id,
+            owner_id=context.scope.owner_id, role=MessageRole.USER,
+            content="Private history", status=MessageStatus.COMPLETED,
+            created_at=now, application_id="health", workspace_id="workspace-1",
+        ),
+        Message(
+            id=uuid4(), conversation_id=pending.conversation_id,
+            owner_id=context.scope.owner_id, role=MessageRole.ASSISTANT,
+            content="Private response", status=MessageStatus.COMPLETED,
+            created_at=now, application_id="health", workspace_id="workspace-1",
+        ),
+    )
+
+    with pytest.raises(ContextPreparationError, match="context_policy_denied"):
+        assembler.assemble(history, pending, application_context=context, refresh=True)
+
+    assert counter.calls == 0
+    assert summaries.calls == 0
 
 
 def test_default_health_policy_is_application_scoped_and_field_specific():
@@ -362,6 +488,6 @@ def test_chat_passes_effective_sensitivity_and_policy_version_to_inference():
 
     inference_context = llm.inference_contexts[0]
     assert inference_context is not None
-    assert inference_context.effective_sensitivity == "personal"
+    assert inference_context.effective_sensitivity == "sensitive"
     assert inference_context.maximum_sensitivity == "sensitive"
     assert inference_context.policy_version == "application-context-policy-v1"

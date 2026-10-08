@@ -14,8 +14,11 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from personal_ai.api.dependencies import get_settings
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import default_application_registry
 from personal_ai.auth.contracts import AuthenticatedPrincipal
 from personal_ai.auth.directory import InMemoryPrincipalDirectory
+from personal_ai.auth.scope import RequestScope
 from personal_ai.booking_extractions.contracts import (
     BookingCandidate,
     BookingExtractionRequest,
@@ -30,6 +33,7 @@ from personal_ai.booking_extractions.repositories import (
 from personal_ai.booking_extractions.service import BookingExtractionService, _model_output
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.contracts import TokenCount
+from personal_ai.context.providers import ContextPreparationError
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.main import app
 from personal_ai.settings import Settings
@@ -70,6 +74,30 @@ def route_settings(**updates) -> Settings:
     }
     values.update(updates)
     return Settings(**values)
+
+
+def application_context(owner_id: str) -> ApplicationContextRequest:
+    registry = default_application_registry()
+    return ApplicationContextRequest(
+        definition=registry.get("personal_ai"),
+        scope=RequestScope(
+            owner_id=owner_id, request_id="booking-test", application_id="personal_ai"
+        ),
+        context_provider_capabilities=registry.registration("personal_ai").context_providers,
+        tool_capabilities=registry.registration("personal_ai").tools,
+    )
+
+
+def without_policy_provider(context: ApplicationContextRequest, provider_id: str):
+    policy = context.definition.context_policy
+    definition = context.definition.model_copy(update={
+        "context_policy": policy.model_copy(update={
+            "provider_policies": tuple(
+                item for item in policy.provider_policies if item.provider_id != provider_id
+            ),
+        }),
+    })
+    return context.model_copy(update={"definition": definition})
 
 
 def test_request_is_hash_bound_strict_and_bounded():
@@ -183,6 +211,7 @@ async def test_service_replays_validated_candidate_and_delete_tombstone():
         ContextAssembler(settings, EstimatedTokenCounter()),
         llm,
         owner_id="verified-owner",
+        application_context=application_context("verified-owner"),
     )
     submitted = request()
     result = await service.create(submitted)
@@ -209,6 +238,30 @@ async def test_service_replays_validated_candidate_and_delete_tombstone():
 
 
 @pytest.mark.anyio
+async def test_booking_policy_denial_precedes_repository_and_model_calls():
+    settings = extraction_settings()
+    repo = InMemoryBookingExtractionRepository()
+    llm = FakeBookingExtractionLLMClient()
+    context = without_policy_provider(
+        application_context("verified-owner"), "booking.document_extraction"
+    )
+    service = BookingExtractionService(
+        settings,
+        repo,
+        ContextAssembler(settings, EstimatedTokenCounter()),
+        llm,
+        owner_id="verified-owner",
+        application_context=context,
+    )
+
+    with pytest.raises(ContextPreparationError, match="context_policy_denied"):
+        await service.create(request())
+
+    assert repo._records == {}
+    assert not llm.requests
+
+
+@pytest.mark.anyio
 async def test_context_overflow_is_saved_and_replayed_as_context_too_large():
     settings = extraction_settings().model_copy(
         update={"booking_extraction_max_input_tokens": 512}
@@ -221,6 +274,7 @@ async def test_context_overflow_is_saved_and_replayed_as_context_too_large():
         ContextAssembler(settings, EstimatedTokenCounter()),
         llm,
         owner_id="verified-owner",
+        application_context=application_context("verified-owner"),
     )
     submitted = request("Booking detail " + "synthetic reservation data " * 550)
 
@@ -250,6 +304,7 @@ async def test_mandatory_instruction_overflow_is_context_too_large_but_provider_
         ContextAssembler(settings, InstructionOverflowCounter()),
         llm,
         owner_id="verified-owner",
+        application_context=application_context("verified-owner"),
     )
     submitted = request()
     result = await service.create(submitted)
@@ -269,6 +324,7 @@ async def test_mandatory_instruction_overflow_is_context_too_large_but_provider_
         ContextAssembler(settings, EstimatedTokenCounter()),
         FailingLLM(),
         owner_id="verified-owner",
+        application_context=application_context("verified-owner"),
     )
     provider_result = await provider_service.create(request())
     assert provider_result.failure_code == "provider_unavailable"
@@ -284,6 +340,7 @@ async def test_service_deadline_is_converted_from_monotonic_to_loop_relative_tim
         ContextAssembler(settings, EstimatedTokenCounter()),
         FakeBookingExtractionLLMClient(),
         owner_id="verified-owner",
+        application_context=application_context("verified-owner"),
     )
     loop = asyncio.get_running_loop()
     original_time = loop.time
@@ -337,6 +394,7 @@ async def test_service_rejects_bad_spans_without_exposing_model_output():
         ContextAssembler(settings, EstimatedTokenCounter()),
         FakeBookingExtractionLLMClient(malformed),
         owner_id="verified-owner",
+        application_context=application_context("verified-owner"),
     )
     result = await service.create(request(text))
     assert result.state == "failed"
@@ -355,6 +413,7 @@ async def test_expiry_cleanup_removes_candidates_and_keeps_idempotency_tombstone
         ContextAssembler(settings, EstimatedTokenCounter()),
         FakeBookingExtractionLLMClient(),
         owner_id="verified-owner",
+        application_context=application_context("verified-owner"),
         clock=lambda: now,
     )
     submitted = request()

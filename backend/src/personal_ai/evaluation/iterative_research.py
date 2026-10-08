@@ -23,6 +23,9 @@ from personal_ai.agents.research.iterative_repositories import (
 from personal_ai.agents.research.iterative_service import IterativeResearchService
 from personal_ai.agents.research.repositories import InMemoryResearchRepository
 from personal_ai.agents.research.service import ResearchService
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import default_application_registry
+from personal_ai.auth.scope import RequestScope
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.decisions.contracts import DecisionCreateRequest
@@ -35,6 +38,18 @@ from personal_ai.settings import Settings
 
 FIXTURES = Path(__file__).with_name("iterative-research-fixtures.json")
 RESULT_SCHEMA = Path(__file__).with_name("iterative-research-evaluation.schema.json")
+
+
+def _application_context(owner_id="local"):
+    registry = default_application_registry()
+    return ApplicationContextRequest(
+        definition=registry.get("personal_ai"),
+        scope=RequestScope(
+            owner_id=owner_id, request_id="iterative-eval", application_id="personal_ai"
+        ),
+        context_provider_capabilities=registry.registration("personal_ai").context_providers,
+        tool_capabilities=registry.registration("personal_ai").tools,
+    )
 
 
 def load_fixtures():
@@ -126,6 +141,7 @@ async def _run_single_pass(fixture):
         adapter,
         ContextAssembler(settings, EstimatedTokenCounter()),
         FakeResearchLLMClient(),
+        application_context=_application_context(),
         clock=clock,
     )
     request = ResearchRequest(
@@ -196,6 +212,7 @@ async def _run_iterative(fixture):
         adapter,
         ContextAssembler(settings, EstimatedTokenCounter()),
         FakeResearchLLMClient(),
+        application_context=_application_context(),
         clock=clock,
         duration_clock=clock.elapsed,
         planner=_FixturePlanner(fixture.get("planner_query_override")),

@@ -25,8 +25,11 @@ from personal_ai.agents.research.iterative_repositories import (
 from personal_ai.agents.research.iterative_service import IterativeResearchService
 from personal_ai.agents.research.repositories import InMemoryResearchRepository
 from personal_ai.agents.research.service import ResearchService
-from personal_ai.auth.scope import ApplicationScope, application_scope_context
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import default_application_registry
+from personal_ai.auth.scope import ApplicationScope, RequestScope, application_scope_context
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.providers import ContextPreparationError
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.llm.fake import FakeResearchLLMClient
 from personal_ai.search.contracts import SearchResult
@@ -35,6 +38,31 @@ from personal_ai.settings import Settings
 from personal_ai.storage.errors import ResourceNotFoundError
 
 NOW = datetime(2026, 10, 2, 12, tzinfo=UTC)
+
+
+def application_context(owner_id="local", application_id="personal_ai", workspace_id=None):
+    registry = default_application_registry()
+    return ApplicationContextRequest(
+        definition=registry.get(application_id),
+        scope=RequestScope(
+            owner_id=owner_id, request_id="research-test", application_id=application_id,
+            workspace_id=workspace_id,
+        ),
+        context_provider_capabilities=registry.registration(application_id).context_providers,
+        tool_capabilities=registry.registration(application_id).tools,
+    )
+
+
+def without_policy_provider(context: ApplicationContextRequest, provider_id: str):
+    policy = context.definition.context_policy
+    definition = context.definition.model_copy(update={
+        "context_policy": policy.model_copy(update={
+            "provider_policies": tuple(
+                item for item in policy.provider_policies if item.provider_id != provider_id
+            ),
+        }),
+    })
+    return context.model_copy(update={"definition": definition})
 
 
 @pytest.fixture
@@ -69,6 +97,7 @@ def build_service(*, sources=(), responses=None, settings_overrides=None, owner=
         ContextAssembler(settings, EstimatedTokenCounter()),
         FakeResearchLLMClient(),
         owner_id=owner,
+        application_context=application_context(owner),
         clock=clock,
         duration_clock=clock.elapsed,
     )
@@ -181,6 +210,7 @@ async def test_idempotency_owner_scope_and_reconnect_are_read_only():
     other_owner = IterativeResearchService(
         service.settings, service.sessions, service.runs, adapter, service.context, service.llm,
         owner_id="other",
+        application_context=application_context("other"),
     )
     with pytest.raises(ResourceNotFoundError):
         await other_owner.get(final.id)
@@ -198,6 +228,9 @@ async def test_same_owner_and_idempotency_key_create_independent_runs_per_scope(
         ApplicationScope(application_id="travel", workspace_id="team-a"),
         ApplicationScope(application_id="travel", workspace_id="team-b"),
     ):
+        service.application_context = application_context(
+            service.owner_id, scope.application_id, scope.workspace_id
+        )
         with application_scope_context(scope):
             scoped_runs.append(await service.create(req))
 
@@ -217,6 +250,69 @@ async def test_same_owner_and_idempotency_key_create_independent_runs_per_scope(
             assert runs.get(service.owner_id, expected.id) == expected
             assert runs.session(service.owner_id, expected.session_id).iterative_run_id == expected.id
     assert runs.get_by_key(service.owner_id, req.idempotency_key) == standalone
+
+
+@pytest.mark.anyio
+async def test_research_policy_denial_precedes_session_and_search_calls():
+    service, adapter, _, sessions, runs = build_service()
+    service.application_context = without_policy_provider(
+        service.application_context, "external_research"
+    )
+
+    with pytest.raises(ContextPreparationError, match="context_policy_denied"):
+        await service.create(request())
+
+    assert not sessions.sessions
+    assert not runs.runs
+    assert not adapter.calls
+
+    ordinary_sessions = InMemoryResearchRepository()
+    ordinary = ResearchService(
+        service.settings,
+        ordinary_sessions,
+        adapter,
+        service.context,
+        service.llm,
+        owner_id=service.owner_id,
+        application_context=service.application_context,
+        clock=service.clock,
+    )
+    with pytest.raises(ContextPreparationError, match="context_policy_denied"):
+        await ordinary.create(ResearchRequest(
+            question="Synthetic observatory schedule?", idempotency_key=uuid4()
+        ))
+    assert not ordinary_sessions.sessions
+    assert not adapter.calls
+
+    prior_sessions = InMemoryResearchRepository()
+    prior_adapter = FakeIterativeSearchAdapter.queued([tuple(result() for _ in range(1))])
+    prior = ResearchService(
+        service.settings,
+        prior_sessions,
+        prior_adapter,
+        service.context,
+        service.llm,
+        owner_id=service.owner_id,
+        application_context=application_context(service.owner_id),
+        clock=service.clock,
+    )
+    session = await prior.create(
+        ResearchRequest(question="Synthetic schedule?", idempotency_key=uuid4())
+    )
+    claimed = await prior.prepare_run(session.id)
+    prior.application_context = service.application_context
+    frames = [frame async for frame in prior.stream(claimed)]
+    assert frames and '"state": "failed"' in frames[-1]
+    assert not prior_adapter.calls
+
+    resumable, resume_adapter, _, _, _ = build_service()
+    run, token = await resumable.start(request())
+    resumable.application_context = without_policy_provider(
+        resumable.application_context, "external_research"
+    )
+    _ = [frame async for frame in resumable.stream(run, token)]
+    assert not resume_adapter.calls
+    assert (await resumable.get(run.id)).state == RunState.INSUFFICIENT
 
 
 def _without_scope_envelopes(value):
@@ -264,9 +360,9 @@ async def test_token_budget_returns_evidence_and_visible_gaps_without_synthesis(
         def __init__(self):
             self.calls = 0
 
-        async def stream(self, messages):
+        async def stream(self, messages, *, inference_context=None):
             self.calls += 1
-            async for delta in super().stream(messages):
+            async for delta in super().stream(messages, inference_context=inference_context):
                 yield delta
 
     service, adapter, _, _, _ = build_service(
@@ -522,7 +618,8 @@ async def test_iterative_session_idempotency_is_separate_from_single_pass_key():
 @pytest.mark.anyio
 async def test_synthesis_failure_settles_uncertainty_and_preserves_no_answer():
     class BrokenLLM:
-        async def stream(self, messages):
+        async def stream(self, messages, *, inference_context=None):
+            del messages, inference_context
             raise RuntimeError("synthetic failure")
             yield ""
 
@@ -544,10 +641,12 @@ async def test_expired_citations_are_withheld_after_synthesis():
     service, _, clock, _, _ = build_service(sources=(result(),))
 
     class EvidenceExpiresDuringSynthesis:
-        async def stream(self, messages):
+        async def stream(self, messages, *, inference_context=None):
             from personal_ai.llm.fake import FakeResearchLLMClient
 
-            async for delta in FakeResearchLLMClient().stream(messages):
+            async for delta in FakeResearchLLMClient().stream(
+                messages, inference_context=inference_context
+            ):
                 yield delta
             clock.advance(3601)
 
@@ -568,6 +667,7 @@ async def test_cancelled_pending_backing_session_cannot_be_started_by_phase5():
     ordinary = ResearchService(
         service.settings, sessions, service.adapter, service.context, service.llm,
         clock=service.clock,
+        application_context=service.application_context,
     )
 
     with pytest.raises(ResearchError, match="research_session_owned_by_iterative_run"):
@@ -585,7 +685,10 @@ async def test_synthesis_finishing_after_absolute_deadline_is_charged_and_withhe
     service, _, clock, _, _ = build_service(sources=(result(),))
 
     class LateLLM:
-        async def stream_bounded(self, messages, *, max_output_tokens, timeout_seconds):
+        async def stream_bounded(
+            self, messages, *, max_output_tokens, timeout_seconds, inference_context=None
+        ):
+            del inference_context
             from personal_ai.llm.fake import FakeResearchLLMClient
 
             clock.advance(95)

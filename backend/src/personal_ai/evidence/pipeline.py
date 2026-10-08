@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from personal_ai.agents.research.contracts import Citation, ResearchError
+from personal_ai.context.authorization import make_inference_context
+from personal_ai.context.providers import ContextSelection
 from personal_ai.entities import Message, MessageRole, MessageStatus
 from personal_ai.evidence.contracts import Evidence, EvidenceSelection, SourceObservation
 from personal_ai.search.policy import canonical_url, content_fingerprint
@@ -108,7 +110,9 @@ def extract_evidence(session, results, attempt, extractor, now, settings):
     return tuple(observations), tuple(evidence)
 
 
-def select_evidence(session, context, now, deadline, reranker=None, clock=None):
+def select_evidence(
+    session, context, now, deadline, reranker=None, clock=None, *, application_context=None
+):
     excluded, scores, eligible = {}, {}, []
     words = set(re.findall(r"\w+", session.request.question.lower()))
     sources = {s.id: s for s in session.observations}
@@ -192,6 +196,16 @@ def select_evidence(session, context, now, deadline, reranker=None, clock=None):
         content=session.request.question,
         status=MessageStatus.COMPLETED,
         created_at=now,
+        application_id=(
+            application_context.scope.application_id
+            if application_context is not None
+            else "personal_ai"
+        ),
+        workspace_id=(
+            application_context.scope.workspace_id
+            if application_context is not None
+            else None
+        ),
     )
     from personal_ai.context.builder import ContextBuildSourceMetadata
 
@@ -204,6 +218,14 @@ def select_evidence(session, context, now, deadline, reranker=None, clock=None):
         )
         for item in eligible
     }
+    source_selections = {
+        str(item.id): ContextSelection(
+            provider_id="external_research",
+            operation="search",
+            fields=("evidence_record",),
+        )
+        for item in eligible
+    }
     assembled = context.assemble_research_context(
         pending,
         blocks,
@@ -211,6 +233,8 @@ def select_evidence(session, context, now, deadline, reranker=None, clock=None):
         deadline=deadline,
         now=now,
         source_metadata=source_metadata,
+        source_selections=source_selections if application_context is not None else None,
+        application_context=application_context,
         clock=clock,
     )
     item_reports = assembled.manifest.items if assembled.manifest else ()
@@ -236,7 +260,14 @@ def select_evidence(session, context, now, deadline, reranker=None, clock=None):
         counter_kind=assembled.budget.counter_kind,
         created_at=now,
     )
-    return selection, assembled.messages
+    inference_context = None
+    if application_context is not None:
+        if assembled.manifest is None:
+            raise ResearchError("context_manifest_unavailable")
+        inference_context = make_inference_context(
+            application_context, assembled.manifest.effective_sensitivity
+        )
+    return selection, assembled.messages, inference_context
 
 
 def _unique_object(pairs):

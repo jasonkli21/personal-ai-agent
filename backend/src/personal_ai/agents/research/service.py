@@ -10,6 +10,12 @@ from uuid import uuid4
 import anyio
 
 from personal_ai.agents.research.contracts import ResearchError, ResearchSession, evolve
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.context.authorization import (
+    authorize_base_disclosure,
+    authorize_context_selection,
+)
+from personal_ai.context.providers import ContextPreparationError, ContextSelection
 from personal_ai.evidence.contracts import AdapterAttempt, SearchQuery
 from personal_ai.evidence.pipeline import extract_evidence, select_evidence, validate_synthesis
 from personal_ai.search.contracts import SearchResult
@@ -33,6 +39,7 @@ class ResearchService:
         llm,
         *,
         owner_id="local",
+        application_context: ApplicationContextRequest | None = None,
         clock=None,
         planner=None,
         extractor=None,
@@ -40,12 +47,14 @@ class ResearchService:
     ):
         self.settings, self.repository, self.adapter = settings, repository, adapter
         self.context, self.llm, self.owner_id = context, llm, owner_id
+        self.application_context = application_context
         self.clock = clock or (lambda: datetime.now(UTC))
         self.planner = planner or DeterministicPlanner()
         self.extractor = extractor or SnippetExtractor()
         self.reranker = reranker
 
     async def create(self, request):
+        self._authorize_research_context()
         now = self.clock()
         session = ResearchSession(
             id=uuid4(),
@@ -56,6 +65,8 @@ class ResearchService:
             created_at=now,
             updated_at=now,
             expires_at=now + timedelta(hours=24),
+            application_id=self.application_context.scope.application_id,
+            workspace_id=self.application_context.scope.workspace_id,
         )
         return self.view(await io_call(self.repository.create, session))
 
@@ -116,6 +127,7 @@ class ResearchService:
 
         try:
             async with asyncio.timeout(seconds):
+                self._authorize_research_context()
                 yield event("started", session_id=str(current.id), state="running")
                 normalized = await io_call(
                     planned_queries,
@@ -240,7 +252,7 @@ class ResearchService:
                     source_count=len(observations),
                     evidence_count=len(evidence),
                 )
-                selection, messages = await io_call(
+                selection, messages, inference_context = await io_call(
                     select_evidence,
                     current,
                     self.context,
@@ -248,6 +260,7 @@ class ResearchService:
                     deadline,
                     self.reranker,
                     clock=self.clock,
+                    application_context=self.application_context,
                 )
                 await save(selection=selection)
                 yield event(
@@ -269,7 +282,9 @@ class ResearchService:
                     await save(state="insufficient", failure_code=code)
                 else:
                     output = ""
-                    async for delta in self.llm.stream(messages):
+                    async for delta in self.llm.stream(
+                        messages, inference_context=inference_context
+                    ):
                         if not isinstance(delta, str) or len(output) + len(delta) > 20000:
                             raise ResearchError("synthesis_oversized")
                         output += delta
@@ -318,3 +333,16 @@ class ResearchService:
                             await save(state="failed", failure_code="research_cancelled")
                     except Exception:  # noqa: BLE001 - durable execution deadline remains visible
                         logging.getLogger(__name__).info("Research cancellation persistence failed")
+
+    def _authorize_research_context(self):
+        if self.application_context is None:
+            raise ContextPreparationError("application_context_required")
+        authorize_base_disclosure(self.application_context)
+        authorize_context_selection(
+            self.application_context,
+            ContextSelection(
+                provider_id="external_research",
+                operation="search",
+                fields=("evidence_record",),
+            ),
+        )

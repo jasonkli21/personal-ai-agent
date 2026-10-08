@@ -34,8 +34,14 @@ from personal_ai.agents.research.iterative_contracts import (
     StopReason,
     SufficiencyAssessment,
 )
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.auth.scope import current_application_scope
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.authorization import (
+    authorize_base_disclosure,
+    authorize_context_selection,
+)
+from personal_ai.context.providers import ContextPreparationError, ContextSelection
 from personal_ai.decisions.contracts import ClaimProposal, DecisionCreateRequest, DecisionResult
 from personal_ai.decisions.repositories import InMemoryDecisionRepository
 from personal_ai.decisions.service import DecisionService
@@ -166,6 +172,7 @@ class IterativeResearchService:
         llm,
         *,
         owner_id: str = "local",
+        application_context: ApplicationContextRequest | None = None,
         clock=lambda: datetime.now(UTC),
         duration_clock=monotonic,
         planner=None,
@@ -180,6 +187,7 @@ class IterativeResearchService:
         self.context = context
         self.llm = llm
         self.owner_id = owner_id
+        self.application_context = application_context
         self.clock = clock
         self.duration_clock = duration_clock
         self.planner = planner or FollowupPlanner()
@@ -215,6 +223,7 @@ class IterativeResearchService:
             raise ResourceNotFoundError("research run not found")
         if request.decision_intent is not None and not self.settings.decision_enabled:
             raise ResourceNotFoundError("decision support is unavailable")
+        self._authorize_research_context()
         fingerprint = request.fingerprint()
         try:
             existing = await self._io(self.runs.get_by_key, self.owner_id, request.idempotency_key)
@@ -228,7 +237,9 @@ class IterativeResearchService:
         now = self.clock()
         # Keep historical standalone run IDs stable while partitioning the same
         # owner/idempotency pair across application and workspace namespaces.
-        run_id = iterative_run_id(self.owner_id, request.idempotency_key)
+        run_id = iterative_run_id(
+            self.owner_id, request.idempotency_key, self.application_context.scope
+        )
         phase5_request = ResearchRequest(
             question=request.question,
             freshness=request.freshness,
@@ -247,6 +258,8 @@ class IterativeResearchService:
             updated_at=now,
             expires_at=now + timedelta(hours=24),
             iterative_run_id=run_id,
+            application_id=self.application_context.scope.application_id,
+            workspace_id=self.application_context.scope.workspace_id,
         )
         session = await self._io(self.sessions.create, session)
         budget = self._budget()
@@ -956,7 +969,7 @@ class IterativeResearchService:
         return tuple(result)
 
     async def _select(self, session, deadline):
-        selection, messages = await self._io(
+        selection, messages, inference_context = await self._io(
             select_evidence,
             session,
             self.context,
@@ -964,8 +977,9 @@ class IterativeResearchService:
             deadline,
             self.reranker,
             clock=self.clock,
+            application_context=self.application_context,
         )
-        return selection, messages
+        return selection, messages, inference_context
 
     def _relevant_evidence(self, question: str, evidence):
         ignored = {"what", "which", "when", "where", "does", "with", "from", "that", "this", "have", "about", "show", "find", "tell", "give", "for", "the", "and", "are", "is", "of", "to", "in", "on", "a", "an", "current"}
@@ -1154,6 +1168,7 @@ class IterativeResearchService:
     async def _dispatch_planned(self, run, session):
         if run.lease_owner is None:
             return run, session
+        self._authorize_research_context()
         query = self._current_query(run, session)
         if query is None:
             stopped = await self._stop(run, session, StopReason.NO_PRODUCTIVE_QUERY, RunState.INSUFFICIENT)
@@ -1483,12 +1498,12 @@ class IterativeResearchService:
             if remaining <= 0:
                 await self._stop(run, session, StopReason.ELAPSED_BUDGET_EXHAUSTED, RunState.INSUFFICIENT)
                 return
-            selection, messages = await self._select(
+            selection, messages, inference_context = await self._select(
                 session,
                 deadline=monotonic() + remaining,
             )
         else:
-            selection, messages = selection_data
+            selection, messages, inference_context = selection_data
         try:
             self._assert_lease(run, run.lease_owner)
         except ResearchError:
@@ -1557,8 +1572,10 @@ class IterativeResearchService:
                     messages,
                     max_output_tokens=output_tokens,
                     timeout_seconds=synth_timeout,
+                    inference_context=inference_context,
                 )
-                if bounded_stream else self.llm.stream(messages)
+                if bounded_stream
+                else self.llm.stream(messages, inference_context=inference_context)
             )
             async with asyncio.timeout(synth_timeout):
                 async for delta in iterator:
@@ -1850,3 +1867,16 @@ class IterativeResearchService:
 
     async def _io(self, function, *args, **kwargs):
         return await io_call(function, *args, **kwargs)
+
+    def _authorize_research_context(self):
+        if self.application_context is None:
+            raise ContextPreparationError("application_context_required")
+        authorize_base_disclosure(self.application_context)
+        authorize_context_selection(
+            self.application_context,
+            ContextSelection(
+                provider_id="external_research",
+                operation="search",
+                fields=("evidence_record",),
+            ),
+        )

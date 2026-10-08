@@ -6,7 +6,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from personal_ai.api.dependencies import get_current_owner_id, require_standalone_application_scope
+from personal_ai.api.dependencies import (
+    get_application_context,
+    get_current_owner_id,
+    require_standalone_application_scope,
+)
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.booking_extractions.contracts import (
     BookingExtractionDeleteRequest,
     BookingExtractionRequest,
@@ -56,6 +61,7 @@ def extraction_service(
     settings: Annotated[Settings, Depends(enabled_settings)],
     repository: Annotated[BookingExtractionRepository, Depends(extraction_repository)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
+    application_context: Annotated[ApplicationContextRequest, Depends(get_application_context)],
 ) -> BookingExtractionService:
     if settings.booking_extraction_generator == "fake":
         llm, counter = FakeBookingExtractionLLMClient(), EstimatedTokenCounter()
@@ -67,6 +73,7 @@ def extraction_service(
         ContextAssembler(settings, counter),
         llm,
         owner_id=owner_id,
+        application_context=application_context,
     )
 
 

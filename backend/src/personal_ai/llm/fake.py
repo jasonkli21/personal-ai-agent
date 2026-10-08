@@ -35,7 +35,8 @@ class FakeLLMClient:
 class FakeResearchLLMClient:
     """Offline literal-excerpt synthesis; no model or search network calls."""
 
-    async def stream(self, messages):
+    async def stream(self, messages, *, inference_context: InferenceContext | None = None):
+        del inference_context
         import json
 
         block = next(
@@ -49,6 +50,10 @@ class FakeResearchLLMClient:
             excerpts.append({"evidence_id": item["evidence_id"], "quote": item["passage"]})
         yield json.dumps({"excerpts": excerpts})
 
-    async def stream_bounded(self, messages, *, max_output_tokens: int, timeout_seconds: float):
-        async for delta in self.stream(messages):
+    async def stream_bounded(
+        self, messages, *, max_output_tokens: int, timeout_seconds: float,
+        inference_context: InferenceContext | None = None,
+    ):
+        del max_output_tokens, timeout_seconds
+        async for delta in self.stream(messages, inference_context=inference_context):
             yield delta

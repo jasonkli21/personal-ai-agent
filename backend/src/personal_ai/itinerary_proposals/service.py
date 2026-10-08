@@ -14,9 +14,16 @@ import anyio
 from pydantic import ValidationError
 
 from personal_ai.agents.research.contracts import ResearchSession
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.context.assembler import ContextAssembler
+from personal_ai.context.authorization import (
+    authorize_base_disclosure,
+    authorize_context_selections,
+    make_inference_context,
+)
 from personal_ai.context.builder import ContextBuildSourceMetadata
 from personal_ai.context.contracts import ContextError
+from personal_ai.context.providers import ContextPreparationError, ContextSelection
 from personal_ai.entities.conversation import Message, MessageRole, MessageStatus
 from personal_ai.itinerary_proposals.contracts import (
     ItineraryProposalRequest,
@@ -154,6 +161,7 @@ class ItineraryProposalService:
         llm,
         *,
         owner_id: str,
+        application_context: ApplicationContextRequest | None = None,
         research_repository_factory=None,
         clock=None,
     ) -> None:
@@ -162,10 +170,27 @@ class ItineraryProposalService:
         self.context = context
         self.llm = llm
         self.owner_id = owner_id
+        self.application_context = application_context
         self.research_repository_factory = research_repository_factory
         self.clock = clock or (lambda: datetime.now(UTC))
 
     async def create(self, request: ItineraryProposalRequest) -> ItineraryProposalResult:
+        if self.application_context is None:
+            raise ContextPreparationError("application_context_required")
+        authorize_base_disclosure(self.application_context)
+        authorize_context_selections(self.application_context, (
+            ContextSelection(
+                provider_id="travel.itinerary_context",
+                operation="current",
+                fields=("itinerary_context",),
+                required=True,
+            ),
+            ContextSelection(
+                provider_id="external_research",
+                operation="search",
+                fields=("evidence_record",),
+            ),
+        ))
         timeout = self.settings.itinerary_proposal_timeout_seconds
         operation_deadline = monotonic() + timeout
         terminal_reserve = min(MAX_TERMINAL_WRITE_RESERVE_SECONDS, timeout * 0.1)
@@ -447,6 +472,8 @@ class ItineraryProposalService:
             content=request.instruction,
             status=MessageStatus.COMPLETED,
             created_at=now,
+            application_id=self.application_context.scope.application_id,
+            workspace_id=self.application_context.scope.workspace_id,
         )
         assembled = await sync_call(
             self.context.assemble_research_context,
@@ -458,6 +485,23 @@ class ItineraryProposalService:
             input_token_limit=self.settings.itinerary_proposal_max_input_tokens,
             required_source_ids=("travel-context",),
             source_metadata=source_metadata,
+            source_selections={
+                "travel-context": ContextSelection(
+                    provider_id="travel.itinerary_context",
+                    operation="current",
+                    fields=("itinerary_context",),
+                    required=True,
+                ),
+                **{
+                    item.handle: ContextSelection(
+                        provider_id="external_research",
+                        operation="search",
+                        fields=("evidence_record",),
+                    )
+                    for item in evidence.blocks
+                },
+            },
+            application_context=self.application_context,
             clock=self.clock,
         )
         item_reports = assembled.manifest.items if assembled.manifest else ()
@@ -485,7 +529,14 @@ class ItineraryProposalService:
         if assembled.budget.selected_total > self.settings.itinerary_proposal_max_input_tokens:
             raise _ProposalContextTooLarge("proposal input budget exceeded")
 
-        raw = await self._collect_model_output(assembled.messages, deadline, terminal_deadline)
+        if assembled.manifest is None:
+            raise ContextPreparationError("actual_context_manifest_unavailable")
+        inference_context = make_inference_context(
+            self.application_context, assembled.manifest.effective_sensitivity
+        )
+        raw = await self._collect_model_output(
+            assembled.messages, deadline, terminal_deadline, inference_context
+        )
         model_result = _parse_model_output(raw)
         if model_result.trip_handle != request.context.trip_handle:
             raise _InvalidProposalOutput("trip_handle_mismatch")
@@ -543,16 +594,19 @@ class ItineraryProposalService:
             citations=citations,
         )
 
-    async def _collect_model_output(self, messages, deadline, terminal_deadline):
+    async def _collect_model_output(
+        self, messages, deadline, terminal_deadline, inference_context
+    ):
         output = ""
         bounded_stream = getattr(self.llm, "stream_bounded", None)
         if bounded_stream is None:
-            stream = self.llm.stream(messages)
+            stream = self.llm.stream(messages, inference_context=inference_context)
         else:
             stream = bounded_stream(
                 messages,
                 max_output_tokens=self.settings.itinerary_proposal_max_output_tokens,
                 timeout_seconds=_remaining(deadline),
+                inference_context=inference_context,
             )
         try:
             # `deadline` is in time.monotonic()'s domain, not necessarily loop.time()'s.

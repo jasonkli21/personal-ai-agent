@@ -9,6 +9,9 @@ from uuid import uuid4
 from personal_ai.agents.research.contracts import ResearchRequest
 from personal_ai.agents.research.repositories import InMemoryResearchRepository
 from personal_ai.agents.research.service import ResearchService
+from personal_ai.applications.contracts import ApplicationContextRequest
+from personal_ai.applications.registry import default_application_registry
+from personal_ai.auth.scope import RequestScope
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.llm.fake import FakeLLMClient, FakeResearchLLMClient
@@ -17,6 +20,18 @@ from personal_ai.search.providers.brave import SearchError
 from personal_ai.settings import Settings
 
 NOW = datetime(2026, 10, 2, tzinfo=UTC)
+
+
+def _application_context(owner_id="local"):
+    registry = default_application_registry()
+    return ApplicationContextRequest(
+        definition=registry.get("personal_ai"),
+        scope=RequestScope(
+            owner_id=owner_id, request_id="research-eval", application_id="personal_ai"
+        ),
+        context_provider_capabilities=registry.registration("personal_ai").context_providers,
+        tool_capabilities=registry.registration("personal_ai").tools,
+    )
 
 
 def load_fixtures():
@@ -48,6 +63,7 @@ def build_fixture(fixture, **overrides):
         adapter,
         ContextAssembler(settings, EstimatedTokenCounter()),
         llm,
+        application_context=_application_context(),
         clock=lambda: NOW,
     )
     request = ResearchRequest(

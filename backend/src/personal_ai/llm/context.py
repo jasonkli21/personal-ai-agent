@@ -8,7 +8,7 @@ from typing import Any
 from personal_ai.context.assembler import summary_request
 from personal_ai.context.contracts import ConversationSummary, SummaryDraft, TokenCount
 from personal_ai.entities import Message
-from personal_ai.llm.client import ChatMessage
+from personal_ai.llm.client import ChatMessage, InferenceContext
 from personal_ai.llm.errors import LLMError
 from personal_ai.llm.gemini import (
     GeminiLLMClient,
@@ -91,12 +91,19 @@ class GeminiConversationSummarizer:
         self,
         source_messages: Sequence[Message],
         prior_summary: ConversationSummary | None,
+        *,
+        inference_context: InferenceContext | None = None,
     ) -> SummaryDraft:
-        return self.summarize_with_timeout(source_messages, prior_summary, None)
+        return self.summarize_with_timeout(
+            source_messages, prior_summary, None,
+            inference_context=inference_context,
+        )
 
     def summarize_with_timeout(
         self, source_messages: Sequence[Message], prior_summary: ConversationSummary | None,
         timeout_seconds: float | None,
+        *,
+        inference_context: InferenceContext | None = None,
     ) -> SummaryDraft:
         request = summary_request(source_messages, prior_summary)
         client = self.client
@@ -104,7 +111,7 @@ class GeminiConversationSummarizer:
         try:
             if owns:
                 adapter = GeminiLLMClient(self.settings)
-                adapter._validate_request(request)
+                adapter._validate_request(request, inference_context=inference_context)
                 client = adapter._build_client()
             options = {"retry_options": {"attempts": 1}}
             if timeout_seconds is not None:

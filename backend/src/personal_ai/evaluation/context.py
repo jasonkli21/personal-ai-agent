@@ -26,7 +26,8 @@ class FactSummarizer:
     def __init__(self) -> None:
         self.calls = []
 
-    def summarize(self, source_messages, prior_summary):
+    def summarize(self, source_messages, prior_summary, *, inference_context=None):
+        del inference_context
         self.calls.append((tuple(m.id for m in source_messages), prior_summary))
         facts = [prior_summary.content] if prior_summary else []
         for message in source_messages:

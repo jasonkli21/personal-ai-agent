@@ -141,7 +141,9 @@ class ContextBuildItem(BaseModel):
         required: bool = False,
         atomic_group_id: str | None = None,
     ) -> ContextBuildItem:
-        payload = item.payload.model_dump(mode="json", exclude_none=True)
+        payload = (item.disclosed_payload or item.payload).model_dump(
+            mode="json", exclude_none=True
+        )
         value = {
             "source_class": item.source_class,
             "provider_id": item.provider_id,

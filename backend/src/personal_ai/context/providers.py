@@ -128,6 +128,7 @@ class ContextItem(BaseModel, Generic[PayloadT]):
     selected_operation: ContextOperation | None = Field(default=None, exclude=True)
     field_sensitivity: tuple[ContextFieldSensitivity, ...] = Field(default=(), max_length=32)
     payload: PayloadT
+    disclosed_payload: BaseModel | None = Field(default=None, exclude=True)
 
     @field_validator("payload", mode="before")
     @classmethod

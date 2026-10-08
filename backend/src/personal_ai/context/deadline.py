@@ -43,9 +43,22 @@ class DeadlineSummarizer:
         self.summarizer = summarizer
         self.deadline = deadline
 
-    def summarize(self, source, prior):
+    def summarize(self, source, prior, *, inference_context=None):
         seconds = remaining(self.deadline)
         timed = getattr(self.summarizer, "summarize_with_timeout", None)
-        result = timed(source, prior, seconds) if timed else self.summarizer.summarize(source, prior)
+        if timed:
+            result = (
+                timed(source, prior, seconds, inference_context=inference_context)
+                if inference_context is not None
+                else timed(source, prior, seconds)
+            )
+        else:
+            result = (
+                self.summarizer.summarize(
+                    source, prior, inference_context=inference_context
+                )
+                if inference_context is not None
+                else self.summarizer.summarize(source, prior)
+            )
         remaining(self.deadline)
         return result

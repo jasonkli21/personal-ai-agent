@@ -14,9 +14,10 @@ from personal_ai.agents.research.iterative_repositories import (
 )
 from personal_ai.agents.research.iterative_service import IterativeResearchService
 from personal_ai.agents.research.repositories import InMemoryResearchRepository
-from personal_ai.api.dependencies import get_current_owner_id
+from personal_ai.api.dependencies import get_application_context, get_current_owner_id
 from personal_ai.api.research import local_repository
 from personal_ai.api.routes import SSE_RESPONSES, _LifecycleStreamingResponse
+from personal_ai.applications.contracts import ApplicationContextRequest
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.decisions.repositories import InMemoryDecisionRepository
@@ -58,6 +59,7 @@ def local_iterative_decision_repository():
 def iterative_research_service(
     settings: Annotated[Settings, Depends(iterative_settings)],
     owner_id: Annotated[str, Depends(get_current_owner_id)],
+    application_context: Annotated[ApplicationContextRequest, Depends(get_application_context)],
 ):
     if settings.research_storage == "memory":
         sessions = local_repository()
@@ -87,6 +89,7 @@ def iterative_research_service(
         ContextAssembler(settings, counter),
         llm,
         owner_id=owner_id,
+        application_context=application_context,
         decision_repository=decisions,
     )
 
