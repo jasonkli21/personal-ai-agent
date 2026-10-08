@@ -29,7 +29,17 @@ open.
 - [`llm/openai_compatible.py`](../../backend/src/personal_ai/llm/openai_compatible.py)
   contains only shared wire mechanics. Provider IDs, endpoint URLs, output-token
   fields, schema envelopes, credentials, and enablement gates stay in the
-  adapter/configuration boundary.
+  adapter/configuration boundary. Completion bodies are limited to 1 MiB;
+  streamed responses are limited to 2 MiB, with 128 KiB line and event limits.
+  Limits are checked while reading, before JSON parsing or event accumulation.
+  Empty and whitespace-only terminal output is incomplete.
+
+Completion and stream identities must include the returned model ID. The ID
+must exactly match the configured model or one of the exact aliases explicitly
+listed in `GROQ_APPROVED_MODEL_ALIASES` or
+`CLOUDFLARE_APPROVED_MODEL_ALIASES` for that configured account/model
+preflight. No prefix, revision, or other implicit alias matching is performed;
+the verified returned ID is retained in `GenerationMetadata`.
 
 The request and response shapes follow the current [Groq Chat API](https://console.groq.com/docs/api-reference), [Groq structured output guide](https://console.groq.com/docs/structured-outputs), [Workers AI OpenAI-compatible API](https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/), and [Workers AI JSON Mode](https://developers.cloudflare.com/workers-ai/features/json-mode/). The adapters don't add SDK dependencies or retry behavior.
 
@@ -40,8 +50,13 @@ Enabling either adapter requires its API credential, selected model, verified
 free-tier eligibility, privacy approval, and a non-empty preflight reference.
 The reference should identify a dated record for the same account and model.
 That record needs to show current account/tier eligibility, cost behavior,
-provider data-use suitability for the effective sensitivity, and the supported
-request/terminal/usage behavior.
+provider data-use suitability, and the supported request/terminal/usage
+behavior. `GROQ_PRIVACY_MAX_SENSITIVITY` and
+`CLOUDFLARE_PRIVACY_MAX_SENSITIVITY` record the approved sensitivity ceiling
+for that configured account/model. Dispatch rejects an effective request
+sensitivity above the ceiling before transport; the ceiling defaults to
+`public`. The configured exact response-model aliases are part of that same
+preflight and have no effect on the request model sent to the provider.
 
 `CLOUDFLARE_FREE_TIER_VERIFIED` specifically attests that the selected model is
 available to the account's free tier without a paid billing method or prepaid

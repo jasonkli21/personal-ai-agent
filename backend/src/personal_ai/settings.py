@@ -4,9 +4,12 @@ import math
 import os
 from decimal import Decimal
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import AliasChoices, AnyHttpUrl, Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+SensitivityCeiling = Literal["public", "personal", "sensitive", "restricted"]
 
 
 class ContextBudgetInvalidError(Exception):
@@ -37,6 +40,8 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr = Field(default=SecretStr(""))
     groq_free_tier_verified: bool = False
     groq_privacy_approved: bool = False
+    groq_privacy_max_sensitivity: SensitivityCeiling = "public"
+    groq_approved_model_aliases: tuple[str, ...] = Field(default=(), max_length=8)
     groq_structured_output_verified: bool = False
     groq_preflight_reference: str = Field(default="", max_length=500)
     cloudflare_adapter_enabled: bool = False
@@ -45,6 +50,8 @@ class Settings(BaseSettings):
     cloudflare_api_token: SecretStr = Field(default=SecretStr(""))
     cloudflare_free_tier_verified: bool = False
     cloudflare_privacy_approved: bool = False
+    cloudflare_privacy_max_sensitivity: SensitivityCeiling = "public"
+    cloudflare_approved_model_aliases: tuple[str, ...] = Field(default=(), max_length=8)
     cloudflare_structured_output_verified: bool = False
     cloudflare_preflight_reference: str = Field(default="", max_length=500)
     gcp_project_id: str = Field(default="", max_length=200)
@@ -237,6 +244,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
+        for aliases in (self.groq_approved_model_aliases, self.cloudflare_approved_model_aliases):
+            if (
+                len(set(aliases)) != len(aliases)
+                or any(not alias or alias != alias.strip() or len(alias) > 200 for alias in aliases)
+            ):
+                raise ValueError("provider_model_aliases_invalid")
         if self.groq_adapter_enabled and (
             not self.groq_model
             or not self.groq_api_key.get_secret_value()

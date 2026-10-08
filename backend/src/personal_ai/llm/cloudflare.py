@@ -33,6 +33,8 @@ class CloudflareWorkersAILLMClient(OpenAICompatibleGenerationClient):
             adapter_enabled=settings.cloudflare_adapter_enabled,
             free_tier_verified=settings.cloudflare_free_tier_verified,
             privacy_approved=settings.cloudflare_privacy_approved,
+            privacy_max_sensitivity=settings.cloudflare_privacy_max_sensitivity,
+            approved_model_aliases=settings.cloudflare_approved_model_aliases,
             structured_output_verified=settings.cloudflare_structured_output_verified,
             preflight_reference=settings.cloudflare_preflight_reference,
             client=client,

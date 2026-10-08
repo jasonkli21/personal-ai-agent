@@ -43,6 +43,11 @@ from personal_ai.llm.errors import (
 from personal_ai.settings import Settings
 
 _RESET_PART = re.compile(r"(\d+(?:\.\d+)?)(ms|s|m|h)")
+_SENSITIVITY_RANK = {"public": 0, "personal": 1, "sensitive": 2, "restricted": 3}
+_MAX_COMPLETION_RESPONSE_BYTES = 1_048_576
+_MAX_STREAM_RESPONSE_BYTES = 2_097_152
+_MAX_SSE_EVENT_BYTES = 131_072
+_MAX_SSE_LINE_BYTES = 131_072
 
 
 class OpenAICompatibleGenerationClient:
@@ -62,6 +67,8 @@ class OpenAICompatibleGenerationClient:
         adapter_enabled: bool,
         free_tier_verified: bool,
         privacy_approved: bool,
+        privacy_max_sensitivity: str,
+        approved_model_aliases: Sequence[str],
         structured_output_verified: bool,
         preflight_reference: str,
         client: httpx.Client | None = None,
@@ -73,6 +80,8 @@ class OpenAICompatibleGenerationClient:
         self._adapter_enabled = adapter_enabled
         self._free_tier_verified = free_tier_verified
         self._privacy_approved = privacy_approved
+        self._privacy_max_sensitivity = privacy_max_sensitivity
+        self._approved_models = frozenset((model_id, *approved_model_aliases))
         self._structured_output_verified = structured_output_verified
         self._preflight_reference = preflight_reference
         self._client = client
@@ -152,7 +161,12 @@ class OpenAICompatibleGenerationClient:
             ) as response:
                 rate_limits = _rate_limit_metadata(response.headers)
                 _raise_for_status(response.status_code, rate_limits)
-                async for data in _sse_data(response, deadline):
+                _validate_wire_response(response.headers, _MAX_STREAM_RESPONSE_BYTES)
+                response_model_id: str | None = None
+                has_non_whitespace_text = False
+                async for data in _sse_data(
+                    response, deadline, max_body_bytes=_MAX_STREAM_RESPONSE_BYTES
+                ):
                     if done_seen:
                         raise LLMInvalidResponseError(
                             "language model emitted data after stream completion"
@@ -161,6 +175,14 @@ class OpenAICompatibleGenerationClient:
                         done_seen = True
                         continue
                     payload = _decode_json_object(data)
+                    chunk_model_id = _response_model_id(payload, required=False)
+                    if chunk_model_id is not None:
+                        self._validate_response_model(chunk_model_id)
+                        if response_model_id is not None and response_model_id != chunk_model_id:
+                            raise LLMInvalidResponseError(
+                                "language model emitted conflicting model identities"
+                            )
+                        response_model_id = chunk_model_id
                     chunk_reason, chunk_usage, deltas = _read_stream_payload(payload)
                     if chunk_reason is not None:
                         if finish_reason is not None and finish_reason != chunk_reason:
@@ -170,11 +192,18 @@ class OpenAICompatibleGenerationClient:
                         finish_reason = chunk_reason
                     usage = chunk_usage or usage
                     for delta in deltas:
+                        has_non_whitespace_text = has_non_whitespace_text or bool(delta.strip())
                         yield GenerationEvent.text_delta(delta)
+            if response_model_id is None:
+                raise LLMInvalidResponseError("language model response omitted its model identity")
             status = _terminal_status(finish_reason) if done_seen else "incomplete"
+            if status == "success" and not has_non_whitespace_text:
+                status = "incomplete"
             yield GenerationEvent.terminal(GenerationMetadata(
                 status=status,
-                identity=self.identity,
+                identity=ProviderIdentity(
+                    self.identity.provider_id, response_model_id, self.identity.serializer_id
+                ),
                 usage=usage,
                 error_code=_terminal_error_code(status),
                 rate_limits=rate_limits,
@@ -254,26 +283,38 @@ class OpenAICompatibleGenerationClient:
             client = httpx.Client(follow_redirects=False)
         deadline = monotonic() + timeout_seconds
         try:
-            response = client.post(
+            with client.stream(
+                "POST",
                 self._endpoint,
                 headers=self._headers(stream=False),
                 json=body,
                 timeout=timeout_seconds,
-            )
-            rate_limits = _rate_limit_metadata(response.headers)
-            _raise_for_status(response.status_code, rate_limits)
-            payload = response.json()
+            ) as response:
+                rate_limits = _rate_limit_metadata(response.headers)
+                _raise_for_status(response.status_code, rate_limits)
+                response_body = _read_limited_response_body(
+                    response, _MAX_COMPLETION_RESPONSE_BYTES
+                )
+            payload = json.loads(response_body)
             text, finish_reason, usage = _read_completion_payload(payload)
+            response_model_id = _response_model_id(payload, required=True)
+            self._validate_response_model(response_model_id)
             if monotonic() > deadline:
                 raise LLMTimeoutError("language model request timed out")
             status = _terminal_status(finish_reason)
             if _has_refusal(payload):
                 status = "rejected"
+            elif status == "success" and not text.strip():
+                status = "incomplete"
             return GenerationResult(
                 text=text,
                 metadata=GenerationMetadata(
                     status=status,
-                    identity=_identity_from_payload(self.identity, payload),
+                    identity=ProviderIdentity(
+                        self.identity.provider_id,
+                        response_model_id,
+                        self.identity.serializer_id,
+                    ),
                     usage=usage,
                     error_code=_terminal_error_code(status),
                     rate_limits=rate_limits,
@@ -318,13 +359,21 @@ class OpenAICompatibleGenerationClient:
         if inference_context is None:
             raise LLMInvalidRequestError("context disclosure policy is required")
         try:
-            InferenceContext(
+            validated_context = InferenceContext(
                 effective_sensitivity=inference_context.effective_sensitivity,
                 maximum_sensitivity=inference_context.maximum_sensitivity,
                 policy_version=inference_context.policy_version,
             )
         except (AttributeError, TypeError, ValueError) as error:
             raise LLMInvalidRequestError("context disclosure policy denied") from error
+        effective_rank = _SENSITIVITY_RANK.get(validated_context.effective_sensitivity, 4)
+        approved_rank = _SENSITIVITY_RANK.get(self._privacy_max_sensitivity, -1)
+        if effective_rank > approved_rank:
+            raise LLMInvalidRequestError("provider privacy preflight does not allow this sensitivity")
+
+    def _validate_response_model(self, response_model_id: str) -> None:
+        if response_model_id not in self._approved_models:
+            raise LLMInvalidResponseError("language model returned an unapproved model identity")
 
     def _bounded_timeout(self, max_output_tokens: int, timeout_seconds: float) -> float:
         if (
@@ -344,6 +393,7 @@ class OpenAICompatibleGenerationClient:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream" if stream else "application/json",
+            "Accept-Encoding": "identity",
         }
 
     def _request_body(
@@ -375,11 +425,17 @@ class OpenAICompatibleGenerationClient:
         raise NotImplementedError
 
 
-async def _sse_data(response: httpx.Response, deadline: float) -> AsyncIterator[str]:
-    """Read complete SSE data fields, enforcing one wall-clock deadline."""
-    lines = response.aiter_lines().__aiter__()
+async def _sse_data(
+    response: httpx.Response,
+    deadline: float,
+    *,
+    max_body_bytes: int,
+) -> AsyncIterator[str]:
+    """Read bounded SSE events while enforcing one wall-clock deadline."""
     data_lines: list[str] = []
+    event_bytes = 0
     loop = asyncio.get_running_loop()
+    lines = _bounded_sse_lines(response, deadline, max_body_bytes).__aiter__()
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
@@ -389,16 +445,113 @@ async def _sse_data(response: httpx.Response, deadline: float) -> AsyncIterator[
                 line = await anext(lines)
         except StopAsyncIteration:
             break
+        event_bytes += len(line.encode("utf-8")) + 1
+        if event_bytes > _MAX_SSE_EVENT_BYTES:
+            raise LLMInvalidResponseError("language model stream event exceeded the size limit")
         if line == "":
             if data_lines:
                 yield "\n".join(data_lines).strip()
                 data_lines.clear()
+            event_bytes = 0
         elif line.startswith(":"):
             continue
         elif line.startswith("data:"):
             data_lines.append(line[5:].lstrip())
     if data_lines:
         yield "\n".join(data_lines).strip()
+
+
+async def _bounded_sse_lines(
+    response: httpx.Response,
+    deadline: float,
+    max_body_bytes: int,
+) -> AsyncIterator[str]:
+    """Yield UTF-8 SSE lines without buffering an oversized line or body."""
+    if response.is_stream_consumed:
+        buffered_body = response.content
+        if len(buffered_body) > max_body_bytes:
+            raise LLMInvalidResponseError("language model stream exceeded the size limit")
+        chunks = _single_async_chunk(buffered_body).__aiter__()
+    else:
+        chunks = response.aiter_raw().__aiter__()
+    pending = bytearray()
+    total_bytes = 0
+    loop = asyncio.get_running_loop()
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise LLMTimeoutError("language model request timed out")
+        try:
+            async with asyncio.timeout(remaining):
+                chunk = await anext(chunks)
+        except StopAsyncIteration:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_body_bytes:
+            raise LLMInvalidResponseError("language model stream exceeded the size limit")
+        start = 0
+        while start < len(chunk):
+            newline = chunk.find(b"\n", start)
+            if newline < 0:
+                part = chunk[start:]
+                if len(pending) + len(part) > _MAX_SSE_LINE_BYTES:
+                    raise LLMInvalidResponseError("language model stream line exceeded the size limit")
+                pending.extend(part)
+                break
+            part = chunk[start:newline]
+            if len(pending) + len(part) > _MAX_SSE_LINE_BYTES:
+                raise LLMInvalidResponseError("language model stream line exceeded the size limit")
+            pending.extend(part)
+            line = bytes(pending)
+            pending.clear()
+            if line.endswith(b"\r"):
+                line = line[:-1]
+            try:
+                yield line.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise LLMInvalidResponseError("language model stream encoding was invalid") from error
+            start = newline + 1
+    if pending:
+        line = bytes(pending)
+        if line.endswith(b"\r"):
+            line = line[:-1]
+        try:
+            yield line.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise LLMInvalidResponseError("language model stream encoding was invalid") from error
+
+
+def _validate_wire_response(headers: Mapping[str, str], max_bytes: int) -> None:
+    encoding = headers.get("content-encoding", "identity").strip().lower()
+    if encoding not in {"", "identity"}:
+        raise LLMInvalidResponseError("language model response encoding was unsupported")
+    content_length = headers.get("content-length")
+    if content_length is not None:
+        normalized = content_length.strip()
+        if not normalized.isdecimal():
+            raise LLMInvalidResponseError("language model response length was invalid")
+        if int(normalized) > max_bytes:
+            raise LLMInvalidResponseError("language model response exceeded the size limit")
+
+
+def _read_limited_response_body(response: httpx.Response, max_bytes: int) -> bytes:
+    """Read an identity-encoded completion only up to its wire-byte limit."""
+    _validate_wire_response(response.headers, max_bytes)
+    if response.is_stream_consumed:
+        body = response.content
+        if len(body) > max_bytes:
+            raise LLMInvalidResponseError("language model response exceeded the size limit")
+        return body
+    body = bytearray()
+    for chunk in response.iter_raw():
+        if len(body) + len(chunk) > max_bytes:
+            raise LLMInvalidResponseError("language model response exceeded the size limit")
+        body.extend(chunk)
+    return bytes(body)
+
+
+async def _single_async_chunk(value: bytes) -> AsyncIterator[bytes]:
+    yield value
 
 
 def _decode_json_object(value: str) -> Mapping[str, Any]:
@@ -523,14 +676,13 @@ def _terminal_error_code(status: str) -> str | None:
     return None
 
 
-def _identity_from_payload(
-    fallback: ProviderIdentity,
-    payload: Mapping[str, Any],
-) -> ProviderIdentity:
+def _response_model_id(payload: Mapping[str, Any], *, required: bool) -> str | None:
     model_id = payload.get("model")
-    if isinstance(model_id, str) and model_id and len(model_id) <= 200:
-        return ProviderIdentity(fallback.provider_id, model_id, fallback.serializer_id)
-    return fallback
+    if model_id is None and not required:
+        return None
+    if not isinstance(model_id, str) or not model_id.strip() or len(model_id) > 200:
+        raise LLMInvalidResponseError("language model response model identity was invalid")
+    return model_id
 
 
 def _raise_for_status(

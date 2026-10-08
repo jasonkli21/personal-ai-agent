@@ -28,6 +28,8 @@ class GroqLLMClient(OpenAICompatibleGenerationClient):
             adapter_enabled=settings.groq_adapter_enabled,
             free_tier_verified=settings.groq_free_tier_verified,
             privacy_approved=settings.groq_privacy_approved,
+            privacy_max_sensitivity=settings.groq_privacy_max_sensitivity,
+            approved_model_aliases=settings.groq_approved_model_aliases,
             structured_output_verified=settings.groq_structured_output_verified,
             preflight_reference=settings.groq_preflight_reference,
             client=client,
