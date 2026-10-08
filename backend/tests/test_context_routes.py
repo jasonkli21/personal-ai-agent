@@ -18,7 +18,10 @@ from personal_ai.api.dependencies import (
 from personal_ai.context import ContextAssembler
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import FakeTokenCounter
-from personal_ai.context.traces import InMemoryContextTraceRepository
+from personal_ai.context.traces import (
+    InMemoryContextTraceRepository,
+    UnsupportedContextTraceSchemaError,
+)
 from personal_ai.entities import Conversation
 from personal_ai.evaluation.context import (
     FactSummarizer,
@@ -366,3 +369,49 @@ def test_overall_preparation_deadline_releases_lease_without_assistant(environme
     assert not llm.requests
     assert messages.list_active(owner_id='local', conversation_id=pending.conversation_id)[-1].role.value == 'user'
     assert conversations.get(owner_id='local', conversation_id=pending.conversation_id).context_preparation_id is None
+
+
+def test_trace_persistence_deadline_releases_lease_before_model_call(environment, monkeypatch):
+    from personal_ai.context import deadline
+    from personal_ai.context.traces import InMemoryContextTraceRepository
+
+    client, conversations, messages, _, llm, context = environment
+    _, pending = install(environment, 'short-control')
+    clock = [0.0]
+    monkeypatch.setattr('personal_ai.services.chat_turns.monotonic', lambda: clock[0])
+    monkeypatch.setattr(deadline, 'monotonic', lambda: clock[0])
+
+    class SlowTraceRepository(InMemoryContextTraceRepository):
+        def put(self, *, owner_id, trace, deadline=None):
+            super().put(owner_id=owner_id, trace=trace, deadline=deadline)
+            assert deadline == context.settings.request_timeout_seconds
+            clock[0] = deadline + 1
+
+    app.dependency_overrides[get_context_trace_repository] = lambda: SlowTraceRepository()
+    response = client.post(
+        f'/v1/conversations/{pending.conversation_id}/messages', json={'content': 'prompt'}
+    )
+
+    assert response.status_code == 503
+    assert response.json()['error']['code'] == 'llm_timeout'
+    assert not llm.requests
+    assert messages.list_active(owner_id='local', conversation_id=pending.conversation_id)[-1].role.value == 'user'
+    assert conversations.get(owner_id='local', conversation_id=pending.conversation_id).context_preparation_id is None
+
+
+def test_historical_trace_schema_degrades_to_estimated_inspection(environment):
+    client, _, _, _, _, _ = environment
+    _, pending = install(environment, 'short-control')
+
+    class HistoricalTraceRepository:
+        def latest_for_user_turn(self, **_kwargs):
+            raise UnsupportedContextTraceSchemaError("unsupported_context_trace_schema")
+
+    app.dependency_overrides[get_context_trace_repository] = lambda: HistoricalTraceRepository()
+    response = client.get(f'/v1/conversations/{pending.conversation_id}/context')
+
+    assert response.status_code == 200
+    assert response.json()['trace_state'] == 'historical_schema_unsupported'
+    assert response.json()['trace_missing_reason'] == 'unsupported_historical_trace_schema'
+    assert response.json()['actual_build_trace'] is None
+    assert response.json()['view_kind'] == 'estimated_current_view'

@@ -117,9 +117,12 @@ and exclusion decisions, authority/sensitivity, bounded token counts and reasons
 Provider-supplied source and item identifiers are fingerprinted before storage;
 prompts, provider values, credentials, and hidden reasoning are omitted. The
 system retains at most 32 traces per conversation, with a 48 KiB serialized
-payload ceiling per trace. Missing or expired traces return `manifest_missing`
-and leave the estimate explicitly labeled. The inspector performs no provider
-calls, writes, or retention actions; normal deployments return 404.
+payload ceiling per trace. Missing or expired traces return `manifest_missing`;
+unsupported historical schemas return `historical_schema_unsupported`. Both
+leave the estimate explicitly labeled. The inspector performs no provider
+calls, writes, or retention actions; normal deployments return 404. Current
+traces still record policy/source version labels rather than immutable Postgres
+version references, which remains an open Phase 14 storage-contract gap.
 
 The development inspector sends an `X-Request-ID`; the proxy forwards the
 validated ID and returns the API correlation header. The actual trace separately

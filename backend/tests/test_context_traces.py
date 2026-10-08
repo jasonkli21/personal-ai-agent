@@ -1,5 +1,8 @@
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+
+import pytest
 
 from personal_ai.auth.scope import ApplicationScope
 from personal_ai.context.builder import (
@@ -14,6 +17,7 @@ from personal_ai.context.traces import (
     MAX_CONTEXT_TRACE_RETENTION,
     ContextTraceManifest,
     InMemoryContextTraceRepository,
+    UnsupportedContextTraceSchemaError,
 )
 from personal_ai.persistence.dynamodb import (
     DynamoDBContextTraceRepository,
@@ -227,3 +231,32 @@ def test_dynamodb_trace_repository_keeps_scoped_records_and_bounded_retention():
         conversation_id=base.conversation_id,
         user_message_id=base.user_message_id,
     ) is None
+
+
+def test_dynamodb_trace_repository_reports_unsupported_historical_schema():
+    table = _MemoryRuntimeTable()
+    repository = DynamoDBContextTraceRepository(table)
+    trace = _trace()
+    scope = ApplicationScope(application_id=trace.application_id, workspace_id=trace.workspace_id)
+    partition = f"{_namespace(scope, 'owner-a')}#CONV#{trace.conversation_id}"
+    table.items[(partition, "META")] = {
+        "PK": partition,
+        "SK": "META",
+        "owner_id": "owner-a",
+        "application_id": scope.application_id,
+        "workspace_id_present": scope.workspace_id is not None,
+        "workspace_id": scope.workspace_id or "",
+    }
+    repository.put(owner_id="owner-a", trace=trace)
+    stored = next(item for item in table.items.values() if item.get("kind") == "context-trace")
+    historical = json.loads(stored["payload"])
+    historical["schema_version"] = "context-trace-v0"
+    stored["payload"] = json.dumps(historical)
+
+    with pytest.raises(UnsupportedContextTraceSchemaError):
+        repository.latest_for_user_turn(
+            owner_id="owner-a",
+            scope=scope,
+            conversation_id=trace.conversation_id,
+            user_message_id=trace.user_message_id,
+        )

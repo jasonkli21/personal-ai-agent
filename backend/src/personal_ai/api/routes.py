@@ -30,7 +30,10 @@ from personal_ai.api.schemas import (
 from personal_ai.auth.scope import RequestScope
 from personal_ai.context.contracts import ConversationSummaryRepository
 from personal_ai.context.inspection import ContextInspector
-from personal_ai.context.traces import ContextTraceRepository
+from personal_ai.context.traces import (
+    ContextTraceRepository,
+    UnsupportedContextTraceSchemaError,
+)
 from personal_ai.entities import Conversation
 from personal_ai.services import ChatTurnService, ConversationService
 from personal_ai.settings import Settings, get_settings
@@ -224,16 +227,24 @@ def inspect_context(
         ),
         None,
     )
-    trace = (
-        traces.latest_for_user_turn(
-            owner_id=scope.owner_id,
-            scope=scope,
-            conversation_id=conversation_id,
-            user_message_id=latest_user.id,
-        )
-        if latest_user is not None
-        else None
-    )
+    trace = None
+    trace_state = "manifest_missing"
+    trace_missing_reason = "no_retained_manifest_for_latest_user_turn"
+    if latest_user is not None:
+        try:
+            trace = traces.latest_for_user_turn(
+                owner_id=scope.owner_id,
+                scope=scope,
+                conversation_id=conversation_id,
+                user_message_id=latest_user.id,
+            )
+        except UnsupportedContextTraceSchemaError:
+            trace_state = "historical_schema_unsupported"
+            trace_missing_reason = "unsupported_historical_trace_schema"
+        else:
+            if trace is not None:
+                trace_state = "available"
+                trace_missing_reason = None
     retrieval = None
     if memory_ids:
         retrieval = service.inspect_memories(
@@ -244,4 +255,6 @@ def inspect_context(
         retrieval,
         trace=trace,
         inspection_request_id=_request_id(http_request),
+        trace_state=trace_state,
+        trace_missing_reason=trace_missing_reason,
     )

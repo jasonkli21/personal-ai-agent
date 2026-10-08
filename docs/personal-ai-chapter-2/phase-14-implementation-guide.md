@@ -1,10 +1,13 @@
 # Phase 14 implementation guide — Provenance and context inspection
 
-Phase 14 extends the gated development inspector with a retained actual-build
-chat trace and request correlation. The inspector still shows the estimated
-current view separately and never claims to reconstruct a past build from
-current state. See the [implementation evidence](phase-14-implementation-evidence.md)
-for the tested source tree, checks, and remaining external gates.
+Phase 14 partially extends the gated development inspector with a retained
+actual-build chat trace and request correlation. The inspector still shows the
+estimated current view separately and never claims to reconstruct a past build
+from current state. Acceptance remains incomplete because these traces do not
+yet reference immutable Postgres policy/source versions as required by the
+[Phase 10 storage contract](phase-10-storage-ownership-and-access-patterns.md).
+See the [implementation evidence](phase-14-implementation-evidence.md) for the
+tested source tree, checks, and remaining gates.
 
 ## Runtime contracts
 
@@ -17,8 +20,9 @@ for the tested source tree, checks, and remaining external gates.
   prompt text, provider payload, credentials, or hidden reasoning. Provider
   source and item IDs are stored as domain-separated SHA-256 fingerprints;
   source versions remain the bounded version labels provided by current source
-  adapters. Planning and build decisions are independently bounded and expose
-  truncation counts.
+  adapters. These labels are not immutable Postgres version references, so the
+  Phase 10 cross-store reference contract is still unmet. Planning and build
+  decisions are independently bounded and expose truncation counts.
 - [`persistence/dynamodb.py`](../../backend/src/personal_ai/persistence/dynamodb.py)
   implements `DynamoDBContextTraceRepository` in the existing owner/app/
   workspace-scoped conversation partition. `CTX_STATE` uses a conditional
@@ -42,9 +46,10 @@ for the tested source tree, checks, and remaining external gates.
   `CONTEXT_INSPECTION_ENABLED`. It returns the current estimate as
   `estimated_current_view`, plus a separate `actual_build` trace when a retained
   match exists. Otherwise it reports `manifest_missing` with
-  `no_retained_manifest_for_latest_user_turn`. Inspection does not write, prune,
-  invoke context providers, or call a model. Foreign resources continue to use
-  not-found behavior.
+  `no_retained_manifest_for_latest_user_turn`, or
+  `historical_schema_unsupported` when a retained schema is not supported.
+  Inspection does not write, prune, invoke context providers, or call a model.
+  Foreign resources continue to use not-found behavior.
 - [`frontend/src/lib/conversation-proxy.ts`](../../frontend/src/lib/conversation-proxy.ts)
   forwards allowlisted `X-Request-ID` and preserves the API correlation header.
   The development inspector sends an inspection request ID and displays it
@@ -55,11 +60,15 @@ for the tested source tree, checks, and remaining external gates.
 Traces are compact operational metadata in DynamoDB; bulky trace artifacts remain
 Phase 20 scope. The record carries the current code-defined policy and planner
 version labels plus source-version labels supplied by existing providers; it
-does not snapshot policy/source bodies. No client-supplied owner label grants
-access. The repository derives the partition from the server owner and validated
-application/workspace scope, verifies conversation metadata before writes, and
-checks each trace envelope before reads or export. Read-only inspection never
-changes the 32-record retention window.
+does not snapshot policy/source bodies or yet reference immutable Postgres
+versions. This is a local acceptance gap. Phase 10 says to preserve code-defined
+Phase 2 manifests and add no new registry product, so resolving the required
+version-reference design remains explicit work rather than an implicit new
+registry. No client-supplied owner label grants access. The repository derives
+the partition from the server owner and validated application/workspace scope,
+verifies conversation metadata before writes, and checks each trace envelope
+before reads or export. Read-only inspection never changes the 32-record
+retention window.
 
 The root README was reviewed. No README edit was required: this phase adds a
 development-gated diagnostic detail that the root README does not currently
@@ -68,8 +77,9 @@ behavior.
 
 ## Scope limits
 
-- A missing or expired trace degrades to the explicitly labeled estimated view;
-  it does not infer a previous build from current records.
+- A missing, expired, or unsupported historical trace degrades to the explicitly
+  labeled estimated view; it does not infer a previous build from current
+  records.
 - This repository persists conversation chat-build traces. Standalone research,
   proposal, and booking preparations continue to use their existing Phase 12
   manifests but are outside this conversation-turn trace store.

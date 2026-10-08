@@ -11,7 +11,8 @@ type MemoryEvent = { id: string; type: string; reason_code: string; policy_versi
 type Lifecycle = { status: string; state_version: number; retrieval_count: number; importance: number | null; superseded_by_memory_id: string | null; consolidated_into_memory_ids: string[]; last_retrieved_at: string | null };
 type Report = {
   inspection_request_id: string | null;
-  trace_state: "available" | "manifest_missing";
+  trace_state: "available" | "manifest_missing" | "historical_schema_unsupported";
+  trace_missing_reason: string | null;
   actual_build_trace: ActualBuildTrace | null;
   memory?: { mode: string; tokens: number; requested_variant: string | null; applied_variant: string | null; policy_version: string | null; lifecycle_event_ids: string[]; records: { id: string; type: string; source_conversation_id: string | null; source_message_ids: string[]; source_records: MemorySource[]; effective_at: string; selected: boolean; selection_kind: string; reason: string | null; similarity: number | null; score: number | null; score_reason: string | null; score_components: { importance: number | null; recency: number | null; frequency: number | null; confidence: number | null } | null; lifecycle?: Lifecycle; events?: MemoryEvent[]; estimated_tokens: number }[] };
   counter_kind: string;
@@ -80,7 +81,7 @@ export default function ContextInspector({ enabled = false, memoryEnabled = fals
         <p>Selected conversation messages: {report.actual_build_trace.selected_message_count}{report.actual_build_trace.selected_messages_truncated ? ` (first ${report.actual_build_trace.selected_message_ids.length} retained)` : ""}.</p>
         {!!report.actual_build_trace.excluded_messages.length && <><p>Excluded messages</p><ul>{report.actual_build_trace.excluded_messages.map(item => <li key={item.message_id}>{item.message_id}: {item.reason}</li>)}</ul></>}
         {report.actual_build_trace.excluded_messages_truncated && <p>Excluded-message list is bounded ({report.actual_build_trace.excluded_message_count} total).</p>}
-      </section> : <p>No retained actual-build manifest matches the latest user turn. The view below is a current estimate and may differ from what an earlier request used.</p>}
+      </section> : <p>{report.trace_state === "historical_schema_unsupported" ? "A retained actual-build manifest uses an unsupported historical schema; it cannot be displayed." : "No retained actual-build manifest matches the latest user turn."} The view below is a current estimate and may differ from what an earlier request used.</p>}
       <h3>Estimated current view</h3>
       <p>Counter: {report.counter_kind}. Estimates can differ from provider-authoritative counts used for model requests.</p>
       {report.overflow && <p role="alert">Rejected: {report.overflow}. Edit the newest message to fit.</p>}

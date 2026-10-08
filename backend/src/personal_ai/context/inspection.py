@@ -24,14 +24,18 @@ class ContextInspector:
         *,
         trace: ContextTraceManifest | None = None,
         inspection_request_id: str | None = None,
+        trace_state: str | None = None,
+        trace_missing_reason: str | None = None,
     ) -> dict:
         report = {
             "counter_kind": "estimated",
             "view_kind": "estimated_current_view",
             "historical_reconstruction": False,
             "inspection_request_id": inspection_request_id,
-            "trace_state": "available" if trace is not None else "manifest_missing",
-            "trace_missing_reason": (
+            "trace_state": trace_state or (
+                "available" if trace is not None else "manifest_missing"
+            ),
+            "trace_missing_reason": trace_missing_reason or (
                 None if trace is not None else "no_retained_manifest_for_latest_user_turn"
             ),
             "actual_build_trace": trace.model_dump(mode="json") if trace is not None else None,

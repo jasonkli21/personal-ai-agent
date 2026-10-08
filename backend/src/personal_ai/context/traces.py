@@ -21,6 +21,10 @@ MAX_CONTEXT_TRACE_BYTES = 48 * 1024
 CONTEXT_BUILD_POLICY_VERSION = "context-build-policy-v1"
 
 
+class UnsupportedContextTraceSchemaError(Exception):
+    """A scoped retained trace uses a schema this runtime cannot inspect."""
+
+
 class ContextTraceSourceRequest(BaseModel):
     """Safe admission bounds for one requested provider operation."""
 
@@ -387,7 +391,9 @@ def _trace_identifier_hash(kind: str, value: str) -> str:
 class ContextTraceRepository(Protocol):
     """Owner- and application-scoped persistence for bounded actual build traces."""
 
-    def put(self, *, owner_id: str, trace: ContextTraceManifest) -> None: ...
+    def put(
+        self, *, owner_id: str, trace: ContextTraceManifest, deadline: float | None = None
+    ) -> None: ...
 
     def latest_for_user_turn(
         self,
@@ -405,7 +411,10 @@ class InMemoryContextTraceRepository:
     def __init__(self) -> None:
         self.records: dict[tuple[str, str, str | None, UUID], list[ContextTraceManifest]] = {}
 
-    def put(self, *, owner_id: str, trace: ContextTraceManifest) -> None:
+    def put(
+        self, *, owner_id: str, trace: ContextTraceManifest, deadline: float | None = None
+    ) -> None:
+        del deadline
         key = (owner_id, trace.application_id, trace.workspace_id, trace.conversation_id)
         records = self.records.setdefault(key, [])
         if any(record.assistant_message_id == trace.assistant_message_id for record in records):

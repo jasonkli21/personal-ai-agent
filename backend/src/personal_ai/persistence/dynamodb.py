@@ -24,6 +24,7 @@ from personal_ai.context.traces import (
     MAX_CONTEXT_TRACE_BYTES,
     MAX_CONTEXT_TRACE_RETENTION,
     ContextTraceManifest,
+    UnsupportedContextTraceSchemaError,
 )
 from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
 from personal_ai.persistence.postgres_memory import EffectGuardToken
@@ -1246,20 +1247,33 @@ class DynamoDBSummaryRepository:
                         raise ConversationConflictError("summary chunk identity conflict") from error
 
 
+def _check_context_trace_deadline(deadline: float | None) -> None:
+    if deadline is not None and monotonic() >= deadline:
+        raise TimeoutError("context trace persistence deadline exceeded")
+
+
 class DynamoDBContextTraceRepository:
     """Compact actual-build manifests in the scoped conversation partition."""
 
     def __init__(self, table: DynamoDBRuntimeTable) -> None:
         self.table = table
 
-    def put(self, *, owner_id: str, trace: ContextTraceManifest) -> None:
+    def put(
+        self,
+        *,
+        owner_id: str,
+        trace: ContextTraceManifest,
+        deadline: float | None = None,
+    ) -> None:
         try:
             scope = ApplicationScope(
                 application_id=trace.application_id,
                 workspace_id=trace.workspace_id,
             )
             keys = _conversation_keys_for(owner_id, scope, trace.conversation_id)
+            _check_context_trace_deadline(deadline)
             conversation = self.table.get(keys.meta)
+            _check_context_trace_deadline(deadline)
             if conversation is None or not _authorized(conversation, owner_id, scope):
                 raise ResourceNotFoundError("resource not found")
             payload = trace.model_dump_json()
@@ -1282,7 +1296,9 @@ class DynamoDBContextTraceRepository:
                 "payload": payload,
             }
             for attempt in range(3):
+                _check_context_trace_deadline(deadline)
                 state = self.table.get(state_key)
+                _check_context_trace_deadline(deadline)
                 if state is not None and not _authorized(state, owner_id, scope):
                     raise StorageUnavailableError("context trace state scope mismatch")
                 previous_sequence = int(state.get("sequence", 0)) if state else 0
@@ -1293,7 +1309,7 @@ class DynamoDBContextTraceRepository:
                         sort_prefix="CTX#",
                         consistent=True,
                         descending=False,
-                        deadline=monotonic() + 5,
+                        deadline=min(deadline, monotonic() + 5) if deadline is not None else monotonic() + 5,
                         limit=MAX_CONTEXT_TRACE_RETENTION,
                     )
                     obsolete = next(
@@ -1328,13 +1344,17 @@ class DynamoDBContextTraceRepository:
                 if obsolete is not None:
                     operations.append(_delete({"PK": obsolete["PK"], "SK": obsolete["SK"]}))
                 try:
+                    _check_context_trace_deadline(deadline)
                     self.table.transact(operations)
+                    _check_context_trace_deadline(deadline)
                     return
                 except Exception as error:
                     if not _conditional_failure(error) or attempt == 2:
                         raise
             raise StorageUnavailableError("context trace write conflict")
         except (ResourceNotFoundError, StorageUnavailableError):
+            raise
+        except TimeoutError:
             raise
         except Exception as error:
             raise StorageUnavailableError("context trace persistence unavailable") from error
@@ -1359,6 +1379,7 @@ class DynamoDBContextTraceRepository:
             )
             latest: ContextTraceManifest | None = None
             latest_sequence = -1
+            latest_unsupported_sequence = -1
             for item in items:
                 if not _authorized(item, owner_id, scope):
                     raise ResourceNotFoundError("resource not found")
@@ -1367,7 +1388,14 @@ class DynamoDBContextTraceRepository:
                     or item.get("user_message_id") != str(user_message_id)
                 ):
                     continue
-                trace = ContextTraceManifest.model_validate_json(item["payload"])
+                sequence = int(item.get("sequence", -1))
+                payload = json.loads(item["payload"])
+                if not isinstance(payload, dict):
+                    raise StorageUnavailableError("context trace payload invalid")
+                if payload.get("schema_version") != "context-trace-v1":
+                    latest_unsupported_sequence = max(latest_unsupported_sequence, sequence)
+                    continue
+                trace = ContextTraceManifest.model_validate(payload)
                 if (
                     trace.conversation_id != conversation_id
                     or trace.user_message_id != user_message_id
@@ -1377,11 +1405,14 @@ class DynamoDBContextTraceRepository:
                     or trace.workspace_id != scope.workspace_id
                 ):
                     raise StorageUnavailableError("context trace identity mismatch")
-                sequence = int(item.get("sequence", -1))
                 if sequence > latest_sequence:
                     latest = trace
                     latest_sequence = sequence
+            if latest_unsupported_sequence > latest_sequence:
+                raise UnsupportedContextTraceSchemaError("unsupported_context_trace_schema")
             return latest
+        except UnsupportedContextTraceSchemaError:
+            raise
         except (ResourceNotFoundError, StorageUnavailableError):
             raise
         except Exception as error:

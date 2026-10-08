@@ -25,7 +25,13 @@ from personal_ai.context.contracts import ContextError
 from personal_ai.context.deadline import remaining
 from personal_ai.context.traces import ContextTraceManifest, ContextTraceRepository
 from personal_ai.entities import MAX_MESSAGE_CONTENT_CHARS, Message, MessageRole, MessageStatus
-from personal_ai.llm import ChatMessage, LLMClient, LLMError, LLMInvalidResponseError
+from personal_ai.llm import (
+    ChatMessage,
+    LLMClient,
+    LLMError,
+    LLMInvalidResponseError,
+    LLMTimeoutError,
+)
 from personal_ai.storage import ConversationConflictError
 from personal_ai.storage.async_io import io_call
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
@@ -264,15 +270,7 @@ class ChatTurnService:
                 context_plan=context_plan,
             )
             remaining(deadline)
-            assistant = self._new_message(
-                conversation_id=user.conversation_id,
-                role=MessageRole.ASSISTANT,
-                content="",
-                status=MessageStatus.STREAMING,
-                now=datetime.now(UTC),
-                parent_message_id=user.id,
-                supersedes_message_id=assistant_supersedes,
-            )
+            assistant_id = uuid4()
             if self._context_traces is not None:
                 if assembled.manifest is None:
                     raise ContextError("actual_context_manifest_unavailable")
@@ -281,7 +279,7 @@ class ChatTurnService:
                     request_id=request_id,
                     conversation_id=user.conversation_id,
                     user_message_id=user.id,
-                    assistant_message_id=assistant.id,
+                    assistant_message_id=assistant_id,
                     scope=(
                         self._application_context.scope
                         if self._application_context is not None
@@ -292,7 +290,23 @@ class ChatTurnService:
                     ),
                     context_plan=context_plan,
                 )
-                self._context_traces.put(owner_id=self._owner_id, trace=trace)
+                try:
+                    self._context_traces.put(
+                        owner_id=self._owner_id, trace=trace, deadline=deadline
+                    )
+                except TimeoutError as error:
+                    raise LLMTimeoutError("context preparation timed out") from error
+                remaining(deadline)
+            assistant = self._new_message(
+                conversation_id=user.conversation_id,
+                role=MessageRole.ASSISTANT,
+                content="",
+                status=MessageStatus.STREAMING,
+                now=datetime.now(UTC),
+                parent_message_id=user.id,
+                supersedes_message_id=assistant_supersedes,
+                message_id=assistant_id,
+            )
             persisted_assistant = self._messages.prepare_message_turn(
                 owner_id=self._owner_id,
                 conversation_id=user.conversation_id,
@@ -544,9 +558,10 @@ class ChatTurnService:
         now: datetime,
         parent_message_id: UUID | None = None,
         supersedes_message_id: UUID | None = None,
+        message_id: UUID | None = None,
     ) -> Message:
         return Message(
-            id=uuid4(),
+            id=message_id or uuid4(),
             conversation_id=conversation_id,
             owner_id=self._owner_id,
             role=role,
