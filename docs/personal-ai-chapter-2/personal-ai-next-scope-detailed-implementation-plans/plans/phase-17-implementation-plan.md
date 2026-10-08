@@ -1,6 +1,6 @@
 # Phase 17 implementation plan — Concrete provider adapters: Gemini, Groq, Cloudflare
 
-Renumbered on 2026-10-06 from former next-scope Phase 9. This file preserves the former detailed-plan scope; the 2026-10-07 reconciliation clarifies reference-adapter extensibility alongside numbering, prerequisites, persistence, and README updates. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
+Renumbered on 2026-10-06 from former next-scope Phase 9. Phase 17 is completed locally; see the [Phase 17 evidence](../../phase-17-implementation-evidence.md) and [current state](../../../current-state.md). This plan preserves the original scope, work packages, invariants, and acceptance criteria rather than rewriting its implementation history. Read the source roadmap, Phase 10 persistence plan, and shared execution contract for the active future boundary.
 
 ## Scope boundary
 
@@ -28,9 +28,9 @@ Renumbered on 2026-10-06 from former next-scope Phase 9. This file preserves the
 - cascades
 - provider discovery marketplace
 
-## Current state and reuse
+## Baseline observed before Phase 17 implementation (historical)
 
-Gemini SDK adapters are implemented and need neutral migration. Groq and Cloudflare adapters are genuinely missing. LiteLLM is optional, not a required new dependency.
+At planning time, Gemini SDK adapters existed and needed neutral migration; Groq and Cloudflare adapters were missing. LiteLLM was optional in that plan. The implementation that completed Phase 17 used the Phase 16 neutral contracts and did not make LiteLLM the transport layer; the later LiteLLM decision is recorded separately in [ADR 0022](../../../decisions/0022-litellm-inference-transport-boundary.md).
 
 Verified existing backend seams include the current `personal_ai.llm`, dependency/settings, context, memory, and provider boundary modules. Infrastructure changes must build on the Postgres/DynamoDB/GCS ownership established by Phase 10; do not reintroduce Firestore as a canonical runtime store.
 
@@ -44,6 +44,10 @@ Required phase: 16 (former Phase 8). Phase 10 is also a standing persistence pre
 - Cloudflare models requiring Workers Paid are ineligible in strict-free configuration.
 - Real-provider checks are opt-in and must not be represented as passed when credentials/network are unavailable.
 - Gemini/Groq/Cloudflare are reference adapters validating the [neutral seam](../../02-target-architecture.md#9-provider-runtime), not privileged identities. Concrete scope remains these three; OpenAI, Anthropic, and other future live adapters are not added here.
+
+## Post-completion reconciliation
+
+The Gemini, Groq, and Cloudflare adapters remain reference and parity evidence for the neutral contracts. Their edge cases, defensive invariants, and contract tests are migration criteria for the planned [Phase 17R](phase-17r-implementation-plan.md). Phase 17R may move provider transport normalization to the LiteLLM Python SDK only after parity is demonstrated; retain a provider-specific compatibility shim only for a demonstrated LiteLLM gap. This reconciliation does not invalidate Phase 17 or imply that LiteLLM was used during its implementation.
 
 ## Work packages
 

@@ -30,16 +30,31 @@ Policy -> Context planner -> Context providers -> Context builder
           |                                  +--> Postgres memory/profile/research
           |                                  +--> DynamoDB conversation/runtime
           v
-AI capability runtime
+          AI capability runtime
           |
           +--> search/research through search adapters
           |
-          +--> neutral model runtime + endpoint registry
-                 |-- STRICT_FREE: automatic eligible APIs
-                 |     Gemini / Groq / Cloudflare reference adapters
-                 |-- EXPLICIT_BYOK: explicit user-billed APIs (future)
-                 '-- CHATGPT_PLAN: explicit subscription lane
-                       local/user-controlled bridge
+          +--> Personal AI endpoint registry + hard admission
+                 |
+                 v
+              Personal AI semantic router
+              pluggable RoutingStrategy
+                 |
+                 v
+              ExecutionPlan
+                 |
+                 v
+              Personal AI inference gateway
+                 |
+                 v
+              LiteLLM Python SDK (planned in Phase 17R) -> selected endpoint
+              Gemini / Groq / Cloudflare initially;
+              OpenRouter as a later provider family
+
+                 STRICT_FREE: eligible automatic endpoint profiles
+                 EXPLICIT_BYOK: explicit user-billed lane (future)
+                 CHATGPT_PLAN: separate explicit subscription lane
+                   via local/user-controlled bridge
 ```
 
 ## 3. Target data plane after Phase 10
@@ -128,11 +143,17 @@ Before mutation: require a typed proposal, domain validation, exact user confirm
 
 ## 9. Provider runtime
 
-Provider SDKs remain below neutral inference/embedding contracts. Automatic routing applies hard strict-free/privacy/capability filters before deterministic priorities, then later measured quota/cascade/adaptive optimization.
+Personal AI's neutral inference/embedding contracts remain the application-facing boundary for generation, streaming, structured generation, token/counting semantics, embeddings, usage, provider/execution identity, latency/status/error information, sensitivity/inference context, cancellation, and embedding-space identity. LiteLLM types do not escape the Personal AI inference gateway; application, domain, and context code do not call LiteLLM directly.
 
-Gemini, Groq, and Cloudflare are reference adapters. Additional free providers or hosted endpoints normally require an adapter, endpoint profile, contract tests, compatibility/preflight, evaluation evidence, and configuration, without changes to domain/context/routing logic. Neutral capabilities cover streaming, bounded and structured generation, counting, embeddings, terminal status, usage metadata, safe errors, cancellation, and capability declarations; provider transport, SDK, and serialization stay inside adapters.
+The planned first transport integration is the LiteLLM Python SDK inside the existing runtime, gated by [Phase 17R](personal-ai-next-scope-detailed-implementation-plans/plans/phase-17r-implementation-plan.md) after completed Phase 17. Phase 17's Gemini/Groq/Cloudflare adapters remain reference/parity evidence, not a claim that LiteLLM was used. A separate LiteLLM Proxy/Gateway is not initial scope.
 
-Provider, endpoint/model, credential reference/source, account/project/tier, cost class, and routing eligibility are distinct facts. Their execution modes and billing boundaries are defined once in [inference and routing](03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes). Endpoint profiles contain safe references/metadata, never credential secrets.
+Personal AI owns endpoint profiles, hard admission/privacy policy, semantic routing, execution/cost-mode permission, quota accounting, evaluation, cascades, and later adaptive strategies. The router applies deterministic hard filters before a project-owned `RoutingStrategy`; the strategy produces an explainable selection, and Personal AI builds an `ExecutionPlan`. LiteLLM mechanically executes that selected endpoint. LiteLLM Router, cross-provider/model fallback, and load balancing must not silently make semantic decisions. A narrow bounded retry of the same selected endpoint may be allowed when safe; it cannot change provider/model, account/credential scope, cost mode, or consent.
+
+The primary routable unit is a versioned execution endpoint profile, not provider order or a LiteLLM catalog entry. Model, provider, deployment/endpoint, credential source/scope, account/project/tier, execution mode, cost/billing class, capability, and privacy eligibility are distinct facts. Endpoint profiles contain safe references and metadata, never credential secrets. `STRICT_FREE`, `EXPLICIT_BYOK`, and `CHATGPT_PLAN` remain separate. Unknown cost is not free; strict-free exhaustion never selects paid/BYOK or subscription capacity.
+
+Gemini, Groq, and Cloudflare are initial reference endpoint families, not privileged identities. A LiteLLM-supported provider normally adds endpoint/configuration/profile/evaluation without new transport code; retain a narrow provider-specific shim only for a demonstrated LiteLLM compatibility gap. OpenRouter is a possible later provider family, not a Phase 17R or Phase 18–24 live requirement. A specific OpenRouter model can be a normal endpoint profile. An OpenRouter-managed `auto`/`free` router is a future composite/virtual endpoint whose requested virtual endpoint, actual selected model, and upstream provider are retained where available; it is not the Personal AI semantic router.
+
+Routing decision and invocation observations follow the shared [Routing Observation Contract](03-free-tier-inference-and-routing.md#routing-observation-contract). Phase 21 introduces its strategy and `ExecutionPlan` seams; Phases 19–24 add joinable operational facts; Phase 35 is the first phase that experiments with learned/adaptive strategies.
 
 ChatGPT plan is a separate explicit lane using a local/user-controlled credential runtime and shared context package. It never silently becomes automatic fallback or API-key billing.
 

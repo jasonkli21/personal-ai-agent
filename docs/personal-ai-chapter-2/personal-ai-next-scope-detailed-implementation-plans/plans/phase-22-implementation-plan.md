@@ -40,7 +40,7 @@ Required phases: 20 and 21, plus Phase 10 persistence foundation.
 
 ## Work packages
 ### P22.0 — Baseline matrix and scoring
-Extend fixture/run formats to record task/model/config/serializer/counter/policy/revision/seed where supported. Define held-out fixtures and deterministic schema/citation/provenance/hard-constraint/privacy scoring, with answer support/relevance, token/quota and latency metrics. Model judges may supplement, never be sole scorer. Capture current single-provider and Phase 21 deterministic baselines before comparison.
+Extend fixture/run formats to record task/profile identity and version against endpoint-profile identity/version, model, provider, account/config scope where material, serializer/runtime/config, counter, policy, tested revision, and seed/counter where supported. Define held-out fixtures and deterministic schema/citation/provenance/hard-constraint/privacy scoring, with answer support/relevance, token/quota and latency metrics. Model judges may supplement, never be sole scorer. Capture current single-provider and Phase 21 deterministic-strategy baselines before comparison.
 
 **Acceptance:** Held-out task fixtures and thresholds produce reproducible deterministic baseline metrics.
 
@@ -54,7 +54,7 @@ These three remain the initial live comparison. The harness iterates registered 
 ### P22.2 — Versioned quality profiles and promotion
 Define task quality floors, confidence/sample coverage and profile invalidation when model/config changes. Unrun/skipped endpoints have no measured quality. Require reproducible benefit and no hard-boundary regression; export/publish only permitted artifacts. Domain phases later extend fixtures with their implemented read contracts before optimization consumes those results.
 
-Bind quality identity to provider, endpoint/model, serializer/configuration, task/profile, policy version, and tested revision, plus counter/seed where applicable. Freeze safe profile/account/execution metadata needed to reproduce eligibility without secrets. Relevant changes invalidate evidence rather than inheriting another credential/account/profile's eligibility or an obsolete configuration's score.
+Bind each quality result to provider, endpoint-profile ID/version, logical model, account/configuration scope where material, serializer/runtime version, task-profile ID/version, policy version, tested revision, and counter/seed where applicable. Freeze safe profile/account/execution metadata needed to reproduce eligibility without secrets. When quality evidence affects a route, the [routing observation](../../03-free-tier-inference-and-routing.md#routing-observation-contract) records the exact evidence/profile version used; later results correlate to the invocation/decision they evaluate where applicable. Relevant changes invalidate evidence rather than inheriting another credential/account/profile's eligibility or an obsolete configuration's score.
 
 **Acceptance:** Versioned profiles include coverage/config evidence and cannot promote stale or unrun models.
 

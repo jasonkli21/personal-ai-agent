@@ -37,6 +37,8 @@ Required phase: 18, plus Phase 10 persistence foundation.
 - Accounting failures do not silently change inference semantics; advisory versus admission-blocking failures are explicit.
 - Store safe metadata only—no prompts/responses/secrets by default.
 - Exact/derived/configured/unknown confidence states remain distinguishable.
+- LiteLLM usage telemetry may supply observations but does not define Personal AI quota units, authority, or remaining-capacity certainty.
+- Operational records are stable and joinable; do not add learned-routing features, feature vectors, reward functions, or model-specific training data.
 
 ## Work packages
 
@@ -46,6 +48,8 @@ Add one bounded invocation/reservation identity per external operation: generati
 **Acceptance:** All external operation families reserve once before dispatch and settle known/unknown outcomes safely.
 
 Attribution consumes [distinct execution identities](../../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes): provider, endpoint/profile version, account/project/tier, safe credential scope/class, execution/cost class, app/workspace/task, quota bucket, usage, status, and latency. Separate credential/account scopes for the same provider/model must not merge quota or billing attribution. Store references/classification only, never secrets. Representing explicit BYOK attribution adds no BYOK dispatch, invoices, monthly billing, cost dashboard, or automatic spending budgets.
+
+Keep stable lineage fields equivalent to `invocation_id`, `task_id`/profile version, `endpoint_profile_id`/version, nullable `routing_decision_id`, nullable `routing_strategy_id`/version until Phase 21, `parent_invocation_id` for retry/cascade lineage, request/run correlation ID, registry/policy versions, and start/completion times. Reuse repository IDs where appropriate. Record input/output count confidence and source alongside usage, latency, status, normalized error, retries, rate-limit/quota attribution, and owner/application/workspace/task scope. Unknown quota and ambiguous outcomes remain explicitly unknown.
 
 ### P19.1 — Quota windows and health
 Represent unit/window/reset/source/confidence separately for each quota bucket; do not mix requests/day with tokens/minute or Cloudflare neurons. Account-level quota is shared across users/apps; track attributable local usage separately and conservative unobserved external use. Record latency, success, 429/5xx/retries, cooldown and exact/derived/configured/unknown observations. Basic search admission/zero-overflow checks belong here; Brave requires verified prepaid/no-auto-reload/no-paid-balance configuration and source rights, with postpaid overflow excluded. Scarcity scoring waits for Phase 23.
@@ -58,6 +62,8 @@ Represent unit/window/reset/source/confidence separately for each quota bucket; 
 Store compact safe aggregates in Postgres and, where justified by Phase 10, high-volume append-only operational events in DynamoDB. Extend account inventory/export/deletion rules, documenting retained tombstones separately. Do not rely on paid TTL behavior for strict-$0 cleanup. Developer summaries never expose prompts, secrets or fabricated remaining quota. Account deletion/lifecycle closure remains an existing release obligation.
 
 **Acceptance:** Safe summaries, bounded retention and account inventory work without paid TTL reliance or cross-store canonical duplication.
+
+The [Routing Observation Contract](../../03-free-tier-inference-and-routing.md#routing-observation-contract) defines how invocation outcomes join later to a decision and strategy version. Persist stable semantic observations only; Phase 35 derives features from them.
 
 ## Requirement coverage
 | Requirement | Work packages |

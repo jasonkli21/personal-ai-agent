@@ -1,10 +1,10 @@
 # Detailed implementation plans
 
-This directory contains 33 implementation plans for the regenerated chapter. `manifest.json` is the machine-readable index and prerequisite graph.
+This directory contains 34 implementation plans for the regenerated chapter. `manifest.json` is the machine-readable index and prerequisite graph; phase IDs are strings, so the new `17R` gate is represented directly without changing later phase identifiers.
 
 ## Plan authority
 
-This is an index of plans, not a living implementation-status record. See [current state](../../current-state.md) for delivered work and remaining acceptance gates. Phases 11–13 and 16–17 are implemented locally; Phase 14 is partial pending immutable Postgres policy/source-version references; Phase 15 is partial pending end-to-end derived-context revocation and external acceptance; Phases 18–36 remain future work under the preserved-scope [numbering map](../NUMBERING-MAP.md). Phase 17's new adapters remain disabled pending account/model, privacy, and live compatibility evidence, and are not wired into current workflows without matching authoritative counters. Reading a plan does not authorize implementation.
+This is an index of plans, not a living implementation-status record. See [current state](../../current-state.md) for delivered work and remaining acceptance gates. Phases 11–13 and 16–17 are implemented locally; Phase 14 is partial pending immutable Postgres policy/source-version references; Phase 15 is partial pending end-to-end derived-context revocation and external acceptance; Phase 17R is planned and not implemented; Phases 18–36 remain future work under the preserved-scope [numbering map](../NUMBERING-MAP.md). Phase 17's new adapters remain disabled pending account/model, privacy, and live compatibility evidence, and are not wired into current workflows without matching authoritative counters. Reading a plan does not authorize implementation.
 
 See [ADR 0021](../../decisions/0021-polyglot-persistence-foundation.md), the [Phase 10 storage contract](../phase-10-storage-ownership-and-access-patterns.md) and [migration/verification plan](../phase-10-migration-cutover-and-verification-plan.md) for the reviewed foundation.
 
@@ -12,7 +12,7 @@ See [ADR 0021](../../decisions/0021-polyglot-persistence-foundation.md), the [Ph
 
 Former Phase 3–28 detailed plans are authoritative for substantive scope. Renumbering changes only phase/prerequisite identifiers, persistence references invalidated by Phase 10, and README-maintenance obligations. Do not replace specific work packages or acceptance criteria with generic summaries.
 
-The 2026-10-07 reconciliation adds extensibility constraints and conformance criteria without removing those commitments or changing phase order/prerequisites. Read the [Application Integration Contract](../02-target-architecture.md#application-integration-contract) and [execution identity/cost modes](../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes) before the affected phase plan; detailed semantics are not repeated in this index. Source copies retain their historical planning snapshot rather than mirroring the clarified active plans. Manifest byte metadata tracks edited plans; phase identities, titles, and graph remain unchanged.
+The 2026-10-07 reconciliation adds extensibility constraints and conformance criteria without removing those commitments. The 2026-10-08 inference/routing reconciliation inserts Phase 17R after completed Phase 17 and gates Phase 18 without renumbering later phases. Read the [Application Integration Contract](../02-target-architecture.md#application-integration-contract), [inference/routing contract](../03-free-tier-inference-and-routing.md), and [execution identity/cost modes](../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes) before affected phase plans; detailed semantics are not repeated in this index. Source copies retain their historical planning snapshot rather than mirroring the clarified active plans. Manifest byte metadata tracks edited plans.
 
 ## Shared closeout rule
 
@@ -33,7 +33,8 @@ The `source/` directory preserves input planning documents for provenance. Their
 - Phase 15: [Permissions and sensitivity policy](plans/phase-15-implementation-plan.md)
 - Phase 16: [Provider-neutral inference and embedding contracts](plans/phase-16-implementation-plan.md)
 - Phase 17: [Concrete provider adapters: Gemini, Groq, Cloudflare](plans/phase-17-implementation-plan.md)
-- Phase 18: [Provider/model registry and strict-free eligibility](plans/phase-18-implementation-plan.md)
+- Phase 17R: [LiteLLM execution substrate reconciliation](plans/phase-17r-implementation-plan.md)
+- Phase 18: [Endpoint registry and strict-free eligibility](plans/phase-18-implementation-plan.md)
 - Phase 19: [Provider usage accounting and quota ledger](plans/phase-19-implementation-plan.md)
 - Phase 20: [Cloud Storage artifact tier and retention](plans/phase-20-implementation-plan.md)
 - Phase 21: [Deterministic task-aware routing](plans/phase-21-implementation-plan.md)

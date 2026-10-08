@@ -91,7 +91,7 @@
     "phase": "16",
     "title": "Provider-neutral inference and embedding contracts",
     "file": "plans/phase-16-implementation-plan.md",
-    "bytes": 10203,
+    "bytes": 10786,
     "prerequisites": [
       "12",
       "15",
@@ -102,20 +102,31 @@
     "phase": "17",
     "title": "Concrete provider adapters: Gemini, Groq, Cloudflare",
     "file": "plans/phase-17-implementation-plan.md",
-    "bytes": 7070,
+    "bytes": 7993,
     "prerequisites": [
       "16",
       "10"
     ]
   },
   {
+    "phase": "17R",
+    "title": "LiteLLM execution substrate reconciliation",
+    "file": "plans/phase-17r-implementation-plan.md",
+    "bytes": 8172,
+    "prerequisites": [
+      "16",
+      "17",
+      "10"
+    ]
+  },
+  {
     "phase": "18",
-    "title": "Provider/model registry and strict-free eligibility",
+    "title": "Endpoint registry and strict-free eligibility",
     "file": "plans/phase-18-implementation-plan.md",
-    "bytes": 5820,
+    "bytes": 6922,
     "prerequisites": [
       "15",
-      "17",
+      "17R",
       "10"
     ]
   },
@@ -123,7 +134,7 @@
     "phase": "19",
     "title": "Provider usage accounting and quota ledger",
     "file": "plans/phase-19-implementation-plan.md",
-    "bytes": 6255,
+    "bytes": 7438,
     "prerequisites": [
       "18",
       "10"
@@ -133,7 +144,7 @@
     "phase": "20",
     "title": "Cloud Storage artifact tier and retention",
     "file": "plans/phase-20-implementation-plan.md",
-    "bytes": 6492,
+    "bytes": 6998,
     "prerequisites": [
       "1",
       "10",
@@ -145,7 +156,7 @@
     "phase": "21",
     "title": "Deterministic task-aware routing",
     "file": "plans/phase-21-implementation-plan.md",
-    "bytes": 5566,
+    "bytes": 10515,
     "prerequisites": [
       "16",
       "18",
@@ -157,7 +168,7 @@
     "phase": "22",
     "title": "Cross-provider task evaluation matrix",
     "file": "plans/phase-22-implementation-plan.md",
-    "bytes": 5595,
+    "bytes": 6109,
     "prerequisites": [
       "20",
       "21",
@@ -168,7 +179,7 @@
     "phase": "23",
     "title": "Quota-aware routing",
     "file": "plans/phase-23-implementation-plan.md",
-    "bytes": 4214,
+    "bytes": 5166,
     "prerequisites": [
       "22",
       "10"
@@ -178,7 +189,7 @@
     "phase": "24",
     "title": "Bounded cascades and deterministic validation",
     "file": "plans/phase-24-implementation-plan.md",
-    "bytes": 4357,
+    "bytes": 4993,
     "prerequisites": [
       "23",
       "10"
@@ -344,7 +355,7 @@
     "phase": "35",
     "title": "Adaptive routing experiments",
     "file": "plans/phase-35-implementation-plan.md",
-    "bytes": 4214,
+    "bytes": 6042,
     "prerequisites": [
       "22",
       "23",

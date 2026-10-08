@@ -1,6 +1,8 @@
 # Phase 16 implementation plan — Provider-neutral inference and embedding contracts
 
-Renumbered on 2026-10-06 from former next-scope Phase 8. This plan preserves the former detailed plan’s normative commitments, work packages, invariants, acceptance criteria, and verification scope. The 2026-10-07 reconciliation clarifies the neutral extension seam and embedding-space identity in addition to numbering/persistence/README updates. Read the source roadmap, Phase 10 persistence plan, and shared execution contract first. This plan defines future implementation; it does not claim delivery.
+Renumbered on 2026-10-06 from former next-scope Phase 8. This plan preserves the former detailed plan’s normative commitments, work packages, invariants, acceptance criteria, and verification scope. The 2026-10-07 reconciliation clarifies the neutral extension seam and embedding-space identity in addition to numbering/persistence/README updates. Phase 16 is implemented locally; see the [Phase 16 evidence](../../phase-16-implementation-evidence.md) and [current state](../../../current-state.md). This plan remains the record of its scope and acceptance boundary.
+
+**Post-Phase 17R boundary:** These Personal AI-owned neutral contracts remain the application-facing inference boundary after any future LiteLLM adoption. Generation, streaming, structured output, counting, embeddings, usage/status/error metadata, sensitivity context, cancellation, and embedding-space identity must not be redefined as LiteLLM-native types. A transport migration must fit beneath these contracts without requiring context, domain, or application callers to change.
 
 ## Scope boundary
 
@@ -28,7 +30,7 @@ Renumbered on 2026-10-06 from former next-scope Phase 8. This plan preserves the
 - embedding re-index migration
 - BYOK selection/execution or hosted secret storage
 
-## Current state and reuse
+## Baseline observed before Phase 16 implementation (historical)
 
 LLMClient.stream and optional concrete stream_bounded exist; structured extraction and embedding protocols are partial. Neutral generation/completion/usage/count metadata require extension, not a second SDK layer.
 

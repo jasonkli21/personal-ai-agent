@@ -13,7 +13,8 @@
 | 7 | 15 | permissions/sensitivity policy |
 | 8 | 16 | provider-neutral inference/embedding — implemented locally |
 | 9 | 17 | Gemini/Groq/Cloudflare adapters |
-| 10 | 18 | provider/model registry |
+| — | 17R | LiteLLM execution-substrate reconciliation — new gate after completed Phase 17 |
+| 10 | 18 | endpoint registry and strict-free eligibility |
 | 11 | 19 | usage/quota ledger |
 | 12 | 20 | GCS artifact tier |
 | 13 | 21 | deterministic task routing |
@@ -37,3 +38,5 @@
 | 28 | 36 | integrated hardening |
 
 Phases 3–9 are intentionally unused in this chapter. This avoids changing completed Phase 0–2 identifiers while making the major persistence migration the clearly visible Phase 10 boundary.
+
+Phase 17R is a new reconciliation gate, not a renumbering of a former phase. Phase 18–36 identifiers remain unchanged; Phase 18 depends on 17R so it cannot bypass the gate.

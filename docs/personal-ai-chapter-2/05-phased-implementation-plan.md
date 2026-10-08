@@ -8,7 +8,7 @@ verification gates; this roadmap records scope and sequencing, not evidence.
 
 This roadmap preserves the full former integrated scope, adds the Postgres/DynamoDB migration as Phase 10, and keeps completed next-scope Phases 0–2 unchanged. Phases 3–9 are intentionally unused. Detailed plans are authoritative for work packages and acceptance criteria.
 
-The 2026-10-07 extensibility reconciliation is additive within existing phases. The [target architecture](02-target-architecture.md#application-integration-contract) owns the integration model and [inference strategy](03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes) owns execution/cost semantics. The phase-local additions below preserve every prior scope commitment; no new major phase or prerequisite is introduced.
+The 2026-10-07 extensibility reconciliation is additive within existing phases. The 2026-10-08 inference/routing reconciliation adds the Phase 17R gate without renumbering Phases 18–36. The [target architecture](02-target-architecture.md#application-integration-contract) owns the integration model; [inference and routing](03-free-tier-inference-and-routing.md) owns the transport, routing, and execution/cost boundaries. Existing phase scope and numbering are preserved.
 
 ### Completed checkpoint
 
@@ -89,19 +89,25 @@ Validate neutral capability contracts with a synthetic provider and preserve exp
 
 ### Phase 17 — Concrete provider adapters: Gemini, Groq, Cloudflare
 
-Prerequisites: 16, 10.
+Prerequisites: 16, 10. **Completed locally; see Phase 17 evidence.**
 
-Scope is preserved from former Phase 9; see the detailed plan for the restored work packages and acceptance criteria.
+Scope is preserved from former Phase 9; the adapters remain reference/parity evidence. Phase 17R plans transport reconciliation after Phase 17 without rewriting its history.
 
 Implement Gemini/Groq/Cloudflare as reference adapters; additional live provider families remain outside this phase.
 
-### Phase 18 — Provider/model registry and strict-free eligibility
+### Phase 17R — LiteLLM execution substrate reconciliation
 
-Prerequisites: 15, 17, 10.
+Prerequisites: 16, 17, 10. **Planned; not implemented.**
+
+Adopt the LiteLLM Python SDK behind Personal AI's neutral inference contracts, prove Gemini/Groq/Cloudflare parity, and retire redundant provider transport code where safe. Personal AI remains the semantic router and LiteLLM executes the selected endpoint. Do not add a proxy, LiteLLM semantic routing, OpenRouter, or paid fallback.
+
+### Phase 18 — Endpoint registry and strict-free eligibility
+
+Prerequisites: 15, 17R, 10.
 
 Scope is preserved from former Phase 10; see the detailed plan for the restored work packages and acceptance criteria.
 
-Separate endpoint/model, credential/account, cost, and selection eligibility; represent explicit-only BYOK profiles without secrets or live BYOK execution.
+Make the versioned endpoint profile the routable/admission unit, keeping model, provider, deployment, credential/account/tier, cost, capability, and privacy facts distinct. Represent explicit-only BYOK profiles without secrets or live BYOK execution.
 
 ### Phase 19 — Provider usage accounting and quota ledger
 
@@ -123,7 +129,7 @@ Prerequisites: 16, 18, 19, 10.
 
 Scope is preserved from former Phase 13; see the detailed plan for the restored work packages and acceptance criteria.
 
-Route from registered endpoint facts and typed task requirements/policy rather than provider/task-name branches.
+Separate deterministic hard admission from a replaceable `RoutingStrategy`; use the deterministic scorer as the baseline and produce an explicit `ExecutionPlan`. Capture replayable, privacy-safe decision facts without raw prompts.
 
 ### Phase 22 — Cross-provider task evaluation matrix
 
@@ -237,7 +243,7 @@ Scope is preserved from former Phase 26; storage references are updated only whe
 
 Prerequisites: 22, 23, 24, 10.
 
-Scope is preserved from former Phase 27; storage references are updated only where Phase 10 supersedes Firestore.
+Scope is preserved from former Phase 27; storage references are updated only where Phase 10 supersedes Firestore. This remains the first learned/adaptive-routing phase, evaluating RouteLLM-style and other strategies behind the Phase 21 seam against the deterministic baseline.
 
 ### Phase 36 — Integrated evaluation and hardening
 
@@ -249,7 +255,7 @@ Validate the already implemented seams with a synthetic fifth app and synthetic 
 
 ## Execution order
 
-`0 [done] -> 1 [done] -> 2 [done] -> 10 -> 11 -> 12 -> ... -> 24 -> 25.1 -> 25.2 -> 25.3 -> 25.4 -> 26 -> ... -> 36`
+`0 [done] -> 1 [done] -> 2 [done] -> 10 -> 11 -> 12 -> ... -> 16 [implemented] -> 17 [implemented] -> 17R -> 18 -> 19 -> ... -> 24 -> 25.1 -> 25.2 -> 25.3 -> 25.4 -> 26 -> ... -> 36`
 
 Later phases with independent prerequisites may be implemented only when their detailed prerequisite set is satisfied and the user authorizes that phase.
 

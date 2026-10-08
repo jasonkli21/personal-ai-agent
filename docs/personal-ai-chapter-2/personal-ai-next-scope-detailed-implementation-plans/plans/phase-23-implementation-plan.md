@@ -34,14 +34,17 @@ Required phase: 22, with Phase 19 ledger and Phase 10 persistence transitively a
 - Unknown quota state stays unknown and uses documented conservative/default policy.
 - Scarcity policy cannot weaken privacy or capability eligibility.
 - Use deterministic formulas/configuration before learned optimization.
+- Personal AI's authoritative quota ledger supplies typed facts; telemetry from LiteLLM is only an observation source.
 
 ## Work packages
-### P23.0 — Deterministic scarcity formula
-Extend Phase 21 router with versioned configurable penalties based on qualified remaining-capacity estimates, window-specific reset horizon, cooldown and reliability. Compare only eligible substitutes meeting Phase 22 task floors. Preserve stronger scarce routes when safe; reducing penalty near reset uses known reset facts, not guessed timestamps.
+### P23.0 — Deterministic scarcity strategy
+Extend the Phase 21 deterministic `RoutingStrategy` baseline or add a compatible deterministic scarcity-aware strategy with versioned configurable penalties based on qualified remaining-capacity estimates, window-specific reset horizon, cooldown and reliability. Compare only eligible substitutes meeting Phase 22 task floors. Preserve stronger scarce routes when safe; reducing penalty near reset uses known reset facts, not guessed timestamps. Do not move hard admission or provider selection into LiteLLM.
 
 Consume typed quota buckets, preserving unit, window, observed/remaining state, reset, source, and confidence. Request/token/neuron/other units use declared semantics rather than provider-name branches or direct comparison of incompatible units. [Execution-mode eligibility](../../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes) remains a hard gate; BYOK is never a scarcity fallback.
 
 **Acceptance:** Scarcity penalties are reproducible from qualified bucket/reset facts and eligible measured substitutes.
+
+Record the bounded decision-time quota/scarcity snapshot (or immutable versioned observation) used by the strategy, including bucket unit/window, remaining-capacity value and confidence/source, time-to-reset when known, cooldown/reliability, policy result, eligible substitutes, and selected endpoint. A pointer to mutable current ledger state alone is insufficient for replay. See the [Routing Observation Contract](../../03-free-tier-inference-and-routing.md#routing-observation-contract).
 
 ### P23.1 — Ledger and dispatch integration
 Read a consistent ledger/profile snapshot and reserve selected operation before dispatch. Concurrent capacity loss rejects/reselects within bounded attempts under identical hard filters. Unknown capacity remains explicit uncertainty, never fake precision or permission for paid overflow.
@@ -52,6 +55,8 @@ Read a consistent ledger/profile snapshot and reserve selected operation before 
 Replay recorded synthetic demand/window scenarios against fixed-routing baseline. Measure task quality, conservation, exhaustion, latency and uncertainty outcomes. Promote only with configured thresholds and deterministic rollback; no learned policy or ChatGPT spillover.
 
 **Acceptance:** Paired demand fixtures demonstrate conservation while satisfying quality thresholds and rollback.
+
+Scarcity facts and outcomes join to routing-decision, strategy-version, and invocation identities. Exhausting eligible free capacity never opens a paid/BYOK or subscription lane.
 
 **Extension acceptance:** Synthetic endpoint buckets with distinct units/windows run through the same policy with explicit uncertainty. Exhausting every free bucket yields exhaustion/unavailability, never paid/BYOK or subscription overflow.
 

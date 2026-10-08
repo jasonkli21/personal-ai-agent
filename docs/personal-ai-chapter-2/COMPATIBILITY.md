@@ -20,6 +20,8 @@ Phases 0–2 stay at their original next-scope numbers. Existing Phase 1/2 imple
 
 Former Phases 3–28 are renumbered per `NUMBERING-MAP.md`. Their substantive scope is preserved. A phase implementation should cite both its new number and former number in migration/review evidence when that helps trace old discussions.
 
+Phase 17R is a new, user-facing reconciliation gate after completed Phase 17 and before Phase 18. It uses the string identifier `"17R"` in the detailed-plan manifest and does not renumber Phases 18–36. Phase 18 depends on 17R. The Phase 17 plan/evidence remain completed history; Phase 17R is planned until implementation evidence establishes otherwise.
+
 ## Root README
 
 The root README describes **implemented current state**. Phase 10 P10.6 updated it after changing the active runtime wiring; no data migration is claimed because the user reports that no Firestore source was deployed.

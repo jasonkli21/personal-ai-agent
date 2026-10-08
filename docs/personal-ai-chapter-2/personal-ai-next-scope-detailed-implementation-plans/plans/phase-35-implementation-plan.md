@@ -1,17 +1,19 @@
 # Phase 35 implementation plan — Adaptive routing experiments
 
-Renumbered from former Phase 27; deterministic hard-filter/rollback requirements are unchanged.
+Renumbered from former Phase 27; deterministic hard-filter/rollback requirements are unchanged. Phase 35 is the first phase that implements learned/adaptive routing, using the replaceable strategy seam defined by Phase 21.
 
 ## Scope boundary
 
-**Goal:** Explore learned routing only after measured deterministic, quota-aware, and cascade baselines exist.
+**Goal:** Explore interchangeable learned routing strategies only after measured deterministic, quota-aware, and cascade baselines exist.
 
 ### Normative commitments
 
-- Experiment with complexity classifiers, RouteLLM-style concepts, or contextual bandits where data justifies them.
+- Add learned ranking/selection only behind the Phase 21 project-owned `RoutingStrategy` contract; keep the deterministic strategy available as baseline and rollback.
+- Experiment with complexity classifiers, RouteLLM-style concepts, contextual bandits, or other rankers only where data justifies them. RouteLLM is a conceptual precedent and optional strategy, not an architectural dependency.
 - Run offline/shadow first.
 - Keep strict-free/privacy/capability/context/cooldown hard filters outside learning.
 - Compare quality and quota use.
+- Record stable strategy ID/version and reproducible configuration/model artifact identity.
 
 ### Acceptance criteria
 
@@ -31,25 +33,27 @@ Required phases: 22, 23, and 24.
 
 ## Invariants
 
-Learning ranks only already-eligible candidates; shadow cannot dispatch extra private/billable calls or alter user-visible routing; deterministic routing remains available.
+Learning ranks only candidates that already passed deterministic admission. It cannot learn around authorization, privacy/sensitivity, cost/execution-mode permission, context limits, capabilities, or consent. Shadow cannot dispatch extra private/billable calls or alter user-visible routing. Deterministic routing remains available.
+
+Phase 35 consumes privacy-safe, versioned, joinable observations from Phases 19, 21, 22, 23, and 24: invocation outcomes/lineage; candidate sets, request characteristics, and strategy/policy versions; task-specific endpoint quality/evidence versions; decision-time quota/scarcity snapshots; and validator/cascade outcomes. See the [Routing Observation Contract](../../03-free-tier-inference-and-routing.md#routing-observation-contract). Replay reconstructs the bounded decision context and known candidate facts; it does not require raw prompts or promise counterfactual model outputs for routes that never ran.
 
 ## Work packages
 
-### P35.0 — Offline learning dataset and candidate experiments
+### P35.0 — Offline learning dataset and candidate strategies
 
-Build privacy-safe task/route/quality/quota/latency features from permitted versioned summaries with held-out splits/profile validity. Explore bounded candidate methods only if concrete data supports them; no mandatory external framework/provider expansion.
+Build a privacy-safe dataset from permitted versioned summaries and decision snapshots, then derive feature representations here rather than in Phases 19–24. Use held-out splits and profile validity. Replay historical decisions, compare candidate strategies with the strategy that actually ran, and conduct counterfactual selection comparisons only where recorded evidence supports them. Explore bounded candidate methods only if concrete data supports them; no mandatory external framework/provider expansion.
 
 **Acceptance:** held-out data reproduces candidate experiments without exposing sensitive raw context.
 
-### P35.1 — Shadow behind hard filters
+### P35.1 — Shadow and compare behind hard filters
 
-Run candidates only after deterministic strict-free/privacy/capability/context/known-exhaustion filters. Shadow mode does not affect visible route or dispatch extra provider calls. ChatGPT is never an automatic candidate.
+Run interchangeable strategies only after deterministic strict-free/privacy/capability/context/known-exhaustion filters produce the eligible set. Compare replay/shadow results with the deterministic baseline; shadow mode does not affect visible route or dispatch extra provider calls. ChatGPT is never an automatic candidate.
 
 **Acceptance:** shadow cannot change visible routes or bypass any hard filter.
 
 ### P35.2 — Promotion evidence and rollback
 
-Compare against deterministic/quota/cascade baselines for supported quality, quota conservation, latency, and uncertainty under provider/model churn. Define measurable thresholds and tested deterministic rollback. Failure cannot silently enable paid paths or alter hard policy.
+Compare against deterministic/quota/cascade baselines for supported quality, quota conservation, latency, and uncertainty under endpoint/account/configuration churn. Define task/endpoint coverage, measurable promotion thresholds, and tested deterministic rollback. Promotion, demotion, or removal of a strategy must not require rewriting orchestration or provider transport. Failure cannot silently enable paid paths or alter hard policy.
 
 **Acceptance:** any promotion has valid evidence and tested rollback.
 

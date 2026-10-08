@@ -29,6 +29,16 @@ Do not reintroduce Firestore as canonical target storage after Phase 10 unless a
 
 Owner/application/workspace isolation is mandatory across direct IDs, listings, vector queries, jobs, replay/idempotency, exports, traces, and cross-store references. Client metadata does not grant authority. Sensitive data must be authorized before retrieval/disclosure rather than fetched broadly and filtered afterward.
 
+## Inference transport and routing ownership
+
+Personal AI's neutral inference contracts remain the application-facing boundary. Under planned Phase 17R, the LiteLLM Python SDK normalizes transport below the Personal AI inference gateway; LiteLLM types do not leak into context, domain, or application code. Personal AI owns endpoint profiles, hard admission/privacy/cost policy, semantic endpoint selection, quota semantics, evaluation, cascades, and later adaptive routing. LiteLLM Proxy/Gateway and semantic Router are not initial scope; transport retries, when safe, repeat only the already-selected endpoint.
+
+Phase 18 cannot proceed without the Phase 17R gate. Phase 21 separates hard admission from a project-owned `RoutingStrategy` and produces an `ExecutionPlan`; every strategy receives only eligible endpoints and cannot call providers or bypass policy. Phase 21's deterministic scorer is the baseline implementation, not routing architecture embedded in orchestration.
+
+## Routing observations and replay
+
+Phases 19–24 record bounded, privacy-safe, versioned semantic facts and stable lineage so decisions can join to invocation, quality, quota, validator, and cascade outcomes. Follow the [Routing Observation Contract](../03-free-tier-inference-and-routing.md#routing-observation-contract): record decision-time mutable facts as immutable/versioned references or bounded snapshots; do not retain raw prompts or embeddings solely for future routing research. Phase 35 derives features and experiments with alternate strategies later. Replay reconstructs bounded decision context and does not promise unexecuted counterfactual provider outputs.
+
 ## Failure semantics
 
 Differentiate terminal success, incomplete/unknown outcome, explicit rejection, unavailable dependency, timeout/cancellation, and advisory optional failures. Do not retry uncertain side effects under new identities. Required outputs such as exports fail explicitly when incomplete.

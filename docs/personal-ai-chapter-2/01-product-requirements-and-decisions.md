@@ -35,14 +35,18 @@ Phase 10 changes persistence; it does not reset this foundation. Phases 11–13 
 
 ### Strict-$0 hosted inference
 
-- Gemini, Groq, and Cloudflare are initial reference inference adapters for eligible automatic free capacity; future adapters extend neutral contracts through profiles, tests, preflight, evaluation, and configuration.
-- Provider/model profiles describe capabilities, privacy/data policy, account/tier eligibility, and quota facts independently of routing.
+- Gemini, Groq, and Cloudflare are initial reference endpoint families for eligible automatic free capacity. Phase 17R plans LiteLLM SDK transport normalization behind the already-implemented Personal AI neutral contracts; LiteLLM adoption is not current implementation status.
+- LiteLLM handles transport for an already-selected endpoint. Personal AI owns semantic routing, hard admission, privacy policy, execution/cost modes, quota accounting, task evaluation, cascades, and later adaptive routing. LiteLLM Router must not silently select another provider/model.
+- Model, provider, execution endpoint, credential/account/tier, cost mode, capability, and privacy eligibility are separate facts. A versioned endpoint profile is the primary routable unit; profiles are not a mirror of LiteLLM's model catalog and contain no secrets.
 - Paid/unknown-eligibility paths never silently enter strict-free candidates.
 - Quota usage is measured before quota-aware routing is introduced.
 - Routing, cascades, and later adaptive experiments always preserve hard privacy/capability/free constraints.
 - Strict-free/free-first remains the default automatic execution policy. Optional BYOK API capacity is user-billed and explicit-only initially; free exhaustion never crosses into paid capacity. ChatGPT subscription execution is a separate explicit lane and does not imply OpenAI API capacity.
 - Provider, endpoint/model, credential source/reference, account/project/tier, cost class, and selection eligibility remain distinct; profiles never hold secrets. See [execution modes](03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes).
-- Routing consumes endpoint facts and task requirements; tasks attach registered deterministic validators. Evaluation profiles extend by endpoint/task configuration and versioned evidence rather than a fixed provider list.
+- Routing first applies deterministic hard admission, then a replaceable `RoutingStrategy`; Phase 21's deterministic scorer is the baseline. The strategy produces an `ExecutionPlan` and does not make provider calls. Generic routing must not encode provider-name chains.
+- Operational phases record versioned, privacy-safe, joinable routing/invocation/quality/quota/validator facts. Phase 35 derives adaptive features later; it is the first learned-routing phase, with RouteLLM-style routing as one optional strategy behind the Phase 21 seam.
+- Evaluation profiles extend by task-profile x endpoint-profile configuration and versioned evidence rather than a fixed provider list.
+- OpenRouter is a possible later provider family via LiteLLM, not a Phase 17R or Phase 18–24 live-provider requirement. Aggregator-managed auto/free routes are future composite endpoints that retain actual upstream identity where available.
 
 ### ChatGPT plan integration
 

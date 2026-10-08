@@ -14,6 +14,16 @@ Validated before archive creation on 2026-10-06:
 
 External provider/cloud/domain compatibility was not run by package generation and remains governed by the corresponding phase plans.
 
+## Inference/routing plan reconciliation — 2026-10-08
+
+Reviewed revision: `2b30bc99888f91892ec7d7dbe153590c22b44d52` plus the documentation working tree. This check covers planning consistency only; it does not establish runtime LiteLLM adoption or provider, cloud, deployment, IAM, cost, or privacy acceptance.
+
+- Session-local Python validation passed: 34 unique manifest entries; exact plan-file set and byte metadata; `17 < 17R < 18`; Phase 17R depends on 16/17/10; Phase 18 depends on 17R; all prerequisites exist and the graph is acyclic.
+- Changed-document review passed: 233 local Markdown links resolve to files and anchors; no trailing whitespace in the reviewed documents.
+- `git diff --check` passed.
+- Content review confirmed Phase 17 remains completed history, Phase 17R is planned, and Phases 18–36 retain their numbering. The Phase 17R plan is behind Personal AI's neutral inference boundary; Phase 21 separates hard admission, a pluggable strategy, and an explicit execution plan; Phases 19–24 specify joinable observations; Phase 35 remains the first adaptive-routing phase. OpenRouter and paid/BYOK execution remain later/deferred scope.
+- No runtime code, dependency, schema, or provider checks were changed or run. The [current-state record](../current-state.md) and root README continue to describe implementation status, not this future plan.
+
 ## P10.0 documentation validation — 2026-10-06
 
 The archive-generation record above remains historical. P10.0 adds Phase 10
