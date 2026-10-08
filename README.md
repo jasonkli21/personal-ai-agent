@@ -58,6 +58,7 @@ Core capabilities include:
                 | private FastAPI API   |
                 |                       |
                 | chat + context        |
+                | endpoint registry     |
                 | memory + research     |
                 | evidence + decisions  |
                 | domain capabilities   |
@@ -71,6 +72,12 @@ Core capabilities include:
 ```
 
 Domain applications integrate over explicit HTTP contracts rather than importing internal packages.
+
+The internal endpoint registry records provider, model, account, credential-scope,
+privacy, capability, count-compatibility, and quota-authority facts, and can
+produce strict-free candidates with deterministic rejection reasons. Current
+application workflows remain Gemini-only; request selection is reserved for a
+later routing phase.
 
 ## Repository layout
 
@@ -88,6 +95,7 @@ Domain applications integrate over explicit HTTP contracts rather than importing
 │   │   ├── evaluation/      # reproducible synthetic evaluation
 │   │   ├── memory/          # durable memory and lifecycle logic
 │   │   ├── ranking/         # deterministic ranking/constraints
+│   │   ├── routing/         # endpoint profiles and strict-free admission
 │   │   ├── search/          # search adapters and pipeline
 │   │   ├── services/        # chat/application orchestration
 │   │   ├── storage/         # repository contracts and persistence primitives

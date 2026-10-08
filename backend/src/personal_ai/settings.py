@@ -33,6 +33,23 @@ class Settings(BaseSettings):
     ai_provider: str = Field(min_length=1)
     ai_model: str = Field(min_length=1)
     ai_api_key: SecretStr = Field(default=SecretStr(""))
+    # Phase 18 endpoint facts are account-specific operator attestations. They
+    # remain disabled/unknown by default and never contain credential values.
+    gemini_account_scope_id: str = Field(default="", max_length=200)
+    gemini_credential_scope_id: str = Field(default="gemini-primary-key", max_length=200)
+    gemini_endpoint_context_limit_tokens: int | None = Field(default=None, ge=1, le=2_000_000)
+    gemini_endpoint_output_limit_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    gemini_embedding_context_limit_tokens: int | None = Field(default=None, ge=1, le=2_000_000)
+    gemini_free_tier_verified: bool = False
+    gemini_privacy_approved: bool = False
+    gemini_privacy_max_sensitivity: SensitivityCeiling = "public"
+    gemini_preflight_reference: str = Field(default="", max_length=500)
+    gemini_counter_compatibility_verified: bool = False
+    gemini_counter_preflight_reference: str = Field(default="", max_length=500)
+    gemini_structured_output_verified: bool = False
+    gemini_structured_schema_ids: tuple[str, ...] = Field(default=(), max_length=128)
+    gemini_quota_membership_verified: bool = False
+    gemini_quota_buckets: tuple[dict[str, object], ...] = Field(default=(), max_length=32)
     # Phase 17 reference adapters stay inactive until an operator records
     # account/model-specific cost, privacy, and compatibility preflight evidence.
     groq_adapter_enabled: bool = False
@@ -41,7 +58,14 @@ class Settings(BaseSettings):
     groq_free_tier_verified: bool = False
     groq_privacy_approved: bool = False
     groq_privacy_max_sensitivity: SensitivityCeiling = "public"
+    groq_account_scope_id: str = Field(default="", max_length=200)
+    groq_credential_scope_id: str = Field(default="groq-primary-key", max_length=200)
+    groq_endpoint_context_limit_tokens: int | None = Field(default=None, ge=1, le=2_000_000)
+    groq_endpoint_output_limit_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    groq_quota_membership_verified: bool = False
+    groq_quota_buckets: tuple[dict[str, object], ...] = Field(default=(), max_length=32)
     groq_approved_model_aliases: tuple[str, ...] = Field(default=(), max_length=8)
+    groq_structured_schema_ids: tuple[str, ...] = Field(default=(), max_length=128)
     groq_structured_output_verified: bool = False
     groq_preflight_reference: str = Field(default="", max_length=500)
     cloudflare_adapter_enabled: bool = False
@@ -51,9 +75,20 @@ class Settings(BaseSettings):
     cloudflare_free_tier_verified: bool = False
     cloudflare_privacy_approved: bool = False
     cloudflare_privacy_max_sensitivity: SensitivityCeiling = "public"
+    cloudflare_credential_scope_id: str = Field(default="cloudflare-primary-token", max_length=200)
+    cloudflare_endpoint_context_limit_tokens: int | None = Field(default=None, ge=1, le=2_000_000)
+    cloudflare_endpoint_output_limit_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    cloudflare_quota_membership_verified: bool = False
+    cloudflare_quota_buckets: tuple[dict[str, object], ...] = Field(default=(), max_length=32)
     cloudflare_approved_model_aliases: tuple[str, ...] = Field(default=(), max_length=8)
+    cloudflare_structured_schema_ids: tuple[str, ...] = Field(default=(), max_length=128)
     cloudflare_structured_output_verified: bool = False
     cloudflare_preflight_reference: str = Field(default="", max_length=500)
+    # Additional neutral endpoint profiles are fully typed, bounded JSON facts.
+    # EndpointProfile forbids unknown fields, including credential values.
+    inference_additional_endpoint_profiles: tuple[dict[str, object], ...] = Field(
+        default=(), max_length=32
+    )
     gcp_project_id: str = Field(default="", max_length=200)
     persistence_local_postgres_dsn: SecretStr = Field(
         default=SecretStr(
@@ -250,6 +285,25 @@ class Settings(BaseSettings):
                 or any(not alias or alias != alias.strip() or len(alias) > 200 for alias in aliases)
             ):
                 raise ValueError("provider_model_aliases_invalid")
+        if self.gemini_free_tier_verified and (
+            not self.gemini_account_scope_id.strip() or not self.gemini_preflight_reference.strip()
+        ):
+            raise ValueError("gemini_endpoint_preflight_required")
+        if self.gemini_privacy_approved and not self.gemini_preflight_reference.strip():
+            raise ValueError("gemini_endpoint_preflight_required")
+        if self.gemini_counter_compatibility_verified and (
+            not self.gemini_counter_preflight_reference.strip()
+            or not self.gemini_account_scope_id.strip()
+        ):
+            raise ValueError("gemini_counter_preflight_required")
+        if self.gemini_structured_output_verified and not self.gemini_structured_schema_ids:
+            raise ValueError("gemini_structured_schema_coverage_required")
+        if self.gemini_quota_membership_verified and not self.gemini_quota_buckets:
+            raise ValueError("gemini_quota_bucket_required")
+        if self.groq_quota_membership_verified and not self.groq_quota_buckets:
+            raise ValueError("groq_quota_bucket_required")
+        if self.cloudflare_quota_membership_verified and not self.cloudflare_quota_buckets:
+            raise ValueError("cloudflare_quota_bucket_required")
         if self.groq_adapter_enabled and (
             not self.groq_model
             or not self.groq_api_key.get_secret_value()
