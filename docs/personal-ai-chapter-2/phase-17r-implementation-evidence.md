@@ -1,7 +1,8 @@
 # Phase 17R implementation evidence — LiteLLM execution substrate
 
 - Date: 2026-10-08
-- Tested source revision: `26436ba8dd3f7090360eef74f33693910bde7e12` (runtime and test commits; documentation follows)
+- Original migration verification revision: `26436ba8dd3f7090360eef74f33693910bde7e12`
+- Review remediation runtime/test revision: `86cf07350ea3a338ba66d4712c09ce29e8bc4114`
 - LiteLLM version: `1.102.1`, exactly pinned in `backend/pyproject.toml` and `backend/uv.lock`
 - Scope: Gemini, Groq, and Cloudflare Workers AI generation; Gemini token counting and embeddings
 
@@ -33,7 +34,7 @@ Provider-reported usage remains `reported`; SDK-synthesized usage is labeled `es
 - Cloudflare's SDK path selects a module-level HTTP handler instead of the per-call handler. A narrow context-local hook routes the SDK call to the explicitly configured account-scoped client without changing account credentials or endpoints globally.
 - Non-streaming response headers are adjusted when the bounded parser copy changes body length; streaming paths preserve wire headers.
 
-## Verification
+## Original migration verification
 
 - Focused gateway and affected workflow tests: `90 passed` (one upstream Pydantic warning).
 - Full backend suite: `783 passed, 26 skipped, 2 failed` out of 811. The two failures are `test_registered_synthetic_application_uses_shared_preparation_without_app_branching` and `test_assembler_rechecks_grants_and_injects_typed_source_with_actual_manifest` in untouched `backend/tests/test_context_sources.py`; both use one-day permission fixtures that are expired on 2026-10-08. The first reports `expired` instead of `permission_unverified`; the second therefore omits the fixture item.
@@ -41,6 +42,19 @@ Provider-reported usage remains `reported`; SDK-synthesized usage is labeled `es
 - `make backend-build`: passed; source distribution and wheel built.
 - `git diff --check`: passed.
 - Intercepted tests cover the pinned SDK request/response path, explicit auth and endpoints, count/generation schema parity, unsupported schema rejection, identity and usage provenance, stream terminal/cancellation/timeout behavior, one-send failures, size limits, external-provider preflight, callback/cache/log controls, concurrent Cloudflare account isolation, and embedding-space compatibility.
+
+## Review remediation verification — 2026-10-08
+
+Tested source revision: `86cf07350ea3a338ba66d4712c09ce29e8bc4114`.
+
+- `backend/.venv/bin/python -m pytest backend/tests/test_litellm_gateway.py -q`: **67 passed**, one upstream Pydantic warning.
+- `PATH="$PWD/backend/.venv/bin:$PATH" make backend-test`: **821 passed, 26 skipped, 2 failed** out of 849. The two failures are the same date-sensitive permission fixtures in untouched `backend/tests/test_context_sources.py`: `test_registered_synthetic_application_uses_shared_preparation_without_app_branching` and `test_assembler_rechecks_grants_and_injects_typed_source_with_actual_manifest`. They report the one-day permission fixtures as expired on 2026-10-08; expiry authorization was not weakened.
+- `PATH="$PWD/backend/.venv/bin:$PATH" make backend-lint`: passed (`ruff check .`).
+- `UV_CACHE_DIR=/private/tmp/personal-ai-system-uv-cache PATH="$PWD/backend/.venv/bin:$PATH" make backend-build`: passed; source distribution and wheel built.
+- `git diff --check`: passed.
+- New intercepted regressions cover ambient retry rejection before dispatch and sync/async one-send fences; synchronous timeouts during successful, structured, setup, parsing, and trickle-read paths; true async-byte-stream EOF draining, split `[DONE]`, final usage, duplicate/trailing events, blocked reads, cancellation, and pre-yield identity checks; literal embedding strings with media-like prefixes; isolated per-batch response caps; decreasing per-batch timeout budgets; and exact Groq and Cloudflare structured-schema request shapes.
+
+These are local checks against intercepted transports and the pinned SDK. They do not establish live provider behavior or close account/tier, privacy, strict-free, paid-path, cloud, or production gates.
 
 ## Remaining gates
 
