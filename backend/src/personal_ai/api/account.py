@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from personal_ai.api.dependencies import get_current_owner_id, require_recent_auth
+from personal_ai.artifacts.contracts import ArtifactUnavailable
 from personal_ai.auth.account_data import (
     AccountDataRepository,
     AccountDataUnavailable,
@@ -18,6 +19,7 @@ from personal_ai.auth.account_data import (
     ExportTooLarge,
 )
 from personal_ai.auth.contracts import AuthenticatedPrincipal
+from personal_ai.auth.scope import current_application_scope
 from personal_ai.persistence.factory import persistence_factory
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.errors import ResourceNotFoundError
@@ -69,11 +71,25 @@ def export_account(
             max_records=settings.export_max_records,
             max_bytes=settings.export_max_bytes,
         )
+        if settings.artifacts_enabled:
+            try:
+                service = persistence_factory(settings).artifact_service(settings)
+                artifact = service.freeze_export(
+                    exported, owner_id=principal.owner_id, scope=current_application_scope(),
+                    identity=str(payload.idempotency_key),
+                    max_records=settings.export_max_records, max_bytes=settings.export_max_bytes,
+                )
+                exported = service.read(artifact.artifact_id, owner_id=principal.owner_id,
+                                        scope=current_application_scope())
+            except Exception as error:
+                raise ArtifactUnavailable("required_export_artifact_failed") from error
         repository.record_export(
             owner_id=principal.owner_id,
             idempotency_key=payload.idempotency_key,
             correlation_id=request.state.correlation_id,
         )
+    except ArtifactUnavailable as error:
+        raise HTTPException(status_code=503, detail="export_artifact_unavailable") from error
     except ExportTooLarge as error:
         raise HTTPException(status_code=413, detail="export_limit_exceeded") from error
     filename_date = datetime.now(UTC).date().isoformat()

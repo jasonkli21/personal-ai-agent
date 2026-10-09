@@ -14,6 +14,7 @@ from personal_ai.applications.registry import default_application_registry
 from personal_ai.auth.scope import RequestScope
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
+from personal_ai.evaluation.output import emit
 from personal_ai.llm.fake import FakeLLMClient, FakeResearchLLMClient
 from personal_ai.search.contracts import FakeSearchAdapter, SearchResult
 from personal_ai.search.providers.brave import SearchError
@@ -118,5 +119,5 @@ async def evaluate():
 
 if __name__ == "__main__":
     report = asyncio.run(evaluate())
-    print(json.dumps(report, indent=2))
+    emit(report)
     raise SystemExit(0 if report["passed"] else 1)

@@ -28,6 +28,7 @@ Core capabilities include:
 - owner-scoped application/workspace identity foundations;
 - bounded provider-attempt accounting with a default-off owner-scoped developer summary;
 - account export/deletion workflow foundations;
+- a default-off private artifact tier for compressed traces, evaluation batches and frozen exports;
 - synthetic evaluation suites for memory, context, research, decisions, and domain behavior.
 
 ## Design principles
@@ -69,6 +70,7 @@ Core capabilities include:
                      |             +-------> hosted LLM/search providers
                      +-------> Neon Postgres + pgvector
                      +-------> DynamoDB runtime state
+                     +-------> private GCS artifact bodies (opt-in)
                      |
                      +-------> Pub/Sub ---> private Cloud Run worker
 ```
@@ -85,6 +87,11 @@ Provider sends have a separate usage ledger for physical attempts, quota
 reservations, endpoint health, and bounded owner-attributed summaries. Its
 developer inspection route is disabled by default; quota values without
 authoritative observations remain unknown.
+
+The optional artifact tier stores compact references in Postgres and immutable
+compressed bodies in private GCS, with bounded retention, storage budgets and
+account deletion fences. Both backend and browser proxy gates default off;
+cloud/IAM/free-tier acceptance remains unverified. See the [Phase 20 guide](docs/personal-ai-chapter-2/phase-20-implementation-guide.md) for setup and prerequisite gates.
 
 ## Repository layout
 

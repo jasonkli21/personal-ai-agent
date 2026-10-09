@@ -79,6 +79,12 @@ class PostgresProviderUsageAccounting:
         selected_buckets: list[tuple[QuotaBucket, datetime, int | None, str]] = []
         try:
             with self.database.transaction() as connection:
+                from personal_ai.artifacts.contracts import ArtifactUnavailable
+                from personal_ai.persistence.postgres_artifacts import assert_owner_unfenced
+                try:
+                    assert_owner_unfenced(connection, invocation.owner_id)
+                except ArtifactUnavailable:
+                    raise UsageAdmissionDenied("provider_owner_deletion_fenced") from None
                 if (
                     self.endpoint_profile_resolver is not None
                     and endpoint.registry_version is not None

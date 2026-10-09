@@ -17,3 +17,8 @@ The active factory composes Postgres/pgvector repositories with DynamoDB timelin
 ## Entry points and references
 
 Start with `repositories.py`, `fake.py`, and `personal_ai.persistence.factory`. Relevant checks include `backend/tests/test_storage_repositories.py` and `backend/tests/persistence/`; use `make persistence-test` for the isolated local-engine integration suite when Docker is available. See the [Phase 10 storage ownership contract](../../../../docs/personal-ai-chapter-2/phase-10-storage-ownership-and-access-patterns.md), [cutover/verification plan](../../../../docs/personal-ai-chapter-2/phase-10-migration-cutover-and-verification-plan.md), and [P10.6 evidence](../../../../docs/personal-ai-chapter-2/phase-10-p10.6-implementation-evidence.md).
+
+
+## Private artifact bodies
+
+Phase 20 adds `personal_ai.artifacts` with scoped immutable references, gzip JSON/JSONL, local fake and private GCS body adapters. Migration 019 keeps compact metadata, storage budgets and deletion fences in Postgres. No artifact bodies or metadata mirror are added to DynamoDB; memory vectors keep pgvector. The tier defaults off. See the [Phase 20 guide](../../../../docs/personal-ai-chapter-2/phase-20-implementation-guide.md) and [evidence](../../../../docs/personal-ai-chapter-2/phase-20-implementation-evidence.md) for lifecycle recovery, consumer gates, configuration and unverified target-store/cloud acceptance.

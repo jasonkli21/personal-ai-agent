@@ -33,3 +33,8 @@ artifacts/
 dist/
 *.tsbuildinfo
 *.sqlite3
+# Artifact-tier source is code, not generated runtime data.
+!backend/src/personal_ai/artifacts/
+!backend/src/personal_ai/artifacts/*.py
+!frontend/src/app/api/artifacts/
+!frontend/src/app/api/artifacts/**

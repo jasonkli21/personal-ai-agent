@@ -44,7 +44,7 @@ jobs:
       - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python -m ruff check .
       - run: python -m pytest
-      - run: python -m pytest -m persistence_integration tests/persistence/test_provider_usage_accounting.py
+      - run: python -m pytest -m persistence_integration tests/persistence/test_provider_usage_accounting.py tests/persistence/test_artifact_tier.py
         env:
           PERSISTENCE_TEST_POSTGRES_DSN: postgresql://personal_ai:personal_ai_test_only@127.0.0.1:5432/personal_ai_test
       - run: python -m personal_ai.evaluation.context

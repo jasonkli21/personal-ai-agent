@@ -30,6 +30,18 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Artifact storage remains opt-in; cloud preflight is separate from offline tests.
+    artifacts_enabled: bool = False
+    artifact_store: Literal["memory", "gcs"] = "memory"
+    artifact_gcs_bucket: str = Field(default="", max_length=63)
+    artifact_gcs_region: str = "us-central1"
+    artifact_gcs_preflight_verified: bool = False
+    artifact_gcs_preflight_reference: str = Field(default="", max_length=500)
+    artifact_max_operations_per_day: int = Field(default=1000, ge=1, le=1000)
+    artifact_max_write_bytes_per_day: int = Field(default=16777216, ge=1, le=16777216)
+    artifact_max_live_bytes: int = Field(default=67108864, ge=1, le=67108864)
+    artifact_max_objects: int = Field(default=10000, ge=1, le=10000)
+
     ai_provider: str = Field(min_length=1)
     ai_model: str = Field(min_length=1)
     ai_api_key: SecretStr = Field(default=SecretStr(""))
@@ -294,6 +306,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
+        if self.artifacts_enabled:
+            if self.artifact_store == "memory" and self.app_environment not in {"local", "test"}:
+                raise ValueError("artifact_memory_store_local_only")
+            if self.artifact_store == "gcs" and (
+                not self.artifact_gcs_preflight_verified
+                or not self.artifact_gcs_preflight_reference.strip()
+                or not self.artifact_gcs_bucket
+                or self.artifact_gcs_region not in {"us-west1", "us-central1", "us-east1"}
+            ):
+                raise ValueError("artifact_gcs_preflight_required")
         # Maintenance must not mistake the longest configured outbound call
         # for a dead worker. The extra minute covers scheduling and settlement.
         minimum_stale_seconds = math.ceil(self.request_timeout_seconds + 60)

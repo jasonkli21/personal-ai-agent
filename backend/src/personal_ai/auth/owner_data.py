@@ -39,4 +39,5 @@ OWNER_DATA_COLLECTIONS = (
     "provider_usage_daily_aggregates",
     "provider_usage_events",
     "global_profiles",
+    "artifact_metadata",
 )

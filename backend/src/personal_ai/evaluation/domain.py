@@ -1,6 +1,5 @@
 """Offline cross-domain evaluation using fixed synthetic Phase 7 records."""
 
-import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +8,7 @@ from personal_ai.decisions.repositories import InMemoryDecisionRepository
 from personal_ai.domains.fixtures import FIXTURE_NOW, fixture_registry
 from personal_ai.domains.repositories import InMemoryDomainRepository
 from personal_ai.domains.service import DomainService
+from personal_ai.evaluation.output import emit
 from personal_ai.settings import Settings
 
 
@@ -129,5 +129,5 @@ def evaluate() -> dict:
 
 if __name__ == "__main__":
     report = evaluate()
-    print(json.dumps(report, indent=2))
+    emit(report)
     raise SystemExit(0 if report["passed"] else 1)

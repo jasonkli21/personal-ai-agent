@@ -31,6 +31,7 @@ from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.decisions.contracts import DecisionCreateRequest
 from personal_ai.decisions.repositories import InMemoryDecisionRepository
 from personal_ai.decisions.service import DecisionService
+from personal_ai.evaluation.output import emit
 from personal_ai.llm.fake import FakeResearchLLMClient
 from personal_ai.search.contracts import FakeSearchAdapter, SearchResult
 from personal_ai.search.providers.brave import SearchError
@@ -508,5 +509,5 @@ async def evaluate():
 
 if __name__ == "__main__":
     result = asyncio.run(evaluate())
-    print(json.dumps(result, indent=2))
+    emit(result)
     raise SystemExit(0 if result["passed"] else 1)

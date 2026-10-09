@@ -296,6 +296,7 @@ class MemoryLifecycleWorker:
         clock=None,
         consolidator=None,
         application_context_resolver=None,
+        owner_active=None,
     ):
         self.settings, self.lifecycle, self.memories, self.messages = (
             settings,
@@ -307,6 +308,7 @@ class MemoryLifecycleWorker:
         self.clock = clock or (lambda: datetime.now(UTC))
         self.consolidator = consolidator or DeterministicMemoryConsolidator()
         self.application_context_resolver = application_context_resolver
+        self.owner_active = owner_active or (lambda owner_id: True)
 
     def process(
         self,
@@ -325,6 +327,8 @@ class MemoryLifecycleWorker:
         if not self.settings.memory_enabled or not self.settings.memory_lifecycle_worker_enabled:
             return "disabled"
         job = self.lifecycle.get_job_by_id(job_id=job_id)
+        if not self.owner_active(job.owner_id):
+            return "disabled"
         now = self.clock().astimezone(UTC)
         claimed = self.lifecycle.claim_job(
             owner_id=job.owner_id,

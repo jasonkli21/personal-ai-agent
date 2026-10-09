@@ -119,7 +119,11 @@ def _safeguards(request: Request, settings: Settings) -> SafeguardStore:
 def _ensure_active_principal(request, settings, principal, correlation_id) -> None:
     # Client construction may discover credentials, so it belongs in the same
     # worker thread as the first blocking persistence call.
-    _directory(request, settings).ensure_active(principal, correlation_id=correlation_id)
+    directory = _directory(request, settings)
+    directory.ensure_active(principal, correlation_id=correlation_id)
+    is_fenced = getattr(directory, "owner_is_fenced", lambda owner_id: False)
+    if not request.url.path.startswith("/v1/account/deletion") and is_fenced(principal.owner_id):
+        raise IdentityMappingConflict
 
 
 def _enforce_safeguards(request, settings, principal) -> None:

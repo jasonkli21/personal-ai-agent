@@ -11,6 +11,7 @@ from personal_ai.context import ContextAssembler
 from personal_ai.context.contracts import fingerprint
 from personal_ai.context.tokens import FakeTokenCounter
 from personal_ai.entities import Conversation, Message
+from personal_ai.evaluation.output import emit
 from personal_ai.memory.contracts import Memory, MemoryCandidate, identity, normalize
 from personal_ai.memory.fake import FakeEmbedder
 from personal_ai.memory.lifecycle_jobs import MemoryLifecycleCoordinator, MemoryLifecycleWorker
@@ -353,5 +354,5 @@ def evaluate():
 
 if __name__ == "__main__":
     rows = evaluate()
-    print(json.dumps(rows, indent=2))
+    emit(rows)
     raise SystemExit(0 if all(row["result"] == "passed" for row in rows) else 1)

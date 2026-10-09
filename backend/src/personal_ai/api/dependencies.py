@@ -165,7 +165,12 @@ def get_summary_repository(
 def get_context_trace_repository(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ContextTraceRepository:
-    return persistence_factory(settings).context_trace_repository()
+    factory = persistence_factory(settings)
+    repository = factory.context_trace_repository()
+    if settings.artifacts_enabled:
+        from personal_ai.artifacts.consumers import ArtifactContextTraceRepository
+        return ArtifactContextTraceRepository(repository, lambda: factory.artifact_service(settings))
+    return repository
 
 
 def get_global_profile_repository(

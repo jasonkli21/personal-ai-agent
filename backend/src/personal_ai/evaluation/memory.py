@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 from personal_ai.context import ContextAssembler
 from personal_ai.context.tokens import FakeTokenCounter
 from personal_ai.entities import Conversation, Message
+from personal_ai.evaluation.output import emit
 from personal_ai.memory.contracts import MemoryCandidate
 from personal_ai.memory.fake import FakeEmbedder, FakeMemoryExtractor
 from personal_ai.memory.policy import RATIONALES
@@ -220,5 +221,5 @@ def evaluate():
 
 if __name__ == "__main__":
     results = evaluate()
-    print(json.dumps(results, indent=2))
+    emit(results)
     raise SystemExit(0 if all(r["result"] == "passed" for r in results) else 1)

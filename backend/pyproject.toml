@@ -30,6 +30,13 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/personal_ai"]
 
+# The repository ignores generated artifacts/ directories; these are source modules.
+[tool.hatch.build.targets.sdist.force-include]
+"src/personal_ai/artifacts" = "src/personal_ai/artifacts"
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/personal_ai/artifacts" = "personal_ai/artifacts"
+
 [dependency-groups]
 build = ["hatchling==1.27.0", "editables==0.5"]
 

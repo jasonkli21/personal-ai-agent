@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from personal_ai.agents.research.contracts import ResearchError
 from personal_ai.api.account import router as account_router
+from personal_ai.api.artifacts import router as artifacts_router
 from personal_ai.api.booking_extractions import router as booking_extractions_router
 from personal_ai.api.decisions import router as decisions_router
 from personal_ai.api.domains import router as domains_router
@@ -54,6 +55,7 @@ app.include_router(booking_extractions_router)
 app.include_router(decisions_router)
 app.include_router(domains_router)
 app.include_router(account_router)
+app.include_router(artifacts_router)
 app.include_router(profile_router)
 app.include_router(provider_usage_router)
 

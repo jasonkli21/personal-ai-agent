@@ -12,6 +12,7 @@ from personal_ai.context.contracts import SummaryDraft
 from personal_ai.context.repositories import InMemorySummaryRepository
 from personal_ai.context.tokens import FakeTokenCounter
 from personal_ai.entities import Conversation, Message, MessageRole, MessageStatus
+from personal_ai.evaluation.output import emit
 from personal_ai.llm import FakeLLMClient
 from personal_ai.services import ChatTurnService
 from personal_ai.settings import Settings
@@ -238,5 +239,5 @@ def rewrite_fixture_branch(active, pending, summaries):
 
 if __name__ == "__main__":
     results = evaluate()
-    print(json.dumps(results, indent=2, default=str))
+    emit(results, default=str)
     raise SystemExit(0 if all(r["result"] == "passed" for r in results) else 1)

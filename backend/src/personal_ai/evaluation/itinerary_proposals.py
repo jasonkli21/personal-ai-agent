@@ -15,6 +15,7 @@ from personal_ai.applications.registry import default_application_registry
 from personal_ai.auth.scope import RequestScope
 from personal_ai.context.assembler import ContextAssembler
 from personal_ai.context.tokens import EstimatedTokenCounter
+from personal_ai.evaluation.output import emit
 from personal_ai.itinerary_proposals.contracts import ItineraryProposalRequest
 from personal_ai.itinerary_proposals.fakes import FakeItineraryProposalLLMClient
 from personal_ai.itinerary_proposals.repositories import InMemoryItineraryProposalRepository
@@ -157,5 +158,5 @@ async def evaluate() -> dict:
 
 if __name__ == "__main__":
     report = asyncio.run(evaluate())
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    emit(report, ensure_ascii=False)
     raise SystemExit(0 if report["passed"] else 1)

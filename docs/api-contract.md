@@ -419,3 +419,12 @@ source, confidence, and reset facts. It contains no prompts, responses,
 credentials, provider headers, or hidden reasoning. Missing or stale quota
 observations are reported as unknown; remaining capacity is never inferred
 from account usage or application limits.
+
+
+## Phase 20 private artifacts
+
+`GET /v1/artifacts/{artifact_id}` is default off under `ARTIFACTS_ENABLED`. It reads only ready, unexpired, authorized owner/application/workspace artifacts. Unknown, cross-scope, revoked, missing or corrupt references are unavailable (404); successful JSON responses use `Cache-Control: no-store`. Browser callers use the separately gated Next.js `/api/artifacts/{artifact_id}` proxy. Clients cannot choose bucket keys, upload bodies or obtain public/signed URLs.
+
+When artifact storage is enabled, `POST /v1/account/export` returns a ready `account-artifact-export-v1` frozen envelope containing the existing declared DB snapshot, exact object manifest, live artifact bodies and explicit body coverage. Previous export bodies, expired and deleted bodies are excluded. Required storage/body failure or artifact envelope overflow returns 503 `export_artifact_unavailable`; existing database-export limits remain 413 `export_limit_exceeded`. Ready retries reuse the original frozen export. Full snapshot atomicity across stores is not promised. With artifact storage disabled, the existing synchronous JSON export contract remains unchanged.
+
+Confirmed account deletion fences future artifact retrieval/publication and provider sends while physical cleanup is reconciled. Verified request and worker gates use the canonical fence; deletion control paths remain accessible. Cancellation can un-fence before irreversible artifact cleanup, after which it returns the existing 409 lifecycle conflict. Full canonical account deletion remains an operator workflow. See the [Phase 20 guide](personal-ai-chapter-2/phase-20-implementation-guide.md) for source/grant and cloud acceptance gates.

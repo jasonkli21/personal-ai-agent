@@ -149,6 +149,13 @@ class PostgresPrincipalDirectory:
         except Exception as error:
             raise IdentityDirectoryUnavailable from error
 
+    def owner_is_fenced(self, owner_id):
+        from personal_ai.persistence.postgres_artifacts import PostgresArtifactMetadataRepository
+        try:
+            return not PostgresArtifactMetadataRepository(self.database).active(owner_id)
+        except Exception as error:
+            raise IdentityDirectoryUnavailable from error
+
     def active_owner_ids(self, *, limit: int = 2) -> tuple[str, ...]:
         if not 1 <= limit <= 100:
             raise ValueError("owner_limit_invalid")
@@ -156,7 +163,9 @@ class PostgresPrincipalDirectory:
             with self.database.connection() as connection:
                 rows = connection.execute(
                     "SELECT owner_id FROM identity_mappings WHERE application_id=%s "
-                    "AND workspace_id IS NULL AND status='active' ORDER BY owner_id LIMIT %s",
+                    "AND workspace_id IS NULL AND status='active' AND NOT EXISTS "
+                    "(SELECT 1 FROM artifact_owner_fences f WHERE f.owner_id=identity_mappings.owner_id) "
+                    "ORDER BY owner_id LIMIT %s",
                     (_ACCOUNT_SCOPE.application_id, limit),
                 ).fetchall()
             return tuple(row[0] for row in rows)
@@ -259,6 +268,19 @@ class PostgresAccountLifecycleRepository:
                         p_revision_max = max(p_revision_max, int(revision or 0))
                         add(family, record_id, payload)
                         p_count += 1
+                artifact_rows = connection.execute(
+                    "SELECT artifact_id,payload,revision FROM artifact_metadata "
+                    "WHERE owner_id=%s AND application_id=%s "
+                    "AND workspace_id IS NOT DISTINCT FROM %s ORDER BY artifact_id LIMIT %s",
+                    (owner_id, scope.application_id, scope.workspace_id, max_records + 1),
+                ).fetchall()
+                p_collection_counts["artifact_metadata"] = len(artifact_rows)
+                p_revision_coverage["artifact_metadata"] = max(
+                    (int(row[2]) for row in artifact_rows), default=0
+                )
+                for artifact_id, payload, revision in artifact_rows:
+                    add("artifact_metadata", artifact_id, payload)
+                    p_count += 1
                 budget_rows = connection.execute(
                     "SELECT record_id,owner_id,application_id,workspace_id,record_version,status,"
                     "revision,created_at,expires_at,budget_day,provider_calls,input_tokens "
@@ -762,6 +784,8 @@ class PostgresAccountLifecycleRepository:
         scope_id = PostgresPayloadRepository.scope_id(owner_id, _ACCOUNT_SCOPE)
         audit_id = hashlib.sha256(f"{request_id}\0{action}".encode()).hexdigest()
         with self.database.transaction() as connection:
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                               (f"artifact-owner:{owner_id}",))
             row = connection.execute(
                 "SELECT payload,revision FROM account_lifecycle_requests WHERE scope_id=%s "
                 "AND record_id=%s AND owner_id=%s FOR UPDATE",
@@ -786,7 +810,25 @@ class PostgresAccountLifecycleRepository:
             next_state = "confirmed_pending_operator" if action == "confirm" else "cancelled"
             updated = {**current, "state": next_state, "updated_at": now.isoformat()}
             if action == "confirm":
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                                   (f"artifact-owner:{owner_id}",))
+                connection.execute(
+                    "INSERT INTO artifact_owner_fences(owner_id,deletion_request_id) VALUES (%s,%s) "
+                    "ON CONFLICT DO NOTHING", (owner_id, request_id),
+                )
                 updated["confirmed_at"] = now.isoformat()
+            if action == "cancel":
+                # Physical artifact cleanup is irreversible. Do not un-fence after it starts.
+                cleaned = connection.execute(
+                    "SELECT 1 FROM artifact_metadata WHERE owner_id=%s "
+                    "AND status IN ('deleting','deleted') AND last_checked_at >= %s LIMIT 1",
+                    (owner_id, current.get("confirmed_at") or now.isoformat()),
+                ).fetchone()
+                if cleaned:
+                    raise AccountRequestConflict
+                connection.execute("DELETE FROM artifact_owner_fences "
+                                   "WHERE owner_id=%s AND deletion_request_id=%s",
+                                   (owner_id, request_id))
             ids = list(updated.get("audit_event_ids", []))
             if audit_id not in ids:
                 ids.append(audit_id)

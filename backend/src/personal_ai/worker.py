@@ -29,6 +29,7 @@ from personal_ai.memory.lifecycle_jobs import (
     PubSubMemoryJobPublisher,
 )
 from personal_ai.persistence.factory import close_persistence_clients, persistence_factory
+from personal_ai.persistence.postgres_artifacts import PostgresArtifactMetadataRepository
 from personal_ai.settings import Settings, get_settings, validate_startup_configuration
 from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import ResourceNotFoundError, StorageError
@@ -72,6 +73,7 @@ def _components(settings: Settings):
         memories,
         messages,
         GeminiMemoryAdapter(settings, usage_accounting=usage),
+        owner_active=PostgresArtifactMetadataRepository(factory.database).active,
     )
     return worker, republisher
 
@@ -190,6 +192,14 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         expired_provider_usage = await anyio.to_thread.run_sync(
             partial(usage.purge_expired, limit=settings.maintenance_batch_size)
         )
+        artifact_reconciliation = None
+        artifact_storage = None
+        if settings.artifacts_enabled:
+            artifacts = await anyio.to_thread.run_sync(factory.artifact_service, settings)
+            artifact_reconciliation = await anyio.to_thread.run_sync(
+                partial(artifacts.reconcile, limit=min(settings.maintenance_batch_size, 100))
+            )
+            artifact_storage = await anyio.to_thread.run_sync(artifacts.metadata.observations)
         safeguards = factory.safeguard_store()
         expired_budgets = await anyio.to_thread.run_sync(
             partial(
@@ -238,6 +248,8 @@ async def run_scheduled_maintenance(request: Request) -> Response:
     )
     return Response(
         content=json.dumps({
+            **({"artifact_reconciliation": artifact_reconciliation,
+                "artifact_storage": artifact_storage} if settings.artifacts_enabled else {}),
             "republished_jobs": published,
             "expired_sessions": expired,
             "expired_usage_budgets": expired_budgets,

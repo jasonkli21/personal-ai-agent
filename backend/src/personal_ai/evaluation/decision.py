@@ -27,6 +27,7 @@ from personal_ai.entities.research import (
     QuantityValue,
     TextValue,
 )
+from personal_ai.evaluation.output import emit
 from personal_ai.ranking.policy import evaluate_candidates
 from personal_ai.settings import Settings
 
@@ -479,5 +480,5 @@ def evaluate() -> dict:
 
 if __name__ == "__main__":
     report = evaluate()
-    print(json.dumps(report, indent=2))
+    emit(report)
     raise SystemExit(0 if report["passed"] else 1)

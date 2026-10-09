@@ -41,6 +41,7 @@ from personal_ai.context.providers import (
     StaticContextProviderFactory,
 )
 from personal_ai.entities import Message, MessageRole, MessageStatus
+from personal_ai.evaluation.output import emit
 from personal_ai.memory.contracts import Memory, RetrievalResult, ScoredMemory, normalize
 from personal_ai.settings import Settings
 
@@ -509,7 +510,7 @@ def evaluate() -> list[dict]:
 
 def main() -> int:
     rows = evaluate()
-    print(json.dumps(rows, indent=2))
+    emit(rows)
     return 1 if any(row["result"] != "passed" for row in rows) else 0
 
 

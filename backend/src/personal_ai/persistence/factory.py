@@ -50,6 +50,7 @@ class PersistenceFactory(Protocol):
     def safeguard_store(self) -> SafeguardStore: ...
     def provider_rate_limiter(self, provider: str, repository=None): ...
     def provider_usage_accounting(self, settings): ...
+    def artifact_service(self, settings): ...
 
 
 class PostgresDynamoPersistenceFactory:
@@ -58,6 +59,7 @@ class PostgresDynamoPersistenceFactory:
     def __init__(self, database, runtime_table) -> None:
         self.database = database
         self.runtime_table = runtime_table
+        self._artifact_services = {}
 
     def conversation_repository(self):
         from personal_ai.persistence.dynamodb import DynamoDBConversationRepository
@@ -78,6 +80,44 @@ class PostgresDynamoPersistenceFactory:
         from personal_ai.persistence.dynamodb import DynamoDBContextTraceRepository
 
         return DynamoDBContextTraceRepository(self.runtime_table)
+
+    def artifact_service(self, settings):
+        if not settings.artifacts_enabled:
+            return None
+        from personal_ai.artifacts.local import InMemoryArtifactStore
+        from personal_ai.artifacts.service import ArtifactService
+        from personal_ai.persistence.postgres_artifacts import PostgresArtifactMetadataRepository
+
+        key = (settings.artifact_store, settings.artifact_gcs_bucket,
+               settings.artifact_gcs_region, settings.artifact_gcs_preflight_reference,
+               settings.artifact_max_operations_per_day, settings.artifact_max_write_bytes_per_day,
+               settings.artifact_max_live_bytes, settings.artifact_max_objects)
+        with _FACTORY_LOCK:
+            if key in self._artifact_services:
+                return self._artifact_services[key]
+            metadata = PostgresArtifactMetadataRepository(
+                self.database, max_operations=settings.artifact_max_operations_per_day,
+                max_daily_bytes=settings.artifact_max_write_bytes_per_day,
+                max_live_bytes=settings.artifact_max_live_bytes,
+                max_objects=settings.artifact_max_objects,
+            )
+            if settings.artifact_store == "gcs":
+                from personal_ai.artifacts.gcs import PrivateGCSArtifactStore
+                metadata.reserve(operations=1, byte_count=0)
+                store = PrivateGCSArtifactStore(
+                    settings.artifact_gcs_bucket, region=settings.artifact_gcs_region,
+                    preflight_verified=settings.artifact_gcs_preflight_verified,
+                )
+                try:
+                    store.verify_private_bucket()
+                except Exception:
+                    store.close()
+                    raise
+            else:
+                store = InMemoryArtifactStore()
+            service = ArtifactService(metadata, store)
+            self._artifact_services[key] = service
+            return service
 
     def global_profile_repository(self):
         from personal_ai.persistence.postgres_context import PostgresGlobalProfileRepository
@@ -194,6 +234,11 @@ class PostgresDynamoPersistenceFactory:
         )
 
     def close(self) -> None:
+        for service in self._artifact_services.values():
+            close = getattr(service.store, "close", None)
+            if close is not None:
+                close()
+        self._artifact_services.clear()
         self.database.close()
         close = getattr(self.runtime_table, "close", None)
         if close is not None:
