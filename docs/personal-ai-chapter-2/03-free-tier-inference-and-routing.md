@@ -14,7 +14,7 @@ The intended sequence is:
 16  Personal AI neutral inference and embedding contracts
 17  completed Gemini/Groq/Cloudflare reference adapters
 17R completed locally: LiteLLM execution-substrate reconciliation
-18  completed locally: endpoint registry and strict-free admission foundation
+18  phase-local implementation complete; integration/prerequisite acceptance open
 19  usage/quota ledger and invocation observations
 21  deterministic semantic routing and RoutingStrategy baseline
 22  task-profile x endpoint-profile quality evidence
@@ -27,7 +27,7 @@ Phase 17 established contract behavior and provider edge cases; Phase 17R implem
 
 The implemented transport uses the LiteLLM Python SDK inside the existing runtime. A separately deployed LiteLLM Proxy/Gateway is not initial scope. Personal AI owns semantic routing, hard admission, privacy, execution/cost modes, task quality, quota policy, cascades, and later adaptive strategies. LiteLLM normalizes provider transport for an already-selected endpoint. LiteLLM Router, cross-provider fallback, and load balancing must not silently change the selected semantic endpoint. Phase 17R disables implicit SDK/provider/HTTP retries; a later explicit bounded retry may repeat only the same endpoint after Phase 19 gives each physical send its own attempt identity and admission/reservation. No retry may change provider/model, credential scope, cost mode, or consent. Phase 18's registry is implemented as an admission foundation but is not yet wired into request-workflow provider selection.
 
-The contract boundary is:
+The request/execution boundary is:
 
 ```text
 Task + context + policy
@@ -36,18 +36,20 @@ Task + context + policy
 Personal AI endpoint registry and hard admission
         |
         v
-Personal AI semantic router -> pluggable RoutingStrategy
+provisional endpoint selection -> endpoint-specific assembly/count
         |
         v
-ExecutionPlan
+policy/source/profile revalidation -> atomic quota reservation
         |
         v
-Personal AI inference gateway -> LiteLLM SDK -> selected endpoint
+final ExecutionPlan -> Personal AI inference gateway -> LiteLLM SDK -> selected endpoint
 ```
+
+The Phase 21 strategy only makes a provisional choice among hard-eligible endpoints. It does not establish context fit or authorize dispatch. The orchestrator completes endpoint-specific preparation, revalidates policy and source permissions, reserves applicable quota, and finalizes one selected endpoint plan before the gateway sends.
 
 Gemini, Groq, and Cloudflare are initial reference endpoint families, not privileged identities or a closed universe. A LiteLLM-supported provider normally adds endpoint/configuration/profile/evaluation without new provider transport code. A narrow provider-specific shim remains only for a demonstrated LiteLLM compatibility gap. OpenRouter is a possible later provider family through endpoint profiles, credential/account/cost metadata, privacy eligibility, evaluation, and quota handling; it is not a Phase 17R or Phase 18–24 live-provider requirement.
 
-For a future OpenRouter integration, a specific model endpoint can be represented as a normal endpoint profile. An OpenRouter-managed `auto` or `free` route is a composite/virtual endpoint: retain the requested virtual endpoint and the actual selected model/upstream provider when known. Before any context is disclosed, a composite is eligible only when enforceable bounds cover every possible upstream for cost/execution mode, data policy, capability, context/output limits, and required quality evidence. If membership or a bound is unknown, exclude the composite for requests that require it. A response identity never retroactively authorizes disclosure; unknown actual identity cannot be reported as a specific measured model. Changes to the possible-upstream set or its bounds invalidate affected profile and quality evidence. Future integration acceptance includes an unknown/disallowed upstream denied before disclosure, a bounded composite using its own quality profile, and a response identity that cannot grant retroactive permission. These routes remain outside the initial quality matrix and primary Personal AI semantic router.
+For a future OpenRouter integration, a specific model endpoint can be represented as a normal endpoint profile. An OpenRouter-managed `auto` or `free` route is a composite/virtual endpoint: retain the requested virtual endpoint and the actual selected model/upstream provider when known. Before any context is disclosed, enforceable cost/execution mode, data policy, capability, and context/output bounds must hold for every possible upstream. A required quality floor may be established either by a proven per-upstream minimum across the full possible set or by a versioned composite-level quality profile measured for the exact upstream-set and selection-policy version. Unknown membership or any missing hard safety bound excludes the composite for requests that require it. A response identity never retroactively authorizes disclosure or substitutes for pre-dispatch quality evidence. Any membership or selection-policy change invalidates the composite quality profile. Future integration acceptance includes unknown/disallowed upstreams denied before disclosure, composite-level quality evidence bound to its exact membership/policy version, and response identity that cannot grant retroactive permission. These routes remain outside the initial quality matrix and primary Personal AI semantic router.
 
 Current quotas/model availability are operational facts, not application constants. No dynamic discovery or provider marketplace is required.
 
@@ -116,7 +118,7 @@ Phases 25.1–25.4 add explicit user-controlled ChatGPT-plan execution through a
 
 Phase 21 introduces a project-owned `RoutingStrategy` (or equivalent) that consumes a versioned task/profile, the eligible endpoint profiles and versions, decision-time policy context, quality evidence, latency/reliability inputs when used, and quota/scarcity inputs when available. The Phase 21 deterministic scorer is the baseline implementation of this seam, not the architecture embedded in request orchestration. Phase 23 may enrich that baseline or add another deterministic strategy. Phase 35 can add interchangeable learned strategies without rewriting orchestration or provider transport.
 
-The strategy returns a bounded, explainable provisional result: selected eligible endpoint, optional ranked eligible candidates/scores, strategy ID/version, and reason. Personal AI assembles/counts for that endpoint, revalidates policy/source/profile, reserves quota, and then finalizes an `ExecutionPlan` containing task/profile identity, selected endpoint, permitted alternatives, execution mode, required capabilities, endpoint-specific prepared-input/count identity and fit, validator/escalation permission, physical-attempt/time/token/auxiliary-call/quota bounds, registry/policy versions, decision ID, strategy identity/version, and reason. The execution layer carries out that plan through the Personal AI inference gateway. Provider/model names are profile and provenance data, never generic fallback order.
+The strategy returns a bounded, explainable provisional result: selected eligible endpoint, optional ranked eligible candidates/scores, strategy ID/version, and reason. Personal AI assembles/counts for that endpoint, revalidates policy/source/profile, reserves quota, and then finalizes an `ExecutionPlan` containing task/profile identity, selected endpoint, advisory `reselection_candidate_refs`, execution mode, required capabilities, endpoint-specific prepared-input/count identity and fit, validator/escalation permission, physical-attempt/time/token/auxiliary-call/quota bounds, registry/policy versions, decision ID, strategy identity/version, and reason. These references are not executable fallbacks. Selecting another endpoint requires a linked decision, recomputed endpoint-specific preparation/count, revalidation, reservation, and a new final plan. The execution layer carries out only the final selected endpoint through the Personal AI inference gateway. Provider/model names are profile and provenance data, never generic fallback order.
 
 ## Routing observation contract
 

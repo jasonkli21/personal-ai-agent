@@ -41,7 +41,7 @@ DynamoDB turn/runtime records hold actual producing-endpoint attribution and com
 
 ## Prerequisites and work ordering
 
-Required phases: 16, 18, 19, and 10. Phase 18 requires completion of Phase 17R, so routing cannot bypass the LiteLLM reconciliation gate. Work packages run in order.
+Required phases: 15, 16, 18, 19, and 10. Phase 18 requires completion of Phase 17R, so routing cannot bypass the LiteLLM reconciliation gate. Phase 15's authoritative membership and end-to-end revocation acceptance must also be complete before any request workflow is connected to automatic endpoint selection. Work packages run in order.
 
 ## Phase-specific invariants
 
@@ -81,7 +81,7 @@ RoutingStrategyResult
 
 ExecutionPlan
   task/profile identity and provisional/final selected endpoint
-  permitted alternatives
+  reselection_candidate_refs (advisory only; never executable fallback)
   execution mode and required capabilities
   endpoint-specific prepared-input/count identity and final-fit result
   validator policy and escalation/cascade permission
@@ -90,7 +90,7 @@ ExecutionPlan
   routing decision ID, strategy ID/version, and reason
 ```
 
-Use repository naming conventions, but preserve the seams. A strategy receives only endpoints that passed admission; it has no provider or credential handles. The result is data, not an execution call. A new application task such as `travel.itinerary_proposal` declares typed requirements/policy rather than adding a router branch. This is bounded configuration, not a runtime task-plugin system; Phase 24 implements validator execution.
+Use repository naming conventions, but preserve the seams. A strategy receives only endpoints that passed admission; it has no provider or credential handles. The result is data, not an execution call. `reselection_candidate_refs` are advisory references for the orchestrator only; the execution layer must never treat them as fallback permission. Selecting another endpoint requires a new linked routing decision, endpoint-specific assembly/count, policy/source/profile revalidation, quota reservation, and a new final plan. A new application task such as `travel.itinerary_proposal` declares typed requirements/policy rather than adding a router branch. This is bounded configuration, not a runtime task-plugin system; Phase 24 implements validator execution.
 
 **Acceptance:** Actual task callers supply typed requirements without an LLM classifier. A synthetic task/profile fits the same contracts without a generic orchestration branch.
 
@@ -104,7 +104,7 @@ The first eligible strategy result is provisional until endpoint-specific assemb
 
 Consume registered endpoint facts and [execution/cost eligibility](../../03-free-tier-inference-and-routing.md#execution-identity-and-cost-modes). Provider/model names may appear in profile configuration and trace identity, but cannot define generic control flow or ordered chains. BYOK/ChatGPT remain outside the automatic strict-free router.
 
-The selected endpoint and permitted alternatives become an `ExecutionPlan`. A separate execution layer revalidates the frozen registry/policy versions as required, performs the selected endpoint through the Personal AI inference gateway, and records invocation lineage. The strategy itself makes no provider calls.
+The selected endpoint and advisory `reselection_candidate_refs` become an `ExecutionPlan`. A separate execution layer revalidates the frozen registry/policy versions as required and performs exactly the final selected endpoint through the Personal AI inference gateway. It does not dispatch an alternative directly; orchestrator reselection creates a linked decision and new final plan after recomputing endpoint-specific preparation and admission. Invocation lineage records each decision and physical attempt. The strategy itself makes no provider calls.
 
 **Acceptance:** Hard filters and mandatory quality floors run before every strategy; below-floor, stale/missing, or insufficiently covered evidence cannot enter any strategy. An explicitly unmeasured baseline task remains usable before Phase 22 without invented quality. The deterministic scorer is replaceable and not scattered through orchestration; count-incompatible, unknown-cost, paid, or explicit-only profiles are rejected even when free candidates are exhausted.
 

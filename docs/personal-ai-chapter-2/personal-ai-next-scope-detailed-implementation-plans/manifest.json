@@ -123,7 +123,7 @@
     "phase": "18",
     "title": "Endpoint registry and strict-free eligibility",
     "file": "plans/phase-18-implementation-plan.md",
-    "bytes": 8879,
+    "bytes": 9460,
     "prerequisites": [
       "15",
       "17R",
@@ -156,8 +156,9 @@
     "phase": "21",
     "title": "Deterministic task-aware routing",
     "file": "plans/phase-21-implementation-plan.md",
-    "bytes": 14834,
+    "bytes": 15620,
     "prerequisites": [
+      "15",
       "16",
       "18",
       "19",
@@ -168,7 +169,7 @@
     "phase": "22",
     "title": "Cross-provider task evaluation matrix",
     "file": "plans/phase-22-implementation-plan.md",
-    "bytes": 6516,
+    "bytes": 7647,
     "prerequisites": [
       "20",
       "21",

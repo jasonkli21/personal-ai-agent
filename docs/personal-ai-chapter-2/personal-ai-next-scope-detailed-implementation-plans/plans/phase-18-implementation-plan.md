@@ -1,6 +1,6 @@
 # Phase 18 implementation plan — Endpoint registry and strict-free eligibility
 
-Renumbered from former Phase 10 with scope preserved. Phase 10 persistence remains a standing prerequisite. Phase 18 is implemented locally after the [Phase 17R LiteLLM reconciliation gate](phase-17r-implementation-plan.md). See the [Phase 18 implementation evidence](../../phase-18-implementation-evidence.md) for delivered registry/admission behavior and remaining database/provider gates.
+Renumbered from former Phase 10 with scope preserved. The Phase 18 phase-local registry/admission implementation is complete after the [Phase 17R LiteLLM reconciliation gate](phase-17r-implementation-plan.md). Full Phase 18 integration acceptance remains open: Phase 15 is still partial, the Phase 18 Postgres migration has not been applied, and Postgres integration verification has not run. Do not connect this registry to request-workflow provider selection until Phase 15 authorization/membership and revocation prerequisites are accepted. See the [Phase 18 implementation evidence](../../phase-18-implementation-evidence.md) for delivered behavior and remaining gates.
 
 ## Scope boundary
 
@@ -39,7 +39,7 @@ Registry policy/version records use Phase 10 ownership and do not duplicate cano
 
 ## Prerequisites and work ordering
 
-Required phases: 15, 17R, and 10. Phase 17R itself requires Phases 16 and 17. Work packages run in order.
+Required phases for full integration acceptance: 15, 17R, and 10. Phase 17R itself requires Phases 16 and 17. The Phase 15 policy/sensitivity subset already consumed by the phase-local registry does not establish completion of Phase 15's authoritative membership and end-to-end revocation work; those remain hard prerequisites before routing is connected to request workflows. Work packages run in order.
 
 ## Phase-specific invariants
 

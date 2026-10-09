@@ -87,3 +87,12 @@ tier/privacy compatibility, Phase 14 immutable policy/source references,
 Phase 15 derived-context revocation and authoritative membership, and
 deployment/account-lifecycle acceptance. This documentation correction does
 not establish delivery or acceptance of the planned routing runtime.
+
+## Post-implementation routing documentation reconciliation — 2026-10-08
+
+Reviewed commit `8d1cb69e246e58e579abc30b4847e28c202cc874` and the documentation working tree. The preceding “LiteLLM routing review-handoff correction” section is a historical review of pre-implementation revision `48ff4d22de49768da7ee14e91c112c01fea0f35a`; its statements that LiteLLM was not installed or validated and routing runtime was not delivered do not describe the current repository.
+
+- Phase 17R's local LiteLLM implementation and tested version `1.102.1` are recorded in [Phase 17R evidence](phase-17r-implementation-evidence.md). Live provider/account/tier/privacy and production acceptance remain open.
+- Phase 18's phase-local registry/admission implementation is recorded in [Phase 18 evidence](phase-18-implementation-evidence.md). Full integration acceptance remains open pending Phase 15 authorization/membership and revocation acceptance, application of the migration, and Postgres integration verification.
+- Current reconciliation clarifies the dispatch lifecycle diagram, Phase 22's evaluation-only quality bootstrap, advisory-only Phase 21 reselection references, OpenRouter composite quality evidence, and Phase 15's prerequisite for automatic request-workflow routing.
+- Documentation links, phase manifest metadata, and `git diff --check` were reviewed for this change. No live provider, database migration, cloud, or production checks were run.
