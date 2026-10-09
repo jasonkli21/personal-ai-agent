@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
-from personal_ai.routing.contracts import QuotaBucket
+from personal_ai.usage.quota import QuotaObservation
 
 if TYPE_CHECKING:
     from personal_ai.llm.metadata import ProviderRateLimitMetadata
@@ -35,7 +35,7 @@ class UsageAdmissionDenied(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ProviderEndpoint:
-    """Safe endpoint/profile facts selected before a provider transport call."""
+    """Immutable accounting projection for fixed-provider/lookup adapters, not a catalog."""
 
     endpoint_profile_id: str
     profile_version: int
@@ -56,7 +56,7 @@ class ProviderEndpoint:
     quota_membership: Literal["verified", "unknown", "ambiguous"] = "unknown"
     registry_version: str | None = None
     registry_revision: int | None = None
-    quota_buckets: tuple[QuotaBucket, ...] = ()
+    quota_buckets: tuple[QuotaObservation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -766,7 +766,7 @@ def test_provider_fence_denies_before_profile_reservation_or_send():
         def execute(self, query, params=None):
             calls.append(query)
             return SimpleNamespace(
-                fetchone=lambda: (1,) if "artifact_owner_fences" in query else None
+                fetchone=lambda: (1,) if "owner_lifecycle_fences" in query else None
             )
 
     class Database:

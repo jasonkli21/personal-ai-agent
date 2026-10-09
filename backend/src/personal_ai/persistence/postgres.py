@@ -210,7 +210,10 @@ class PostgresDatabase:
 
     @contextmanager
     def connection(
-        self, *, timeout_seconds: float | None = None, deadline: float | None = None,
+        self,
+        *,
+        timeout_seconds: float | None = None,
+        deadline: float | None = None,
         snapshot: bool = False,
     ) -> Iterator[Any]:
         if timeout_seconds is not None:
@@ -221,7 +224,9 @@ class PostgresDatabase:
         remaining = None if deadline is None else deadline - monotonic()
         if remaining is not None and remaining <= 0:
             raise TimeoutError("postgres operation deadline exceeded")
-        pool_timeout = self._pool_timeout if remaining is None else min(self._pool_timeout, remaining)
+        pool_timeout = (
+            self._pool_timeout if remaining is None else min(self._pool_timeout, remaining)
+        )
         self.open()
         try:
             with (
@@ -249,7 +254,10 @@ class PostgresDatabase:
 
     @contextmanager
     def transaction(
-        self, *, timeout_seconds: float | None = None, deadline: float | None = None,
+        self,
+        *,
+        timeout_seconds: float | None = None,
+        deadline: float | None = None,
         snapshot: bool = False,
     ) -> Iterator[Any]:
         """Alias that makes transaction-group intent explicit at call sites."""
@@ -282,9 +290,7 @@ class PostgresDatabase:
         self.open()
         applied: list[int] = []
         migration_dir = files("personal_ai.persistence").joinpath("migrations")
-        migrations = sorted(
-            item for item in migration_dir.iterdir() if item.name.endswith(".sql")
-        )
+        migrations = sorted(item for item in migration_dir.iterdir() if item.name.endswith(".sql"))
         for resource in migrations:
             prefix, _, _ = resource.name.partition("_")
             try:
@@ -292,11 +298,14 @@ class PostgresDatabase:
             except ValueError as error:
                 raise RuntimeError("migration_filename_invalid") from error
             sql = resource.read_text(encoding="utf-8")
-            checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
-            with self.transaction() as connection:
-                connection.execute(
-                    "SELECT pg_advisory_xact_lock(%s, %s)", (0x504149, 10)
+            checksum_payload = sql.encode("utf-8")
+            if version == 22:
+                checksum_payload += (
+                    files("personal_ai.persistence").joinpath("routing_migration.py").read_bytes()
                 )
+            checksum = hashlib.sha256(checksum_payload).hexdigest()
+            with self.transaction() as connection:
+                connection.execute("SELECT pg_advisory_xact_lock(%s, %s)", (0x504149, 10))
                 connection.execute(
                     "CREATE TABLE IF NOT EXISTS schema_migrations ("
                     "version integer PRIMARY KEY, checksum text NOT NULL, "
@@ -311,6 +320,12 @@ class PostgresDatabase:
                         raise RuntimeError("migration_checksum_mismatch")
                     continue
                 connection.execute(sql, prepare=False)
+                if version == 22:
+                    from personal_ai.persistence.routing_migration import (
+                        migrate_routing_authorities,
+                    )
+
+                    migrate_routing_authorities(connection)
                 connection.execute(
                     "INSERT INTO schema_migrations(version, checksum) VALUES (%s, %s)",
                     (version, checksum),
@@ -427,8 +442,11 @@ class PostgresPayloadRepository:
                 "WHERE scope_id=%s AND owner_id=%s AND application_id=%s "
                 "AND workspace_id IS NOT DISTINCT FROM %s AND idempotency_key=%s",
                 (
-                    self.scope_id(owner_id, scope), owner_id, scope.application_id,
-                    scope.workspace_id, idempotency_key,
+                    self.scope_id(owner_id, scope),
+                    owner_id,
+                    scope.application_id,
+                    scope.workspace_id,
+                    idempotency_key,
                 ),
             ).fetchone()
         return None if row is None else (row[0], row[1], row[2], row[3])
@@ -468,9 +486,17 @@ class PostgresPayloadRepository:
                     "workspace_id,record_version,status,revision,created_at,expires_at,fingerprint,"
                     "idempotency_key,payload) VALUES (%s,%s,%s,%s,%s,1,%s,1,%s,%s,%s,%s,%s::jsonb)",
                     (
-                        record_id, scope_id, owner_id, scope.application_id, scope.workspace_id,
-                        status, _datetime(created_at) or datetime.now(UTC), _datetime(expires_at),
-                        fingerprint, idempotency_key, self._json(payload),
+                        record_id,
+                        scope_id,
+                        owner_id,
+                        scope.application_id,
+                        scope.workspace_id,
+                        status,
+                        _datetime(created_at) or datetime.now(UTC),
+                        _datetime(expires_at),
+                        fingerprint,
+                        idempotency_key,
+                        self._json(payload),
                     ),
                 )
         except Exception as error:
@@ -480,7 +506,9 @@ class PostgresPayloadRepository:
                 owner_id=owner_id, scope=scope, idempotency_key=idempotency_key
             )
             if replay is None:
-                raise PersistenceConflict("idempotency key conflicted with another record") from error
+                raise PersistenceConflict(
+                    "idempotency key conflicted with another record"
+                ) from error
             if replay[1] != fingerprint:
                 raise PersistenceConflict("idempotency fingerprint conflict") from error
             return replay[2], False
@@ -539,8 +567,16 @@ class PostgresPayloadRepository:
                     "created_at,fingerprint,idempotency_key,payload) "
                     "VALUES (%s,%s,%s,%s,%s,1,'active',1,%s,%s,%s,%s,%s,%s::jsonb)",
                     (
-                        record_id, scope_id, owner_id, scope.application_id, scope.workspace_id,
-                        sequence, aggregate_id, timestamp, fingerprint, idempotency_key,
+                        record_id,
+                        scope_id,
+                        owner_id,
+                        scope.application_id,
+                        scope.workspace_id,
+                        sequence,
+                        aggregate_id,
+                        timestamp,
+                        fingerprint,
+                        idempotency_key,
                         self._json(payload),
                     ),
                 )
@@ -562,8 +598,11 @@ class PostgresPayloadRepository:
                 "WHERE scope_id=%s AND owner_id=%s AND application_id=%s "
                 "AND workspace_id IS NOT DISTINCT FROM %s AND idempotency_key=%s",
                 (
-                    self.scope_id(owner_id, scope), owner_id, scope.application_id,
-                    scope.workspace_id, idempotency_key,
+                    self.scope_id(owner_id, scope),
+                    owner_id,
+                    scope.application_id,
+                    scope.workspace_id,
+                    idempotency_key,
                 ),
             ).fetchone()
         if row is None:

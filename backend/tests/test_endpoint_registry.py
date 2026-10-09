@@ -1,18 +1,16 @@
 """Strict-free endpoint facts, admission, and lifecycle contracts."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
 from personal_ai.routing import (
-    CandidateRequirementsChangedError,
     CandidateSetOverflowError,
     CounterCompatibility,
     CountRequirement,
     DataUsePolicy,
     EndpointCandidateRequirements,
-    EndpointNotAdmissibleError,
     EndpointProfile,
     EndpointRegistry,
     EndpointRegistrySnapshot,
@@ -44,14 +42,10 @@ def _bucket(
         operations=operations,
         unit="requests",
         window_seconds=60,
-        reset_at=reset_at,
         source="provider_contract",
         confidence=confidence,
         evidence_reference="quota:synthetic-v1",
-        observed_at=datetime(2026, 10, 8, tzinfo=UTC) if fresh_until else None,
-        fresh_until=fresh_until,
         limit=500 if remaining is not None else None,
-        remaining=remaining,
     )
 
 
@@ -442,18 +436,11 @@ def test_search_auxiliary_uses_its_own_bounds_and_quota_bucket():
     assert "search_results_exceed_endpoint_limit" in too_large.rejection_reasons
 
 
-def test_fresh_exhausted_quota_bucket_blocks_admission():
-    instant = datetime(2026, 10, 8, 12, tzinfo=UTC)
-    exhausted = _bucket(
-        "bucket-exhausted",
-        remaining=0,
-        fresh_until=instant + timedelta(minutes=1),
-    )
-    profile = _profile(quota_buckets=(exhausted,))
-
-    result = EndpointRegistry((profile,)).candidates(_requirements(), now=instant).assessments[0]
-
-    assert "quota_bucket_exhausted:bounded_generation" in result.rejection_reasons
+def test_endpoint_catalog_rejects_dynamic_quota_state():
+    for field, value in (("remaining", 0), ("reset_at", datetime.now(UTC)),
+                         ("observed_at", datetime.now(UTC)), ("fresh_until", datetime.now(UTC))):
+        with pytest.raises(ValidationError):
+            QuotaBucket.model_validate({**_bucket("test-bucket").model_dump(), field: value})
 
 
 def test_distinct_account_credential_and_cost_profiles_keep_distinct_eligibility():
@@ -525,26 +512,26 @@ def test_lifecycle_updates_and_removals_invalidate_frozen_candidates():
     profile = _profile()
     registry = EndpointRegistry((profile,))
     candidates = registry.candidates(_requirements())
-    assert registry.revalidate(candidates, profile.endpoint_profile_id, _requirements()) == profile
+    assert registry.revalidate_selected(profile.ref, candidates.requirements) == profile
 
     changed = profile.model_copy(update={"profile_version": 2, "context_limit_tokens": 2048})
     registry.upsert(changed)
     assert registry.registry_version != candidates.registry_version
     with pytest.raises(RegistryRevisionChangedError):
-        registry.revalidate(candidates, profile.endpoint_profile_id, _requirements())
+        registry.revalidate_selected(profile.ref, candidates.requirements)
 
     updated_candidates = registry.candidates(_requirements())
     registry.remove(profile.endpoint_profile_id)
     assert registry.profiles == ()
     with pytest.raises(RegistryRevisionChangedError):
-        registry.revalidate(updated_candidates, profile.endpoint_profile_id, _requirements())
+        registry.revalidate_selected(changed.ref, updated_candidates.requirements)
 
     with pytest.raises(RegistryConflictError, match="version_must_increase_after_removal"):
         registry.upsert(profile)
     readded = profile.model_copy(update={"profile_version": 3})
     registry.upsert(readded)
     with pytest.raises(RegistryRevisionChangedError):
-        registry.revalidate(candidates, profile.endpoint_profile_id, _requirements())
+        registry.revalidate_selected(profile.ref, candidates.requirements)
 
     assert registry.profiles == (readded,)
 
@@ -728,86 +715,8 @@ def test_registry_profile_schema_rejects_secret_fields_and_non_symbolic_credenti
         EndpointProfile.model_validate(document)
 
 
-def test_candidate_requirements_are_frozen_and_originally_rejected_profiles_stay_rejected():
-    profile = _profile()
-    registry = EndpointRegistry((profile,))
-    requirements = _requirements(sensitivity="personal", input_tokens=128, output_tokens=64)
-    candidates = registry.candidates(requirements)
-
-    with pytest.raises(CandidateRequirementsChangedError):
-        registry.revalidate(
-            candidates,
-            profile.endpoint_profile_id,
-            _requirements(sensitivity="public", input_tokens=128, output_tokens=64),
-        )
-
-    rejected = _profile("disabled:endpoint", enabled=False)
-    rejected_registry = EndpointRegistry((rejected,))
-    rejected_candidates = rejected_registry.candidates(_requirements())
-    with pytest.raises(EndpointNotAdmissibleError) as rejected_error:
-        rejected_registry.revalidate(
-            rejected_candidates, rejected.endpoint_profile_id
-        )
-    assert "endpoint_disabled_or_unconfigured" in rejected_error.value.rejection_reasons
 
 
-def test_candidate_requirements_cannot_drop_count_schema_or_token_bounds():
-    count_profile = _profile(
-        capabilities=frozenset({"bounded_generation", "token_counting"}),
-        quota_buckets=(
-            _bucket("generate", operations=frozenset({"bounded_generation"})),
-            _bucket("count", operations=frozenset({"token_counting"})),
-        ),
-        counter=CounterCompatibility(
-            endpoint_profile_id="synthetic:account-a:key-a:model-a",
-            endpoint_id="synthetic-endpoint-v1",
-            deployment_id="synthetic-deployment-a",
-            credential_scope_id="credential-a",
-            account_scope_id="account-a",
-            provider_id="synthetic",
-            model_id="model-a",
-            serializer_id="synthetic-chat-v1",
-            counter_id="synthetic-counter-v1",
-            confidence="authoritative",
-            approved=True,
-            provenance_reference="preflight:count-v1",
-        ),
-    )
-    count_requirements = _requirements(
-        required_capabilities=frozenset({"bounded_generation", "token_counting"}),
-        input_tokens=4096,
-        output_tokens=1024,
-        count=CountRequirement(minimum_confidence="authoritative"),
-    )
-    count_candidates = EndpointRegistry((count_profile,)).candidates(count_requirements)
-    with pytest.raises(CandidateRequirementsChangedError):
-        EndpointRegistry((count_profile,)).revalidate(
-            count_candidates,
-            count_profile.endpoint_profile_id,
-            _requirements(input_tokens=1, output_tokens=1),
-        )
-
-    structured = _profile(
-        capabilities=frozenset({"structured_generation", "bounded_generation"}),
-        quota_buckets=(
-            _bucket("structured", operations=frozenset({"structured_generation", "bounded_generation"})),
-        ),
-        structured_schema_ids=("schema:a", "schema:b"),
-    )
-    structured_requirements = _requirements(
-        required_capabilities=frozenset({"structured_generation", "bounded_generation"}),
-        structured_schema_id="schema:a",
-    )
-    structured_candidates = EndpointRegistry((structured,)).candidates(structured_requirements)
-    with pytest.raises(CandidateRequirementsChangedError):
-        EndpointRegistry((structured,)).revalidate(
-            structured_candidates,
-            structured.endpoint_profile_id,
-            _requirements(
-                required_capabilities=frozenset({"structured_generation", "bounded_generation"}),
-                structured_schema_id="schema:b",
-            ),
-        )
 
 
 def test_operation_requirements_reject_missing_safety_facts_but_accept_explicit_zero():
@@ -863,54 +772,6 @@ def test_embedding_dimension_and_explicit_zero_search_bounds_are_checked():
         search_results=0,
     )
     assert EndpointRegistry((search,)).candidates(zero_search).eligible_profiles == (search,)
-
-
-@pytest.mark.parametrize(
-    ("quota", "exhausted"),
-    [
-        (_bucket("reset-future", remaining=0, reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC)), True),
-        (_bucket("reset-passed", remaining=0, reset_at=datetime(2026, 10, 8, 11, tzinfo=UTC)), False),
-        (
-            _bucket(
-                "fresh-and-reset", remaining=0,
-                reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC),
-                fresh_until=datetime(2026, 10, 8, 12, 30, tzinfo=UTC),
-            ),
-            True,
-        ),
-        (
-            _bucket(
-                "stale-and-reset", remaining=0,
-                reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC),
-                fresh_until=datetime(2026, 10, 8, 11, 59, tzinfo=UTC),
-            ),
-            False,
-        ),
-        (
-            _bucket(
-                "reported-zero", remaining=0,
-                reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC),
-                confidence="reported",
-            ),
-            False,
-        ),
-        (
-            _bucket(
-                "remaining-capacity", remaining=1,
-                reset_at=datetime(2026, 10, 8, 13, tzinfo=UTC),
-            ),
-            False,
-        ),
-    ],
-)
-def test_quota_exhaustion_uses_reset_and_freshness(quota, exhausted):
-    instant = datetime(2026, 10, 8, 12, tzinfo=UTC)
-    profile = _profile(quota_buckets=(quota,))
-    assessment = EndpointRegistry((profile,)).candidates(
-        _requirements(), now=instant
-    ).assessments[0]
-
-    assert ("quota_bucket_exhausted:bounded_generation" in assessment.rejection_reasons) == exhausted
 
 
 @pytest.mark.parametrize(
@@ -1059,7 +920,7 @@ def test_durable_revalidation_observes_updates_from_another_registry_instance(ch
     second.upsert(change(profile))
 
     with pytest.raises(RegistryRevisionChangedError):
-        first.revalidate(candidates, profile.endpoint_profile_id)
+        first.revalidate_selected(profile.ref, candidates.requirements)
 
 
 def test_durable_revalidation_observes_removal_and_unchanged_registry():
@@ -1068,11 +929,11 @@ def test_durable_revalidation_observes_removal_and_unchanged_registry():
     first = EndpointRegistry((profile,), repository=repository)
     second = EndpointRegistry(None, repository=repository)
     candidates = first.candidates(_requirements())
-    assert first.revalidate(candidates, profile.endpoint_profile_id) == profile
+    assert first.revalidate_selected(profile.ref, candidates.requirements) == profile
 
     second.remove(profile.endpoint_profile_id)
     with pytest.raises(RegistryRevisionChangedError):
-        first.revalidate(candidates, profile.endpoint_profile_id)
+        first.revalidate_selected(profile.ref, candidates.requirements)
 
 
 def test_configuration_reconciliation_advances_versions_revokes_and_survives_restart():
@@ -1086,7 +947,7 @@ def test_configuration_reconciliation_advances_versions_revokes_and_survives_res
     assert reconciled.profiles[0].profile_version == 2
     assert reconciled.profiles[0].context_limit_tokens == 2048
     with pytest.raises(RegistryRevisionChangedError):
-        initial.revalidate(old_candidates, configured.endpoint_profile_id)
+        initial.revalidate_selected(configured.ref, old_candidates.requirements)
 
     restarted = EndpointRegistry((changed_config,), repository=repository)
     assert restarted.profiles == reconciled.profiles

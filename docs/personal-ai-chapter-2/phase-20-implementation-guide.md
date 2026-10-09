@@ -47,3 +47,7 @@ GCS protocol references: [object insertion and generation preconditions](https:/
 ## Verification
 
 `make backend-test backend-lint backend-build` covers offline contracts; `make frontend-test frontend-lint frontend-typecheck frontend-build` covers the proxy and unchanged UI. `tests/test_artifacts.py` exercises scope, hash/compression, atomic flow and store admission, crashes, duplicates, corruption, orphan races, expiry, revocation, export freezing/propagation, typed observations, provider/job fences and private API/GCS requests. `tests/persistence/test_artifact_tier.py` contains seven opt-in real Postgres cases, including both orderings of owner-cleanup cancellation races and concurrent store admission, and is explicitly included in CI alongside Phase 19 accounting. See [implementation evidence](phase-20-implementation-evidence.md) for actual results and unresolved gates.
+
+## Shared owner lifecycle boundary (2026-10-09)
+
+The [Phase 18–21 refactor](phase-18-21-architecture-refactor-implementation-plan.md) extracts the shared deletion fence into `persistence/postgres_owner_lifecycle.py` and renames its durable table to `owner_lifecycle_fences` in migration 022. The existing advisory-lock key remains stable. Artifact errors adapt the shared fence error at their boundary; usage and routing no longer import artifact persistence to authorize work. Artifact body/metadata, private APIs, budgets and retention remain orthogonal to routing decisions and replay.

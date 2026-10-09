@@ -1,6 +1,4 @@
-"""Opt-in Postgres migration, scope, replay retention, and fence checks."""
-
-from __future__ import annotations
+"""Real-engine routing authority/migration/atomicity/race tests; opt-in DSN."""
 
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -13,421 +11,439 @@ import pytest
 from personal_ai.auth.scope import ApplicationScope
 from personal_ai.persistence.postgres import PersistenceConflict, PostgresDatabase
 from personal_ai.persistence.postgres_artifacts import PostgresArtifactMetadataRepository
+from personal_ai.persistence.postgres_owner_lifecycle import OwnerFenced
+from personal_ai.persistence.postgres_routing import PostgresEndpointRegistryRepository
 from personal_ai.persistence.postgres_routing_observations import (
     PostgresRoutingDecisionRepository,
     RoutingDecisionUnavailable,
 )
-from personal_ai.routing import EndpointRegistry, RoutingDecisionService
-from personal_ai.routing.contracts import (
-    DataUsePolicy,
-    EndpointCandidateRequirements,
-    EndpointProfile,
-    QuotaBucket,
-    StrictFreeEligibilityAttestation,
-)
-from personal_ai.routing.phase21 import (
-    RoutingDecisionEvent,
-    RoutingDecisionObservation,
+from personal_ai.persistence.postgres_usage import PostgresProviderUsageAccounting
+from personal_ai.routing import (
+    DeterministicScoringStrategy,
+    EndpointRegistry,
+    PreparationIdentity,
+    RoutingDecisionService,
+    RoutingFinalizationError,
     RoutingRequestFacts,
-    RoutingStrategyIdentity,
     RoutingTaskProfile,
-    RuntimeCandidateFacts,
+    replay_deterministic_decision,
 )
+from personal_ai.usage.contracts import AttemptResult, UsageAdmissionDenied
+from personal_ai.usage.profiles import EndpointProfileResolver
+from tests.test_endpoint_registry import _profile, _requirements
+from tests.test_routing_phase21 import Authorization
 
 pytestmark = pytest.mark.persistence_integration
+SCOPE = ApplicationScope()
 
 
 @pytest.fixture
 def database():
     dsn = os.environ.get("PERSISTENCE_TEST_POSTGRES_DSN")
     if not dsn:
-        pytest.skip("set PERSISTENCE_TEST_POSTGRES_DSN for isolated local Postgres")
-    database = PostgresDatabase(dsn, environment="test", min_size=1, max_size=4)
-    database.migrate()
+        pytest.skip("set isolated PERSISTENCE_TEST_POSTGRES_DSN")
+    db = PostgresDatabase(dsn, environment="test", min_size=1, max_size=8)
+    db.migrate()
     try:
-        yield database
+        yield db
     finally:
-        database.close()
+        db.close()
 
 
-def _no_route_observation(owner_id: str, scope: ApplicationScope, *, created_at: datetime):
-    policy_version = "policy:phase21-integration-v1"
-    decision_id = uuid4()
-    task = RoutingTaskProfile(
-        task_id="integration-chat",
-        profile_id="task-profile:integration-chat-v1",
+def setup(database, **task_changes):
+    owner = f"route-owner-{uuid4()}"
+    p = _profile(f"route-endpoint-{uuid4()}")
+    catalog = PostgresEndpointRegistryRepository(database)
+    registry = EndpointRegistry((p,), repository=catalog)
+    repo = PostgresRoutingDecisionRepository(database)
+    usage = PostgresProviderUsageAccounting(
+        database, endpoint_profile_resolver=EndpointProfileResolver(registry, catalog)
+    )
+    auth = Authorization()
+    service = RoutingDecisionService(registry, repo, usage=usage, authorization=auth)
+    t = RoutingTaskProfile(
+        task_id="chat",
+        profile_id="task:test",
         profile_version=1,
         task_type="chat",
         required_capabilities=frozenset({"bounded_generation"}),
+        deadline_ms=600000,
+        **task_changes,
     )
     request = RoutingRequestFacts(
         request_id=f"request-{uuid4()}",
-        requirements=EndpointCandidateRequirements(
-            input_tokens=32,
-            output_tokens=16,
-        ),
-        policy_version=policy_version,
+        policy_version="policy:v1",
+        requirements=_requirements(input_tokens=64, output_tokens=16),
     )
-    return RoutingDecisionObservation(
-        routing_decision_id=decision_id,
-        root_decision_id=decision_id,
-        owner_id=owner_id,
-        application_id=scope.application_id,
-        workspace_id=scope.workspace_id,
-        created_at=created_at,
-        root_deadline_at=created_at + timedelta(seconds=30),
-        replay_until=created_at + timedelta(days=30),
-        request=request,
-        task=task,
-        registry_version="registry:phase21-integration-v1",
-        policy_version=policy_version,
-        strategy_identity=RoutingStrategyIdentity(
-            strategy_id="deterministic-scoring",
-            strategy_version="1",
-            strategy_implementation_sha256="0" * 64,
-            configuration_version="task-profile:integration-chat-v1",
-            configuration_sha256="1" * 64,
-            tie_break_version="profile-id-v1",
-        ),
-        lifecycle_status="no_route",
-        no_route_reason="no-eligible-endpoint",
+    d = service.route(owner_id=owner, scope=SCOPE, task=t, request=request)
+    assert d.selected
+    prep = PreparationIdentity(
+        endpoint=d.selected,
+        serializer_id=p.serializer_id,
+        input_tokens=32,
+        count_source="test-estimate",
+        count_confidence="estimated",
+        prepared_input_sha256="1" * 64,
+        prepared_at=datetime.now(UTC),
+    )
+    return owner, service, d, prep, repo, usage, auth
+
+
+def finalize(system):
+    owner, service, d, prep, *_ = system
+    return service.finalize(
+        owner_id=owner,
+        scope=SCOPE,
+        decision_id=d.routing_decision_id,
+        preparation=prep,
+        operation="bounded_generation",
     )
 
 
-def _preparing_profile() -> EndpointProfile:
-    profile_id = f"integration:{uuid4()}"
-    account_id = f"account:{profile_id}"
-    credential_id = f"credential:{profile_id}"
-    provider_id = "synthetic-provider"
-    model_id = "synthetic-model"
-    endpoint_id = "synthetic-endpoint"
-    deployment_id = "synthetic-deployment"
-    return EndpointProfile(
-        endpoint_profile_id=profile_id,
-        profile_version=1,
-        provider_id=provider_id,
-        model_id=model_id,
-        endpoint_id=endpoint_id,
-        deployment_id=deployment_id,
-        credential_source="environment",
-        credential_reference="env:SYNTHETIC_MODEL_KEY",
-        credential_scope_id=credential_id,
-        account_scope_id=account_id,
-        tier_id="free",
-        tier_verified=True,
-        execution_mode="STRICT_FREE",
-        cost_class="VERIFIED_FREE",
-        billing_owner="provider_account",
-        enabled=True,
-        strict_free_enabled=True,
-        capabilities=frozenset({"bounded_generation"}),
-        context_limit_tokens=4096,
-        max_output_tokens=1024,
-        data_use_policy=DataUsePolicy(
-            status="approved", max_sensitivity="personal", policy_reference="policy:v1"
-        ),
-        strict_free_attestation=StrictFreeEligibilityAttestation(
-            endpoint_profile_id=profile_id,
-            provider_id=provider_id,
-            model_id=model_id,
-            endpoint_id=endpoint_id,
-            deployment_id=deployment_id,
-            account_scope_id=account_id,
-            credential_scope_id=credential_id,
-            tier_id="free",
-            reference="preflight:synthetic-v1",
-            source="synthetic_test",
-            zero_cost_verified=True,
-            paid_overflow_excluded=True,
-        ),
-        serializer_id="synthetic-chat-v1",
-        runtime_id="synthetic-runtime-v1",
-        quota_membership="verified",
-        quota_buckets=(QuotaBucket(
-            bucket_id=f"quota:{profile_id}",
-            authority_scope_id=account_id,
-            operations=frozenset({"bounded_generation"}),
-            unit="requests",
-            window_seconds=3600,
-            source="provider_contract",
-            confidence="verified",
-            evidence_reference="quota:synthetic-v1",
-        ),),
-    )
-
-
-def test_real_postgres_routing_decision_scope_and_owner_fence(database):
-    scope = ApplicationScope(application_id="personal_ai")
-    owner_id = f"phase21-test-{uuid4()}"
-    observation = _no_route_observation(
-        owner_id, scope, created_at=datetime.now(UTC)
-    )
-    repository = PostgresRoutingDecisionRepository(database)
-    repository.begin(
-        owner_id=owner_id,
-        scope=scope,
-        observation=observation,
-        initial_event=RoutingDecisionEvent(
-            event_type="decision_no_route",
-            occurred_at=observation.created_at,
-            reason_code="no-eligible-endpoint",
-        ),
-    )
-
-    stored = repository.get(
-        owner_id=owner_id,
-        scope=scope,
-        decision_id=observation.routing_decision_id,
-    )
-    listed = repository.list(
-        owner_id=owner_id,
-        scope=scope,
-        request_id=observation.request.request_id,
-    )
-    assert stored.observation == observation
-    assert listed[0].observation.routing_decision_id == observation.routing_decision_id
-    with pytest.raises(RoutingDecisionUnavailable):
-        repository.get(
-            owner_id=f"other-{uuid4()}",
-            scope=scope,
-            decision_id=observation.routing_decision_id,
-        )
-
-    PostgresArtifactMetadataRepository(database).fence(owner_id)
-    with pytest.raises(RoutingDecisionUnavailable):
-        repository.get(
-            owner_id=owner_id,
-            scope=scope,
-            decision_id=observation.routing_decision_id,
-        )
-
-
-def test_real_postgres_expired_routing_replay_is_unavailable_and_purged(database):
-    scope = ApplicationScope(application_id="personal_ai")
-    owner_id = f"phase21-expired-{uuid4()}"
-    created_at = datetime.now(UTC) - timedelta(days=31)
-    observation = _no_route_observation(owner_id, scope, created_at=created_at)
-    repository = PostgresRoutingDecisionRepository(database)
-    repository.begin(
-        owner_id=owner_id,
-        scope=scope,
-        observation=observation,
-        initial_event=RoutingDecisionEvent(
-            event_type="decision_no_route",
-            occurred_at=created_at,
-            reason_code="no-eligible-endpoint",
-        ),
-    )
-
-    with pytest.raises(RoutingDecisionUnavailable):
-        repository.get(
-            owner_id=owner_id,
-            scope=scope,
-            decision_id=observation.routing_decision_id,
-        )
-    assert repository.purge_expired(limit=10) >= 1
-
-
-def test_real_postgres_concurrent_duplicate_event_append_is_idempotent(database):
-    scope = ApplicationScope(application_id="personal_ai")
-    owner_id = f"phase21-events-{uuid4()}"
-    created_at = datetime.now(UTC)
-    observation = _no_route_observation(owner_id, scope, created_at=created_at)
-    repository = PostgresRoutingDecisionRepository(database)
-    repository.begin(
-        owner_id=owner_id,
-        scope=scope,
-        observation=observation,
-        initial_event=RoutingDecisionEvent(
-            event_type="decision_no_route",
-            occurred_at=created_at,
-            reason_code="no-eligible-endpoint",
-        ),
-    )
-    event = RoutingDecisionEvent(
-        event_type="replay_unavailable",
-        event_id=uuid4(),
-        occurred_at=created_at + timedelta(seconds=1),
-        outcome_code="expired-decision-context",
-    )
+def test_concurrent_authorization_one_reservation_and_single_send_claim(database):
+    system = setup(database)
+    owner, service, d, _prep, repo, _usage, _auth = system
     barrier = Barrier(2)
 
-    def append_same_event():
+    def authorize(_):
         barrier.wait(timeout=5)
-        return repository.append_event(
-            owner_id=owner_id,
-            scope=scope,
-            decision_id=observation.routing_decision_id,
-            event=event,
-        )
+        return finalize(system)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        records = list(pool.map(lambda _index: append_same_event(), range(2)))
-    assert records[0] == records[1]
-    assert len(records[0].events) == 2
-    with pytest.raises(PersistenceConflict, match="idempotency conflict"):
-        repository.append_event(
-            owner_id=owner_id,
-            scope=scope,
-            decision_id=observation.routing_decision_id,
-            event=event.model_copy(update={"outcome_code": "different-payload"}),
+        permits = list(pool.map(authorize, range(2)))
+    assert permits[0] == permits[1]
+    with database.connection() as c:
+        assert (
+            c.execute(
+                "SELECT count(*) FROM provider_attempts WHERE invocation_id=%s",
+                (permits[0].invocation_id,),
+            ).fetchone()[0]
+            == 1
         )
-
-
-def test_real_postgres_concurrent_reselection_consumes_one_root_budget(database):
-    scope = ApplicationScope(application_id="personal_ai")
-    owner_id = f"phase21-reselection-{uuid4()}"
-    now = datetime.now(UTC)
-    profile = _preparing_profile()
-    task = RoutingTaskProfile(
-        task_id="integration-chat",
-        profile_id="task-profile:integration-chat-v1",
-        profile_version=1,
-        task_type="chat",
-        required_capabilities=frozenset({"bounded_generation"}),
-        max_reselections=1,
-    )
-    request = RoutingRequestFacts(
-        request_id=f"request-{uuid4()}",
-        requirements=EndpointCandidateRequirements(input_tokens=32, output_tokens=16),
-        policy_version="policy:phase21-integration-v1",
-    )
-    runtime = RuntimeCandidateFacts(
-        endpoint_profile_id=profile.endpoint_profile_id,
-        endpoint_profile_version=profile.profile_version,
-        authorization="authorized",
-        authorization_reference="authorization:integration-v1",
-        credential_status="usable",
-        health_status="healthy",
-        observed_at=now,
-        fresh_until=now + timedelta(minutes=5),
-        exhausted=False,
-    )
-    repository = PostgresRoutingDecisionRepository(database)
-    service = RoutingDecisionService(EndpointRegistry((profile,)), repository)
-    parent = service.route(
-        owner_id=owner_id,
-        scope=scope,
-        task=task,
-        request=request,
-        runtime_facts=(runtime,),
-        now=now,
-    )
-    repository.append_event(
-        owner_id=owner_id,
-        scope=scope,
-        decision_id=parent.observation.routing_decision_id,
-        event=RoutingDecisionEvent(
-            event_type="preparation_failed",
-            occurred_at=now + timedelta(seconds=1),
-            endpoint_profile_id=profile.endpoint_profile_id,
-            reason_code="fit-failed",
-        ),
-    )
     barrier = Barrier(2)
 
-    def reselect():
+    def claim(_):
         barrier.wait(timeout=5)
-        return service.route(
-            owner_id=owner_id,
-            scope=scope,
-            task=task,
-            request=request,
-            runtime_facts=(runtime.model_copy(update={
-                "observed_at": now + timedelta(seconds=2),
-                "fresh_until": now + timedelta(minutes=6),
-            }),),
-            parent_decision_id=parent.observation.routing_decision_id,
-            now=now + timedelta(seconds=2),
-        )
+        try:
+            return service.claim(
+                owner_id=owner, scope=SCOPE, permit=permits[0], operation="bounded_generation"
+            )
+        except RoutingFinalizationError:
+            return None
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _index: reselect(), range(2)))
-    assert results[0].observation.routing_decision_id == results[1].observation.routing_decision_id
-    assert results[0].observation.reselection_depth == 1
-    root = repository.get(
-        owner_id=owner_id,
-        scope=scope,
-        decision_id=parent.observation.routing_decision_id,
+        results = list(pool.map(claim, range(2)))
+    assert sum(r is not None for r in results) == 1
+    assert (
+        repo.get(owner_id=owner, scope=SCOPE, decision_id=d.routing_decision_id).status
+        == "dispatched"
     )
-    assert len([event for event in root.events if event.event_type == "reselection_linked"]) == 1
-    rows = repository.list(owner_id=owner_id, scope=scope, request_id=request.request_id)
-    assert len(rows) == 2
 
 
-def test_real_postgres_concurrent_auxiliary_calls_share_root_budget(database):
-    scope = ApplicationScope(application_id="personal_ai")
-    owner_id = f"phase21-auxiliary-{uuid4()}"
-    now = datetime.now(UTC)
-    profile = _preparing_profile()
-    task = RoutingTaskProfile(
-        task_id="integration-chat",
-        profile_id="task-profile:integration-chat-v1",
-        profile_version=1,
-        task_type="chat",
-        required_capabilities=frozenset({"bounded_generation"}),
-        max_auxiliary_calls=1,
-    )
-    request = RoutingRequestFacts(
-        request_id=f"request-{uuid4()}",
-        requirements=EndpointCandidateRequirements(input_tokens=32, output_tokens=16),
-        policy_version="policy:phase21-integration-v1",
-    )
-    runtime = RuntimeCandidateFacts(
-        endpoint_profile_id=profile.endpoint_profile_id,
-        endpoint_profile_version=profile.profile_version,
-        authorization="authorized",
-        authorization_reference="authorization:integration-v1",
-        credential_status="usable",
-        health_status="healthy",
-        observed_at=now,
-        fresh_until=now + timedelta(minutes=5),
-        exhausted=False,
-    )
-    repository = PostgresRoutingDecisionRepository(database)
-    service = RoutingDecisionService(EndpointRegistry((profile,)), repository)
-    decision = service.route(
-        owner_id=owner_id,
-        scope=scope,
-        task=task,
-        request=request,
-        runtime_facts=(runtime,),
-        now=now,
-    )
-    barrier = Barrier(2)
-    event_time = now + timedelta(seconds=1)
+def test_reservation_and_event_rollback_together(database, monkeypatch):
+    system = setup(database)
+    owner, _service, d, _prep, repo, _usage, _auth = system
+    original = repo.append_in_transaction
 
-    def consume(_index):
-        event = RoutingDecisionEvent(
-            event_type="auxiliary_call_reserved",
-            occurred_at=event_time,
-            outcome_code="counter-call",
+    def fail_authorization(c, **kwargs):
+        if kwargs["event"].kind == "authorized":
+            raise RuntimeError("publication-unavailable")
+        return original(c, **kwargs)
+
+    monkeypatch.setattr(repo, "append_in_transaction", fail_authorization)
+    with pytest.raises(RoutingFinalizationError):
+        finalize(system)
+    with database.connection() as c:
+        assert (
+            c.execute(
+                "SELECT count(*) FROM provider_invocations WHERE routing_decision_id=%s",
+                (str(d.routing_decision_id),),
+            ).fetchone()[0]
+            == 0
         )
+        assert (
+            c.execute(
+                "SELECT count(*) FROM provider_quota_reservations r JOIN provider_attempts a USING(attempt_id) "
+                "JOIN provider_invocations i USING(invocation_id) WHERE i.owner_id=%s",
+                (owner,),
+            ).fetchone()[0]
+            == 0
+        )
+    assert (
+        repo.get(owner_id=owner, scope=SCOPE, decision_id=d.routing_decision_id).status == "failed"
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["revoke", "delete", "profile", "reservation", "expired", "tokens"]
+)
+def test_direct_authority_changes_between_reserve_and_claim_deny(database, change):
+    system = setup(database)
+    owner, service, d, _prep, _repo, _usage, auth = system
+    permit = finalize(system)
+    if change == "revoke":
+        auth.deny = True
+    if change == "delete":
+        PostgresArtifactMetadataRepository(database).fence(owner)
+    if change == "profile":
+        service.registry.remove(d.selected.endpoint_profile_id)
+    if change == "reservation":
+        with database.transaction() as c:
+            c.execute(
+                "UPDATE provider_quota_reservations SET state='uncertain' WHERE attempt_id=%s",
+                (permit.attempt_id,),
+            )
+    if change == "tokens":
+        with database.transaction() as c:
+            c.execute(
+                "UPDATE provider_attempts SET reserved_tokens=0 WHERE attempt_id=%s",
+                (permit.attempt_id,),
+            )
+    if change == "expired":
+        permit = permit.model_copy(update={"expires_at": datetime.now(UTC) - timedelta(seconds=1)})
+    with pytest.raises((RoutingFinalizationError, UsageAdmissionDenied, OwnerFenced, RuntimeError)):
+        service.claim(owner_id=owner, scope=SCOPE, permit=permit, operation="bounded_generation")
+    with database.connection() as c:
+        assert (
+            c.execute(
+                "SELECT dispatch_claimed_at FROM provider_attempts WHERE attempt_id=%s",
+                (permit.attempt_id,),
+            ).fetchone()[0]
+            is None
+        )
+
+
+def test_source_scope_replay_immutable_history_and_corrupt_state(database):
+    system = setup(database)
+    owner, service, d, _prep, repo, _usage, _auth = system
+    service.registry.remove(d.selected.endpoint_profile_id)
+    assert service.registry.historical(d.selected).ref == d.selected
+    assert replay_deterministic_decision(d, DeterministicScoringStrategy()) == d.ranking
+    with pytest.raises(LookupError):
+        repo.get(owner_id="other-owner", scope=SCOPE, decision_id=d.routing_decision_id)
+    with database.transaction() as c:
+        c.execute(
+            "UPDATE routing_decisions SET status='authorized' WHERE decision_id=%s",
+            (d.routing_decision_id,),
+        )
+    with pytest.raises(RuntimeError, match="record_invalid"):
+        repo.get(owner_id=owner, scope=SCOPE, decision_id=d.routing_decision_id)
+
+
+def test_auxiliary_root_budget_concurrent_single_winner_and_idempotency(database):
+    owner, service, d, _prep, _repo, _usage, _auth = setup(database, max_auxiliary_calls=1)
+    barrier = Barrier(2)
+    ids = [uuid4(), uuid4()]
+
+    def consume(i):
         barrier.wait(timeout=5)
         try:
             return service.consume_auxiliary_call(
-                owner_id=owner_id,
-                scope=scope,
-                decision_id=decision.observation.routing_decision_id,
-                event=event,
-                now=event_time,
+                owner_id=owner, scope=SCOPE, decision_id=d.routing_decision_id, event_id=ids[i]
             )
-        except PersistenceConflict as error:
-            return str(error)
+        except PersistenceConflict:
+            return None
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        outcomes = list(pool.map(consume, range(2)))
-    assert outcomes.count(1) == 1
-    assert outcomes.count("routing_auxiliary_call_budget_exceeded") == 1
-    stored = repository.get(
-        owner_id=owner_id,
-        scope=scope,
-        decision_id=decision.observation.routing_decision_id,
+        values = list(pool.map(consume, range(2)))
+    assert values.count(1) == 1
+    winner = values.index(1)
+    assert (
+        service.consume_auxiliary_call(
+            owner_id=owner, scope=SCOPE, decision_id=d.routing_decision_id, event_id=ids[winner]
+        )
+        == 1
     )
-    assert len([event for event in stored.events if event.event_type == "auxiliary_call_reserved"]) == 1
-    with database.connection() as connection:
-        used = connection.execute(
-            "SELECT auxiliary_calls_used FROM routing_decisions WHERE decision_id=%s",
-            (decision.observation.root_decision_id,),
-        ).fetchone()[0]
-    assert used == 1
+
+
+def test_dispatch_callback_runs_after_commit_and_settles_exact_attempt(database):
+    system = setup(database)
+    owner, service, d, _prep, repo, _usage, _auth = system
+    permit = finalize(system)
+
+    def send(profile, invocation, attempt):
+        with database.connection() as c:
+            assert (
+                c.execute(
+                    "SELECT dispatch_claimed_at FROM provider_attempts WHERE attempt_id=%s",
+                    (attempt.attempt_id,),
+                ).fetchone()[0]
+                is not None
+            )
+        assert profile.ref == d.selected
+        return "synthetic-result", AttemptResult(
+            outcome="success", completed_at=datetime.now(UTC), latency_ms=1
+        )
+
+    assert (
+        service.dispatch(
+            owner_id=owner, scope=SCOPE, permit=permit, operation="bounded_generation", send=send
+        )
+        == "synthetic-result"
+    )
+    assert (
+        repo.get(owner_id=owner, scope=SCOPE, decision_id=d.routing_decision_id).status == "closed"
+    )
+
+
+def test_owner_fence_and_finalization_race_orders_authorization(database):
+    system = setup(database)
+    owner, service, _d, _prep, _repo, _usage, _auth = system
+    barrier = Barrier(2)
+
+    def fence():
+        barrier.wait(timeout=5)
+        PostgresArtifactMetadataRepository(database).fence(owner)
+
+    def authorize():
+        barrier.wait(timeout=5)
+        try:
+            return finalize(system)
+        except OwnerFenced:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f = pool.submit(fence)
+        permit = pool.submit(authorize).result()
+        f.result()
+    if permit:
+        with pytest.raises(OwnerFenced):
+            service.claim(
+                owner_id=owner, scope=SCOPE, permit=permit, operation="bounded_generation"
+            )
+
+
+def test_concurrent_reselection_consumes_one_root_budget(database):
+    owner, service, d, _prep, repo, _usage, _auth = setup(database, max_reselections=1)
+    service.finish(
+        owner_id=owner, scope=SCOPE, decision_id=d.routing_decision_id, reason="fit-failed"
+    )
+    barrier = Barrier(2)
+
+    def reselect(_):
+        barrier.wait(timeout=5)
+        return service.route(
+            owner_id=owner,
+            scope=SCOPE,
+            task=d.task,
+            request=d.request,
+            parent_decision_id=d.routing_decision_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        children = list(pool.map(reselect, range(2)))
+    assert children[0] == children[1]
+    with database.connection() as c:
+        assert (
+            c.execute(
+                "SELECT count(*) FROM routing_decisions WHERE parent_decision_id=%s",
+                (d.routing_decision_id,),
+            ).fetchone()[0]
+            == 1
+        )
+    parent = repo.get(owner_id=owner, scope=SCOPE, decision_id=d.routing_decision_id)
+    assert parent.status == "reselected"
+    assert len([e for e in parent.events if e.kind == "reselected"]) == 1
+
+
+def test_expired_decisions_purge_normalized_events(database):
+    owner, _service, d, _prep, repo, _usage, _auth = setup(database)
+    decision_id = uuid4()
+    created = datetime.now(UTC) - timedelta(days=2)
+    expired = d.model_copy(
+        update={
+            "routing_decision_id": decision_id,
+            "root_decision_id": decision_id,
+            "created_at": created,
+            "root_deadline_at": created + timedelta(milliseconds=d.task.deadline_ms),
+            "replay_until": created + timedelta(days=1),
+        }
+    )
+    repo.begin(owner_id=owner, scope=SCOPE, decision=expired)
+    with pytest.raises(RoutingDecisionUnavailable):
+        repo.get(owner_id=owner, scope=SCOPE, decision_id=decision_id)
+    assert repo.purge_expired(limit=100) >= 1
+    with database.connection() as c:
+        assert (
+            c.execute(
+                "SELECT count(*) FROM routing_decision_events WHERE decision_id=%s", (decision_id,)
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_staged_migration_preserves_legacy_audit_and_transfers_quota(database):
+    import json
+    from importlib.resources import files
+
+    from personal_ai.persistence.routing_migration import migrate_routing_authorities
+    from tests.test_routing_migration import old_snapshot
+
+    schema = f"routing_migration_{uuid4().hex}"
+    migrations = files("personal_ai.persistence").joinpath("migrations")
+    snapshot = old_snapshot()
+    profile = snapshot["profiles"][0]
+    decision_id = uuid4()
+    now = datetime.now(UTC)
+    until = now + timedelta(days=1)
+    facts = {
+        "schema_version": "routing-decision-v1",
+        "routing_decision_id": str(decision_id),
+        "owner_id": "audit-owner",
+        "application_id": "personal_ai",
+        "workspace_id": None,
+        "candidates": [{"profile": profile}],
+    }
+    events = [{"event_type": "decision_preparing", "occurred_at": now.isoformat()}]
+    with database.transaction() as c:
+        # A transaction-local schema exercises the actual SQL cutover without
+        # downgrading or modifying the shared isolated integration database.
+        c.execute(f"CREATE SCHEMA {schema}")
+        c.execute(f"SET LOCAL search_path TO {schema},public")
+        c.execute("CREATE TABLE scope_namespaces(scope_id text PRIMARY KEY)")
+        for version in (16, 17, 18, 19, 20, 21):
+            resource = next(p for p in migrations.iterdir() if p.name.startswith(f"{version:03}_"))
+            c.execute(resource.read_text(), prepare=False)
+        c.execute("INSERT INTO scope_namespaces VALUES ('system'),('owner')")
+        c.execute(
+            "INSERT INTO endpoint_registry_snapshots(scope_id,record_id,owner_id,application_id,"
+            "revision,registry_version,created_at,updated_at,payload) "
+            "VALUES ('system','endpoint-registry-v1','personal-ai-system','personal_ai',1,%s,%s,%s,%s::jsonb)",
+            (snapshot["registry_version"], now, now, json.dumps(snapshot)),
+        )
+        c.execute(
+            "INSERT INTO endpoint_profile_version_history VALUES ('system',%s,1,%s)",
+            (profile["endpoint_profile_id"], now),
+        )
+        c.execute(
+            "INSERT INTO routing_decisions(scope_id,decision_id,owner_id,application_id,request_id,"
+            "root_decision_id,lifecycle_status,decision_facts,outcome_events,created_at,updated_at,replay_until) "
+            "VALUES ('owner',%s,'audit-owner','personal_ai','audit-request',%s,'preparing',%s::jsonb,%s::jsonb,%s,%s,%s)",
+            (decision_id, decision_id, json.dumps(facts), json.dumps(events), now, now, until),
+        )
+        c.execute("INSERT INTO artifact_owner_fences(owner_id) VALUES ('fenced-owner')")
+        sql = migrations.joinpath("022_routing_authorities.sql").read_text()
+        c.execute(sql, prepare=False)
+        migrate_routing_authorities(c)
+        assert c.execute(
+            "SELECT decision_facts,outcome_events,replay_until FROM routing_decisions_legacy WHERE decision_id=%s",
+            (decision_id,),
+        ).fetchone() == (facts, events, until)
+        assert c.execute("SELECT count(*) FROM routing_decisions").fetchone()[0] == 0
+        assert (
+            c.execute("SELECT owner_id FROM owner_lifecycle_fences").fetchone()[0] == "fenced-owner"
+        )
+        definitions = c.execute(
+            "SELECT profile_version,payload FROM endpoint_profile_definitions ORDER BY profile_version"
+        ).fetchall()
+        assert [row[0] for row in definitions] == [1, 2]
+        assert definitions[0][1]["quota_buckets"][0]["remaining"] == 0
+        assert "remaining" not in definitions[1][1]["quota_buckets"][0]
+        assert (
+            c.execute("SELECT reported_remaining FROM provider_quota_bucket_windows").fetchone()[0]
+            == 0
+        )
+        upgraded = c.execute("SELECT payload FROM endpoint_registry_snapshots").fetchone()[0]
+        assert upgraded["schema_version"] == "endpoint-registry-v2"
+        assert upgraded["profiles"][0]["profile_version"] == 2
+        c.execute(f"DROP SCHEMA {schema} CASCADE")

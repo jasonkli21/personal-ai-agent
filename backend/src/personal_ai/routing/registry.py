@@ -12,6 +12,7 @@ from personal_ai.routing.contracts import (
     EndpointCandidateRequirements,
     EndpointCandidateSet,
     EndpointProfile,
+    EndpointRef,
     EndpointRegistrySnapshot,
     QuotaBucket,
     compute_registry_version,
@@ -41,10 +42,6 @@ class RegistryConflictError(EndpointRegistryError):
 
 class RegistryRevisionChangedError(EndpointRegistryError):
     """A decision used candidates from an older endpoint registry revision."""
-
-
-class CandidateRequirementsChangedError(EndpointRegistryError):
-    """Revalidation attempted to weaken or replace frozen admission requirements."""
 
 
 class EndpointNotAdmissibleError(EndpointRegistryError):
@@ -85,6 +82,7 @@ class EndpointRegistry:
         repository: EndpointRegistryRepository | None = None,
     ) -> None:
         self._lock = RLock()
+        self._definitions: dict[tuple[str, int], EndpointProfile] = {}
         self._repository = repository
         configured = self._validate_profiles(profiles) if profiles is not None else None
         if repository is not None:
@@ -93,9 +91,7 @@ class EndpointRegistry:
             if stored is None:
                 seed_profiles = configured or ()
                 try:
-                    stored = repository.save(
-                        seed_profiles, expected_registry_version=None
-                    )
+                    stored = repository.save(seed_profiles, expected_registry_version=None)
                 except RegistryConflictError:
                     # A concurrent process may have initialized the singleton
                     # row. Reload its winner; a conflicting desired state is
@@ -111,9 +107,7 @@ class EndpointRegistry:
             if configured is not None:
                 if initialization_raced:
                     if not _configuration_matches_snapshot(configured, self._snapshot.profiles):
-                        raise RegistryConflictError(
-                            "endpoint_registry_initialization_conflict"
-                        )
+                        raise RegistryConflictError("endpoint_registry_initialization_conflict")
                 else:
                     self._reconcile_locked(configured)
         else:
@@ -162,56 +156,32 @@ class EndpointRegistry:
                 assessments=assessments,
             )
 
-    def revalidate(
-        self,
-        candidates: EndpointCandidateSet,
-        endpoint_profile_id: str,
-        requirements: EndpointCandidateRequirements | None = None,
-        *,
-        now: datetime | None = None,
-    ) -> EndpointProfile:
-        """Recheck frozen registry/profile eligibility immediately before use."""
-        with self._lock:
-            self._refresh_from_repository_locked()
-            snapshot = self._snapshot
-            if candidates.registry_version != snapshot.registry_version:
-                raise RegistryRevisionChangedError("endpoint_registry_revision_changed")
-            frozen_requirements = candidates.requirements
-            if requirements is not None and requirements != frozen_requirements:
-                raise CandidateRequirementsChangedError(
-                    "endpoint_candidate_requirements_changed"
-                )
-            assessment = next(
-                (
-                    item
-                    for item in candidates.assessments
-                    if item.profile.endpoint_profile_id == endpoint_profile_id
-                ),
-                None,
-            )
-            if assessment is None:
-                raise EndpointNotAdmissibleError(("candidate_not_in_frozen_set",))
-            if not assessment.eligible:
-                raise EndpointNotAdmissibleError(assessment.rejection_reasons)
-            current = next(
-                (
-                    profile for profile in snapshot.profiles
-                    if profile.endpoint_profile_id == endpoint_profile_id
-                ),
-                None,
-            )
-            if current is None or current.profile_version != assessment.profile.profile_version:
-                raise RegistryRevisionChangedError("endpoint_profile_version_changed")
-            current_assessment = _assess(
-                current, frozen_requirements, _aware_utc(now or datetime.now(UTC))
-            )
-            if not current_assessment.eligible:
-                raise EndpointNotAdmissibleError(current_assessment.rejection_reasons)
-            return current
+    def historical(self, ref: EndpointRef) -> EndpointProfile:
+        if self._repository is not None:
+            return self._repository.load_definition(ref)
+        try:
+            return self._definitions[(ref.endpoint_profile_id, ref.profile_version)]
+        except KeyError as error:
+            raise EndpointRegistryError("historical_endpoint_profile_unavailable") from error
+
+    def revalidate_selected(self, ref: EndpointRef, requirements, *, now=None, connection=None):
+        if connection is not None and self._repository is not None:
+            snapshot = self._repository.load_from_connection(connection, lock=True)
+            if snapshot is None:
+                raise EndpointRegistryError("endpoint_registry_snapshot_missing")
+        else:
+            snapshot = self.refresh()
+        current = next((p for p in snapshot.profiles if p.ref == ref), None)
+        if current is None:
+            raise RegistryRevisionChangedError("endpoint_profile_version_changed")
+        assessment = _assess(current, requirements, _aware_utc(now or datetime.now(UTC)))
+        if not assessment.eligible:
+            raise EndpointNotAdmissibleError(assessment.rejection_reasons)
+        return current
 
     def upsert(self, profile: EndpointProfile) -> EndpointRegistrySnapshot:
         """Add a profile or replace it at a strictly higher profile version."""
-        profile, = self._validate_profiles((profile,))
+        (profile,) = self._validate_profiles((profile,))
         with self._lock:
             self._refresh_from_repository_locked(include_profile_history=True)
             current = {item.endpoint_profile_id: item for item in self._snapshot.profiles}
@@ -232,16 +202,15 @@ class EndpointRegistry:
         with self._lock:
             self._refresh_from_repository_locked()
             current = tuple(
-                item for item in self._snapshot.profiles
+                item
+                for item in self._snapshot.profiles
                 if item.endpoint_profile_id != endpoint_profile_id
             )
             if len(current) == len(self._snapshot.profiles):
                 return self._snapshot
             return self._publish(current)
 
-    def reconcile(
-        self, configured_profiles: Sequence[EndpointProfile]
-    ) -> EndpointRegistrySnapshot:
+    def reconcile(self, configured_profiles: Sequence[EndpointProfile]) -> EndpointRegistrySnapshot:
         """Apply operator configuration as the desired endpoint profile set.
 
         Identical facts are a no-op. Changed facts advance the profile version
@@ -282,9 +251,7 @@ class EndpointRegistry:
         self._make_snapshot(profiles, revision=self._snapshot.revision + 1)
         expected = self._snapshot.registry_version
         if self._repository is not None:
-            candidate = self._repository.save(
-                profiles, expected_registry_version=expected
-            )
+            candidate = self._repository.save(profiles, expected_registry_version=expected)
         else:
             candidate = self._make_snapshot(profiles, revision=self._snapshot.revision + 1)
         candidate = self._validated_snapshot(candidate)
@@ -292,9 +259,7 @@ class EndpointRegistry:
         self._remember_active_versions(candidate.profiles)
         return candidate
 
-    def _refresh_from_repository_locked(
-        self, *, include_profile_history: bool = False
-    ) -> None:
+    def _refresh_from_repository_locked(self, *, include_profile_history: bool = False) -> None:
         if self._repository is None:
             return
         stored = self._repository.load()
@@ -309,17 +274,13 @@ class EndpointRegistry:
             self._validate_no_profile_version_regression(current.profiles)
         self._remember_active_versions(current.profiles)
 
-    def _validate_active_profile_versions(
-        self, profiles: Sequence[EndpointProfile]
-    ) -> None:
+    def _validate_active_profile_versions(self, profiles: Sequence[EndpointProfile]) -> None:
         for profile in profiles:
             last_version = self._profile_versions.get(profile.endpoint_profile_id)
             if last_version is not None and last_version != profile.profile_version:
                 raise EndpointRegistryError("endpoint_profile_version_history_mismatch")
 
-    def _validate_no_profile_version_regression(
-        self, profiles: Sequence[EndpointProfile]
-    ) -> None:
+    def _validate_no_profile_version_regression(self, profiles: Sequence[EndpointProfile]) -> None:
         for profile in profiles:
             last_version = self._profile_versions.get(profile.endpoint_profile_id, 0)
             if profile.profile_version < last_version:
@@ -327,6 +288,7 @@ class EndpointRegistry:
 
     def _remember_active_versions(self, profiles: Sequence[EndpointProfile]) -> None:
         for profile in profiles:
+            self._definitions[(profile.endpoint_profile_id, profile.profile_version)] = profile
             self._profile_versions[profile.endpoint_profile_id] = max(
                 profile.profile_version,
                 self._profile_versions.get(profile.endpoint_profile_id, 0),
@@ -407,7 +369,11 @@ def _assess(
     if not profile.tier_verified:
         reasons.append("account_tier_not_verified")
     attestation = profile.strict_free_attestation
-    if attestation is not None and attestation.valid_until is not None and attestation.valid_until < now:
+    if (
+        attestation is not None
+        and attestation.valid_until is not None
+        and attestation.valid_until <= now
+    ):
         reasons.append("strict_free_attestation_expired")
     if profile.billing_owner != "provider_account":
         reasons.append("billing_owner_not_verified_provider_account")
@@ -429,7 +395,13 @@ def _assess(
         reasons.append(f"capability_missing:{capability}")
     needs_input_limit = bool(
         requirements.required_capabilities
-        & {"streaming", "bounded_generation", "structured_generation", "token_counting", "embeddings"}
+        & {
+            "streaming",
+            "bounded_generation",
+            "structured_generation",
+            "token_counting",
+            "embeddings",
+        }
     )
     needs_output_limit = bool(
         requirements.required_capabilities
@@ -437,10 +409,7 @@ def _assess(
     )
     if needs_input_limit and profile.context_limit_tokens is None:
         reasons.append("endpoint_context_limit_unknown")
-    elif (
-        needs_input_limit
-        and requirements.input_tokens is None
-    ):
+    elif needs_input_limit and requirements.input_tokens is None:
         reasons.append("prepared_input_bound_missing")
     elif (
         needs_input_limit
@@ -486,16 +455,13 @@ def _assess(
     else:
         for capability in sorted(requirements.required_capabilities):
             covered = tuple(
-                bucket for bucket in profile.quota_buckets
-                if capability in bucket.operations
+                bucket for bucket in profile.quota_buckets if capability in bucket.operations
             )
             if not covered:
                 reasons.append(f"quota_bucket_operation_missing:{capability}")
                 continue
             if any(bucket.source == "unknown" for bucket in covered):
                 reasons.append(f"quota_bucket_source_unknown:{capability}")
-            if any(_quota_is_known_exhausted(bucket, now) for bucket in covered):
-                reasons.append(f"quota_bucket_exhausted:{capability}")
 
     schema_id = requirements.structured_schema_id
     if schema_id is not None and schema_id not in profile.structured_schema_ids:
@@ -531,16 +497,6 @@ def _assess(
     )
 
 
-def _quota_is_known_exhausted(bucket: QuotaBucket, now: datetime) -> bool:
-    if bucket.remaining != 0 or bucket.confidence != "verified":
-        return False
-    if bucket.fresh_until is not None and bucket.fresh_until < now:
-        return False
-    if bucket.reset_at is not None:
-        return bucket.reset_at > now
-    return bucket.fresh_until is not None and bucket.fresh_until >= now
-
-
 def _same_profile_facts(left: EndpointProfile, right: EndpointProfile) -> bool:
     left_document = left.model_dump(mode="python")
     right_document = right.model_dump(mode="python")
@@ -554,12 +510,9 @@ def _configuration_matches_snapshot(
 ) -> bool:
     configured_by_id = {profile.endpoint_profile_id: profile for profile in configured}
     current_by_id = {profile.endpoint_profile_id: profile for profile in current}
-    return (
-        configured_by_id.keys() == current_by_id.keys()
-        and all(
-            _same_profile_facts(configured_by_id[profile_id], current_by_id[profile_id])
-            for profile_id in configured_by_id
-        )
+    return configured_by_id.keys() == current_by_id.keys() and all(
+        _same_profile_facts(configured_by_id[profile_id], current_by_id[profile_id])
+        for profile_id in configured_by_id
     )
 
 
@@ -583,13 +536,9 @@ def _validate_shared_quota_authorities(profiles: Sequence[EndpointProfile]) -> N
                 prior_bucket.authority_scope_id == bucket.authority_scope_id
                 and prior_bucket.unit == bucket.unit
                 and prior_bucket.window_seconds == bucket.window_seconds
-                and prior_bucket.reset_at == bucket.reset_at
                 and prior_bucket.source == bucket.source
                 and prior_bucket.confidence == bucket.confidence
-                and prior_bucket.observed_at == bucket.observed_at
-                and prior_bucket.fresh_until == bucket.fresh_until
                 and prior_bucket.limit == bucket.limit
-                and prior_bucket.remaining == bucket.remaining
                 and prior_profile.account_scope_id is not None
                 and prior_profile.account_scope_id == profile.account_scope_id
                 and prior_profile.execution_mode == profile.execution_mode

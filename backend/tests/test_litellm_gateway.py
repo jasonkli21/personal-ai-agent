@@ -1526,3 +1526,37 @@ def test_cloudflare_schema_guard_rejects_openai_wrapped_shape():
         profile,
         schema,
     )
+
+
+def test_transport_attribution_uses_ledger_assigned_physical_attempt(monkeypatch):
+    from dataclasses import replace
+    from uuid import uuid4
+
+    import personal_ai.llm.litellm_gateway as gateway
+
+    monkeypatch.setattr(gateway, "_assert_litellm_runtime_safe", lambda: None)
+    assigned_id = uuid4()
+
+    class Ledger(_RecordingProviderUsage):
+        def reserve_attempt(self, invocation, attempt, *, max_attempts):
+            reserved = replace(attempt, attempt_id=assigned_id)
+            self.events.append(("reserve", reserved))
+            self.attempts.append(reserved)
+            return reserved
+
+        def settle_attempt(self, invocation, attempt, result):
+            assert attempt.attempt_id == assigned_id
+            super().settle_attempt(invocation, attempt, result)
+
+    ledger = Ledger()
+    adapter = GeminiLLMClient(
+        _settings(), usage_accounting=ledger,
+        sync_transport_factory=lambda: httpx.MockTransport(
+            lambda request: httpx.Response(200, json=_response("gemini"))
+        ),
+    )
+    result = adapter.complete(
+        [ChatMessage("user", "hello")], max_output_tokens=10,
+        timeout_seconds=2, inference_context=_context(),
+    )
+    assert result.metadata.attempt_ids == (str(assigned_id),)

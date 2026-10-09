@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
 from uuid import uuid4
@@ -11,11 +10,8 @@ import anyio
 import httpx
 import pytest
 
-from personal_ai.auth.scope import ApplicationScope
 from personal_ai.persistence.postgres import PostgresDatabase
 from personal_ai.persistence.postgres_usage import PostgresProviderUsageAccounting
-from personal_ai.routing.contracts import QuotaBucket
-from personal_ai.routing.phase21 import QuotaReservationRef
 from personal_ai.search.providers import brave
 from personal_ai.search.providers.brave import BraveSearchAdapter, SearchError
 from personal_ai.settings import Settings
@@ -27,6 +23,7 @@ from personal_ai.usage.contracts import (
     ProviderEndpoint,
     UsageAdmissionDenied,
 )
+from personal_ai.usage.quota import QuotaObservation as QuotaBucket
 
 pytestmark = pytest.mark.persistence_integration
 
@@ -121,8 +118,12 @@ def _endpoint(
 
 
 def _attempt(
-    *, reservation_units=None, reserved_tokens=0, started_at=None,
-    send_number=1, parent_attempt_id=None,
+    *,
+    reservation_units=None,
+    reserved_tokens=0,
+    started_at=None,
+    send_number=1,
+    parent_attempt_id=None,
 ) -> AttemptMetadata:
     return AttemptMetadata(
         attempt_id=uuid4(),
@@ -241,65 +242,6 @@ def test_unknown_quota_keeps_unknown_confidence_and_tracks_local_usage(postgres_
     assert after == (authority, "requests", "unknown", None, None, 1, 0)
 
 
-def test_phase19_routing_proof_binds_live_attempt_scope_operation_endpoint_and_buckets(
-    postgres_database,
-):
-    decision_id = uuid4()
-    bucket = _bucket(f"synthetic-routing-proof-{uuid4()}", f"synthetic-account-{uuid4()}", limit=10)
-    endpoint = _endpoint(
-        f"synthetic:endpoint-{uuid4()}",
-        account=bucket.authority_scope_id,
-        credential="synthetic:key",
-        buckets=(bucket,),
-    )
-    invocation = replace(
-        _invocation(
-            f"owner-{uuid4()}", f"request-{uuid4()}", endpoint,
-        ),
-        routing_decision_id=str(decision_id),
-    )
-    attempt = _attempt()
-    accounting = PostgresProviderUsageAccounting(postgres_database)
-    accounting.begin_invocation(invocation)
-    reserved = accounting.reserve_attempt(invocation, attempt, max_attempts=3)
-    now = reserved.started_at + timedelta(seconds=1)
-    proof = QuotaReservationRef(
-        invocation_id=invocation.invocation_id,
-        attempt_id=reserved.attempt_id,
-        send_number=reserved.send_number,
-        operation="bounded_generation",
-        reserved_at=reserved.started_at,
-        buckets=((bucket.bucket_id, 1),),
-    )
-    expected = {
-        "reservation": proof,
-        "owner_id": invocation.owner_id,
-        "scope": ApplicationScope(
-            application_id=invocation.application_id,
-            workspace_id=invocation.workspace_id,
-        ),
-        "request_id": invocation.request_id,
-        "run_id": invocation.run_id,
-        "routing_decision_id": decision_id,
-        "endpoint_profile_id": endpoint.endpoint_profile_id,
-        "endpoint_profile_version": endpoint.profile_version,
-        "operation": "bounded_generation",
-        "expected_bucket_ids": frozenset({bucket.bucket_id}),
-        "max_physical_attempts": 3,
-        "now": now,
-    }
-    assert accounting.verify_routing_reservation(**expected)
-    assert not accounting.verify_routing_reservation(
-        **{**expected, "routing_decision_id": uuid4()}
-    )
-    assert not accounting.verify_routing_reservation(
-        **{**expected, "expected_bucket_ids": frozenset()}
-    )
-
-    _settle(accounting, invocation, reserved)
-    assert not accounting.verify_routing_reservation(**expected)
-
-
 def test_all_required_quota_buckets_reserve_or_deny_without_partial_units(
     postgres_database,
 ):
@@ -394,12 +336,17 @@ def test_generic_provider_units_reserve_estimate_and_settle_exact_usage(postgres
     ],
 )
 def test_unverified_quota_membership_is_denied_before_attempt_reservation(
-    postgres_database, membership, denial,
+    postgres_database,
+    membership,
+    denial,
 ):
     bucket = _bucket(f"membership-{uuid4()}", f"account-{uuid4()}", limit=None)
     endpoint = _endpoint(
-        f"synthetic:endpoint-{uuid4()}", account=bucket.authority_scope_id,
-        credential="synthetic:key", buckets=(bucket,), quota_membership=membership,
+        f"synthetic:endpoint-{uuid4()}",
+        account=bucket.authority_scope_id,
+        credential="synthetic:key",
+        buckets=(bucket,),
+        quota_membership=membership,
     )
     invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
     attempt = _attempt()
@@ -458,10 +405,13 @@ def test_brave_unknown_membership_does_not_reach_http_transport(postgres_databas
 
     assert send_count == 0
     with postgres_database.connection(snapshot=True) as connection:
-        assert connection.execute(
-            "SELECT count(*) FROM provider_attempts a JOIN provider_invocations i USING(invocation_id) "
-            "WHERE i.endpoint_profile_id='brave:search' AND i.task_id='web_research_search'"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM provider_attempts a JOIN provider_invocations i USING(invocation_id) "
+                "WHERE i.endpoint_profile_id='brave:search' AND i.task_id='web_research_search'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_operator_quota_correction_applies_downward_and_never_grants_mid_window_increase(
@@ -474,8 +424,10 @@ def test_operator_quota_correction_applies_downward_and_never_grants_mid_window_
     for index in range(9):
         bucket = _bucket(bucket_id, authority, limit=100)
         endpoint = _endpoint(
-            f"synthetic:endpoint-{index}", account=authority,
-            credential=f"synthetic:key-{index}", buckets=(bucket,),
+            f"synthetic:endpoint-{index}",
+            account=authority,
+            credential=f"synthetic:key-{index}",
+            buckets=(bucket,),
         )
         invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
         attempt = _attempt()
@@ -485,8 +437,10 @@ def test_operator_quota_correction_applies_downward_and_never_grants_mid_window_
 
     corrected = _bucket(bucket_id, authority, limit=10)
     endpoint = _endpoint(
-        f"synthetic:endpoint-{uuid4()}", account=authority,
-        credential="synthetic:key", buckets=(corrected,),
+        f"synthetic:endpoint-{uuid4()}",
+        account=authority,
+        credential="synthetic:key",
+        buckets=(corrected,),
     )
     invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
     attempt = _attempt()
@@ -496,8 +450,10 @@ def test_operator_quota_correction_applies_downward_and_never_grants_mid_window_
 
     increased = _bucket(bucket_id, authority, limit=100)
     endpoint = _endpoint(
-        f"synthetic:endpoint-{uuid4()}", account=authority,
-        credential="synthetic:key", buckets=(increased,),
+        f"synthetic:endpoint-{uuid4()}",
+        account=authority,
+        credential="synthetic:key",
+        buckets=(increased,),
     )
     invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
     accounting.begin_invocation(invocation)
@@ -515,8 +471,10 @@ def test_changed_quota_window_identity_is_rejected(postgres_database):
     accounting = PostgresProviderUsageAccounting(postgres_database)
     first_bucket = _bucket(bucket_id, authority, limit=10, window_seconds=3600)
     endpoint = _endpoint(
-        f"synthetic:endpoint-{uuid4()}", account=authority,
-        credential="synthetic:key", buckets=(first_bucket,),
+        f"synthetic:endpoint-{uuid4()}",
+        account=authority,
+        credential="synthetic:key",
+        buckets=(first_bucket,),
     )
     invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
     attempt = _attempt()
@@ -525,12 +483,12 @@ def test_changed_quota_window_identity_is_rejected(postgres_database):
 
     changed = _bucket(bucket_id, authority, limit=10, window_seconds=7200)
     next_endpoint = _endpoint(
-        f"synthetic:endpoint-{uuid4()}", account=authority,
-        credential="synthetic:key", buckets=(changed,),
+        f"synthetic:endpoint-{uuid4()}",
+        account=authority,
+        credential="synthetic:key",
+        buckets=(changed,),
     )
-    next_invocation = _invocation(
-        f"owner-{uuid4()}", f"request-{uuid4()}", next_endpoint
-    )
+    next_invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", next_endpoint)
     accounting.begin_invocation(next_invocation)
     with pytest.raises(ValueError, match="provider_quota_window_identity_conflict"):
         accounting.reserve_attempt(next_invocation, _attempt(), max_attempts=10)
@@ -541,11 +499,17 @@ def test_retry_lineage_and_timeout_fence_are_persisted(postgres_database):
     authority = f"synthetic-account-{uuid4()}"
     bucket = _bucket(bucket_id, authority, limit=10)
     endpoint = _endpoint(
-        "synthetic:retry", account=authority, credential="synthetic:key", buckets=(bucket,),
+        "synthetic:retry",
+        account=authority,
+        credential="synthetic:key",
+        buckets=(bucket,),
     )
     invocation = _invocation(
-        f"owner-{uuid4()}", f"request-{uuid4()}", endpoint,
-        invocation_id=uuid4(), task_id="web_research_search",
+        f"owner-{uuid4()}",
+        f"request-{uuid4()}",
+        endpoint,
+        invocation_id=uuid4(),
+        task_id="web_research_search",
     )
     accounting = PostgresProviderUsageAccounting(postgres_database)
     first = _attempt()
@@ -571,13 +535,14 @@ def test_retry_lineage_and_timeout_fence_are_persisted(postgres_database):
         second,
         completed_at=second.started_at + timedelta(seconds=1),
     )
-    accounting.complete_invocation(
-        invocation, outcome="success", completed_at=datetime.now(UTC)
-    )
+    accounting.complete_invocation(invocation, outcome="success", completed_at=datetime.now(UTC))
 
     timeout_invocation = _invocation(
-        f"owner-{uuid4()}", f"request-{uuid4()}", endpoint,
-        invocation_id=uuid4(), task_id="iterative_research_search",
+        f"owner-{uuid4()}",
+        f"request-{uuid4()}",
+        endpoint,
+        invocation_id=uuid4(),
+        task_id="iterative_research_search",
     )
     timed_out = _attempt()
     accounting.begin_invocation(timeout_invocation)
@@ -587,8 +552,11 @@ def test_retry_lineage_and_timeout_fence_are_persisted(postgres_database):
         timeout_invocation, outcome="timeout", completed_at=datetime.now(UTC)
     )
     retry = AttemptMetadata(
-        attempt_id=uuid4(), parent_attempt_id=timed_out.attempt_id, send_number=2,
-        started_at=datetime.now(UTC), reservation_units=unit_reservations(),
+        attempt_id=uuid4(),
+        parent_attempt_id=timed_out.attempt_id,
+        send_number=2,
+        started_at=datetime.now(UTC),
+        reservation_units=unit_reservations(),
     )
     with pytest.raises(UsageAdmissionDenied, match="provider_outcome_unresolved"):
         accounting.reserve_attempt(timeout_invocation, retry, max_attempts=10)
@@ -611,9 +579,7 @@ def test_retry_lineage_and_timeout_fence_are_persisted(postgres_database):
             (timeout_invocation.invocation_id,),
         ).fetchone()
 
-    assert retry_rows == [
-        (1, None, "server_error"), (2, first.attempt_id, "success")
-    ]
+    assert retry_rows == [(1, None, "server_error"), (2, first.attempt_id, "success")]
     assert aggregate == (2, 1, endpoint.profile_version)
     assert timed_out_state == ("timeout", 1)
 
@@ -627,11 +593,17 @@ def test_daily_aggregates_separate_profile_versions_and_retention_removes_both(
     owner = f"owner-{uuid4()}"
     for version, model_id in ((1, "model-a"), (2, "model-b")):
         endpoint = _endpoint(
-            "synthetic:versioned", account=authority, credential="synthetic:key",
-            buckets=(bucket,), profile_version=version, model_id=model_id,
+            "synthetic:versioned",
+            account=authority,
+            credential="synthetic:key",
+            buckets=(bucket,),
+            profile_version=version,
+            model_id=model_id,
         )
         invocation = _invocation(
-            owner, f"request-{uuid4()}", endpoint,
+            owner,
+            f"request-{uuid4()}",
+            endpoint,
             task_id="versioned_summary_test",
         )
         attempt = _attempt()
@@ -646,11 +618,13 @@ def test_daily_aggregates_separate_profile_versions_and_retention_removes_both(
         days=30,
     )
     matching = [
-        group for group in summary["groups"]
+        group
+        for group in summary["groups"]
         if group["endpoint_profile_id"] == "synthetic:versioned"
     ]
     assert {(group["endpoint_profile_version"], group["model_id"]) for group in matching} == {
-        (1, "model-a"), (2, "model-b")
+        (1, "model-a"),
+        (2, "model-b"),
     }
 
     with postgres_database.transaction() as connection:
@@ -660,10 +634,13 @@ def test_daily_aggregates_separate_profile_versions_and_retention_removes_both(
         )
     accounting.purge_expired(limit=100)
     with postgres_database.connection(snapshot=True) as connection:
-        assert connection.execute(
-            "SELECT count(*) FROM provider_usage_daily_aggregates "
-            "WHERE endpoint_profile_id='synthetic:versioned'"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM provider_usage_daily_aggregates "
+                "WHERE endpoint_profile_id='synthetic:versioned'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_late_live_result_cannot_overwrite_stale_unknown_and_keeps_quota_consumed(
@@ -672,12 +649,12 @@ def test_late_live_result_cannot_overwrite_stale_unknown_and_keeps_quota_consume
     authority = f"synthetic-account-{uuid4()}"
     bucket = _bucket(f"synthetic-live-{uuid4()}", authority, limit=10)
     endpoint = _endpoint(
-        f"synthetic:endpoint-{uuid4()}", account=authority,
-        credential="synthetic:key", buckets=(bucket,),
+        f"synthetic:endpoint-{uuid4()}",
+        account=authority,
+        credential="synthetic:key",
+        buckets=(bucket,),
     )
-    accounting = PostgresProviderUsageAccounting(
-        postgres_database, stale_attempt_seconds=120
-    )
+    accounting = PostgresProviderUsageAccounting(postgres_database, stale_attempt_seconds=120)
 
     live_invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
     live_attempt = _attempt(started_at=datetime.now(UTC) - timedelta(seconds=119))
@@ -690,9 +667,7 @@ def test_late_live_result_cannot_overwrite_stale_unknown_and_keeps_quota_consume
     )
 
     orphan_invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
-    orphan_attempt = _attempt(
-        started_at=datetime.now(UTC) - timedelta(seconds=121)
-    )
+    orphan_attempt = _attempt(started_at=datetime.now(UTC) - timedelta(seconds=121))
     accounting.begin_invocation(orphan_invocation)
     accounting.reserve_attempt(orphan_invocation, orphan_attempt, max_attempts=10)
     assert accounting.resolve_stale_attempts(limit=10) == 1
@@ -715,16 +690,16 @@ def test_late_live_result_cannot_overwrite_stale_unknown_and_keeps_quota_consume
 def test_quota_windows_age_out_but_active_and_referenced_windows_remain(postgres_database):
     now = datetime.now(UTC)
     retention_days = 7
-    accounting = PostgresProviderUsageAccounting(
-        postgres_database, retention_days=retention_days
-    )
+    accounting = PostgresProviderUsageAccounting(postgres_database, retention_days=retention_days)
     old_unreferenced_ids = []
     for index in range(3):
         authority = f"old-account-{uuid4()}"
         bucket = _bucket(f"old-bucket-{uuid4()}", authority, limit=20)
         endpoint = _endpoint(
-            f"old:endpoint-{index}-{uuid4()}", account=authority,
-            credential="synthetic:key", buckets=(bucket,),
+            f"old:endpoint-{index}-{uuid4()}",
+            account=authority,
+            credential="synthetic:key",
+            buckets=(bucket,),
         )
         invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
         attempt = _attempt(started_at=now - timedelta(days=20))
@@ -746,7 +721,9 @@ def test_quota_windows_age_out_but_active_and_referenced_windows_remain(postgres
     old_authority = f"old-reference-account-{uuid4()}"
     old_bucket = _bucket(f"old-reference-{uuid4()}", old_authority, limit=20)
     old_endpoint = _endpoint(
-        "old:referenced", account=old_authority, credential="synthetic:key",
+        "old:referenced",
+        account=old_authority,
+        credential="synthetic:key",
         buckets=(old_bucket,),
     )
     old_invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", old_endpoint)
@@ -762,7 +739,9 @@ def test_quota_windows_age_out_but_active_and_referenced_windows_remain(postgres
     active_authority = f"active-account-{uuid4()}"
     active_bucket = _bucket(f"active-bucket-{uuid4()}", active_authority, limit=20)
     active_endpoint = _endpoint(
-        "active:endpoint", account=active_authority, credential="synthetic:key",
+        "active:endpoint",
+        account=active_authority,
+        credential="synthetic:key",
         buckets=(active_bucket,),
     )
     active_invocation = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", active_endpoint)
@@ -773,7 +752,8 @@ def test_quota_windows_age_out_but_active_and_referenced_windows_remain(postgres
     accounting.purge_expired(limit=100)
     with postgres_database.connection(snapshot=True) as connection:
         retained_ids = {
-            row[0] for row in connection.execute(
+            row[0]
+            for row in connection.execute(
                 "SELECT bucket_id FROM provider_quota_bucket_windows WHERE bucket_id = ANY(%s)",
                 ([*old_unreferenced_ids, old_bucket.bucket_id, active_bucket.bucket_id],),
             ).fetchall()
@@ -797,3 +777,41 @@ def test_quota_windows_age_out_but_active_and_referenced_windows_remain(postgres
         ).fetchone()[0]
     assert remaining == 0
     assert active == 1
+
+
+def test_shared_endpoint_reservation_and_settlement_follow_one_lock_order(postgres_database):
+    authority = f"synthetic-account-{uuid4()}"
+    bucket = _bucket(f"shared-lock-order-{uuid4()}", authority, limit=100)
+    endpoint = _endpoint(
+        f"synthetic:endpoint-{uuid4()}",
+        account=authority,
+        credential="synthetic:key",
+        buckets=(bucket,),
+    )
+    accounting = PostgresProviderUsageAccounting(postgres_database)
+    first = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
+    first_attempt = _attempt()
+    accounting.reserve_attempt(first, first_attempt, max_attempts=10)
+    # Seed health as well as the quota window to exercise both lock families.
+    _settle(accounting, first, first_attempt)
+    pending = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
+    pending_attempt = _attempt()
+    accounting.reserve_attempt(pending, pending_attempt, max_attempts=10)
+    incoming = _invocation(f"owner-{uuid4()}", f"request-{uuid4()}", endpoint)
+    incoming_attempt = _attempt()
+    barrier = Barrier(2)
+
+    def settle():
+        barrier.wait(timeout=5)
+        _settle(accounting, pending, pending_attempt)
+
+    def reserve():
+        barrier.wait(timeout=5)
+        return accounting.reserve_attempt(incoming, incoming_attempt, max_attempts=10)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        settled = pool.submit(settle)
+        admitted = pool.submit(reserve)
+        assert admitted.result(timeout=10).attempt_id == incoming_attempt.attempt_id
+        settled.result(timeout=10)
+    assert _bucket_state(postgres_database, bucket.bucket_id)[-2:] == (2, 1)

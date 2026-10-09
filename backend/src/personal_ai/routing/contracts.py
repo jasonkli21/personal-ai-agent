@@ -84,17 +84,21 @@ class StrictFreeEligibilityAttestation(_FrozenContract):
     credential_scope_id: str
     tier_id: str
     reference: str = Field(min_length=1, max_length=500)
-    source: Literal[
-        "provider_contract", "provider_console", "operator_preflight", "synthetic_test"
-    ]
+    source: Literal["provider_contract", "provider_console", "operator_preflight", "synthetic_test"]
     zero_cost_verified: bool = False
     paid_overflow_excluded: bool = False
     verified_at: datetime | None = None
     valid_until: datetime | None = None
 
     @field_validator(
-        "endpoint_profile_id", "provider_id", "model_id", "endpoint_id", "deployment_id",
-        "account_scope_id", "credential_scope_id", "tier_id",
+        "endpoint_profile_id",
+        "provider_id",
+        "model_id",
+        "endpoint_id",
+        "deployment_id",
+        "account_scope_id",
+        "credential_scope_id",
+        "tier_id",
     )
     @classmethod
     def valid_attested_identity(cls, value: str) -> str:
@@ -128,32 +132,23 @@ class StrictFreeEligibilityAttestation(_FrozenContract):
 
 
 class QuotaBucket(_FrozenContract):
-    """A typed reference to provider-authoritative capacity shared by endpoints."""
+    """Static quota topology and optional configured ceiling; runtime state belongs to P19."""
 
     bucket_id: str = Field(min_length=1, max_length=200)
     authority_scope_id: str = Field(min_length=1, max_length=200)
     operations: frozenset[EndpointOperation] = Field(min_length=1, max_length=7)
     unit: str = Field(min_length=1, max_length=80)
     window_seconds: int | None = Field(default=None, ge=1, le=31_536_000)
-    reset_at: datetime | None = None
     source: Literal["provider_contract", "provider_headers", "operator_attestation", "unknown"]
     confidence: Literal["verified", "reported", "unknown"]
     reservation_units_per_request: int | None = Field(default=None, ge=0)
-    observed_at: datetime | None = None
-    fresh_until: datetime | None = None
     evidence_reference: str | None = Field(default=None, max_length=500)
     limit: int | None = Field(default=None, ge=0)
-    remaining: int | None = Field(default=None, ge=0)
 
     @field_validator("bucket_id", "authority_scope_id", "unit")
     @classmethod
     def valid_bucket_identity(cls, value: str) -> str:
         return _valid_fact_id(value)
-
-    @field_validator("reset_at", "observed_at", "fresh_until")
-    @classmethod
-    def timestamps_are_aware(cls, value: datetime | None) -> datetime | None:
-        return _require_aware(value)
 
     @field_validator("evidence_reference")
     @classmethod
@@ -168,16 +163,6 @@ class QuotaBucket(_FrozenContract):
     def validate_snapshot(self) -> QuotaBucket:
         if self.confidence == "verified" and self.evidence_reference is None:
             raise ValueError("verified_quota_requires_evidence")
-        if self.fresh_until is not None and self.observed_at is None:
-            raise ValueError("quota_freshness_requires_observation")
-        if (
-            self.observed_at is not None
-            and self.fresh_until is not None
-            and self.fresh_until < self.observed_at
-        ):
-            raise ValueError("quota_freshness_interval_invalid")
-        if self.remaining is not None and self.limit is not None and self.remaining > self.limit:
-            raise ValueError("quota_remaining_exceeds_limit")
         return self
 
 
@@ -199,8 +184,13 @@ class CounterCompatibility(_FrozenContract):
     structured_schema_ids: tuple[str, ...] = Field(default=(), max_length=128)
 
     @field_validator(
-        "endpoint_profile_id", "endpoint_id", "deployment_id", "provider_id", "model_id",
-        "serializer_id", "counter_id",
+        "endpoint_profile_id",
+        "endpoint_id",
+        "deployment_id",
+        "provider_id",
+        "model_id",
+        "serializer_id",
+        "counter_id",
     )
     @classmethod
     def valid_counter_identity(cls, value: str) -> str:
@@ -231,6 +221,16 @@ class CounterCompatibility(_FrozenContract):
         if self.approved and (self.credential_scope_id is None or self.account_scope_id is None):
             raise ValueError("approved_counter_requires_endpoint_scope")
         return self
+
+
+class EndpointRef(_FrozenContract):
+    endpoint_profile_id: str
+    profile_version: int = Field(ge=1, le=2_147_483_647)
+
+    @field_validator("endpoint_profile_id")
+    @classmethod
+    def valid_id(cls, value: str) -> str:
+        return _valid_fact_id(value)
 
 
 class EndpointProfile(_FrozenContract):
@@ -271,9 +271,21 @@ class EndpointProfile(_FrozenContract):
     quota_membership: Literal["verified", "unknown", "ambiguous"] = "unknown"
     quota_buckets: tuple[QuotaBucket, ...] = Field(default=(), max_length=32)
 
+    @property
+    def ref(self) -> EndpointRef:
+        return EndpointRef(
+            endpoint_profile_id=self.endpoint_profile_id, profile_version=self.profile_version
+        )
+
     @field_validator(
-        "endpoint_profile_id", "provider_id", "model_id", "endpoint_id", "deployment_id",
-        "tier_id", "serializer_id", "runtime_id",
+        "endpoint_profile_id",
+        "provider_id",
+        "model_id",
+        "endpoint_id",
+        "deployment_id",
+        "tier_id",
+        "serializer_id",
+        "runtime_id",
     )
     @classmethod
     def valid_profile_identity(cls, value: str) -> str:
@@ -313,9 +325,7 @@ class EndpointProfile(_FrozenContract):
         ):
             raise ValueError("verified_quota_membership_requires_evidence")
         attestation_required = (
-            self.tier_verified
-            or self.strict_free_enabled
-            or self.cost_class == "VERIFIED_FREE"
+            self.tier_verified or self.strict_free_enabled or self.cost_class == "VERIFIED_FREE"
         )
         if attestation_required and self.strict_free_attestation is None:
             raise ValueError("strict_free_claim_requires_attestation")
@@ -353,9 +363,8 @@ class EndpointProfile(_FrozenContract):
             "user_runtime": "user_runtime",
             "none": "none",
         }[self.credential_source]
-        if (
-            self.credential_reference.split(":", 1)[0] != expected_prefix
-            or (self.credential_source == "none" and self.credential_reference != "none:")
+        if self.credential_reference.split(":", 1)[0] != expected_prefix or (
+            self.credential_source == "none" and self.credential_reference != "none:"
         ):
             raise ValueError("credential_reference_source_mismatch")
         return self
@@ -399,20 +408,21 @@ class EndpointCandidateRequirements(_FrozenContract):
     def validate_request_shape(self) -> EndpointCandidateRequirements:
         if not self.required_capabilities:
             raise ValueError("required_capabilities_empty")
-        if self.structured_schema_id is not None and "structured_generation" not in self.required_capabilities:
+        if (
+            self.structured_schema_id is not None
+            and "structured_generation" not in self.required_capabilities
+        ):
             raise ValueError("structured_schema_requires_structured_generation")
         if self.embedding_dimensions is not None and "embeddings" not in self.required_capabilities:
             raise ValueError("embedding_dimensions_requires_embedding_capability")
-        if (self.search_query_chars or self.search_results) and "search" not in self.required_capabilities:
+        if (
+            self.search_query_chars or self.search_results
+        ) and "search" not in self.required_capabilities:
             raise ValueError("search_bounds_require_search_capability")
         if self.count is not None and "token_counting" not in self.required_capabilities:
             raise ValueError("count_requirement_requires_count_capability")
-        generation_capabilities = {
-            "streaming", "bounded_generation", "structured_generation"
-        }
-        input_bounded_capabilities = generation_capabilities | {
-            "token_counting", "embeddings"
-        }
+        generation_capabilities = {"streaming", "bounded_generation", "structured_generation"}
+        input_bounded_capabilities = generation_capabilities | {"token_counting", "embeddings"}
         if self.required_capabilities & input_bounded_capabilities and self.input_tokens is None:
             raise ValueError("prepared_input_bound_required")
         if self.required_capabilities & generation_capabilities and self.output_tokens is None:
@@ -452,7 +462,7 @@ class CandidateAssessment(_FrozenContract):
 class EndpointCandidateSet(_FrozenContract):
     """Frozen, bounded endpoint facts and every eligibility/rejection outcome."""
 
-    schema_version: Literal["endpoint-candidates-v1"] = "endpoint-candidates-v1"
+    schema_version: Literal["endpoint-candidates-v2"] = "endpoint-candidates-v2"
     registry_version: str = Field(min_length=1, max_length=80)
     execution_mode: ExecutionMode
     requirements: EndpointCandidateRequirements
@@ -476,7 +486,7 @@ class EndpointCandidateSet(_FrozenContract):
 class EndpointRegistrySnapshot(_FrozenContract):
     """Versioned Postgres-owned catalog snapshot used to invalidate decisions."""
 
-    schema_version: Literal["endpoint-registry-v1"] = "endpoint-registry-v1"
+    schema_version: Literal["endpoint-registry-v2"] = "endpoint-registry-v2"
     revision: int = Field(ge=0)
     registry_version: str = Field(pattern=r"^[0-9a-f]{64}$")
     profiles: tuple[EndpointProfile, ...] = Field(max_length=32)
@@ -486,16 +496,12 @@ class EndpointRegistrySnapshot(_FrozenContract):
         identifiers = [profile.endpoint_profile_id for profile in self.profiles]
         if len(set(identifiers)) != len(identifiers):
             raise ValueError("endpoint_profile_id_duplicate")
-        if self.registry_version != compute_registry_version(
-            self.profiles, revision=self.revision
-        ):
+        if self.registry_version != compute_registry_version(self.profiles, revision=self.revision):
             raise ValueError("endpoint_registry_version_mismatch")
         return self
 
 
-def compute_registry_version(
-    profiles: Sequence[EndpointProfile], *, revision: int = 0
-) -> str:
+def compute_registry_version(profiles: Sequence[EndpointProfile], *, revision: int = 0) -> str:
     """Hash canonical facts and lifecycle revision, independent of list ordering."""
     documents = []
     for profile in sorted(profiles, key=lambda item: item.endpoint_profile_id):

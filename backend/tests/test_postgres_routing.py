@@ -100,6 +100,7 @@ class _MemoryConnection:
         self.namespace = None
         self.registry = None
         self.profile_versions = {}
+        self.definitions = {}
         self.hide_registry_on_load = False
         self.hide_registry_on_lock = False
 
@@ -130,6 +131,12 @@ class _MemoryConnection:
                 (profile_id, version)
                 for profile_id, version in sorted(self.profile_versions.items())
             ])
+        if query.startswith("INSERT INTO endpoint_profile_definitions"):
+            self.definitions.setdefault((params[0],params[1]),json.loads(params[2]))
+            return _Cursor(rowcount=1)
+        if query.startswith("SELECT payload FROM endpoint_profile_definitions"):
+            value = self.definitions.get((params[0],params[1]))
+            return _Cursor((value,) if value is not None else None)
         if query.startswith("INSERT INTO endpoint_registry_snapshots"):
             if self.registry is not None:
                 return _Cursor()

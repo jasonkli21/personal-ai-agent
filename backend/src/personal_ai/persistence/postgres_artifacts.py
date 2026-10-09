@@ -12,17 +12,20 @@ from personal_ai.artifacts.contracts import (
     same_publication_identity,
     validate_transition,
 )
+from personal_ai.persistence.postgres_owner_lifecycle import (
+    OwnerFenced,
+)
+from personal_ai.persistence.postgres_owner_lifecycle import (
+    assert_owner_unfenced as _assert_owner_unfenced,
+)
 
 
 def assert_owner_unfenced(connection, owner_id):
-    # Serializes begin/reservation/confirmation; external IO still rechecks before return.
-    connection.execute(
-        "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (f"artifact-owner:{owner_id}",)
-    )
-    if connection.execute(
-        "SELECT 1 FROM artifact_owner_fences WHERE owner_id=%s", (owner_id,)
-    ).fetchone():
-        raise ArtifactUnavailable("artifact_owner_fenced")
+    # Adapt the shared lifecycle error to the existing artifact boundary.
+    try:
+        _assert_owner_unfenced(connection, owner_id)
+    except OwnerFenced:
+        raise ArtifactUnavailable("artifact_owner_fenced") from None
 
 
 class PostgresArtifactMetadataRepository:
@@ -45,7 +48,7 @@ class PostgresArtifactMetadataRepository:
         with self.database.connection() as connection:
             return (
                 connection.execute(
-                    "SELECT 1 FROM artifact_owner_fences WHERE owner_id=%s", (owner_id,)
+                    "SELECT 1 FROM owner_lifecycle_fences WHERE owner_id=%s", (owner_id,)
                 ).fetchone()
                 is None
             )
@@ -57,7 +60,7 @@ class PostgresArtifactMetadataRepository:
                 (f"artifact-owner:{owner_id}",),
             )
             connection.execute(
-                "INSERT INTO artifact_owner_fences(owner_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                "INSERT INTO owner_lifecycle_fences(owner_id) VALUES (%s) ON CONFLICT DO NOTHING",
                 (owner_id,),
             )
 
@@ -218,7 +221,7 @@ class PostgresArtifactMetadataRepository:
                 (f"artifact-owner:{ref.owner_id}",),
             )
             if connection.execute(
-                "SELECT 1 FROM artifact_owner_fences WHERE owner_id=%s", (ref.owner_id,)
+                "SELECT 1 FROM owner_lifecycle_fences WHERE owner_id=%s", (ref.owner_id,)
             ).fetchone() is None:
                 raise ArtifactUnavailable("artifact_owner_deletion_fence_missing")
             previous = connection.execute(
@@ -254,7 +257,7 @@ class PostgresArtifactMetadataRepository:
                 "OR a.created_at >= now() - interval '10 minutes') "
                 "AND (%s::text IS NULL OR a.owner_id=%s) "
                 "ORDER BY CASE WHEN a.expires_at<=now() OR a.status='deleting' OR EXISTS "
-                "(SELECT 1 FROM artifact_owner_fences f WHERE f.owner_id=a.owner_id) "
+                "(SELECT 1 FROM owner_lifecycle_fences f WHERE f.owner_id=a.owner_id) "
                 "THEN 0 ELSE 1 END,a.last_checked_at,a.expires_at,a.artifact_id "
                 "LIMIT %s FOR UPDATE SKIP LOCKED",
                 (owner_id, owner_id, limit),

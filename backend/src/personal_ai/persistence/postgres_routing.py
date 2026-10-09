@@ -14,6 +14,7 @@ from personal_ai.persistence.postgres import (
 )
 from personal_ai.routing.contracts import (
     EndpointProfile,
+    EndpointRef,
     EndpointRegistrySnapshot,
     compute_registry_version,
 )
@@ -57,6 +58,22 @@ class PostgresEndpointRegistryRepository:
             raise RuntimeError("endpoint_registry_record_invalid")
         return snapshot
 
+    def load_definition(self, ref: EndpointRef):
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM endpoint_profile_definitions "
+                "WHERE endpoint_profile_id=%s AND profile_version=%s",
+                (ref.endpoint_profile_id, ref.profile_version),
+            ).fetchone()
+        if row is None:
+            raise LookupError("historical_endpoint_profile_unavailable")
+        from personal_ai.persistence.routing_migration import historical_profile
+
+        profile = historical_profile(row[0])
+        if profile.ref != ref:
+            raise RuntimeError("historical_endpoint_profile_corrupt")
+        return profile
+
     def load_profile_version_history(self) -> dict[str, int]:
         scope_id = PostgresPayloadRepository.scope_id(_OWNER_ID, _SCOPE)
         with self.database.connection() as connection:
@@ -97,9 +114,7 @@ class PostgresEndpointRegistryRepository:
                     profiles=profile_tuple,
                 )
                 _ensure_payload_fits(snapshot)
-                payload = PostgresPayloadRepository._json(
-                    snapshot.model_dump(mode="json")
-                )
+                payload = PostgresPayloadRepository._json(snapshot.model_dump(mode="json"))
                 inserted = connection.execute(
                     "INSERT INTO endpoint_registry_snapshots(record_id,scope_id,owner_id,"
                     "application_id,workspace_id,record_version,revision,registry_version,"
@@ -108,15 +123,20 @@ class PostgresEndpointRegistryRepository:
                     "ON CONFLICT (scope_id,record_id) DO NOTHING "
                     "RETURNING registry_version,revision",
                     (
-                        _RECORD_ID, scope_id, _OWNER_ID, _SCOPE.application_id,
-                        snapshot.revision, snapshot.registry_version, now, now, payload,
+                        _RECORD_ID,
+                        scope_id,
+                        _OWNER_ID,
+                        _SCOPE.application_id,
+                        snapshot.revision,
+                        snapshot.registry_version,
+                        now,
+                        now,
+                        payload,
                     ),
                 )
                 if inserted.fetchone() is None:
                     raise RegistryConflictError("endpoint registry initialization raced")
-                _write_profile_version_history(
-                    connection, scope_id, profile_tuple, history
-                )
+                _write_profile_version_history(connection, scope_id, profile_tuple, history)
                 return snapshot
 
             if row is None or row[0] != expected_registry_version:
@@ -138,19 +158,22 @@ class PostgresEndpointRegistryRepository:
                 "AND owner_id=%s AND application_id=%s AND workspace_id IS NULL "
                 "AND revision=%s AND registry_version=%s",
                 (
-                    snapshot.revision, snapshot.registry_version, now, payload,
-                    scope_id, _RECORD_ID, _OWNER_ID, _SCOPE.application_id,
-                    int(row[1]), expected_registry_version,
+                    snapshot.revision,
+                    snapshot.registry_version,
+                    now,
+                    payload,
+                    scope_id,
+                    _RECORD_ID,
+                    _OWNER_ID,
+                    _SCOPE.application_id,
+                    int(row[1]),
+                    expected_registry_version,
                 ),
             )
             if cursor.rowcount != 1:
                 raise RegistryConflictError("endpoint registry revision changed")
-            _write_profile_version_history(
-                connection, scope_id, previous.profiles, history
-            )
-            _write_profile_version_history(
-                connection, scope_id, profile_tuple, history
-            )
+            _write_profile_version_history(connection, scope_id, previous.profiles, history)
+            _write_profile_version_history(connection, scope_id, profile_tuple, history)
             return snapshot
 
 
@@ -211,9 +234,7 @@ def _validate_profile_version_changes(
                 raise RegistryConflictError("endpoint_profile_version_must_increase")
             continue
         if profile.profile_version <= history.get(profile.endpoint_profile_id, 0):
-            raise RegistryConflictError(
-                "endpoint_profile_version_must_increase_after_removal"
-            )
+            raise RegistryConflictError("endpoint_profile_version_must_increase_after_removal")
 
 
 def _write_profile_version_history(
@@ -223,6 +244,19 @@ def _write_profile_version_history(
     existing: dict[str, int],
 ) -> None:
     for profile in profiles:
+        payload = profile.model_dump_json()
+        connection.execute(
+            "INSERT INTO endpoint_profile_definitions(endpoint_profile_id,profile_version,payload) "
+            "VALUES (%s,%s,%s::jsonb) ON CONFLICT DO NOTHING",
+            (profile.endpoint_profile_id, profile.profile_version, payload),
+        )
+        stored = connection.execute(
+            "SELECT payload FROM endpoint_profile_definitions WHERE endpoint_profile_id=%s "
+            "AND profile_version=%s",
+            (profile.endpoint_profile_id, profile.profile_version),
+        ).fetchone()
+        if stored is None or EndpointProfile.model_validate(stored[0]) != profile:
+            raise RegistryConflictError("immutable_endpoint_definition_conflict")
         prior = existing.get(profile.endpoint_profile_id, 0)
         version = max(prior, profile.profile_version)
         connection.execute(

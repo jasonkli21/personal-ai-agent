@@ -39,6 +39,8 @@ OWNER_DATA_COLLECTIONS = (
     "provider_usage_daily_aggregates",
     "provider_usage_events",
     "routing_decisions",
+    "routing_decision_events",
+    "routing_decisions_legacy",
     "global_profiles",
     "artifact_metadata",
 )

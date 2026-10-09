@@ -1,0 +1,63 @@
+# Phase 18–21 architecture refactor implementation plan
+
+Date: 2026-10-09 (America/Los_Angeles). Review baseline: `5b05a9d0f63161c125fc95c8542352ba8f132e4f`, current local main. This is the implementation source of truth for this refactor; earlier phase plans remain scope/history, not the target representation. Implementation evidence is recorded separately.
+
+## Independent review and disposition
+
+The handoff correctly identifies representation multiplicity, rather than safety checks themselves, as the main problem. Yes: the hard properties can be enforced with fewer state representations and cross-object equalities. Full profiles in strategies, duplicate strategy identities in results, preparing/ready plans, reconstructed candidate sets, source count/hash copies, and persisted revalidation booleans primarily serve the old representation. Remove them. Keep admission, replay, physical-send accounting, immutable configuration, root limits, and source/requirement monotonicity.
+
+Reviewed the Phase 18–21 plans/guides/evidence, production registry/configuration, routing contracts/service/strategy, usage adapters/ledger, artifact/account fences, migrations 016–021, relevant tests, and implementation/remediation pairs 5ed6992/6740084, a3540ac/425bfde, 3a92cee/c65fa7a, a79ba90/5b05a9d. ADRs 0021/0022 establish Postgres control-plane ownership and one-send transport. Future 22/23/24/25.2/26/35 requirements justify a strategy seam, exact identity, bounded evidence and root lineage; they do not justify implementing quality collection, scarcity policy, cascades, learned routing, paid execution, BYOK or workflow enablement now.
+
+| Recommendation | Disposition and implementation |
+| --- | --- |
+| Static P18, runtime P19, orthogonal P20 | Accept. Static quota bindings carry topology and configured ceilings, never live remaining/reset/freshness. P19 observations/ledger alone own effective availability. |
+| Shared lifecycle authority | Accept a narrow persistence helper and shared fence table; no generic lifecycle service/framework. Preserve the existing advisory-lock key for migration ordering. |
+| Compact decision and narrow strategy | Accept. One bounded decision contains request, task policy snapshot, candidate facts, strategy semantic identity, ranking and reason. Strategy gets only endpoint ref and scoring features/preferences. |
+| Endpoint/profile/task/strategy refs everywhere | Modify. Endpoint refs are essential cross-phase identities. A retained task snapshot is small, needed for monotonicity/root policy/replay, and avoids building an otherwise unused task catalog. Strategy identity is explicit semantic version plus artifact identity. |
+| Ready-only dispatch permit | Accept, but a serialized permit is a receipt, not a bearer grant. Durable one-time claim and direct authority checks at the send boundary are also required; merely returning a permit still permits duplicate sends. |
+| Atomic reservation/authorization | Accept as mandatory on the common Postgres path. Expose a connection-aware reservation method, not a Unit of Work. Provider IO follows commit. |
+| Minimal lifecycle events | Accept normalized bounded events, one materialized status, root auxiliary counter. P19 owns physical outcomes; P21 owns only coordination transitions. |
+| Shadow/dual-write migration | Reject permanent/new V1 writes. No request workflow consumes P21 and no deployment acceptance has occurred. Preserve existing V1 rows in a read-only legacy table; cut the internal API over in this effort with invariant tests. No need for a second active implementation. |
+| Remove P19 endpoint projection immediately | Modify. Routed work uses exact refs resolved from P18. Existing fixed-provider and public lookup adapters still need a secret-free accounting projection; it is produced by one converter, never an independent mutable catalog. Its bridge is removed when gated workflow integration passes exact refs. Do not alter unrelated transport semantics merely for symmetry. |
+
+New findings: profile history is only a version high-water mark, not historical definitions; reservation verification and readiness publication use separate transactions; several lifecycle checks use caller time instead of database time; a ready receipt alone does not provide single-send authority; physical-attempt health bootstrap must distinguish no failure evidence from authority unavailable; profile-level quota observations can compete with provider header observations; quota/health lock inversion can deadlock reservation against settlement; caller-supplied closure success can disagree with physical outcome authority. Closure now derives from P19 terminal outcome. Review also removes the redundant reselection counter: a locked parent transition and single-child lineage enforce the same finite budget. Final dispatch must check preparation freshness, exact source subset, current policy/credential/source authorization, selected static profile and P19 admission directly. Concurrent retry acknowledgements must return an existing receipt without authorizing another send. Unknown outcomes fence retries/reselection through P19.
+
+## Authority map and contracts
+
+| Fact | Authority |
+| --- | --- |
+| Endpoint identity/version, billing/free/privacy/capabilities/counter, static quota bindings | P18 current catalog and immutable profile definitions |
+| Quota observations/windows, remaining capacity, health/cooldown, invocation/physical attempts/reservations/settlements | P19 ledger |
+| Owner deletion fence | Shared account lifecycle persistence |
+| Current endpoint credential/access and source/policy authorization | Injected trusted authorization authority; absent/error/stale evidence denies |
+| Task/root policy and canonical decision/reselection lineage | P21 immutable decision; mutable status and root auxiliary counter in its row |
+| Selection preference | Replaceable pure strategy, outside hard admission |
+| Artifact references/bodies/retention | P20; optional and never routing authority |
+
+Target contracts: `EndpointRef`; static quota binding; P19 quota observation; compact `CandidateFact` (ref, rejection codes, accepted scoring features and bounded evidence references/expiry); `StrategyView` (preferences and eligible feature-only candidates); `StrategyRef` (semantic identity); `RoutingDecision`; `PreparationIdentity` (exact endpoint/serializer/counter/input digest/count/canonical source set); `DispatchPermit` (decision, invocation, attempt and expiry receipt); minimal `RoutingEvent` and read record. Selection derives from ranking; source count/digest derive from canonical sorted unique digests. No execution-plan/revalidation/reservation DTOs on the active path.
+
+Replay reproduces ranking/selection from candidate facts/preferences and exact semantic strategy identity, without current catalog reads. Historical profiles are retained independently for audit; no replay silently substitutes current definitions. Missing old implementations report historical strategy unavailable. V1 data is audit-readable but cannot dispatch under the new API or claim replay with changed semantics.
+
+## Persistence, transaction and lifecycle
+
+Add immutable endpoint definition storage; seed available active and legacy decision definitions. Missing older definitions stay unavailable, never fabricated. Preserve high-water anti-reuse history. Retain definitions (system config, no user prompt) until an explicit later maintenance policy proves no retained decision/usage reference needs them.
+
+Rename old decisions to a legacy retention table; create compact active decisions and normalized events with bounded JSON facts. Scope/lineage/index/retention columns are query projections validated on reads, not independent facts. Events reference their decision and cascade on deletion; attempt outcomes join P19 by IDs. Account export/inventory includes active events and retained legacy rows. Maintenance explicitly purges both decision generations.
+
+Statuses: selected, no_route, failed (retryable coordination failure), authorized, dispatched, closed, reselected. Events record initial choice, failure, authorization, single-use dispatch claim, closure, auxiliary reservation, reselection. Persist event/status atomically. No preparing/ready plan. Same endpoint physical retry requires a fresh direct check/reservation after a confirmed failure; changed endpoint creates a linked decision. Unknown physical outcomes deny both.
+
+Lock order: owner lifecycle advisory lock; root decision; child decision; registry shared lock; request usage lock; sorted quota bucket locks; endpoint-health lock. Settlement follows bucket-before-health ordering; a health advisory lock also serializes the absence of a bootstrap row. Final authorization resolves selected static profile and current permissions, validates preparation and deadline using DB time, reserves all P19 buckets and appends authorization in one transaction. Readiness is returned only after commit. Dispatch claim repeats current safety checks, proves the attempt is pending with exact attribution/bucket coverage and atomically consumes the receipt. Provider/network IO occurs after this commit, at most once. A crash after claim remains conservatively unknown; no replay send. No transaction can atomically encompass an external permission revocation or provider send; require authority freshness and immediate checks, preserve the Phase 15 workflow gate.
+
+Root deadline, max physical attempts, auxiliary and reselection budgets remain finite across descendants. Reselection is a single-child chain: validated depth and an atomic parent transition consume its budget, with a unique parent index; no duplicated mutable reselection counter. Root auxiliary usage remains durable because expired descendants must not restore consumed calls. Child requirements preserve/tighten parent; sources equal or policy-permitted subset; exclusions inherit selected failed endpoint. Child retention cannot exceed root/dependency horizon. Late/backdated events do not extend deadlines. State and event validation fail closed for corrupt rows.
+
+## Stages and validation
+
+1. Save this reviewed plan (before substantive edits); preserve unrelated untracked files.
+2. Extract shared lifecycle fence, add static selected-profile admission and immutable history, separate static bindings from P19 observations.
+3. Expose connection-aware P19 reservation/runtime status, exact-ref resolver and conservative dispatch claim verification; retain existing settlement/aggregation algorithms.
+4. Replace P21 contracts/strategy/service/persistence with canonical decision, explicit semantic strategy identity, normalized events and atomic permit issuance/claim. Switch factory/maintenance/account inventory to active path.
+5. Replace obsolete shape tests with invariant coverage; preserve P18/P19/P20 and transport tests. Add real-engine races for finalization, single-use claim, deletion, shared buckets and root limits, plus malformed rows/history/retention/replay cases.
+6. Run targeted P18–21 and provider tests, persistence migrations/integration where locally possible, full backend tests, lint, compile/build, relevant offline evaluations, diff/link checks. Record exact revision/digest, results and skipped external acceptance separately; fix refactor regressions.
+7. Update guides/router/current-state and write final review/implementation/verification/files/debt report. Delete active V1 models, source-derived hashes, duplicate validators and persistence writers in this effort.
+
+Legacy removal condition: every old routing row has expired or been owner-deleted, confirmed by zero retained legacy rows; then drop the legacy table and its audit reader/inventory/maintenance branch in a dedicated migration. Keep no V1 executor. Fixed-provider projection bridge removal condition: Phase 15 acceptance plus routed application integration passes exact endpoint refs for current fixed call sites; public lookup must retain an explicit canonical descriptor until registered. Historic migrations remain immutable. Future functionality and cloud/provider acceptance are separate follow-ups, not refactor scaffolding.

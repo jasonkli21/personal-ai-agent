@@ -28,7 +28,8 @@ not select or route to a different model provider.
   it has an explicit new attempt. Search and lookup providers use the shared
   async accounting bridge.
 
-An admitted attempt is a physical send, not a retry estimate. A denied
+An admitted attempt reserves one physical send; reservation alone does not prove
+that the external provider received it. A denied
 pre-dispatch reservation creates no attempt row and does not inflate send or
 retry counts. Timeouts and interrupted sends remain unknown/uncertain under the
 original identity and reservation; unresolved outcomes fence replay. A later
@@ -41,8 +42,8 @@ Iterative research keeps its distinct task and run attribution.
 ## Admission and quota state
 
 - [`routing/contracts.py`](../../backend/src/personal_ai/routing/contracts.py)
-  supplies quota bucket authority, unit, window/reset, source, confidence, and
-  freshness facts. Bucket IDs represent shared provider/account capacity;
+  supplies static quota bucket authority, unit, window, ceiling and provenance.
+  `usage/quota.py` owns live reset/remaining/freshness observations. Bucket IDs represent shared provider/account capacity;
   endpoint and credential attribution remain on their individual attempts.
 - [`persistence/postgres_usage.py`](../../backend/src/personal_ai/persistence/postgres_usage.py)
   locks request budgets, endpoint cooldowns, and every applicable quota bucket
@@ -51,7 +52,7 @@ Iterative research keeps its distinct task and run attribution.
   together. Unknown capacity is retained as unknown and tracked with local
   reserved/consumed units; it is not replaced with a guessed limit.
 - Fixed-provider accounting resolves the exact profile ID from the current
-  durable registry and rechecks its registry/profile versions inside the
+  durable registry and rechecks its exact profile identity/facts inside the
   reservation transaction. Unknown or ambiguous quota-bucket membership is
   denied before dispatch; verified membership with unknown remaining capacity
   remains explicitly unknown. This keeps relationship authority distinct from
@@ -115,9 +116,17 @@ Usage limits, retention, stale-attempt age, cooldown, provider-header freshness,
 and inspection are bounded settings documented in
 [`backend/.env.example`](../../backend/.env.example). The developer summary is
 not a substitute for deployment auth or a provider account review. Apply
-migrations 017 and 018 before persistent accounting is enabled in a database-backed
+migrations through 022 before persistent accounting is enabled in a database-backed
 environment. The stale-attempt threshold must remain at least the maximum
 provider request timeout plus 60 seconds. Deterministic fake tests do not
 establish Postgres transaction behavior, DynamoDB Local behavior, IAM, provider
 usage semantics, account tier, source rights, or cloud retention. Those checks
 remain external acceptance gates recorded in the evidence.
+
+## Phase 18–21 authority refactor (2026-10-09)
+
+The [refactor plan](phase-18-21-architecture-refactor-implementation-plan.md) and [results](phase-18-21-architecture-refactor-results.md) supersede the earlier routing handoff details. P19 is the only runtime quota/window/health authority. P18 supplies static bindings; `usage.QuotaObservation` contains live observations. Provider header evidence retains its freshness/confidence when static ceilings are corrected. Expired cooldowns permit a probe, without inventing measured health; unavailable/corrupt authority still denies.
+
+`reserve_attempt_in_transaction` lets the routing coordinator reserve all buckets and authorize dispatch in one caller-owned Postgres transaction. `reserved_attempt_in_transaction` verifies neutral invocation identity, exact attempt, operation, bucket authority/unit/amount/state and freshness directly. `claim_attempt_in_transaction` consumes an attempt once. The API does not depend on P21 decision DTOs. Sorted bucket locks precede the endpoint-health lock, matching settlement. The health lock also serializes bootstrap absence. Closure resolves terminal outcomes directly from P19. Network sends occur after commit. Unknown outcomes, settlements, aggregate versioning and explicit retention keep their existing ledger semantics.
+
+Routed work starts from exact selected refs resolved through P18. Existing fixed-provider/public-lookup adapters retain one non-authoritative, secret-free accounting projection produced by `from_profile` or the explicit lookup constructor; it is not another catalog. Unrelated registry revisions no longer invalidate identical profile facts. Remove the fixed-provider mapping/projection bridge when gated workflow integration passes exact refs at those existing call sites. Provider sends and logical invocation creation use the shared owner lifecycle fence.

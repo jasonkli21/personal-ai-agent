@@ -164,7 +164,7 @@ class PostgresPrincipalDirectory:
                 rows = connection.execute(
                     "SELECT owner_id FROM identity_mappings WHERE application_id=%s "
                     "AND workspace_id IS NULL AND status='active' AND NOT EXISTS "
-                    "(SELECT 1 FROM artifact_owner_fences f WHERE f.owner_id=identity_mappings.owner_id) "
+                    "(SELECT 1 FROM owner_lifecycle_fences f WHERE f.owner_id=identity_mappings.owner_id) "
                     "ORDER BY owner_id LIMIT %s",
                     (_ACCOUNT_SCOPE.application_id, limit),
                 ).fetchall()
@@ -281,28 +281,23 @@ class PostgresAccountLifecycleRepository:
                 for artifact_id, payload, revision in artifact_rows:
                     add("artifact_metadata", artifact_id, payload)
                     p_count += 1
-                routing_rows = connection.execute(
-                    "SELECT decision_id::text,jsonb_build_object("
-                    "'decision_facts',decision_facts,'outcome_events',outcome_events,"
-                    "'invocation_ids',invocation_ids,'attempt_ids',attempt_ids,"
-                    "'evaluation_run_ids',evaluation_run_ids,"
-                    "'lifecycle_status',lifecycle_status,'parent_decision_id',parent_decision_id,"
-                    "'created_at',created_at,'replay_until',replay_until) "
-                    "FROM routing_decisions WHERE owner_id=%s AND application_id=%s "
-                    "AND workspace_id IS NOT DISTINCT FROM %s "
-                    "ORDER BY created_at,decision_id LIMIT %s",
-                    (owner_id, scope.application_id, scope.workspace_id,
-                     MAX_EXPORT_SCAN_RECORDS + 1),
-                ).fetchall()
-                if len(routing_rows) > MAX_EXPORT_SCAN_RECORDS:
-                    raise ExportTooLarge
-                p_collection_counts["routing_decisions"] = len(routing_rows)
-                p_revision_coverage["routing_decisions"] = (
-                    "identity_set_in_repeatable_read_snapshot"
-                )
-                for decision_id, payload in routing_rows:
-                    add("routing_decisions", decision_id, payload)
-                    p_count += 1
+                for table, key in (("routing_decisions", "decision_id"),
+                                   ("routing_decision_events", "event_id"),
+                                   ("routing_decisions_legacy", "decision_id")):
+                    routing_rows = connection.execute(
+                        f"SELECT {key}::text,to_jsonb(r) FROM {table} r "
+                        "WHERE owner_id=%s AND application_id=%s "
+                        "AND workspace_id IS NOT DISTINCT FROM %s "
+                        f"ORDER BY {key} LIMIT %s",
+                        (owner_id, scope.application_id, scope.workspace_id, MAX_EXPORT_SCAN_RECORDS+1),
+                    ).fetchall()
+                    if len(routing_rows) > MAX_EXPORT_SCAN_RECORDS:
+                        raise ExportTooLarge
+                    p_collection_counts[table] = len(routing_rows)
+                    p_revision_coverage[table] = "identity_set_in_repeatable_read_snapshot"
+                    for identity, payload in routing_rows:
+                        add(table, identity, payload)
+                        p_count += 1
                 budget_rows = connection.execute(
                     "SELECT record_id,owner_id,application_id,workspace_id,record_version,status,"
                     "revision,created_at,expires_at,budget_day,provider_calls,input_tokens "
@@ -835,7 +830,7 @@ class PostgresAccountLifecycleRepository:
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
                                    (f"artifact-owner:{owner_id}",))
                 connection.execute(
-                    "INSERT INTO artifact_owner_fences(owner_id,deletion_request_id) VALUES (%s,%s) "
+                    "INSERT INTO owner_lifecycle_fences(owner_id,deletion_request_id) VALUES (%s,%s) "
                     "ON CONFLICT DO NOTHING", (owner_id, request_id),
                 )
                 updated["confirmed_at"] = now.isoformat()
@@ -848,7 +843,7 @@ class PostgresAccountLifecycleRepository:
                 ).fetchone()
                 if cleaned:
                     raise AccountRequestConflict
-                connection.execute("DELETE FROM artifact_owner_fences "
+                connection.execute("DELETE FROM owner_lifecycle_fences "
                                    "WHERE owner_id=%s AND deletion_request_id=%s",
                                    (owner_id, request_id))
             ids = list(updated.get("audit_event_ids", []))

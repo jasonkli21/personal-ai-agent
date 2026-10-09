@@ -3,9 +3,10 @@
 from threading import Lock
 
 from personal_ai.routing.configured import build_initial_endpoint_profiles
-from personal_ai.routing.contracts import EndpointProfile, EndpointRegistrySnapshot, QuotaBucket
+from personal_ai.routing.contracts import EndpointProfile, EndpointRef, EndpointRegistrySnapshot
 from personal_ai.routing.registry import EndpointRegistry
 from personal_ai.usage.contracts import ProviderEndpoint
+from personal_ai.usage.quota import QuotaObservation
 
 _KNOWN_PROFILE_IDS = {
     ("gemini", "streaming"): "gemini:generation",
@@ -55,13 +56,12 @@ class EndpointProfileResolver:
                     )
         return self.registry
 
-    def resolve(
-        self, *, provider_id: str, model_id: str, operation: str
-    ) -> ProviderEndpoint:
+    def resolve(self, *, provider_id: str, model_id: str, operation: str) -> ProviderEndpoint:
         snapshot = self._current_registry().refresh()
         preferred_id = _KNOWN_PROFILE_IDS.get((provider_id, operation))
         matches = [
-            profile for profile in snapshot.profiles
+            profile
+            for profile in snapshot.profiles
             if profile.provider_id == provider_id
             and profile.model_id == model_id
             and operation in profile.capabilities
@@ -74,6 +74,13 @@ class EndpointProfileResolver:
             registry_version=snapshot.registry_version,
             registry_revision=snapshot.revision,
         )
+
+    def resolve_ref(self, ref: EndpointRef) -> ProviderEndpoint:
+        snapshot = self._current_registry().refresh()
+        profile = next((p for p in snapshot.profiles if p.ref == ref), None)
+        if profile is None:
+            raise ValueError("provider_usage_endpoint_profile_stale")
+        return from_profile(profile)
 
     def assert_current(self, endpoint: ProviderEndpoint) -> None:
         snapshot = self._current_registry().refresh()
@@ -94,16 +101,17 @@ class EndpointProfileResolver:
     ) -> None:
         profile = next(
             (
-                item for item in snapshot.profiles
+                item
+                for item in snapshot.profiles
                 if item.endpoint_profile_id == endpoint.endpoint_profile_id
             ),
             None,
         )
-        if profile is None or from_profile(
-            profile,
-            registry_version=snapshot.registry_version,
-            registry_revision=snapshot.revision,
-        ) != endpoint:
+        from dataclasses import replace
+
+        if profile is None or from_profile(profile) != replace(
+            endpoint, registry_version=None, registry_revision=None
+        ):
             raise ValueError("provider_usage_endpoint_profile_stale")
 
 
@@ -116,13 +124,12 @@ def endpoint_for_operation(
     resolver: EndpointProfileResolver | None = None,
 ) -> ProviderEndpoint:
     if resolver is not None:
-        return resolver.resolve(
-            provider_id=provider_id, model_id=model_id, operation=operation
-        )
+        return resolver.resolve(provider_id=provider_id, model_id=model_id, operation=operation)
     profiles = build_initial_endpoint_profiles(settings)
     preferred_id = _KNOWN_PROFILE_IDS.get((provider_id, operation))
     matching = [
-        profile for profile in profiles
+        profile
+        for profile in profiles
         if profile.provider_id == provider_id
         and profile.model_id == model_id
         and operation in profile.capabilities
@@ -134,11 +141,15 @@ def endpoint_for_operation(
 
 
 def public_lookup_endpoint(
-    *, provider_id: str, model_id: str, endpoint_id: str, deployment_id: str,
+    *,
+    provider_id: str,
+    model_id: str,
+    endpoint_id: str,
+    deployment_id: str,
     authority_scope_id: str,
 ) -> ProviderEndpoint:
     """Describe a public lookup service without inventing capacity or cost facts."""
-    bucket = QuotaBucket(
+    bucket = QuotaObservation(
         bucket_id=f"{authority_scope_id}:requests",
         authority_scope_id=authority_scope_id,
         operations=frozenset({"lookup"}),
@@ -194,5 +205,5 @@ def from_profile(
         quota_membership=profile.quota_membership,
         registry_version=registry_version,
         registry_revision=registry_revision,
-        quota_buckets=profile.quota_buckets,
+        quota_buckets=tuple(QuotaObservation(**b.model_dump()) for b in profile.quota_buckets),
     )

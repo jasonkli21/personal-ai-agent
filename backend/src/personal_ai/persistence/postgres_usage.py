@@ -12,13 +12,13 @@ from types import SimpleNamespace
 from uuid import UUID, uuid5
 
 from personal_ai.persistence.postgres import PostgresDatabase, _ensure_namespace
-from personal_ai.routing.contracts import QuotaBucket
 from personal_ai.usage.contracts import (
     AttemptMetadata,
     AttemptResult,
     InvocationMetadata,
     UsageAdmissionDenied,
 )
+from personal_ai.usage.quota import QuotaObservation as QuotaBucket
 
 logger = logging.getLogger(__name__)
 _QUOTA_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -57,6 +57,9 @@ class PostgresProviderUsageAccounting:
         now = datetime.now(UTC)
         retention_until = now + timedelta(days=self.retention_days)
         with self.database.transaction() as connection:
+            from personal_ai.persistence.postgres_owner_lifecycle import assert_owner_unfenced
+
+            assert_owner_unfenced(connection, invocation.owner_id)
             scope_id = _ensure_namespace(
                 connection,
                 invocation.owner_id,
@@ -64,303 +67,412 @@ class PostgresProviderUsageAccounting:
             )
             _insert_invocation(connection, invocation, scope_id, now, retention_until)
 
-    def reserve_attempt(
-        self,
-        invocation: InvocationMetadata,
-        attempt: AttemptMetadata,
-        *,
-        max_attempts: int,
-    ) -> AttemptMetadata:
+    def reserve_attempt(self, invocation, attempt, *, max_attempts):
+        # Preserve a denied logical outcome while committing no physical attempt.
+        denial = None
+        with self.database.transaction() as connection:
+            try:
+                result = self.reserve_attempt_in_transaction(
+                    connection, invocation, attempt, max_attempts=max_attempts
+                )
+            except UsageAdmissionDenied as error:
+                denial = error
+        if denial is not None:
+            raise denial
+        return result
+
+    def reserve_attempt_in_transaction(self, connection, invocation, attempt, *, max_attempts):
+        """Small transaction-aware seam; caller owns commit, never provider IO."""
         now = attempt.started_at.astimezone(UTC)
         retention_until = now + timedelta(days=self.retention_days)
         endpoint = invocation.endpoint
-        denial: str | None = None
-        reserved_attempt: AttemptMetadata | None = None
-        selected_buckets: list[tuple[QuotaBucket, datetime, int | None, str]] = []
+        denial = None
+        reserved_attempt = None
+        selected_buckets = []
+        from personal_ai.persistence.postgres_owner_lifecycle import (
+            OwnerFenced,
+            assert_owner_unfenced,
+        )
+
         try:
-            with self.database.transaction() as connection:
-                from personal_ai.artifacts.contracts import ArtifactUnavailable
-                from personal_ai.persistence.postgres_artifacts import assert_owner_unfenced
-                try:
-                    assert_owner_unfenced(connection, invocation.owner_id)
-                except ArtifactUnavailable:
-                    raise UsageAdmissionDenied("provider_owner_deletion_fenced") from None
-                if (
-                    self.endpoint_profile_resolver is not None
-                    and endpoint.registry_version is not None
-                ):
-                    try:
-                        self.endpoint_profile_resolver.assert_current_in_transaction(
-                            connection, endpoint
-                        )
-                    except ValueError:
-                        raise UsageAdmissionDenied("provider_endpoint_profile_stale") from None
-                scope_id = _ensure_namespace(
-                    connection,
-                    invocation.owner_id,
-                    _scope(invocation.application_id, invocation.workspace_id),
-                )
-                connection.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
-                    (f"provider-usage:{invocation.owner_id}:{invocation.request_id}",),
-                )
-                _insert_invocation(connection, invocation, scope_id, now, retention_until)
+            assert_owner_unfenced(connection, invocation.owner_id)
+        except OwnerFenced:
+            raise UsageAdmissionDenied("provider_owner_deletion_fenced") from None
+        if self.endpoint_profile_resolver is not None and endpoint.credential_source != "none":
+            try:
+                self.endpoint_profile_resolver.assert_current_in_transaction(connection, endpoint)
+            except ValueError:
+                raise UsageAdmissionDenied("provider_endpoint_profile_stale") from None
+        scope_id = _ensure_namespace(
+            connection,
+            invocation.owner_id,
+            _scope(invocation.application_id, invocation.workspace_id),
+        )
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+            (f"provider-usage:{invocation.owner_id}:{invocation.request_id}",),
+        )
+        _insert_invocation(connection, invocation, scope_id, now, retention_until)
 
-                unresolved = connection.execute(
-                    "SELECT 1 FROM provider_attempts a JOIN provider_invocations i USING(invocation_id) "
-                    "WHERE i.owner_id=%s AND i.request_id=%s "
-                    "AND a.status IN ('pending','unknown','timeout') LIMIT 1",
-                    (invocation.owner_id, invocation.request_id),
+        unresolved = connection.execute(
+            "SELECT 1 FROM provider_attempts a JOIN provider_invocations i USING(invocation_id) "
+            "WHERE i.owner_id=%s AND i.request_id=%s "
+            "AND a.status IN ('pending','unknown','timeout') LIMIT 1",
+            (invocation.owner_id, invocation.request_id),
+        ).fetchone()
+        if unresolved is not None:
+            denial = "provider_outcome_unresolved"
+
+        attempt_count, reserved_tokens = connection.execute(
+            "SELECT count(*),COALESCE(sum(reserved_tokens),0) "
+            "FROM provider_attempts a JOIN provider_invocations i USING (invocation_id) "
+            "WHERE i.owner_id=%s AND i.request_id=%s",
+            (invocation.owner_id, invocation.request_id),
+        ).fetchone()
+        call_tokens = max(0, attempt.reserved_tokens)
+        if denial is None and attempt_count >= min(max_attempts, self.request_attempt_limit):
+            denial = "provider_attempt_budget_exceeded"
+        elif denial is None and reserved_tokens + call_tokens > self.request_token_limit:
+            denial = "provider_token_budget_exceeded"
+
+        previous_attempt = connection.execute(
+            "SELECT attempt_id,send_number FROM provider_attempts "
+            "WHERE invocation_id=%s ORDER BY send_number DESC LIMIT 1 FOR UPDATE",
+            (invocation.invocation_id,),
+        ).fetchone()
+        expected_send_number = int(previous_attempt[1]) + 1 if previous_attempt else 1
+        expected_parent_id = previous_attempt[0] if previous_attempt else None
+        reserved_attempt = (
+            attempt
+            if (
+                attempt.send_number == expected_send_number
+                and attempt.parent_attempt_id == expected_parent_id
+            )
+            else replace(
+                attempt,
+                attempt_id=uuid5(
+                    invocation.invocation_id,
+                    f"provider-attempt:{expected_send_number}",
+                ),
+                parent_attempt_id=expected_parent_id,
+                send_number=expected_send_number,
+            )
+        )
+
+        applicable_buckets = _applicable_buckets(endpoint.quota_buckets, invocation.operation)
+        if denial is None:
+            if endpoint.quota_membership == "ambiguous":
+                denial = "provider_quota_membership_ambiguous"
+            elif endpoint.quota_membership != "verified" or not applicable_buckets:
+                denial = "provider_quota_membership_unknown"
+
+        if denial is None:
+            for bucket in sorted(applicable_buckets, key=lambda b: b.bucket_id):
+                amount = _reservation_amount(bucket, dict(attempt.reservation_units))
+                window_start, reset_at, confidence = _select_quota_window(connection, bucket, now)
+                _lock_or_seed_bucket(connection, bucket, window_start, reset_at, confidence, now)
+                state = connection.execute(
+                    "SELECT authority_scope_id,unit,window_seconds,reset_at,source,confidence,"
+                    "limit_units,reported_remaining,observed_at,fresh_until,consumed_units,reserved_units "
+                    "FROM provider_quota_bucket_windows WHERE bucket_id=%s AND window_start=%s "
+                    "FOR UPDATE",
+                    (bucket.bucket_id, window_start),
                 ).fetchone()
-                if unresolved is not None:
-                    denial = "provider_outcome_unresolved"
-
-                attempt_count, reserved_tokens = connection.execute(
-                    "SELECT count(*),COALESCE(sum(reserved_tokens),0) "
-                    "FROM provider_attempts a JOIN provider_invocations i USING (invocation_id) "
-                    "WHERE i.owner_id=%s AND i.request_id=%s",
-                    (invocation.owner_id, invocation.request_id),
-                ).fetchone()
-                call_tokens = max(0, attempt.reserved_tokens)
-                if denial is None and attempt_count >= min(max_attempts, self.request_attempt_limit):
-                    denial = "provider_attempt_budget_exceeded"
-                elif denial is None and reserved_tokens + call_tokens > self.request_token_limit:
-                    denial = "provider_token_budget_exceeded"
-
-                previous_attempt = connection.execute(
-                    "SELECT attempt_id,send_number FROM provider_attempts "
-                    "WHERE invocation_id=%s ORDER BY send_number DESC LIMIT 1 FOR UPDATE",
-                    (invocation.invocation_id,),
-                ).fetchone()
-                expected_send_number = int(previous_attempt[1]) + 1 if previous_attempt else 1
-                expected_parent_id = previous_attempt[0] if previous_attempt else None
-                reserved_attempt = (
-                    attempt
-                    if (
-                        attempt.send_number == expected_send_number
-                        and attempt.parent_attempt_id == expected_parent_id
-                    )
-                    else replace(
-                        attempt,
-                        attempt_id=uuid5(
-                            invocation.invocation_id,
-                            f"provider-attempt:{expected_send_number}",
-                        ),
-                        parent_attempt_id=expected_parent_id,
-                        send_number=expected_send_number,
-                    )
+                if state is None:
+                    raise RuntimeError("provider_quota_bucket_state_missing")
+                (
+                    authority_scope,
+                    unit,
+                    _window_seconds,
+                    state_reset,
+                    _source,
+                    state_confidence,
+                    limit_units,
+                    reported_remaining,
+                    _observed_at,
+                    fresh_until,
+                    consumed,
+                    reserved,
+                ) = state
+                if authority_scope != bucket.authority_scope_id or unit != bucket.unit:
+                    raise ValueError("provider_quota_bucket_identity_conflict")
+                capacity_known = (
+                    state_confidence != "unknown"
+                    and (limit_units is not None or reported_remaining is not None)
+                    and (fresh_until is None or fresh_until > now)
+                    and (state_reset is None or state_reset > now)
                 )
-
-                health = connection.execute(
-                    "SELECT cooldown_until FROM provider_endpoint_health "
-                    "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s FOR UPDATE",
-                    (endpoint.endpoint_profile_id, endpoint.profile_version),
-                ).fetchone()
-                if denial is None and health and health[0] is not None and health[0] > now:
-                    denial = "provider_endpoint_cooling_down"
-
-                applicable_buckets = _applicable_buckets(
-                    endpoint.quota_buckets, invocation.operation
-                )
-                if denial is None:
-                    if endpoint.quota_membership == "ambiguous":
-                        denial = "provider_quota_membership_ambiguous"
-                    elif endpoint.quota_membership != "verified" or not applicable_buckets:
-                        denial = "provider_quota_membership_unknown"
-
-                if denial is None:
-                    for bucket in applicable_buckets:
-                        amount = _reservation_amount(bucket, dict(attempt.reservation_units))
-                        window_start, reset_at, confidence = _select_quota_window(
-                            connection, bucket, now
-                        )
-                        _lock_or_seed_bucket(connection, bucket, window_start, reset_at, confidence, now)
-                        state = connection.execute(
-                            "SELECT authority_scope_id,unit,window_seconds,reset_at,source,confidence,"
-                            "limit_units,reported_remaining,observed_at,fresh_until,consumed_units,reserved_units "
-                            "FROM provider_quota_bucket_windows WHERE bucket_id=%s AND window_start=%s "
-                            "FOR UPDATE",
-                            (bucket.bucket_id, window_start),
-                        ).fetchone()
-                        if state is None:
-                            raise RuntimeError("provider_quota_bucket_state_missing")
-                        (
-                            authority_scope,
-                            unit,
-                            _window_seconds,
-                            state_reset,
-                            _source,
-                            state_confidence,
-                            limit_units,
-                            reported_remaining,
-                            _observed_at,
-                            fresh_until,
-                            consumed,
-                            reserved,
-                        ) = state
-                        if authority_scope != bucket.authority_scope_id or unit != bucket.unit:
-                            raise ValueError("provider_quota_bucket_identity_conflict")
-                        capacity_known = (
-                            state_confidence != "unknown"
-                            and (limit_units is not None or reported_remaining is not None)
-                            and (fresh_until is None or fresh_until > now)
-                            and (state_reset is None or state_reset > now)
-                        )
-                        if capacity_known and amount is None:
-                            denial = "provider_quota_unit_unpriced"
-                        elif capacity_known and amount is not None:
-                            limits = []
-                            if limit_units is not None:
-                                limits.append(int(limit_units) - int(consumed) - int(reserved))
-                            if reported_remaining is not None:
-                                limits.append(
-                                    int(reported_remaining) - int(consumed) - int(reserved)
-                                )
-                            if limits and min(limits) < amount:
-                                denial = "provider_quota_exhausted"
-                        selected_buckets.append((bucket, window_start, amount, state_confidence))
-                        if denial is not None:
-                            break
-
+                if capacity_known and amount is None:
+                    denial = "provider_quota_unit_unpriced"
+                elif capacity_known and amount is not None:
+                    limits = []
+                    if limit_units is not None:
+                        limits.append(int(limit_units) - int(consumed) - int(reserved))
+                    if reported_remaining is not None:
+                        limits.append(int(reported_remaining) - int(consumed) - int(reserved))
+                    if limits and min(limits) < amount:
+                        denial = "provider_quota_exhausted"
+                selected_buckets.append((bucket, window_start, amount, state_confidence))
                 if denial is not None:
-                    # Denied admission did not dispatch a physical provider send.
-                    # Keep the logical outcome without inflating attempt/retry counts.
+                    break
+
+        # Settlement locks bucket windows before health. Follow the same order,
+        # including across different owners sharing one endpoint/quota scope.
+        _lock_endpoint_health(connection, endpoint)
+        health = connection.execute(
+            "SELECT health_status,cooldown_until FROM provider_endpoint_health "
+            "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s FOR SHARE",
+            (endpoint.endpoint_profile_id, endpoint.profile_version),
+        ).fetchone()
+        if denial is None and _health_unavailable(health, now):
+            denial = "provider_endpoint_cooling_down"
+
+        if denial is not None:
+            # Denied admission did not dispatch a physical provider send.
+            # Keep the logical outcome without inflating attempt/retry counts.
+            connection.execute(
+                "UPDATE provider_invocations SET outcome='rejected',"
+                "completed_at=GREATEST(%s,started_at) "
+                "WHERE invocation_id=%s AND outcome='running'",
+                (now, invocation.invocation_id),
+            )
+        else:
+            quota_confidences = {item[3] for item in selected_buckets}
+            quota_confidence = (
+                "unknown"
+                if not selected_buckets or "unknown" in quota_confidences
+                else "configured"
+            )
+            connection.execute(
+                "UPDATE provider_invocations SET quota_confidence=%s WHERE invocation_id=%s",
+                (quota_confidence, invocation.invocation_id),
+            )
+            connection.execute(
+                "UPDATE provider_invocations SET outcome='running',completed_at=NULL "
+                "WHERE invocation_id=%s",
+                (invocation.invocation_id,),
+            )
+            _insert_attempt(
+                connection,
+                invocation,
+                reserved_attempt,
+                call_tokens,
+                retention_until,
+                status="pending",
+                error_code=None,
+            )
+            for bucket, window_start, amount, confidence in selected_buckets:
+                is_known = confidence != "unknown" and amount is not None
+                reserved_amount = amount or 0
+                connection.execute(
+                    "INSERT INTO provider_quota_reservations(attempt_id,bucket_id,"
+                    "authority_scope_id,unit,window_start,reserved_units,settled_units,state,"
+                    "confidence,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s)",
+                    (
+                        reserved_attempt.attempt_id,
+                        bucket.bucket_id,
+                        bucket.authority_scope_id,
+                        bucket.unit,
+                        window_start,
+                        reserved_amount,
+                        "reserved" if is_known else "unknown",
+                        confidence,
+                        now,
+                        now,
+                    ),
+                )
+                if reserved_amount:
                     connection.execute(
-                        "UPDATE provider_invocations SET outcome='rejected',"
-                        "completed_at=GREATEST(%s,started_at) "
-                        "WHERE invocation_id=%s AND outcome='running'",
-                        (now, invocation.invocation_id),
+                        "UPDATE provider_quota_bucket_windows SET reserved_units=reserved_units+%s,"
+                        "updated_at=%s WHERE bucket_id=%s AND window_start=%s",
+                        (reserved_amount, now, bucket.bucket_id, window_start),
                     )
-                else:
-                    quota_confidences = {item[3] for item in selected_buckets}
-                    quota_confidence = (
-                        "unknown" if not selected_buckets or "unknown" in quota_confidences
-                        else "configured"
-                    )
-                    connection.execute(
-                        "UPDATE provider_invocations SET quota_confidence=%s "
-                        "WHERE invocation_id=%s",
-                        (quota_confidence, invocation.invocation_id),
-                    )
-                    connection.execute(
-                        "UPDATE provider_invocations SET outcome='running',completed_at=NULL "
-                        "WHERE invocation_id=%s",
-                        (invocation.invocation_id,),
-                    )
-                    _insert_attempt(
-                        connection, invocation, reserved_attempt, call_tokens, retention_until,
-                        status="pending", error_code=None,
-                    )
-                    for bucket, window_start, amount, confidence in selected_buckets:
-                        is_known = confidence != "unknown" and amount is not None
-                        reserved_amount = amount or 0
-                        connection.execute(
-                            "INSERT INTO provider_quota_reservations(attempt_id,bucket_id,"
-                            "authority_scope_id,unit,window_start,reserved_units,settled_units,state,"
-                            "confidence,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s)",
-                            (
-                                reserved_attempt.attempt_id,
-                                bucket.bucket_id,
-                                bucket.authority_scope_id,
-                                bucket.unit,
-                                window_start,
-                                reserved_amount,
-                                "reserved" if is_known else "unknown",
-                                confidence,
-                                now,
-                                now,
-                            ),
-                        )
-                        if reserved_amount:
-                            connection.execute(
-                                "UPDATE provider_quota_bucket_windows SET reserved_units=reserved_units+%s,"
-                                "updated_at=%s WHERE bucket_id=%s AND window_start=%s",
-                                (reserved_amount, now, bucket.bucket_id, window_start),
-                            )
-        except UsageAdmissionDenied:
-            raise
-        except Exception:
-            logger.info("provider_usage_reservation_failed error_class=storage")
-            raise
         if denial is not None:
             raise UsageAdmissionDenied(denial)
         if reserved_attempt is None:
             raise RuntimeError("provider_usage_attempt_not_reserved")
         return reserved_attempt
 
-    def verify_routing_reservation(
-        self,
-        *,
-        reservation,
-        owner_id: str,
-        scope,
-        request_id: str,
-        run_id: str | None,
-        routing_decision_id: UUID,
-        endpoint_profile_id: str,
-        endpoint_profile_version: int,
-        operation: str,
-        expected_bucket_ids: frozenset[str],
-        max_physical_attempts: int,
-        now: datetime,
-    ) -> bool:
-        """Prove a ready routing plan is backed by a live Phase 19 attempt.
+    def runtime_rejections(self, connection, profile, requirements, *, now, check_capacity=True):
+        """Current runtime authority. No failure row means no observed health failure.
 
-        The receipt is reconstructed from the canonical invocation, physical
-        attempt, and bucket rows. Caller supplied IDs or bucket amounts alone
-        can never authorize a send.
+        Unknown capacity remains unknown and never asserts available units; the
+        strict-free static attestation excludes billable overflow independently.
         """
-        with self.database.connection() as connection:
+        from personal_ai.usage.profiles import from_profile
+
+        endpoint = from_profile(profile)
+        health = connection.execute(
+            "SELECT health_status,cooldown_until FROM provider_endpoint_health "
+            "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s",
+            (profile.endpoint_profile_id, profile.profile_version),
+        ).fetchone()
+        reasons = []
+        if _health_unavailable(health, now):
+            reasons.append("endpoint_health_unavailable")
+        if not check_capacity:
+            return tuple(reasons)
+        from personal_ai.usage.accounting import unit_reservations
+
+        values = dict(
+            unit_reservations(
+                input_tokens=requirements.input_tokens, output_tokens=requirements.output_tokens
+            )
+        )
+        for bucket in sorted(endpoint.quota_buckets, key=lambda b: b.bucket_id):
+            if not requirements.required_capabilities.intersection(bucket.operations):
+                continue
+            start, reset, confidence = _select_quota_window(connection, bucket, now)
+            _lock_or_seed_bucket(connection, bucket, start, reset, confidence, now)
             row = connection.execute(
-                "SELECT i.owner_id,i.application_id,i.workspace_id,i.request_id,i.run_id,"
-                "i.routing_decision_id,i.endpoint_profile_id,i.endpoint_profile_version,"
-                "i.operation,i.outcome,a.send_number,a.started_at,a.status "
-                "FROM provider_attempts a JOIN provider_invocations i USING(invocation_id) "
-                "WHERE i.invocation_id=%s AND a.attempt_id=%s",
-                (reservation.invocation_id, reservation.attempt_id),
+                "SELECT limit_units,reported_remaining,consumed_units,reserved_units,confidence,"
+                "fresh_until,reset_at FROM provider_quota_bucket_windows "
+                "WHERE bucket_id=%s AND window_start=%s",
+                (bucket.bucket_id, start),
             ).fetchone()
             if row is None:
-                return False
-            (
-                stored_owner, stored_application, stored_workspace, stored_request,
-                stored_run, stored_decision, stored_endpoint, stored_version,
-                stored_operation, invocation_outcome, send_number, started_at, attempt_status,
-            ) = row
-            started_at = started_at.astimezone(UTC)
-            instant = now.astimezone(UTC)
-            if (
-                stored_owner != owner_id
-                or stored_application != scope.application_id
-                or stored_workspace != scope.workspace_id
-                or stored_request != request_id
-                or stored_run != run_id
-                or stored_decision != str(routing_decision_id)
-                or stored_endpoint != endpoint_profile_id
-                or int(stored_version) != endpoint_profile_version
-                or stored_operation != operation
-                or invocation_outcome != "running"
-                or int(send_number) != reservation.send_number
-                or reservation.operation != operation
-                or reservation.reserved_at != started_at
-                or attempt_status != "pending"
-                or int(send_number) > max_physical_attempts
-                or started_at > instant
-                or (instant - started_at).total_seconds() > self.stale_attempt_seconds
-            ):
-                return False
-            bucket_rows = connection.execute(
-                "SELECT bucket_id,reserved_units,state FROM provider_quota_reservations "
-                "WHERE attempt_id=%s ORDER BY bucket_id",
-                (reservation.attempt_id,),
-            ).fetchall()
-        actual = {bucket_id: int(units) for bucket_id, units, _ in bucket_rows}
-        states = {bucket_id: state for bucket_id, _units, state in bucket_rows}
-        supplied = dict(reservation.buckets)
-        return (
-            frozenset(actual) == expected_bucket_ids
-            and actual == supplied
-            and all(state in {"reserved", "unknown"} for state in states.values())
+                raise RuntimeError("provider_quota_state_missing")
+            limit, remaining, consumed, reserved, confidence, fresh, reset = row
+            known = (
+                confidence != "unknown"
+                and (fresh is None or fresh > now)
+                and (reset is None or reset > now)
+            )
+            amount = _reservation_amount(bucket, values)
+            if known and (limit is not None or remaining is not None):
+                if amount is None:
+                    reasons.append("provider_quota_unit_unpriced")
+                elif (
+                    min(v for v in (limit, remaining) if v is not None) - consumed - reserved
+                    < amount
+                ):
+                    reasons.append("endpoint_quota_exhausted")
+        return tuple(dict.fromkeys(reasons))
+
+    def reserved_attempt_in_transaction(
+        self, connection, invocation, attempt_id, *, expected_units, max_attempts, now
+    ):
+        """Resolve exact provenance directly, with the attempt locked against settlement."""
+        endpoint = invocation.endpoint
+        row = connection.execute(
+            "SELECT i.owner_id,i.application_id,i.workspace_id,i.request_id,i.run_id,"
+            "i.routing_decision_id,i.endpoint_profile_id,i.endpoint_profile_version,i.operation,"
+            "i.outcome,a.started_at,a.status,a.send_number,a.parent_attempt_id,a.reserved_tokens,"
+            "a.dispatch_claimed_at FROM provider_invocations i JOIN provider_attempts a USING(invocation_id) "
+            "WHERE i.invocation_id=%s AND a.attempt_id=%s FOR UPDATE OF a FOR SHARE OF i",
+            (invocation.invocation_id, attempt_id),
+        ).fetchone()
+        expected = (
+            invocation.owner_id,
+            invocation.application_id,
+            invocation.workspace_id,
+            invocation.request_id,
+            invocation.run_id,
+            invocation.routing_decision_id,
+            endpoint.endpoint_profile_id,
+            endpoint.profile_version,
+            invocation.operation,
+            "running",
         )
+        if (
+            row is None
+            or row[:10] != expected
+            or row[11] != "pending"
+            or row[10] > now
+            or (now - row[10]).total_seconds() >= self.stale_attempt_seconds
+        ):
+            raise UsageAdmissionDenied("routing_reservation_not_authoritative")
+        if row[12] > max_attempts or row[12] < 1:
+            raise UsageAdmissionDenied("routing_attempt_budget_invalid")
+        if row[14] != dict(expected_units).get("tokens", 0):
+            raise UsageAdmissionDenied("routing_attempt_budget_invalid")
+        if row[12] == 1:
+            if row[13] is not None:
+                raise UsageAdmissionDenied("routing_attempt_lineage_invalid")
+        else:
+            previous = connection.execute(
+                "SELECT attempt_id,status FROM provider_attempts "
+                "WHERE invocation_id=%s AND send_number=%s FOR SHARE",
+                (invocation.invocation_id, row[12] - 1),
+            ).fetchone()
+            if (
+                previous is None
+                or previous[0] != row[13]
+                or previous[1] in {"pending", "unknown", "timeout"}
+            ):
+                raise UsageAdmissionDenied("routing_attempt_lineage_invalid")
+        _insert_invocation(
+            connection,
+            invocation,
+            _ensure_namespace(
+                connection,
+                invocation.owner_id,
+                _scope(invocation.application_id, invocation.workspace_id),
+            ),
+            now,
+            now + timedelta(days=self.retention_days),
+        )
+        buckets = connection.execute(
+            "SELECT r.bucket_id,r.reserved_units,r.state,r.authority_scope_id,r.unit,"
+            "w.authority_scope_id,w.unit FROM provider_quota_reservations r "
+            "JOIN provider_quota_bucket_windows w USING(bucket_id,window_start) "
+            "WHERE attempt_id=%s ORDER BY r.bucket_id FOR SHARE OF r,w",
+            (attempt_id,),
+        ).fetchall()
+        bindings = {
+            b.bucket_id: b for b in endpoint.quota_buckets if invocation.operation in b.operations
+        }
+        values = dict(expected_units)
+        if not bindings or {b[0] for b in buckets} != set(bindings):
+            raise UsageAdmissionDenied("routing_reservation_incomplete")
+        for bucket_id, amount, state, authority, unit, window_authority, window_unit in buckets:
+            binding = bindings[bucket_id]
+            expected_amount = _reservation_amount(binding, values) or 0
+            if (
+                amount != expected_amount
+                or state not in {"reserved", "unknown"}
+                or authority != binding.authority_scope_id
+                or window_authority != authority
+                or unit != binding.unit
+                or window_unit != unit
+            ):
+                raise UsageAdmissionDenied("routing_reservation_incomplete")
+        _lock_endpoint_health(connection, endpoint)
+        health = connection.execute(
+            "SELECT health_status,cooldown_until FROM provider_endpoint_health "
+            "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s FOR SHARE",
+            (endpoint.endpoint_profile_id, endpoint.profile_version),
+        ).fetchone()
+        if _health_unavailable(health, now):
+            raise UsageAdmissionDenied("provider_endpoint_cooling_down")
+        return AttemptMetadata(
+            attempt_id=attempt_id,
+            parent_attempt_id=row[13],
+            send_number=row[12],
+            started_at=row[10],
+            reservation_units=(),
+            reserved_tokens=row[14],
+        )
+
+    def claim_attempt_in_transaction(self, connection, attempt_id, *, now):
+        if (
+            connection.execute(
+                "UPDATE provider_attempts SET dispatch_claimed_at=%s WHERE attempt_id=%s "
+                "AND status='pending' AND dispatch_claimed_at IS NULL RETURNING attempt_id",
+                (now, attempt_id),
+            ).fetchone()
+            is None
+        ):
+            raise UsageAdmissionDenied("routing_dispatch_already_claimed")
+
+    def attempt_outcome_in_transaction(self, connection, invocation_id, attempt_id):
+        row = connection.execute(
+            "SELECT status FROM provider_attempts WHERE invocation_id=%s AND attempt_id=%s FOR SHARE",
+            (invocation_id, attempt_id),
+        ).fetchone()
+        if row is None or row[0] == "pending":
+            raise UsageAdmissionDenied("provider_outcome_unresolved")
+        return row[0]
 
     def settle_attempt(
         self,
@@ -404,7 +516,7 @@ class PostgresProviderUsageAccounting:
             )
             rows = connection.execute(
                 "SELECT bucket_id,authority_scope_id,unit,window_start,reserved_units,state "
-                "FROM provider_quota_reservations WHERE attempt_id=%s FOR UPDATE",
+                "FROM provider_quota_reservations WHERE attempt_id=%s ORDER BY bucket_id FOR UPDATE",
                 (attempt.attempt_id,),
             ).fetchall()
             for bucket_id, authority, unit, window_start, reserved_units, state in rows:
@@ -538,16 +650,23 @@ class PostgresProviderUsageAccounting:
             "generated_at": datetime.now(UTC).isoformat(),
             "groups": [
                 {
-                    "provider_id": row[0], "model_id": row[1],
-                    "endpoint_profile_id": row[2], "endpoint_profile_version": row[3],
-                    "task_id": row[4], "operation": row[5],
-                    "attempts": int(row[6] or 0), "successes": int(row[7] or 0),
-                    "rate_limited": int(row[8] or 0), "server_errors": int(row[9] or 0),
-                    "failures": int(row[10] or 0), "retries": int(row[11] or 0),
+                    "provider_id": row[0],
+                    "model_id": row[1],
+                    "endpoint_profile_id": row[2],
+                    "endpoint_profile_version": row[3],
+                    "task_id": row[4],
+                    "operation": row[5],
+                    "attempts": int(row[6] or 0),
+                    "successes": int(row[7] or 0),
+                    "rate_limited": int(row[8] or 0),
+                    "server_errors": int(row[9] or 0),
+                    "failures": int(row[10] or 0),
+                    "retries": int(row[11] or 0),
                     "average_latency_ms": (
                         round(int(row[12] or 0) / int(row[6]), 1) if row[6] else None
                     ),
-                    "input_tokens": int(row[13] or 0), "output_tokens": int(row[14] or 0),
+                    "input_tokens": int(row[13] or 0),
+                    "output_tokens": int(row[14] or 0),
                     "exact_usage_attempts": int(row[15] or 0),
                     "derived_usage_attempts": int(row[16] or 0),
                     "unknown_usage_attempts": int(row[17] or 0),
@@ -556,19 +675,28 @@ class PostgresProviderUsageAccounting:
             ],
             "health": [
                 {
-                    "endpoint_profile_id": row[0], "endpoint_profile_version": row[1],
-                    "status": row[2], "failure_streak": row[3],
-                    "cooldown_until": _iso(row[4]), "last_status": row[5],
-                    "last_http_status": row[6], "last_success_at": _iso(row[7]),
-                    "last_failure_at": _iso(row[8]), "updated_at": _iso(row[9]),
+                    "endpoint_profile_id": row[0],
+                    "endpoint_profile_version": row[1],
+                    "status": row[2],
+                    "failure_streak": row[3],
+                    "cooldown_until": _iso(row[4]),
+                    "last_status": row[5],
+                    "last_http_status": row[6],
+                    "last_success_at": _iso(row[7]),
+                    "last_failure_at": _iso(row[8]),
+                    "updated_at": _iso(row[9]),
                 }
                 for row in health_rows
             ],
             "quota": [
                 {
-                    "bucket_id": row[0], "authority_scope_id": row[1], "unit": row[2],
-                    "window_start": _iso(row[3]), "window_seconds": row[4],
-                    "reset_at": _iso(row[5]), "source": row[6],
+                    "bucket_id": row[0],
+                    "authority_scope_id": row[1],
+                    "unit": row[2],
+                    "window_start": _iso(row[3]),
+                    "window_seconds": row[4],
+                    "reset_at": _iso(row[5]),
+                    "source": row[6],
                     "snapshot_confidence": row[7],
                     "confidence": (
                         "unknown"
@@ -576,11 +704,14 @@ class PostgresProviderUsageAccounting:
                         or (row[5] is not None and row[5] <= datetime.now(UTC))
                         else row[7]
                     ),
-                    "limit": row[8], "reported_remaining": row[9],
-                    "observed_at": _iso(row[10]), "fresh_until": _iso(row[11]),
+                    "limit": row[8],
+                    "reported_remaining": row[9],
+                    "observed_at": _iso(row[10]),
+                    "fresh_until": _iso(row[11]),
                 }
                 for row in quota_rows
-            ] + [
+            ]
+            + [
                 {
                     "endpoint_profile_id": endpoint_id,
                     "bucket_id": None,
@@ -650,7 +781,11 @@ class PostgresProviderUsageAccounting:
                 "WHERE h.endpoint_profile_id=e.endpoint_profile_id "
                 "AND h.endpoint_profile_version=e.endpoint_profile_version "
                 "RETURNING h.endpoint_profile_id",
-                (now - timedelta(days=self.retention_days), now - timedelta(days=self.retention_days), limit),
+                (
+                    now - timedelta(days=self.retention_days),
+                    now - timedelta(days=self.retention_days),
+                    limit,
+                ),
             ).fetchall()
         removed = len(rows) + len(aggregates) + len(windows) + len(health)
         if self.operational_event_purger is not None:
@@ -676,9 +811,19 @@ class PostgresProviderUsageAccounting:
             ).fetchall()
             for row in rows:
                 (
-                    invocation_id, owner_id, application_id, workspace_id, task_id, operation,
-                    provider_id, model_id, endpoint_profile_id, attempt_id, endpoint_profile_version,
-                    parent_attempt_id, started_at,
+                    invocation_id,
+                    owner_id,
+                    application_id,
+                    workspace_id,
+                    task_id,
+                    operation,
+                    provider_id,
+                    model_id,
+                    endpoint_profile_id,
+                    attempt_id,
+                    endpoint_profile_version,
+                    parent_attempt_id,
+                    started_at,
                 ) = row
                 latency = max(0, int((now - started_at).total_seconds() * 1000))
                 connection.execute(
@@ -712,12 +857,26 @@ class PostgresProviderUsageAccounting:
                     (now, invocation_id, invocation_id),
                 )
                 invocation = _aggregate_identity(
-                    owner_id, application_id, workspace_id, task_id, operation,
-                    provider_id, model_id, endpoint_profile_id, endpoint_profile_version,
+                    owner_id,
+                    application_id,
+                    workspace_id,
+                    task_id,
+                    operation,
+                    provider_id,
+                    model_id,
+                    endpoint_profile_id,
+                    endpoint_profile_version,
                 )
                 _aggregate_attempt(
-                    connection, invocation, SimpleNamespace(parent_attempt_id=parent_attempt_id),
-                    "unknown", latency, 0, 0, "unknown", now,
+                    connection,
+                    invocation,
+                    SimpleNamespace(parent_attempt_id=parent_attempt_id),
+                    "unknown",
+                    latency,
+                    0,
+                    0,
+                    "unknown",
+                    now,
                 )
         return len(rows)
 
@@ -784,6 +943,25 @@ class PostgresProviderUsageAccounting:
             )
 
 
+def _lock_endpoint_health(connection, endpoint):
+    # Lock even the bootstrap absence of a row against concurrent settlement.
+    connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+        (f"provider-health:{endpoint.endpoint_profile_id}:{endpoint.profile_version}",),
+    )
+
+
+def _health_unavailable(health, now):
+    if health is None:
+        return False  # Explicit bootstrap: no locally observed failure.
+    status, cooldown = health
+    if status not in {"healthy", "degraded", "cooldown"}:
+        return True
+    if cooldown is not None:
+        return cooldown > now
+    return status != "healthy"
+
+
 def _scope(application_id, workspace_id):
     from personal_ai.auth.scope import ApplicationScope
 
@@ -793,9 +971,11 @@ def _scope(application_id, workspace_id):
 def _insert_invocation(connection, invocation, scope_id, now, retention_until):
     endpoint = invocation.endpoint
     quota_confidence = (
-        "unknown" if endpoint.quota_membership != "verified" or not endpoint.quota_buckets or any(
-            bucket.confidence == "unknown" for bucket in endpoint.quota_buckets
-        ) else "configured"
+        "unknown"
+        if endpoint.quota_membership != "verified"
+        or not endpoint.quota_buckets
+        or any(bucket.confidence == "unknown" for bucket in endpoint.quota_buckets)
+        else "configured"
     )
     connection.execute(
         "INSERT INTO provider_invocations(invocation_id,scope_id,owner_id,application_id,workspace_id,"
@@ -808,19 +988,42 @@ def _insert_invocation(connection, invocation, scope_id, now, retention_until):
         "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
         "%s,%s,%s,%s,%s,%s,%s,%s,%s,'running',%s,%s) ON CONFLICT(invocation_id) DO NOTHING",
         (
-            invocation.invocation_id, scope_id, invocation.owner_id, invocation.application_id,
-            invocation.workspace_id, invocation.task_id, invocation.operation,
-            invocation.request_id, invocation.run_id, endpoint.endpoint_profile_id,
-            endpoint.profile_version, endpoint.provider_id, endpoint.model_id,
-            endpoint.endpoint_id, endpoint.deployment_id, endpoint.credential_source,
-            endpoint.credential_scope_id, endpoint.account_scope_id, endpoint.project_scope_id,
-            endpoint.tier_id, endpoint.execution_mode, endpoint.cost_class, endpoint.billing_owner,
-            endpoint.serializer_id, endpoint.runtime_id, endpoint.quota_membership,
+            invocation.invocation_id,
+            scope_id,
+            invocation.owner_id,
+            invocation.application_id,
+            invocation.workspace_id,
+            invocation.task_id,
+            invocation.operation,
+            invocation.request_id,
+            invocation.run_id,
+            endpoint.endpoint_profile_id,
+            endpoint.profile_version,
+            endpoint.provider_id,
+            endpoint.model_id,
+            endpoint.endpoint_id,
+            endpoint.deployment_id,
+            endpoint.credential_source,
+            endpoint.credential_scope_id,
+            endpoint.account_scope_id,
+            endpoint.project_scope_id,
+            endpoint.tier_id,
+            endpoint.execution_mode,
+            endpoint.cost_class,
+            endpoint.billing_owner,
+            endpoint.serializer_id,
+            endpoint.runtime_id,
+            endpoint.quota_membership,
             invocation.routing_decision_id,
-            invocation.routing_strategy_id, invocation.routing_strategy_version,
-            invocation.registry_version, invocation.policy_version,
-            invocation.input_tokens_estimate, invocation.output_tokens_bound,
-            quota_confidence, now, retention_until,
+            invocation.routing_strategy_id,
+            invocation.routing_strategy_version,
+            invocation.registry_version,
+            invocation.policy_version,
+            invocation.input_tokens_estimate,
+            invocation.output_tokens_bound,
+            quota_confidence,
+            now,
+            retention_until,
         ),
     )
     identity = connection.execute(
@@ -833,50 +1036,93 @@ def _insert_invocation(connection, invocation, scope_id, now, retention_until):
         (invocation.invocation_id,),
     ).fetchone()
     expected = (
-        invocation.owner_id, invocation.application_id, invocation.workspace_id,
-        invocation.task_id, invocation.operation, invocation.request_id, invocation.run_id,
-        endpoint.endpoint_profile_id, endpoint.profile_version, endpoint.provider_id,
-        endpoint.model_id, endpoint.endpoint_id, endpoint.deployment_id,
-        endpoint.credential_source, endpoint.credential_scope_id, endpoint.account_scope_id,
-        endpoint.project_scope_id, endpoint.tier_id, endpoint.execution_mode, endpoint.cost_class,
-        endpoint.billing_owner, endpoint.serializer_id, endpoint.runtime_id,
-        endpoint.quota_membership, invocation.routing_decision_id,
-        invocation.routing_strategy_id, invocation.routing_strategy_version,
-        invocation.registry_version, invocation.policy_version,
+        invocation.owner_id,
+        invocation.application_id,
+        invocation.workspace_id,
+        invocation.task_id,
+        invocation.operation,
+        invocation.request_id,
+        invocation.run_id,
+        endpoint.endpoint_profile_id,
+        endpoint.profile_version,
+        endpoint.provider_id,
+        endpoint.model_id,
+        endpoint.endpoint_id,
+        endpoint.deployment_id,
+        endpoint.credential_source,
+        endpoint.credential_scope_id,
+        endpoint.account_scope_id,
+        endpoint.project_scope_id,
+        endpoint.tier_id,
+        endpoint.execution_mode,
+        endpoint.cost_class,
+        endpoint.billing_owner,
+        endpoint.serializer_id,
+        endpoint.runtime_id,
+        endpoint.quota_membership,
+        invocation.routing_decision_id,
+        invocation.routing_strategy_id,
+        invocation.routing_strategy_version,
+        invocation.registry_version,
+        invocation.policy_version,
     )
     if identity != expected:
         raise ValueError("provider_invocation_identity_conflict")
 
 
-def _insert_attempt(connection, invocation, attempt, reserved_tokens, retention_until,
-                    *, status, error_code, completed_at=None):
+def _insert_attempt(
+    connection,
+    invocation,
+    attempt,
+    reserved_tokens,
+    retention_until,
+    *,
+    status,
+    error_code,
+    completed_at=None,
+):
     connection.execute(
         "INSERT INTO provider_attempts(attempt_id,invocation_id,parent_attempt_id,send_number,status,"
         "error_code,started_at,completed_at,latency_ms,reserved_tokens,retention_until,"
         "operational_event_status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (
-            attempt.attempt_id, invocation.invocation_id, attempt.parent_attempt_id,
-            attempt.send_number, status, _safe_code(error_code), attempt.started_at,
-            completed_at, 0 if completed_at is not None else None, reserved_tokens,
-            retention_until, "published" if status == "rejected" else "pending",
+            attempt.attempt_id,
+            invocation.invocation_id,
+            attempt.parent_attempt_id,
+            attempt.send_number,
+            status,
+            _safe_code(error_code),
+            attempt.started_at,
+            completed_at,
+            0 if completed_at is not None else None,
+            reserved_tokens,
+            retention_until,
+            "published" if status == "rejected" else "pending",
         ),
     )
 
 
 def _applicable_buckets(buckets: tuple[QuotaBucket, ...], operation: str):
-    return tuple(sorted(
-        (bucket for bucket in buckets if operation in bucket.operations),
-        key=lambda bucket: bucket.bucket_id,
-    ))
+    return tuple(
+        sorted(
+            (bucket for bucket in buckets if operation in bucket.operations),
+            key=lambda bucket: bucket.bucket_id,
+        )
+    )
 
 
 def _reservation_amount(bucket: QuotaBucket, values: dict[str, int]) -> int | None:
     unit = bucket.unit
     normalized = unit.strip().lower().replace("/", "_").replace("-", "_")
     aliases = {
-        "request": "requests", "request_count": "requests", "calls": "requests",
-        "call": "requests", "provider_calls": "requests", "token": "tokens",
-        "input_token": "input_tokens", "output_token": "output_tokens",
+        "request": "requests",
+        "request_count": "requests",
+        "calls": "requests",
+        "call": "requests",
+        "provider_calls": "requests",
+        "token": "tokens",
+        "input_token": "input_tokens",
+        "output_token": "output_tokens",
     }
     normalized = aliases.get(normalized, normalized)
     if normalized in values:
@@ -938,7 +1184,9 @@ def _select_quota_window(connection, bucket: QuotaBucket, now: datetime):
     ).fetchone()
     if latest is None:
         return _quota_window(bucket, now)
-    window_start, reset_at, authority, unit, existing_confidence, existing_source, fresh_until = latest
+    window_start, reset_at, authority, unit, existing_confidence, existing_source, fresh_until = (
+        latest
+    )
     if authority != bucket.authority_scope_id or unit != bucket.unit:
         raise ValueError("provider_quota_bucket_identity_conflict")
     if _unknown_daily_bucket(bucket):
@@ -1017,9 +1265,20 @@ def _lock_or_seed_bucket(connection, bucket, window_start, reset_at, confidence,
         "observed_at,fresh_until,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
         "ON CONFLICT(bucket_id,window_start) DO NOTHING",
         (
-            bucket.bucket_id, bucket.authority_scope_id, bucket.unit, window_start,
-            bucket.window_seconds, reset_at, source, confidence, bucket.evidence_reference,
-            bucket.limit, bucket.remaining, observed_at, fresh_until, now,
+            bucket.bucket_id,
+            bucket.authority_scope_id,
+            bucket.unit,
+            window_start,
+            bucket.window_seconds,
+            reset_at,
+            source,
+            confidence,
+            bucket.evidence_reference,
+            bucket.limit,
+            bucket.remaining,
+            observed_at,
+            fresh_until,
+            now,
         ),
     )
     existing = connection.execute(
@@ -1045,10 +1304,27 @@ def _lock_or_seed_bucket(connection, bucket, window_start, reset_at, confidence,
             "limit_units=%s,reported_remaining=%s,observed_at=%s,fresh_until=%s,"
             "reset_at=COALESCE(%s,reset_at),updated_at=%s WHERE bucket_id=%s AND window_start=%s",
             (
-                source, confidence, bucket.evidence_reference, bucket.limit, bucket.remaining,
-                observed_at, fresh_until, reset_at, now, bucket.bucket_id, window_start,
+                source,
+                confidence,
+                bucket.evidence_reference,
+                bucket.limit,
+                bucket.remaining,
+                observed_at,
+                fresh_until,
+                reset_at,
+                now,
+                bucket.bucket_id,
+                window_start,
             ),
         )
+        return
+    if existing[5] == "provider_headers":
+        if bucket.limit is not None:
+            connection.execute(
+                "UPDATE provider_quota_bucket_windows SET limit_units=CASE WHEN limit_units IS NULL "
+                "THEN %s ELSE LEAST(limit_units,%s) END,updated_at=%s WHERE bucket_id=%s AND window_start=%s",
+                (bucket.limit, bucket.limit, now, bucket.bucket_id, window_start),
+            )
         return
     if (
         source in {"operator_attestation", "provider_contract"}
@@ -1121,7 +1397,14 @@ def _actual_unit_usage(unit: str, result: AttemptResult) -> int | None:
 
 
 def _record_header_observation(
-    connection, *, bucket_id, authority_scope, unit, window_start, result, observed_at,
+    connection,
+    *,
+    bucket_id,
+    authority_scope,
+    unit,
+    window_start,
+    result,
+    observed_at,
     freshness_seconds,
 ):
     limits = result.rate_limits
@@ -1132,10 +1415,16 @@ def _record_header_observation(
     is_token = "token" in normalized
     if is_request:
         limit, remaining, reset = (
-            limits.requests_limit, limits.requests_remaining, limits.requests_reset_seconds
+            limits.requests_limit,
+            limits.requests_remaining,
+            limits.requests_reset_seconds,
         )
     elif is_token:
-        limit, remaining, reset = limits.tokens_limit, limits.tokens_remaining, limits.tokens_reset_seconds
+        limit, remaining, reset = (
+            limits.tokens_limit,
+            limits.tokens_remaining,
+            limits.tokens_reset_seconds,
+        )
     else:
         return
     if limit is None and remaining is None:
@@ -1150,8 +1439,17 @@ def _record_header_observation(
         "updated_at=%s WHERE bucket_id=%s AND authority_scope_id=%s AND unit=%s AND window_start=%s "
         "AND (observed_at IS NULL OR observed_at<=%s)",
         (
-            limit, remaining, observed_at,
-            fresh_until, reset_at, remaining, observed_at, bucket_id, authority_scope, unit, window_start,
+            limit,
+            remaining,
+            observed_at,
+            fresh_until,
+            reset_at,
+            remaining,
+            observed_at,
+            bucket_id,
+            authority_scope,
+            unit,
+            window_start,
             observed_at,
         ),
     )
@@ -1159,6 +1457,7 @@ def _record_header_observation(
 
 def _update_endpoint_health(connection, invocation, result, now, *, default_cooldown_seconds):
     endpoint = invocation.endpoint
+    _lock_endpoint_health(connection, endpoint)
     row = connection.execute(
         "SELECT failure_streak,cooldown_until FROM provider_endpoint_health "
         "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s FOR UPDATE",
@@ -1178,16 +1477,28 @@ def _update_endpoint_health(connection, invocation, result, now, *, default_cool
             "health_status=EXCLUDED.health_status,failure_streak=0,cooldown_until=EXCLUDED.cooldown_until,"
             "last_status=EXCLUDED.last_status,last_http_status=EXCLUDED.last_http_status,"
             "last_success_at=EXCLUDED.last_success_at,updated_at=EXCLUDED.updated_at",
-            (endpoint.endpoint_profile_id, endpoint.profile_version, status, cooldown,
-             result.outcome, result.http_status, now, now),
+            (
+                endpoint.endpoint_profile_id,
+                endpoint.profile_version,
+                status,
+                cooldown,
+                result.outcome,
+                result.http_status,
+                now,
+                now,
+            ),
         )
         return
     failures += 1
     if result.outcome == "rate_limited":
         duration = result.rate_limits.retry_after_seconds if result.rate_limits else None
         if duration is None and result.rate_limits:
-            duration = result.rate_limits.requests_reset_seconds or result.rate_limits.tokens_reset_seconds
-        delay = max(1, min(3600, ceil(duration))) if duration is not None else default_cooldown_seconds
+            duration = (
+                result.rate_limits.requests_reset_seconds or result.rate_limits.tokens_reset_seconds
+            )
+        delay = (
+            max(1, min(3600, ceil(duration))) if duration is not None else default_cooldown_seconds
+        )
         status = "cooldown"
     else:
         delay = min(default_cooldown_seconds, 5 * (2 ** min(failures - 1, 5)))
@@ -1204,14 +1515,30 @@ def _update_endpoint_health(connection, invocation, result, now, *, default_cool
         "cooldown_until=EXCLUDED.cooldown_until,last_status=EXCLUDED.last_status,"
         "last_http_status=EXCLUDED.last_http_status,last_failure_at=EXCLUDED.last_failure_at,"
         "updated_at=EXCLUDED.updated_at",
-        (endpoint.endpoint_profile_id, endpoint.profile_version, status, failures, cooldown,
-         result.outcome, result.http_status, now, now),
+        (
+            endpoint.endpoint_profile_id,
+            endpoint.profile_version,
+            status,
+            failures,
+            cooldown,
+            result.outcome,
+            result.http_status,
+            now,
+            now,
+        ),
     )
 
 
 def _aggregate_attempt(
-    connection, invocation, attempt, outcome, latency, input_tokens, output_tokens,
-    usage_confidence, at,
+    connection,
+    invocation,
+    attempt,
+    outcome,
+    latency,
+    input_tokens,
+    output_tokens,
+    usage_confidence,
+    at,
 ):
     endpoint = invocation.endpoint
     success = int(outcome == "success")
@@ -1243,19 +1570,42 @@ def _aggregate_attempt(
         "unknown_usage_attempts=provider_usage_daily_aggregates.unknown_usage_attempts+EXCLUDED.unknown_usage_attempts,"
         "updated_at=EXCLUDED.updated_at",
         (
-            invocation.owner_id, invocation.application_id, invocation.workspace_id, at.date(),
-            endpoint.provider_id, endpoint.model_id, endpoint.endpoint_profile_id,
+            invocation.owner_id,
+            invocation.application_id,
+            invocation.workspace_id,
+            at.date(),
+            endpoint.provider_id,
+            endpoint.model_id,
+            endpoint.endpoint_profile_id,
             endpoint.profile_version,
-            invocation.task_id, invocation.operation, success, rate_limited, server_error,
-            failure, int(attempt.parent_attempt_id is not None), max(0, int(latency)),
-            max(0, int(input_tokens)), max(0, int(output_tokens)), exact, derived, unknown, at,
+            invocation.task_id,
+            invocation.operation,
+            success,
+            rate_limited,
+            server_error,
+            failure,
+            int(attempt.parent_attempt_id is not None),
+            max(0, int(latency)),
+            max(0, int(input_tokens)),
+            max(0, int(output_tokens)),
+            exact,
+            derived,
+            unknown,
+            at,
         ),
     )
 
 
 def _aggregate_identity(
-    owner_id, application_id, workspace_id, task_id, operation,
-    provider_id, model_id, endpoint_profile_id, endpoint_profile_version,
+    owner_id,
+    application_id,
+    workspace_id,
+    task_id,
+    operation,
+    provider_id,
+    model_id,
+    endpoint_profile_id,
+    endpoint_profile_version,
 ):
     return SimpleNamespace(
         owner_id=owner_id,
@@ -1337,16 +1687,53 @@ def _operational_event(invocation, attempt, result):
 
 def _event_from_row(row):
     keys = (
-        "invocation_id", "owner_id", "application_id", "workspace_id", "task_id", "operation",
-        "request_id", "run_id", "endpoint_profile_id", "endpoint_profile_version", "provider_id",
-        "model_id", "endpoint_id", "deployment_id", "credential_source", "credential_scope_id",
-        "account_scope_id", "project_scope_id", "tier_id", "execution_mode", "cost_class",
-        "billing_owner", "serializer_id", "runtime_id", "quota_membership", "routing_decision_id",
-        "routing_strategy_id", "routing_strategy_version", "registry_version", "policy_version",
-        "attempt_id", "parent_attempt_id",
-        "send_number", "status", "error_code", "http_status", "started_at", "completed_at",
-        "latency_ms", "input_tokens", "output_tokens", "total_tokens", "usage_source",
-        "usage_confidence", "unit_usage", "unit_usage_source", "unit_usage_confidence",
+        "invocation_id",
+        "owner_id",
+        "application_id",
+        "workspace_id",
+        "task_id",
+        "operation",
+        "request_id",
+        "run_id",
+        "endpoint_profile_id",
+        "endpoint_profile_version",
+        "provider_id",
+        "model_id",
+        "endpoint_id",
+        "deployment_id",
+        "credential_source",
+        "credential_scope_id",
+        "account_scope_id",
+        "project_scope_id",
+        "tier_id",
+        "execution_mode",
+        "cost_class",
+        "billing_owner",
+        "serializer_id",
+        "runtime_id",
+        "quota_membership",
+        "routing_decision_id",
+        "routing_strategy_id",
+        "routing_strategy_version",
+        "registry_version",
+        "policy_version",
+        "attempt_id",
+        "parent_attempt_id",
+        "send_number",
+        "status",
+        "error_code",
+        "http_status",
+        "started_at",
+        "completed_at",
+        "latency_ms",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "usage_source",
+        "usage_confidence",
+        "unit_usage",
+        "unit_usage_source",
+        "unit_usage_confidence",
         "rate_limits",
     )
     values = dict(zip(keys, row, strict=True))
@@ -1359,18 +1746,58 @@ def _event_from_row(row):
     return {
         "schema_version": "provider-usage-event-v1",
         "event_id": values["attempt_id"],
-        **{key: values[key] for key in (
-            "invocation_id", "attempt_id", "parent_attempt_id", "send_number", "owner_id",
-            "application_id", "workspace_id", "task_id", "operation", "request_id", "run_id",
-            "endpoint_profile_id", "endpoint_profile_version", "provider_id", "model_id",
-            "endpoint_id", "deployment_id", "credential_source", "credential_scope_id",
-            "account_scope_id", "project_scope_id", "tier_id", "execution_mode", "cost_class",
-            "billing_owner", "serializer_id", "runtime_id", "quota_membership", "routing_decision_id",
-            "routing_strategy_id", "routing_strategy_version", "registry_version", "policy_version",
-            "status", "error_code", "http_status", "started_at", "completed_at",
-            "latency_ms", "input_tokens", "output_tokens", "total_tokens", "usage_source",
-            "usage_confidence", "unit_usage", "unit_usage_source", "unit_usage_confidence",
-        )},
+        **{
+            key: values[key]
+            for key in (
+                "invocation_id",
+                "attempt_id",
+                "parent_attempt_id",
+                "send_number",
+                "owner_id",
+                "application_id",
+                "workspace_id",
+                "task_id",
+                "operation",
+                "request_id",
+                "run_id",
+                "endpoint_profile_id",
+                "endpoint_profile_version",
+                "provider_id",
+                "model_id",
+                "endpoint_id",
+                "deployment_id",
+                "credential_source",
+                "credential_scope_id",
+                "account_scope_id",
+                "project_scope_id",
+                "tier_id",
+                "execution_mode",
+                "cost_class",
+                "billing_owner",
+                "serializer_id",
+                "runtime_id",
+                "quota_membership",
+                "routing_decision_id",
+                "routing_strategy_id",
+                "routing_strategy_version",
+                "registry_version",
+                "policy_version",
+                "status",
+                "error_code",
+                "http_status",
+                "started_at",
+                "completed_at",
+                "latency_ms",
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "usage_source",
+                "usage_confidence",
+                "unit_usage",
+                "unit_usage_source",
+                "unit_usage_confidence",
+            )
+        },
         "rate_limits": values["rate_limits"] or {},
     }
 

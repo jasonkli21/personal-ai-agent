@@ -1,979 +1,664 @@
-"""Hard admission, deterministic strategy selection, and plan finalization."""
+"""Routing coordination: admission, selection, durable decision and dispatch authority."""
 
-from __future__ import annotations
-
-import hashlib
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, uuid5
 
-from personal_ai.auth.scope import ApplicationScope
-from personal_ai.routing.contracts import (
-    CandidateAssessment,
-    EndpointCandidateSet,
-    EndpointOperation,
-    confidence_meets,
-)
+from personal_ai.persistence.postgres_routing_observations import database_time
+from personal_ai.routing.contracts import confidence_meets
 from personal_ai.routing.phase21 import (
-    CandidateDecision,
-    DispatchRevalidation,
-    ExecutionPlan,
-    OverflowCandidateRef,
+    AuthorizationEvidence,
+    CandidateFact,
+    DispatchPermit,
     PreparationIdentity,
     QualityEvidence,
-    QuotaReservationRef,
-    RoutingDecisionEvent,
-    RoutingDecisionObservation,
+    RoutingDecision,
+    RoutingEvent,
     RoutingRequestFacts,
     RoutingSignals,
-    RoutingStrategyCandidate,
-    RoutingStrategyInput,
-    RoutingStrategyResult,
     RoutingTaskProfile,
-    RuntimeCandidateFacts,
+    StrategyView,
     reselection_requirements_preserved,
-    source_references_are_subset,
+    sources_allowed,
 )
-from personal_ai.routing.registry import EndpointRegistry, EndpointRegistryError
-from personal_ai.routing.strategy import DeterministicScoringStrategy, RoutingStrategy
+from personal_ai.routing.strategy import DeterministicScoringStrategy
+from personal_ai.usage.accounting import unit_reservations
+from personal_ai.usage.contracts import AttemptMetadata, InvocationMetadata, UsageAdmissionDenied
+from personal_ai.usage.profiles import from_profile
 
 
-class RoutingDecisionRepository(Protocol):
-    """Structural protocol for the required fail-closed durable decision writer."""
+class RoutingAuthorizationAuthority(Protocol):
+    """Trusted current endpoint access, credential, policy and source authority.
 
-    def begin(self, *, owner_id, scope, observation, initial_event) -> None: ...
+    Implementations deny by raising, read current authoritative state and never
+    authorize from decision-time evidence. No default permissive implementation.
+    """
 
-    def append_event(self, *, owner_id, scope, decision_id, event): ...
-
-    def get(self, *, owner_id, scope, decision_id): ...
-
-    def begin_reselection(
-        self, *, owner_id, scope, observation, initial_event, parent_decision_id,
-        max_reselections
-    ) -> None: ...
-
-    def consume_auxiliary_call(
-        self, *, owner_id, scope, decision_id, max_auxiliary_calls, event
-    ) -> int: ...
-
-
-class Phase19ReservationAuthority(Protocol):
-    """Read-only verifier for a currently reserved Phase 19 physical attempt."""
-
-    def verify_routing_reservation(
-        self, *, reservation: QuotaReservationRef, owner_id: str, scope: ApplicationScope,
-        request_id: str, run_id: str | None, routing_decision_id: UUID,
-        endpoint_profile_id: str, endpoint_profile_version: int, operation: EndpointOperation,
-        expected_bucket_ids: frozenset[str], max_physical_attempts: int, now: datetime,
-    ) -> bool: ...
+    def authorize(
+        self,
+        *,
+        connection,
+        owner_id,
+        scope,
+        endpoint,
+        requirements,
+        policy_version,
+        source_references,
+        now,
+    ) -> AuthorizationEvidence: ...
 
 
 class RoutingFinalizationError(RuntimeError):
-    """Preparation, policy, profile, or reservation did not authorize a final plan."""
-
-    def __init__(self, code: str) -> None:
+    def __init__(self, code):
         self.code = code
         super().__init__(code)
 
 
-class RoutingDecisionResult:
-    """Result of a persisted provisional decision; a plan is not a provider call."""
-
-    __slots__ = ("observation", "plan")
-
-    def __init__(self, observation: RoutingDecisionObservation, plan: ExecutionPlan | None):
-        self.observation = observation
-        self.plan = plan
-
-
 class RoutingDecisionService:
-    """Select only from deterministic hard-eligible endpoint facts.
-
-    This service has no inference client and makes no external provider calls.
-    Callers must persist the decision before doing endpoint-specific preparation.
-    """
-
-    def __init__(
-        self,
-        registry: EndpointRegistry,
-        observations: RoutingDecisionRepository,
-        strategy: RoutingStrategy | None = None,
-        reservation_authority: Phase19ReservationAuthority | None = None,
-    ) -> None:
+    def __init__(self, registry, observations, strategy=None, *, usage=None, authorization=None):
         self.registry = registry
         self.observations = observations
         self.strategy = strategy or DeterministicScoringStrategy()
-        self.reservation_authority = reservation_authority
+        self.usage = usage
+        self.authorization = authorization
+
+    def _authorize(self, c, owner_id, scope, endpoint, request, sources, now):
+        if self.authorization is None:
+            raise RoutingFinalizationError("routing_authorization_authority_unavailable")
+        try:
+            evidence = self.authorization.authorize(
+                connection=c,
+                owner_id=owner_id,
+                scope=scope,
+                endpoint=endpoint,
+                requirements=request.requirements,
+                policy_version=request.policy_version,
+                source_references=sources,
+                now=now,
+            )
+            evidence = AuthorizationEvidence.model_validate(evidence.model_dump())
+        except Exception as error:
+            raise RoutingFinalizationError("routing_authorization_unavailable") from error
+        checked = database_time(c)
+        if (
+            evidence.checked_at > checked
+            or evidence.checked_at < now
+            or evidence.valid_until <= checked
+        ):
+            raise RoutingFinalizationError("routing_authorization_evidence_stale")
+        return evidence
 
     def route(
         self,
         *,
-        owner_id: str,
-        scope: ApplicationScope,
+        owner_id,
+        scope,
         task: RoutingTaskProfile,
         request: RoutingRequestFacts,
-        runtime_facts: Sequence[RuntimeCandidateFacts],
         quality_evidence: Sequence[QualityEvidence] = (),
         routing_signals: Sequence[RoutingSignals] = (),
-        parent_decision_id: UUID | None = None,
-        dependency_expires_at: datetime | None = None,
-        now: datetime | None = None,
-    ) -> RoutingDecisionResult:
-        instant = _aware_utc(now or datetime.now(UTC))
-        decision_id = _root_decision_id(owner_id, scope, request.request_id, request.run_id)
-        if request.requirements.execution_mode != "STRICT_FREE" or not request.requirements.automatic:
+        parent_decision_id=None,
+        dependency_expires_at=None,
+    ):
+        task = RoutingTaskProfile.model_validate(task.model_dump())
+        request = RoutingRequestFacts.model_validate(request.model_dump())
+        if (
+            request.requirements.execution_mode != "STRICT_FREE"
+            or not request.requirements.automatic
+        ):
             raise ValueError("automatic_router_requires_strict_free")
         if not task.required_capabilities.issubset(request.requirements.required_capabilities):
             raise ValueError("routing_task_capability_requirement_mismatch")
-        if request.source_manifest_sha256 is None and (
-            request.source_count not in {None, 0} or request.source_reference_sha256s
-        ):
-            raise ValueError("routing_source_manifest_required")
-
-        parent_observation = None
-        root_decision_id = decision_id
-        reselection_depth = 0
-        root_deadline_at = instant + timedelta(milliseconds=task.deadline_ms)
-        if parent_decision_id is not None:
-            if task.max_reselections < 1:
-                raise ValueError("routing_reselection_not_permitted")
-            parent_record = self.observations.get(
-                owner_id=owner_id,
-                scope=scope,
-                decision_id=parent_decision_id,
-            )
-            parent_observation = getattr(parent_record, "observation", parent_record)
-            parent_events = getattr(parent_record, "events", ())
-            if parent_events and parent_events[-1].event_type == "reselection_linked":
-                linked_id = parent_events[-1].linked_decision_id
-                if linked_id is not None:
-                    try:
-                        linked_record = self.observations.get(
-                            owner_id=owner_id, scope=scope, decision_id=linked_id
-                        )
-                    except LookupError:
-                        linked_record = None
-                    if linked_record is not None:
-                        linked_observation = getattr(linked_record, "observation", linked_record)
-                        if (
-                            linked_observation.task == task
-                            and linked_observation.request.request_id == request.request_id
-                            and linked_observation.request.run_id == request.run_id
-                            and linked_observation.policy_version == request.policy_version
-                            and reselection_requirements_preserved(
-                                parent_observation.request.requirements,
-                                request.requirements,
-                            )
-                            and source_references_are_subset(
-                                request.source_reference_sha256s,
-                                parent_observation.request.source_reference_sha256s,
-                            )
-                            and linked_observation.request == request.model_copy(update={
-                                "excluded_endpoint_profile_ids": tuple(sorted(
-                                    set(request.excluded_endpoint_profile_ids)
-                                    | set(parent_observation.request.excluded_endpoint_profile_ids)
-                                    | {parent_observation.provisional_plan.selected_endpoint_profile_id}
-                                )),
-                            })
-                        ):
-                            return RoutingDecisionResult(
-                                linked_observation,
-                                linked_observation.provisional_plan,
-                            )
-            if (
-                parent_observation.owner_id != owner_id
-                or parent_observation.application_id != scope.application_id
-                or parent_observation.workspace_id != scope.workspace_id
-                or parent_observation.routing_decision_id != parent_decision_id
-                or parent_observation.lifecycle_status != "preparing"
-                or parent_observation.provisional_plan is None
-                or parent_observation.task != task
-                or parent_observation.request.request_id != request.request_id
-                or parent_observation.request.run_id != request.run_id
-                or parent_observation.policy_version != request.policy_version
-                or not reselection_requirements_preserved(
-                    parent_observation.request.requirements, request.requirements
+        decision_id = uuid5(
+            NAMESPACE_URL,
+            json.dumps(
+                [
+                    "phase21-root-v1",
+                    owner_id,
+                    scope.application_id,
+                    scope.workspace_id,
+                    request.request_id,
+                    request.run_id,
+                ],
+                separators=(",", ":"),
+            ),
+        )
+        with self.observations.transaction(owner_id=owner_id) as c:
+            now = database_time(c)
+            root_id = decision_id
+            depth = 0
+            deadline = now + timedelta(milliseconds=task.deadline_ms)
+            replay_until = now + timedelta(seconds=task.replay_retention_seconds)
+            if parent_decision_id:
+                parent = self.observations.lock_root(
+                    c, owner_id=owner_id, scope=scope, decision_id=parent_decision_id
                 )
-                or not _source_narrowing_is_allowed(
-                    task,
-                    request.source_reference_sha256s,
-                    parent_observation.request.source_reference_sha256s,
+                p = parent.decision
+                if (
+                    p.selected is None
+                    or p.task != task
+                    or p.request.request_id != request.request_id
+                    or p.request.run_id != request.run_id
+                    or p.request.policy_version != request.policy_version
+                    or not reselection_requirements_preserved(
+                        p.request.requirements, request.requirements
+                    )
+                    or not sources_allowed(p, request.source_reference_sha256s)
+                ):
+                    raise ValueError("routing_reselection_parent_not_retryable")
+                depth = p.reselection_depth + 1
+                decision_id = uuid5(parent_decision_id, f"phase21-reselection-v1:{depth}")
+                root_id, deadline = p.root_decision_id, p.root_deadline_at
+                replay_until = min(replay_until, p.replay_until)
+                request = RoutingRequestFacts.model_validate(
+                    {
+                        **request.model_dump(),
+                        "excluded_endpoint_profile_ids": tuple(
+                            sorted(
+                                set(request.excluded_endpoint_profile_ids)
+                                | set(p.request.excluded_endpoint_profile_ids)
+                                | {p.selected.endpoint_profile_id}
+                            )
+                        ),
+                    }
                 )
-                or not parent_events
-                or parent_events[-1].event_type not in {
-                    "preparation_failed", "reservation_failed", "dispatch_failed"
-                }
-            ):
-                raise ValueError("routing_reselection_parent_not_retryable")
-            reselection_depth = parent_observation.reselection_depth + 1
-            if reselection_depth > task.max_reselections:
-                raise ValueError("routing_reselection_budget_exceeded")
-            root_decision_id = parent_observation.root_decision_id
-            root_deadline_at = parent_observation.root_deadline_at
-            excluded_ids = set(request.excluded_endpoint_profile_ids)
-            excluded_ids.update(parent_observation.request.excluded_endpoint_profile_ids)
-            excluded_ids.add(parent_observation.provisional_plan.selected_endpoint_profile_id)
-            request = RoutingRequestFacts.model_validate({
-                **request.model_dump(mode="python"),
-                "excluded_endpoint_profile_ids": tuple(sorted(excluded_ids)),
-            })
-            decision_id = _reselection_decision_id(parent_decision_id, reselection_depth)
-        else:
-            # A lost write acknowledgement can be retried with the same logical request.
             try:
-                existing = self.observations.get(
-                    owner_id=owner_id, scope=scope, decision_id=decision_id
+                existing = self.observations.get_in_transaction(
+                    c, owner_id=owner_id, scope=scope, decision_id=decision_id, lock=True
                 )
             except LookupError:
                 existing = None
-            if existing is not None:
-                existing_observation = getattr(existing, "observation", existing)
-                if existing_observation.task != task or existing_observation.request != request:
+            if existing:
+                if existing.decision.task != task or existing.decision.request != request:
                     raise ValueError("routing_decision_idempotency_conflict")
-                return RoutingDecisionResult(
-                    existing_observation, existing_observation.provisional_plan
-                )
-
-        static = self.registry.candidates(request.requirements, now=instant)
-        runtime_by_id = _unique_by_id(runtime_facts, lambda row: row.endpoint_profile_id)
-        quality_by_id = _unique_by_id(quality_evidence, lambda row: row.endpoint_profile_id)
-        signals_by_id = _unique_by_id(routing_signals, lambda row: row.endpoint_profile_id)
-        decisions: list[CandidateDecision] = []
-        strategy_candidates: list[RoutingStrategyCandidate] = []
-
-        for assessment in static.assessments:
-            profile = assessment.profile
-            runtime = runtime_by_id.get(profile.endpoint_profile_id)
-            quality = quality_by_id.get(profile.endpoint_profile_id)
-            signals = signals_by_id.get(profile.endpoint_profile_id)
-            reasons = list(assessment.rejection_reasons)
-            reasons.extend(_runtime_rejections(profile, runtime, instant))
-            if profile.endpoint_profile_id in request.excluded_endpoint_profile_ids:
-                reasons.append("endpoint-excluded-after-reselection")
-            quality_reasons, quality_is_current = _quality_rejections(
-                task, profile, quality, instant
-            )
-            reasons.extend(quality_reasons)
-            eligible = not reasons
-            decision = CandidateDecision(
-                profile=profile,
-                eligible=eligible,
-                rejection_reasons=tuple(dict.fromkeys(reasons)),
-                runtime_facts=runtime,
-                quality_evidence=quality,
-                routing_signals=signals,
-                configured_priority=task.priority_for(profile.endpoint_profile_id),
-            )
-            decisions.append(decision)
-            if not eligible:
-                continue
-            usable_signal = _current_signal(signals, profile, instant)
-            quality_score = (
-                quality.score
-                if quality_is_current and quality is not None and task.preferences.quality_weight
-                else None
-            )
-            strategy_candidates.append(RoutingStrategyCandidate(
-                profile=profile,
-                configured_priority=decision.configured_priority,
-                quality_score=quality_score,
-                latency_ms=(
-                    usable_signal.latency_ms
-                    if usable_signal is not None
-                    and task.preferences.latency_penalty_per_second
-                    else None
-                ),
-                reliability=(
-                    usable_signal.reliability
-                    if usable_signal is not None and task.preferences.reliability_weight
-                    else None
-                ),
-                quality_evidence_reference=(
-                    quality.evidence_reference if quality_score is not None and quality else None
-                ),
-                signal_evidence_reference=(
-                    usable_signal.evidence_reference if usable_signal is not None else None
-                ),
-            ))
-
-        eligible_ids = {row.profile.endpoint_profile_id for row in strategy_candidates}
-        strategy_task = RoutingTaskProfile.model_validate({
-            **task.model_dump(mode="python"),
-            "endpoint_priorities": tuple(
-                row for row in task.endpoint_priorities
-                if row.endpoint_profile_id in eligible_ids
-            ),
-        })
-        strategy_input = RoutingStrategyInput(
-            task=strategy_task,
-            requirements=request.requirements,
-            policy_version=request.policy_version,
-            registry_version=static.registry_version,
-            candidates=tuple(strategy_candidates),
-        )
-        strategy_identity = self.strategy.identity(strategy_input)
-        strategy_result: RoutingStrategyResult | None = None
-        no_route_reason: str | None = None
-        plan: ExecutionPlan | None = None
-        if not strategy_candidates:
-            no_route_reason = "no-eligible-endpoint"
-        else:
-            try:
-                strategy_result = self.strategy.select(strategy_input)
-                _validate_strategy_result(strategy_result, strategy_input, strategy_identity)
-                selected = next(
-                    row.profile for row in strategy_candidates
-                    if row.profile.endpoint_profile_id == strategy_result.selected_endpoint_profile_id
-                )
-                alternative_refs = tuple(
-                    (row.profile.endpoint_profile_id, row.profile.profile_version)
-                    for row in sorted(
-                        strategy_candidates,
-                        key=lambda item: item.profile.endpoint_profile_id,
-                    )
-                    if row.profile.endpoint_profile_id != selected.endpoint_profile_id
-                )
-                plan = ExecutionPlan(
-                    routing_decision_id=decision_id,
-                    parent_decision_id=parent_decision_id,
-                    reselection_depth=reselection_depth,
-                    task_id=task.task_id,
-                    task_profile_id=task.profile_id,
-                    task_profile_version=task.profile_version,
-                    selected_endpoint_profile_id=selected.endpoint_profile_id,
-                    selected_profile_version=selected.profile_version,
-                    reselection_candidate_refs=alternative_refs,
-                    execution_mode=request.requirements.execution_mode,
-                    required_capabilities=request.requirements.required_capabilities,
-                    root_deadline_at=root_deadline_at,
-                    validator_id=task.validator_id,
-                    validator_version=task.validator_version,
-                    escalation_allowed=task.escalation_allowed,
-                    cascade_allowed=task.cascade_allowed,
-                    max_physical_attempts=task.max_physical_attempts,
-                    max_reselections=task.max_reselections,
-                    max_auxiliary_calls=task.max_auxiliary_calls,
-                    deadline_ms=task.deadline_ms,
-                    input_tokens_bound=request.requirements.input_tokens or 0,
-                    output_tokens_bound=request.requirements.output_tokens or 0,
-                    registry_version=static.registry_version,
-                    policy_version=request.policy_version,
-                    strategy_id=strategy_identity.strategy_id,
-                    strategy_version=strategy_identity.strategy_version,
-                    strategy_reason_code=strategy_result.reason_code,
-                )
-            except Exception:  # noqa: BLE001 - persist a fail-closed no-route for strategy failures.
-                no_route_reason = "routing-strategy-contract-invalid"
-                strategy_result = None
-                plan = None
-
-        if instant >= root_deadline_at:
-            no_route_reason = "routing-deadline-expired"
-            strategy_result = None
-            plan = None
-
-        replay_until = instant + timedelta(seconds=task.replay_retention_seconds)
-        if parent_observation is not None:
-            replay_until = min(replay_until, parent_observation.replay_until)
-        if dependency_expires_at is not None:
-            dependency_expiry = _aware_utc(dependency_expires_at)
-            if dependency_expiry <= instant:
-                replay_until = min(replay_until, instant + timedelta(seconds=1))
-                no_route_reason = no_route_reason or "routing-dependency-expired"
-                plan = None
-            else:
-                replay_until = min(replay_until, dependency_expiry)
-        if replay_until <= instant:
-            raise ValueError("routing_replay_horizon_invalid")
-        lifecycle_status = "preparing" if plan is not None else "no_route"
-        observation_values = {
-            "routing_decision_id": decision_id,
-            "parent_decision_id": parent_decision_id,
-            "root_decision_id": root_decision_id,
-            "reselection_depth": reselection_depth,
-            "owner_id": owner_id,
-            "application_id": scope.application_id,
-            "workspace_id": scope.workspace_id,
-            "created_at": instant,
-            "root_deadline_at": root_deadline_at,
-            "replay_until": replay_until,
-            "request": request,
-            "task": task,
-            "registry_version": static.registry_version,
-            "policy_version": request.policy_version,
-            "strategy_identity": strategy_identity,
-            "lifecycle_status": lifecycle_status,
-            "candidates": tuple(decisions),
-            "strategy_input": strategy_input,
-            "strategy_result": strategy_result,
-            "provisional_plan": plan,
-            "no_route_reason": no_route_reason,
-        }
-        observation_probe = RoutingDecisionObservation.model_construct(**observation_values)
-        if len(observation_probe.model_dump_json().encode("utf-8")) > 65_536:
-            overflow_candidates = tuple(
-                OverflowCandidateRef(
-                    endpoint_profile_id=row.profile.endpoint_profile_id,
-                    profile_version=row.profile.profile_version,
-                    profile_facts_sha256=hashlib.sha256(
-                        row.profile.model_dump_json().encode("utf-8")
-                    ).hexdigest(),
-                )
-                for row in decisions
-            )
-            observation_values.update({
-                "lifecycle_status": "no_route",
-                "replay_completeness": "incomplete",
-                "incomplete_reason": "decision-facts-over-64-kib",
-                "candidates": (),
-                "overflow_candidates": overflow_candidates,
-                "strategy_input": None,
-                "strategy_result": None,
-                "provisional_plan": None,
-                "no_route_reason": "routing-observation-overflow",
-            })
-            plan = None
-        observation = RoutingDecisionObservation.model_validate(observation_values)
-        initial_event = RoutingDecisionEvent(
-            event_type="decision_preparing" if plan is not None else "decision_no_route",
-            event_id=uuid5(decision_id, "phase21-initial-event-v1"),
-            occurred_at=instant,
-            reason_code=no_route_reason,
-            endpoint_profile_id=plan.selected_endpoint_profile_id if plan else None,
-            outcome_code="provisional-selection" if plan is not None else no_route_reason,
-        )
-        # A failed observation write aborts before endpoint-specific remote work.
-        if parent_decision_id is None:
-            try:
-                self.observations.begin(
-                    owner_id=owner_id,
-                    scope=scope,
-                    observation=observation,
-                    initial_event=initial_event,
-                )
-            except Exception:
-                existing = self._existing_decision(owner_id, scope, decision_id)
-                if existing is None or not _same_logical_decision(
-                    existing.observation, observation
-                ):
-                    raise
-                return existing
-        else:
-            try:
-                self.observations.begin_reselection(
-                    owner_id=owner_id,
-                    scope=scope,
-                    observation=observation,
-                    initial_event=initial_event,
-                    parent_decision_id=parent_decision_id,
-                    max_reselections=task.max_reselections,
-                )
-            except Exception:
-                existing = self._existing_decision(owner_id, scope, decision_id)
-                if existing is None or not _same_logical_decision(
-                    existing.observation, observation
-                ):
-                    raise
-                return existing
-        return RoutingDecisionResult(observation, plan)
-
-    def _existing_decision(
-        self, owner_id: str, scope: ApplicationScope, decision_id: UUID
-    ) -> RoutingDecisionResult | None:
-        try:
-            record = self.observations.get(
-                owner_id=owner_id, scope=scope, decision_id=decision_id
-            )
-        except LookupError:
-            return None
-        observation = getattr(record, "observation", record)
-        return RoutingDecisionResult(observation, observation.provisional_plan)
-
-    def finalize(
-        self,
-        *,
-        owner_id: str,
-        scope: ApplicationScope,
-        observation: RoutingDecisionObservation,
-        preparation: PreparationIdentity,
-        reservation: QuotaReservationRef,
-        revalidation: DispatchRevalidation,
-        operation: EndpointOperation,
-        now: datetime | None = None,
-    ) -> ExecutionPlan:
-        """Create a ready plan only after revalidation and durable reservation proof."""
-        instant = _aware_utc(now or datetime.now(UTC))
-        try:
-            canonical_record = self.observations.get(
-                owner_id=owner_id,
-                scope=scope,
-                decision_id=observation.routing_decision_id,
-            )
-        except LookupError as error:
-            raise RoutingFinalizationError("routing_decision_unavailable") from error
-        canonical_observation = getattr(canonical_record, "observation", canonical_record)
-        if (
-            canonical_observation.owner_id != owner_id
-            or canonical_observation.application_id != scope.application_id
-            or canonical_observation.workspace_id != scope.workspace_id
-        ):
-            raise RoutingFinalizationError("routing_decision_scope_mismatch")
-        if canonical_observation.facts_sha256 != observation.facts_sha256:
-            raise RoutingFinalizationError("routing_decision_facts_changed")
-        observation = canonical_observation
-        plan = observation.provisional_plan
-        if plan is None or observation.lifecycle_status != "preparing":
-            raise RoutingFinalizationError("routing_decision_has_no_plan")
-        events = getattr(canonical_record, "events", ())
-        if not events:
-            raise RoutingFinalizationError("routing_decision_lifecycle_missing")
-        latest_event = events[-1]
-        if latest_event.event_type not in {
-            "decision_preparing", "preparation_completed", "auxiliary_call_reserved",
-            "dispatch_failed", "reservation_succeeded",
-        }:
-            raise RoutingFinalizationError("routing_decision_lifecycle_not_finalizable")
-        if latest_event.event_type == "reservation_succeeded" and (
-            latest_event.attempt_id != reservation.attempt_id
-            or latest_event.invocation_id != reservation.invocation_id
-        ):
-            raise RoutingFinalizationError("routing_decision_reservation_already_finalized")
-        if instant >= observation.root_deadline_at:
-            self._record_failure(owner_id, scope, observation, "routing-deadline-expired", instant, revalidation)
-            raise RoutingFinalizationError("routing_deadline_expired")
-        if (
-            preparation.prepared_at < observation.created_at
-            or preparation.prepared_at > instant
-            or revalidation.validated_at < preparation.prepared_at
-            or revalidation.validated_at > instant
-            or revalidation.fresh_until <= instant
-        ):
-            self._record_failure(owner_id, scope, observation, "routing-dispatch-revalidation-stale", instant, revalidation)
-            raise RoutingFinalizationError("routing_dispatch_revalidation_order_invalid")
-        if revalidation.policy_version != observation.policy_version:
-            self._record_failure(owner_id, scope, observation, "routing-policy-changed", instant, revalidation)
-            raise RoutingFinalizationError("routing_policy_changed")
-        if not revalidation.authorization_current or not revalidation.credential_usable:
-            self._record_failure(owner_id, scope, observation, "routing-authorization-or-credential-changed", instant, revalidation)
-            raise RoutingFinalizationError("routing_authorization_or_credential_changed")
-        if revalidation.health_status != "healthy" or not revalidation.quota_not_exhausted:
-            self._record_failure(owner_id, scope, observation, "routing-endpoint-health-or-quota-changed", instant, revalidation)
-            raise RoutingFinalizationError("routing_endpoint_health_or_quota_changed")
-        if not revalidation.sources_authorized:
-            self._record_failure(owner_id, scope, observation, "routing-source-permission-revoked", instant, revalidation)
-            raise RoutingFinalizationError("routing_source_permission_revoked")
-        if (
-            revalidation.endpoint_profile_id != plan.selected_endpoint_profile_id
-            or revalidation.endpoint_profile_version != plan.selected_profile_version
-        ):
-            self._record_failure(owner_id, scope, observation, "routing-endpoint-profile-stale", instant, revalidation)
-            raise RoutingFinalizationError("routing_endpoint_profile_stale")
-        source_refs_match = (
-            preparation.source_reference_sha256s == revalidation.source_reference_sha256s
-            and preparation.source_manifest_sha256 == revalidation.source_manifest_sha256
-        )
-        source_refs_subset = source_references_are_subset(
-            preparation.source_reference_sha256s,
-            observation.request.source_reference_sha256s,
-        )
-        source_identity_matches = (
-            preparation.source_reference_sha256s
-            == observation.request.source_reference_sha256s
-            and preparation.source_manifest_sha256 == observation.request.source_manifest_sha256
-        )
-        allowed_narrowing = (
-            observation.task.allow_source_narrowing and source_refs_subset
-        )
-        if not source_refs_match or not (source_identity_matches or allowed_narrowing):
-            self._record_failure(owner_id, scope, observation, "routing-source-set-changed", instant, revalidation)
-            raise RoutingFinalizationError("routing_source_set_changed")
-
-        try:
-            current = self.registry.revalidate(
-                EndpointCandidateSet(
-                    registry_version=observation.registry_version,
-                    execution_mode=observation.request.requirements.execution_mode,
-                    requirements=observation.request.requirements,
-                    assessments=tuple(
-                        CandidateAssessment(
-                            profile=row.profile,
-                            eligible=row.eligible,
-                            rejection_reasons=row.rejection_reasons,
+                return existing.decision
+            static = self.registry.candidates(request.requirements, now=now)
+            quality = _by_id(quality_evidence, QualityEvidence)
+            signals = _by_id(routing_signals, RoutingSignals)
+            candidates = []
+            for assessment in static.assessments:
+                profile = assessment.profile
+                reasons = list(assessment.rejection_reasons)
+                references = []
+                until = None
+                if profile.endpoint_profile_id in request.excluded_endpoint_profile_ids:
+                    reasons.append("endpoint-excluded-after-reselection")
+                if not reasons:
+                    try:
+                        auth = self._authorize(
+                            c,
+                            owner_id,
+                            scope,
+                            profile.ref,
+                            request,
+                            request.source_reference_sha256s,
+                            database_time(c),
                         )
-                        for row in observation.candidates
+                        references.append(auth.reference)
+                    except Exception:  # noqa: BLE001 - missing authority/invalid strategy fails closed
+                        reasons.append("endpoint_authorization_unavailable")
+                    if self.usage is None:
+                        reasons.append("routing_runtime_authority_unavailable")
+                    else:
+                        try:
+                            reasons.extend(
+                                self.usage.runtime_rejections(
+                                    c, profile, request.requirements, now=database_time(c)
+                                )
+                            )
+                        except Exception:  # noqa: BLE001 - missing authority/invalid strategy fails closed
+                            reasons.append("routing_runtime_authority_unavailable")
+                q = quality.get(profile.endpoint_profile_id)
+                q_current = _quality_current(task, profile, q, now)
+                if task.quality.mode == "measured_floor":
+                    if not q_current:
+                        reasons.append("required_quality_evidence_stale_or_missing")
+                    elif (
+                        q.score < task.quality.minimum_score
+                        or q.coverage < task.quality.minimum_coverage
+                    ):
+                        reasons.append("required_quality_floor_not_met")
+                    else:
+                        references.append(q.evidence_reference)
+                        until = min(
+                            q.fresh_until,
+                            q.measured_at + timedelta(seconds=task.quality.max_age_seconds),
+                        )
+                if (
+                    q_current
+                    and task.preferences.quality_weight
+                    and q.evidence_reference not in references
+                ):
+                    references.append(q.evidence_reference)
+                signal = signals.get(profile.endpoint_profile_id)
+                signal_current = (
+                    signal is not None
+                    and signal.endpoint_profile_version == profile.profile_version
+                    and signal.observed_at <= now < signal.fresh_until
+                )
+                if signal_current:
+                    references.append(signal.evidence_reference)
+                candidates.append(
+                    CandidateFact(
+                        endpoint=profile.ref,
+                        rejection_reasons=tuple(dict.fromkeys(reasons)),
+                        configured_priority=task.priority_for(profile.endpoint_profile_id),
+                        quality_score=q.score
+                        if q_current and task.preferences.quality_weight
+                        else None,
+                        latency_ms=signal.latency_ms
+                        if signal_current and task.preferences.latency_penalty_per_second
+                        else None,
+                        reliability=signal.reliability
+                        if signal_current and task.preferences.reliability_weight
+                        else None,
+                        evidence_references=tuple(references),
+                        quality_valid_until=until,
+                    )
+                )
+            view = StrategyView(
+                preferences=task.preferences,
+                candidates=tuple(r.strategy_view() for r in candidates if r.eligible),
+            )
+            reason = "no-eligible-endpoint" if not view.candidates else None
+            ranking = ()
+            if view.candidates:
+                try:
+                    from personal_ai.routing.phase21 import RankedCandidate
+
+                    ranking = tuple(
+                        RankedCandidate.model_validate(r.model_dump())
+                        for r in self.strategy.select(view)
+                    )
+                    if (
+                        not ranking
+                        or len(ranking) != len(view.candidates)
+                        or {r.endpoint for r in ranking} != {v.endpoint for v in view.candidates}
+                    ):
+                        # Strategies rank each eligible endpoint exactly once; decisions validate duplicates.
+                        raise ValueError("routing_strategy_contract_invalid")
+                except Exception:  # noqa: BLE001 - missing authority/invalid strategy fails closed
+                    ranking = ()
+                    reason = "routing-strategy-contract-invalid"
+            if dependency_expires_at is not None:
+                if dependency_expires_at.tzinfo is None:
+                    raise ValueError("routing_timestamp_must_be_aware")
+                if dependency_expires_at <= now:
+                    reason, ranking = "routing-dependency-expired", ()
+                else:
+                    replay_until = min(replay_until, dependency_expires_at)
+            if database_time(c) >= deadline:
+                reason, ranking = "routing-deadline-expired", ()
+            decision = RoutingDecision(
+                routing_decision_id=decision_id,
+                root_decision_id=root_id,
+                parent_decision_id=parent_decision_id,
+                reselection_depth=depth,
+                owner_id=owner_id,
+                application_id=scope.application_id,
+                workspace_id=scope.workspace_id,
+                created_at=now,
+                root_deadline_at=deadline,
+                replay_until=replay_until,
+                request=request,
+                task=task,
+                strategy=self.strategy.ref,
+                registry_version=static.registry_version,
+                candidates=tuple(candidates),
+                ranking=ranking,
+                no_route_reason=reason,
+            )
+            # Nested begin would acquire a second connection. Use this exact transaction.
+            self.observations.begin_in_transaction(
+                c, owner_id=owner_id, scope=scope, decision=decision
+            )
+            return decision
+
+    def _check_dispatch(self, c, owner_id, scope, record, preparation, operation):
+        decision = record.decision
+        now = database_time(c)
+        if decision.selected is None or now >= decision.root_deadline_at:
+            raise RoutingFinalizationError("routing_deadline_or_selection_invalid")
+        if preparation.prepared_at < decision.created_at or preparation.prepared_at > now:
+            raise RoutingFinalizationError("routing_preparation_stale")
+        if preparation.endpoint != decision.selected or not sources_allowed(
+            decision, preparation.source_reference_sha256s
+        ):
+            raise RoutingFinalizationError("routing_preparation_identity_or_sources_changed")
+        profile = self.registry.revalidate_selected(
+            decision.selected, decision.request.requirements, now=now, connection=c
+        )
+        requirements = decision.request.requirements
+        if operation not in requirements.required_capabilities:
+            raise RoutingFinalizationError("routing_operation_invalid")
+        if (
+            preparation.serializer_id != profile.serializer_id
+            or preparation.input_tokens > (requirements.input_tokens or 0)
+            or preparation.input_tokens > (profile.context_limit_tokens or 0)
+        ):
+            raise RoutingFinalizationError("routing_preparation_does_not_fit")
+        if requirements.count is not None:
+            if (
+                profile.counter is None
+                or preparation.counter_id != profile.counter.counter_id
+                or not confidence_meets(
+                    preparation.count_confidence, requirements.count.minimum_confidence
+                )
+            ):
+                raise RoutingFinalizationError("routing_counter_incompatible")
+        elif preparation.counter_id is not None and (
+            profile.counter is None or preparation.counter_id != profile.counter.counter_id
+        ):
+            raise RoutingFinalizationError("routing_counter_incompatible")
+        candidate = next(r for r in decision.candidates if r.endpoint == decision.selected)
+        if decision.task.quality.mode == "measured_floor" and (
+            candidate.quality_valid_until is None or candidate.quality_valid_until <= now
+        ):
+            raise RoutingFinalizationError("routing_quality_evidence_expired")
+        evidence = self._authorize(
+            c,
+            owner_id,
+            scope,
+            profile.ref,
+            decision.request,
+            preparation.source_reference_sha256s,
+            now,
+        )
+        if self.usage is None:
+            raise RoutingFinalizationError("routing_runtime_authority_unavailable")
+        reasons = self.usage.runtime_rejections(
+            c, profile, requirements, now=database_time(c), check_capacity=False
+        )
+        if reasons:
+            raise RoutingFinalizationError(reasons[0])
+        return profile, evidence
+
+    def finalize(self, *, owner_id, scope, decision_id, preparation, operation):
+        preparation = PreparationIdentity.model_validate(preparation.model_dump())
+        failure = None
+        permit = None
+        with self.observations.transaction(owner_id=owner_id) as c:
+            record = self.observations.lock_root(
+                c, owner_id=owner_id, scope=scope, decision_id=decision_id
+            )
+            if record.status == "authorized":
+                event = record.events[-1]
+                if event.preparation != preparation:
+                    raise RoutingFinalizationError("routing_finalization_idempotency_conflict")
+                profile, evidence = self._check_dispatch(
+                    c, owner_id, scope, record, preparation, operation
+                )
+                self.usage.reserved_attempt_in_transaction(
+                    c,
+                    _invocation(record.decision, profile, preparation, operation),
+                    event.permit.attempt_id,
+                    expected_units=unit_reservations(
+                        input_tokens=preparation.input_tokens,
+                        output_tokens=record.decision.request.requirements.output_tokens,
                     ),
-                ),
-                plan.selected_endpoint_profile_id,
-                now=instant,
+                    max_attempts=record.decision.task.max_physical_attempts,
+                    now=database_time(c),
+                )
+                if database_time(c) >= event.permit.expires_at:
+                    raise RoutingFinalizationError("routing_permit_expired")
+                return event.permit
+            if record.status not in {"selected", "failed"}:
+                raise RoutingFinalizationError("routing_decision_not_finalizable")
+            try:
+                # A savepoint ensures failed authorization/publication rolls back every reserve.
+                with c.transaction():
+                    profile, evidence = self._check_dispatch(
+                        c, owner_id, scope, record, preparation, operation
+                    )
+                    now = database_time(c)
+                    invocation = _invocation(record.decision, profile, preparation, operation)
+                    units = unit_reservations(
+                        input_tokens=preparation.input_tokens,
+                        output_tokens=record.decision.request.requirements.output_tokens,
+                    )
+                    attempt = AttemptMetadata(
+                        attempt_id=uuid5(invocation.invocation_id, "provider-attempt:1"),
+                        parent_attempt_id=None,
+                        send_number=1,
+                        started_at=now,
+                        reservation_units=units,
+                        reserved_tokens=dict(units).get("tokens", 0),
+                    )
+                    attempt = self.usage.reserve_attempt_in_transaction(
+                        c,
+                        invocation,
+                        attempt,
+                        max_attempts=record.decision.task.max_physical_attempts,
+                    )
+                    expiry = min(
+                        record.decision.root_deadline_at,
+                        evidence.valid_until,
+                        now + timedelta(seconds=30),
+                    )
+                    if database_time(c) >= expiry:
+                        raise RoutingFinalizationError("routing_permit_expired")
+                    permit = DispatchPermit(
+                        decision_id=decision_id,
+                        invocation_id=invocation.invocation_id,
+                        attempt_id=attempt.attempt_id,
+                        expires_at=expiry,
+                    )
+                    self.observations.append_in_transaction(
+                        c,
+                        scope=scope,
+                        record=record,
+                        event=RoutingEvent(
+                            kind="authorized",
+                            occurred_at=database_time(c),
+                            preparation=preparation,
+                            permit=permit,
+                            authorization_reference=evidence.reference,
+                            attempt_id=attempt.attempt_id,
+                        ),
+                    )
+            except Exception as error:  # noqa: BLE001 - rollback reserve, record denial
+                failure = error
+                if record.status == "selected":
+                    code = (
+                        error.code
+                        if isinstance(error, (RoutingFinalizationError, UsageAdmissionDenied))
+                        else "routing_authority_unavailable"
+                    )
+                    self.observations.append_in_transaction(
+                        c,
+                        scope=scope,
+                        record=record,
+                        event=RoutingEvent(
+                            kind="failed", occurred_at=database_time(c), reason=code
+                        ),
+                    )
+        if failure:
+            raise RoutingFinalizationError(
+                getattr(failure, "code", "routing_authority_unavailable")
+            ) from failure
+        return permit
+
+    def claim(self, *, owner_id, scope, permit, operation):
+        """Claim once. Receipt validation never substitutes for direct current checks."""
+        permit = DispatchPermit.model_validate(permit.model_dump())
+        with self.observations.transaction(owner_id=owner_id) as c:
+            record = self.observations.lock_root(
+                c, owner_id=owner_id, scope=scope, decision_id=permit.decision_id
             )
-        except EndpointRegistryError as error:
-            self._record_failure(owner_id, scope, observation, "routing-endpoint-profile-stale", instant, revalidation)
-            raise RoutingFinalizationError("routing_endpoint_profile_stale") from error
-        if current.profile_version != plan.selected_profile_version:
-            self._record_failure(owner_id, scope, observation, "routing-endpoint-profile-stale", instant, revalidation)
-            raise RoutingFinalizationError("routing_endpoint_profile_stale")
-        if not _preparation_fits(observation, current, preparation, instant):
-            self._record_failure(owner_id, scope, observation, "routing-endpoint-preparation-does-not-fit", instant, revalidation)
-            raise RoutingFinalizationError("routing_endpoint_preparation_does_not_fit")
-        if (
-            operation not in observation.request.requirements.required_capabilities
-            or operation not in current.capabilities
-            or reservation.operation != operation
-        ):
-            self._record_failure(owner_id, scope, observation, "routing-dispatch-operation-invalid", instant, revalidation)
-            raise RoutingFinalizationError("routing_dispatch_operation_invalid")
-        applicable_buckets = {
-            bucket.bucket_id
-            for bucket in current.quota_buckets
-            if operation in bucket.operations
-        }
-        reserved_buckets = {bucket_id for bucket_id, _ in reservation.buckets}
-        if not applicable_buckets or reserved_buckets != applicable_buckets:
-            self._record_failure(owner_id, scope, observation, "routing-reservation-incomplete", instant, revalidation)
-            raise RoutingFinalizationError("routing_reservation_incomplete")
-        if (
-            reservation.reserved_at < revalidation.validated_at
-            or reservation.reserved_at < preparation.prepared_at
-            or reservation.reserved_at > instant
-            or reservation.reserved_at >= observation.root_deadline_at
-        ):
-            self._record_failure(owner_id, scope, observation, "routing-reservation-order-invalid", instant, revalidation)
-            raise RoutingFinalizationError("routing_reservation_order_invalid")
-        if self.reservation_authority is None or not self.reservation_authority.verify_routing_reservation(
-            reservation=reservation,
-            owner_id=owner_id,
-            scope=scope,
-            request_id=observation.request.request_id,
-            run_id=observation.request.run_id,
-            routing_decision_id=observation.routing_decision_id,
-            endpoint_profile_id=current.endpoint_profile_id,
-            endpoint_profile_version=current.profile_version,
-            operation=operation,
-            expected_bucket_ids=frozenset(applicable_buckets),
-            max_physical_attempts=plan.max_physical_attempts,
-            now=instant,
-        ):
-            self._record_failure(owner_id, scope, observation, "routing-reservation-not-authoritative", instant, revalidation)
-            raise RoutingFinalizationError("routing_reservation_not_authoritative")
+            if record.status != "authorized" or record.events[-1].permit != permit:
+                raise RoutingFinalizationError("routing_permit_not_claimable")
+            preparation = record.events[-1].preparation
+            profile, evidence = self._check_dispatch(
+                c, owner_id, scope, record, preparation, operation
+            )
+            now = database_time(c)
+            if now >= min(permit.expires_at, evidence.valid_until):
+                raise RoutingFinalizationError("routing_permit_expired")
+            invocation = _invocation(record.decision, profile, preparation, operation)
+            attempt = self.usage.reserved_attempt_in_transaction(
+                c,
+                invocation,
+                permit.attempt_id,
+                expected_units=unit_reservations(
+                    input_tokens=preparation.input_tokens,
+                    output_tokens=record.decision.request.requirements.output_tokens,
+                ),
+                max_attempts=record.decision.task.max_physical_attempts,
+                now=now,
+            )
+            self.usage.claim_attempt_in_transaction(c, attempt.attempt_id, now=now)
+            self.observations.append_in_transaction(
+                c,
+                scope=scope,
+                record=record,
+                event=RoutingEvent(
+                    kind="dispatched",
+                    occurred_at=database_time(c),
+                    attempt_id=attempt.attempt_id,
+                    authorization_reference=evidence.reference,
+                ),
+            )
+            invocation = _invocation(record.decision, profile, preparation, operation)
+            if database_time(c) >= min(
+                permit.expires_at, evidence.valid_until, record.decision.root_deadline_at
+            ):
+                raise RoutingFinalizationError("routing_permit_expired")
+        if datetime.now(UTC) >= min(permit.expires_at, evidence.valid_until):
+            raise RoutingFinalizationError("routing_permit_expired")
+        return profile, invocation, attempt
 
-        ready_plan = ExecutionPlan.model_validate({
-            **plan.model_dump(mode="python"),
-            "state": "ready",
-            "preparation": preparation,
-            "final_fit": True,
-            "reservation": reservation,
-            "physical_operation": operation,
-        })
-        event = RoutingDecisionEvent(
-            event_type="reservation_succeeded",
-            event_id=uuid5(reservation.attempt_id, "phase21-reservation-succeeded-v1"),
-            occurred_at=reservation.reserved_at,
-            endpoint_profile_id=current.endpoint_profile_id,
-            invocation_id=reservation.invocation_id,
-            attempt_id=reservation.attempt_id,
-            preparation=preparation,
-            outcome_code="execution-plan-ready",
-            dispatch_revalidation=revalidation,
-        )
-        # This append must complete before the caller can dispatch the plan.
-        self.observations.append_event(
-            owner_id=owner_id,
-            scope=scope,
-            decision_id=observation.routing_decision_id,
-            event=event,
-        )
-        return ready_plan
+    def dispatch(self, *, owner_id, scope, permit, operation, send):
+        """Internal transport seam. Callback receives the exact committed attempt.
 
-    def consume_auxiliary_call(
-        self,
-        *,
-        owner_id: str,
-        scope: ApplicationScope,
-        decision_id: UUID,
-        event: RoutingDecisionEvent,
-        now: datetime | None = None,
-    ) -> int:
-        """Atomically consume the root budget before remote count/summary work."""
-        instant = _aware_utc(now or datetime.now(UTC))
-        if event.event_type != "auxiliary_call_reserved" or event.occurred_at > instant:
-            raise RoutingFinalizationError("routing_auxiliary_call_event_invalid")
+        Callback must perform one send and return (value, neutral AttemptResult).
+        Any exception keeps conservative unknown accounting and closes no success.
+        Application workflows remain gated on Phase 15; there is no HTTP route.
+        """
+        profile, invocation, attempt = self.claim(
+            owner_id=owner_id, scope=scope, permit=permit, operation=operation
+        )
         try:
-            record = self.observations.get(
-                owner_id=owner_id, scope=scope, decision_id=decision_id
+            value, result = send(profile, invocation, attempt)
+            from personal_ai.usage.contracts import AttemptResult
+
+            if (
+                not isinstance(result, AttemptResult)
+                or result.outcome
+                not in {
+                    "success",
+                    "incomplete",
+                    "rejected",
+                    "rate_limited",
+                    "server_error",
+                    "timeout",
+                    "failure",
+                    "unknown",
+                }
+                or result.completed_at.tzinfo is None
+                or result.completed_at < attempt.started_at
+            ):
+                raise TypeError("routing_transport_result_invalid")
+        except BaseException:
+            from personal_ai.usage.contracts import AttemptResult
+
+            result = AttemptResult(outcome="unknown", completed_at=datetime.now(UTC), latency_ms=0)
+            self.usage.settle_attempt(invocation, attempt, result)
+            self.usage.complete_invocation(
+                invocation, outcome=result.outcome, completed_at=result.completed_at
             )
-        except LookupError as error:
-            raise RoutingFinalizationError("routing_decision_unavailable") from error
-        observation = getattr(record, "observation", record)
-        if (
-            observation.lifecycle_status != "preparing"
-            or observation.provisional_plan is None
-        ):
-            raise RoutingFinalizationError("routing_decision_has_no_plan")
-        if instant >= observation.root_deadline_at:
-            raise RoutingFinalizationError("routing_deadline_expired")
-        return self.observations.consume_auxiliary_call(
+            self.finish(owner_id=owner_id, scope=scope, decision_id=permit.decision_id)
+            raise
+        self.usage.settle_attempt(invocation, attempt, result)
+        self.usage.complete_invocation(
+            invocation, outcome=result.outcome, completed_at=result.completed_at
+        )
+        self.finish(
             owner_id=owner_id,
             scope=scope,
-            decision_id=decision_id,
-            max_auxiliary_calls=observation.task.max_auxiliary_calls,
-            event=event,
+            decision_id=permit.decision_id,
         )
+        return value
 
-    def _record_failure(
-        self,
-        owner_id: str,
-        scope: ApplicationScope,
-        observation: RoutingDecisionObservation,
-        reason_code: str,
-        at: datetime,
-        revalidation: DispatchRevalidation | None = None,
-    ) -> None:
-        event_type = (
-            "reservation_failed"
-            if reason_code.startswith("routing-reservation")
-            or reason_code == "routing-dispatch-operation-invalid"
-            else "preparation_failed"
-        )
-        self.observations.append_event(
-            owner_id=owner_id,
-            scope=scope,
-            decision_id=observation.routing_decision_id,
-            event=RoutingDecisionEvent(
-                event_type=event_type,
-                occurred_at=at,
-                reason_code=reason_code,
-                endpoint_profile_id=(
-                    observation.provisional_plan.selected_endpoint_profile_id
-                    if observation.provisional_plan is not None else None
+    def finish(self, *, owner_id, scope, decision_id, reason="coordination-failed"):
+        with self.observations.transaction(owner_id=owner_id) as c:
+            record = self.observations.lock_root(
+                c, owner_id=owner_id, scope=scope, decision_id=decision_id
+            )
+            kind = "failed"
+            if record.status == "dispatched":
+                dispatched = next(e for e in reversed(record.events) if e.kind == "dispatched")
+                receipt = next(
+                    e.permit
+                    for e in reversed(record.events)
+                    if e.kind == "authorized" and e.attempt_id == dispatched.attempt_id
+                )
+                outcome = self.usage.attempt_outcome_in_transaction(
+                    c, receipt.invocation_id, dispatched.attempt_id
+                )
+                kind = "closed" if outcome == "success" else "failed"
+                reason = "attempt-completed"
+            self.observations.append_in_transaction(
+                c,
+                scope=scope,
+                record=record,
+                event=RoutingEvent(
+                    kind=kind,
+                    occurred_at=database_time(c),
+                    reason=reason,
                 ),
-                outcome_code="dispatch-denied",
-                dispatch_revalidation=revalidation,
-            ),
-        )
+            )
+
+    def consume_auxiliary_call(self, **kwargs):
+        return self.observations.consume_auxiliary_call(**kwargs)
 
 
-def _runtime_rejections(
-    profile,
-    facts: RuntimeCandidateFacts | None,
-    now: datetime,
-) -> tuple[str, ...]:
-    if facts is None:
-        return ("runtime_admission_facts_missing",)
-    reasons: list[str] = []
-    if facts.observed_at > now or facts.fresh_until <= now:
-        reasons.append("endpoint_runtime_admission_facts_stale")
-    if (
-        facts.endpoint_profile_id != profile.endpoint_profile_id
-        or facts.endpoint_profile_version != profile.profile_version
-    ):
-        reasons.append("runtime_profile_version_mismatch")
-    if facts.authorization != "authorized":
-        reasons.append(
-            "endpoint_authorization_denied"
-            if facts.authorization == "denied"
-            else "endpoint_authorization_unknown"
-        )
-    if facts.credential_status != "usable":
-        reasons.append(
-            "credential_account_unusable"
-            if facts.credential_status == "unusable"
-            else "credential_account_usability_unknown"
-        )
-    if facts.health_status != "healthy":
-        reasons.append(f"endpoint_health_{facts.health_status}")
-    if facts.cooldown_until is not None and facts.cooldown_until > now:
-        reasons.append("endpoint_cooldown_active")
-    if facts.exhausted is True:
-        reasons.append("endpoint_quota_exhausted")
-    return tuple(reasons)
+def _invocation(decision, profile, preparation, operation):
+    return InvocationMetadata(
+        invocation_id=uuid5(decision.routing_decision_id, f"invocation:{operation}"),
+        owner_id=decision.owner_id,
+        application_id=decision.application_id,
+        workspace_id=decision.workspace_id,
+        task_id=decision.task.task_id,
+        operation=operation,
+        request_id=decision.request.request_id,
+        run_id=decision.request.run_id,
+        endpoint=from_profile(profile),
+        routing_decision_id=str(decision.routing_decision_id),
+        routing_strategy_id=decision.strategy.strategy_id,
+        routing_strategy_version=decision.strategy.semantic_version,
+        policy_version=decision.request.policy_version,
+        input_tokens_estimate=preparation.input_tokens,
+        output_tokens_bound=decision.request.requirements.output_tokens,
+    )
 
 
-def _quality_rejections(task, profile, evidence, now: datetime) -> tuple[tuple[str, ...], bool]:
+def _by_id(values, model):
+    result = {}
+    for value in values:
+        value = model.model_validate(value.model_dump())
+        if value.endpoint_profile_id in result:
+            raise ValueError("routing_evidence_duplicate")
+        result[value.endpoint_profile_id] = value
+    return result
+
+
+def _quality_current(task, profile, evidence, now):
     policy = task.quality
-    current = _quality_is_current(task, profile, evidence, now)
-    if policy.mode == "unmeasured_baseline":
-        return (), current
-    if evidence is None:
-        return ("required_quality_evidence_missing",), False
-    if not current:
-        return ("required_quality_evidence_stale_or_mismatched",), False
-    reasons = []
-    if evidence.coverage < policy.minimum_coverage:
-        reasons.append("required_quality_coverage_insufficient")
-    if evidence.score < policy.minimum_score:
-        reasons.append("required_quality_floor_not_met")
-    return tuple(reasons), current
-
-
-def _quality_is_current(task, profile, evidence, now: datetime) -> bool:
-    if evidence is None:
-        return False
-    policy = task.quality
-    return (
+    return evidence is not None and (
         evidence.task_profile_id == task.profile_id
         and evidence.task_profile_version == task.profile_version
         and evidence.endpoint_profile_id == profile.endpoint_profile_id
         and evidence.endpoint_profile_version == profile.profile_version
         and (
             policy.quality_profile_id is None
-            or evidence.quality_profile_id == policy.quality_profile_id
+            or policy.quality_profile_id == evidence.quality_profile_id
         )
         and (
             policy.quality_profile_version is None
-            or evidence.quality_profile_version == policy.quality_profile_version
+            or policy.quality_profile_version == evidence.quality_profile_version
         )
-        and evidence.measured_at <= now
-        and evidence.fresh_until > now
+        and evidence.measured_at <= now < evidence.fresh_until
         and (now - evidence.measured_at).total_seconds() <= policy.max_age_seconds
     )
-
-
-def _current_signal(signals, profile, now: datetime) -> RoutingSignals | None:
-    if signals is None:
-        return None
-    if (
-        signals.endpoint_profile_id != profile.endpoint_profile_id
-        or signals.endpoint_profile_version != profile.profile_version
-        or signals.observed_at > now
-        or signals.fresh_until <= now
-    ):
-        return None
-    return signals
-
-
-def _validate_strategy_result(result, value, identity) -> None:
-    if result is None:
-        raise ValueError("routing_strategy_returned_no_result")
-    if (
-        result.strategy_id != identity.strategy_id
-        or result.strategy_version != identity.strategy_version
-        or result.strategy_implementation_sha256 != identity.strategy_implementation_sha256
-        or result.configuration_version != identity.configuration_version
-        or result.configuration_sha256 != identity.configuration_sha256
-        or result.tie_break_version != identity.tie_break_version
-    ):
-        raise ValueError("routing_strategy_identity_mismatch")
-    available = {
-        (row.profile.endpoint_profile_id, row.profile.profile_version)
-        for row in value.candidates
-    }
-    ranked = {
-        (row.endpoint_profile_id, row.profile_version)
-        for row in result.ranked_candidates
-    }
-    if not ranked.issubset(available):
-        raise ValueError("routing_strategy_ranked_ineligible_endpoint")
-    if (
-        result.selected_endpoint_profile_id,
-        result.selected_profile_version,
-    ) not in available:
-        raise ValueError("routing_strategy_selected_ineligible_endpoint")
-
-
-def _preparation_fits(
-    observation,
-    profile,
-    preparation: PreparationIdentity,
-    now: datetime,
-) -> bool:
-    requirements = observation.request.requirements
-    if (
-        preparation.endpoint_profile_id != profile.endpoint_profile_id
-        or preparation.endpoint_profile_version != profile.profile_version
-        or preparation.serializer_id != profile.serializer_id
-        or preparation.input_tokens > (profile.context_limit_tokens or 0)
-        or preparation.input_tokens > (requirements.input_tokens or 0)
-    ):
-        return False
-    if requirements.output_tokens is not None and (
-        requirements.output_tokens > (profile.max_output_tokens or 0)
-    ):
-        return False
-    if observation.task.quality.mode == "measured_floor":
-        evidence = next(
-            (
-                row.quality_evidence for row in observation.candidates
-                if row.profile.endpoint_profile_id == profile.endpoint_profile_id
-            ),
-            None,
-        )
-        if evidence is None or _quality_rejections(
-            observation.task, profile, evidence, now
-        )[0]:
-            return False
-    if requirements.count is not None:
-        counter = profile.counter
-        if (
-            counter is None
-            or preparation.counter_id != counter.counter_id
-            or not confidence_meets(
-                preparation.count_confidence, requirements.count.minimum_confidence
-            )
-        ):
-            return False
-        required_schema = requirements.count.structured_schema_id or requirements.structured_schema_id
-        if required_schema is not None and required_schema not in counter.structured_schema_ids:
-            return False
-    elif preparation.counter_id is not None and (
-        profile.counter is None or preparation.counter_id != profile.counter.counter_id
-    ):
-        return False
-    return True
-
-
-def _root_decision_id(
-    owner_id: str, scope: ApplicationScope, request_id: str, run_id: str | None
-) -> UUID:
-    identity = [
-        "phase21-root-v1", owner_id, scope.application_id, scope.workspace_id,
-        request_id, run_id,
-    ]
-    encoded = json.dumps(identity, separators=(",", ":"))
-    return uuid5(NAMESPACE_URL, encoded)
-
-
-def _reselection_decision_id(parent_decision_id: UUID, depth: int) -> UUID:
-    return uuid5(parent_decision_id, f"phase21-reselection-v1:{depth}")
-
-
-def _same_logical_decision(
-    stored: RoutingDecisionObservation, proposed: RoutingDecisionObservation
-) -> bool:
-    return (
-        stored.routing_decision_id == proposed.routing_decision_id
-        and stored.parent_decision_id == proposed.parent_decision_id
-        and stored.root_decision_id == proposed.root_decision_id
-        and stored.reselection_depth == proposed.reselection_depth
-        and stored.owner_id == proposed.owner_id
-        and stored.application_id == proposed.application_id
-        and stored.workspace_id == proposed.workspace_id
-        and stored.request == proposed.request
-        and stored.task == proposed.task
-        and stored.root_deadline_at == proposed.root_deadline_at
-    )
-
-
-def _source_narrowing_is_allowed(
-    task: RoutingTaskProfile, candidate: tuple[str, ...], parent: tuple[str, ...]
-) -> bool:
-    return candidate == parent or (
-        task.allow_source_narrowing and source_references_are_subset(candidate, parent)
-    )
-
-
-def _unique_by_id(values: Sequence, get_id) -> dict:
-    result = {}
-    for value in values:
-        identity = get_id(value)
-        if identity in result:
-            raise ValueError("routing_decision_input_duplicate")
-        result[identity] = value
-    return result
-
-
-def _aware_utc(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("routing_timestamp_must_be_aware")
-    return value.astimezone(UTC)

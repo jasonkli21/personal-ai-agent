@@ -211,8 +211,8 @@ class _TransportState:
             raise LLMUnavailableError("provider usage accounting is unavailable") from None
         self.active_attempt = reserved_attempt or attempt
         self.active_attempt_started_monotonic = monotonic()
-        self.last_attempt_id = attempt.attempt_id
-        self.attempt_ids.append(str(attempt.attempt_id))
+        self.last_attempt_id = self.active_attempt.attempt_id
+        self.attempt_ids.append(str(self.active_attempt.attempt_id))
 
     def _new_attempt(self, *, parent_attempt_id=None) -> AttemptMetadata:
         number = self.request_count + 1

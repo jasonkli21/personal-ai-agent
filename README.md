@@ -79,7 +79,9 @@ Domain applications integrate over explicit HTTP contracts rather than importing
 
 The internal endpoint registry records provider, model, account, credential-scope,
 privacy, capability, count-compatibility, and quota-authority facts, and can
-produce strict-free candidates with deterministic rejection reasons. Current
+produce strict-free candidates with deterministic rejection reasons. The internal routing
+coordinator persists compact decisions and requires atomic usage reservation plus
+a current, single-use dispatch claim; see the [Phase 18–21 refactor](docs/personal-ai-chapter-2/phase-18-21-architecture-refactor-implementation-plan.md). Current
 application workflows remain Gemini-only; request selection is reserved for a
 later routing phase.
 
