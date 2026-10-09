@@ -44,7 +44,8 @@ operations additionally check exact Origin, method/content type and caller capab
 Cloud context is usable only with a pinned Ed25519 signature binding its canonical
 content hash, selected connection/provider/model, policy/sensitivity, caller,
 runtime audience and expiration. Browser edits cannot become policy authority.
-There is no cloud signer in this phase. Browser storage is not used.
+There is no cloud signer in this phase. Browser credential storage is not used. Optional ID-token hints are omitted from
+authorization URLs; returning account selection is validated after exchange.
 
 Local atomic JSON is the canonical store for credentials and send receipts. POSIX
 owner-only directory/files, no symlinks, cross-process flock, atomic replacement and

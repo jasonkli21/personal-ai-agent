@@ -263,6 +263,8 @@ For a real streamed model response, set the key only in the untracked local envi
 
 Gemini remains the only provider wired into the current chat, research, and memory workflows. The pinned LiteLLM 1.102.1 Python SDK runs below Personal AI's neutral inference gateway; Personal AI still selects providers and credentials, and LiteLLM Proxy, Router, and cross-provider fallback are not used. Groq and Cloudflare Workers AI support bounded generation and model-gated structured output, but their live gates default off and require account/model-specific free-tier, privacy, and compatibility preflight evidence. They do not provide authoritative endpoint token counting, which current workflows require before dispatch, so enabling their adapter flags alone does not switch application traffic.
 
+A separately started user-local ChatGPT bridge now provides gated OAuth/credential lifecycle, account-specific discovery, and restricted Responses streaming. It keeps reusable credentials outside the managed API/worker and browser callers. Live execution is unavailable by default pending distribution approval, verified plan-only billing, and native browser/loopback acceptance; no application provider selector or cloud-issued turn workflow is included yet. Installation, pairing, and open gates are documented in the [Phase 25.1 guide](docs/personal-ai-chapter-2/phase-25-1-implementation-guide.md).
+
 Research, memory, decision, travel, shopping, proposal, and extraction capabilities each have independent gates. Enable only the specific path you are testing and preserve its provider/storage policy controls.
 
 ## Quality and evaluation
