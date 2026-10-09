@@ -192,14 +192,11 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         expired_provider_usage = await anyio.to_thread.run_sync(
             partial(usage.purge_expired, limit=settings.maintenance_batch_size)
         )
-        artifact_reconciliation = None
-        artifact_storage = None
-        if settings.artifacts_enabled:
-            artifacts = await anyio.to_thread.run_sync(factory.artifact_service, settings)
-            artifact_reconciliation = await anyio.to_thread.run_sync(
-                partial(artifacts.reconcile, limit=min(settings.maintenance_batch_size, 100))
-            )
-            artifact_storage = await anyio.to_thread.run_sync(artifacts.metadata.observations)
+        artifacts = await anyio.to_thread.run_sync(factory.artifact_maintenance_service, settings)
+        artifact_reconciliation = await anyio.to_thread.run_sync(
+            partial(artifacts.reconcile, limit=min(settings.maintenance_batch_size, 100))
+        )
+        artifact_storage = await anyio.to_thread.run_sync(artifacts.metadata.observations)
         safeguards = factory.safeguard_store()
         expired_budgets = await anyio.to_thread.run_sync(
             partial(
@@ -248,8 +245,8 @@ async def run_scheduled_maintenance(request: Request) -> Response:
     )
     return Response(
         content=json.dumps({
-            **({"artifact_reconciliation": artifact_reconciliation,
-                "artifact_storage": artifact_storage} if settings.artifacts_enabled else {}),
+            "artifact_reconciliation": artifact_reconciliation,
+            "artifact_storage": artifact_storage,
             "republished_jobs": published,
             "expired_sessions": expired,
             "expired_usage_budgets": expired_budgets,

@@ -139,6 +139,23 @@ def test_optional_failure_is_advisory_required_failure_explicit(tier, monkeypatc
     assert next(iter(repo.records.values())).status == "pending"
 
 
+@pytest.mark.parametrize("exhaustion", ["daily_operations", "monthly_operations", "monthly_io"])
+def test_flow_budget_rejection_does_not_create_live_metadata(tier, exhaustion):
+    service, repo, store, clock = tier
+    month = (clock[0].year, clock[0].month)
+    if exhaustion == "daily_operations":
+        repo.max_operations = 2
+    elif exhaustion == "monthly_operations":
+        repo.months[month] = (3999, 0)
+    else:
+        repo.months[month] = (0, 67108864)
+
+    for index in range(3):
+        assert write(service, identity=f"budget-rejected-{index}", required=False) is None
+    assert not repo.records
+    assert not store.objects
+
+
 def test_upload_before_metadata_crash_reconciles_same_generation(tier, monkeypatch):
     service, repo, store, _ = tier
     real_update = repo.update
@@ -213,6 +230,36 @@ def test_expiry_denies_before_delayed_physical_cleanup(tier):
     assert not store.objects
 
 
+def test_disabled_writes_keep_existing_artifact_cleanup_running(tier):
+    service, repo, store, clock = tier
+    ref = write(service, retention_days=1)
+    disabled = ArtifactService(repo, store, clock=lambda: clock[0], writes_enabled=False)
+
+    assert write(disabled, identity="new-run", required=False) is None
+    clock[0] += timedelta(days=1)
+    assert disabled.reconcile()["deleted"] == 1
+    assert ref.key not in store.objects
+
+
+def test_healthy_reconciliation_does_not_read_or_reserve_transfer(tier):
+    service, repo, store, clock = tier
+    write(service, identity="healthy-1", retention_days=1)
+    write(service, identity="healthy-2", retention_days=1)
+    reads_before = store.read_calls
+    operations_before = repo.operations
+    transfer_before = repo.read_bytes
+
+    for _ in range(5):
+        assert service.reconcile(limit=100)["ready"] == 2
+
+    assert store.read_calls == reads_before
+    assert repo.operations == operations_before
+    assert repo.read_bytes == transfer_before
+    clock[0] += timedelta(days=2)
+    assert service.reconcile(limit=100)["deleted"] == 2
+    assert not store.objects
+
+
 def test_owner_fence_denies_reads_writes_and_cleans_all_scopes(tier):
     service, repo, store, _ = tier
     ref = write(service)
@@ -282,6 +329,36 @@ def test_observations_reject_raw_prompts_embeddings_and_routing_overflow(tier):
             is None
         )
     assert not tier[2].objects
+
+
+def test_observation_contract_rejects_aliases_and_nested_vectors(tier):
+    service, _, store, _ = tier
+    for field in (
+        "prompt_text", "completion", "passage", "source_excerpt", "transcript",
+        "user_utterance",
+    ):
+        assert retain_routing_trace(
+            service,
+            {field: "private words"},
+            owner_id="owner",
+            scope=SCOPE,
+            routing_decision_id=uuid4(),
+        ) is None
+    assert retain_routing_trace(
+        service,
+        {"candidates": [{"endpoint_id": "endpoint-a", "vector": [0.1, 0.2]}]},
+        owner_id="owner",
+        scope=SCOPE,
+        routing_decision_id=uuid4(),
+    ) is None
+    assert retain_debug_replay(
+        service,
+        [{"nested": {"embedding_values": [0.1, 0.2]}}],
+        owner_id="owner",
+        scope=SCOPE,
+        run_id=uuid4(),
+    ) is None
+    assert not store.objects
 
 
 def test_source_rights_gate_and_expiry(tier):
@@ -760,6 +837,39 @@ def test_required_export_storage_failure_does_not_record_success(monkeypatch):
     assert caught.value.detail == "export_artifact_unavailable"
 
 
+def test_export_with_artifacts_disabled_refuses_to_omit_live_bodies(tier):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from personal_ai.api.account import export_account
+
+    ref = write(tier[0])
+    configured = Settings(
+        ai_provider="fake", ai_model="fake", export_enabled=True, artifacts_enabled=False
+    )
+    records = []
+    repository = SimpleNamespace(
+        export_owner=lambda *a, **k: {
+            "collections": {"artifact_metadata": [{"data": ref.model_dump(mode="json")}]}
+        },
+        record_export=lambda **kwargs: records.append(kwargs),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        export_account(
+            SimpleNamespace(idempotency_key=uuid4()),
+            SimpleNamespace(state=SimpleNamespace(correlation_id="request")),
+            SimpleNamespace(owner_id="owner"),
+            configured,
+            repository,
+        )
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail == "export_artifact_unavailable"
+    assert not records
+
+
 def test_account_export_returns_ready_frozen_envelope(tier, monkeypatch):
     import json
     from types import SimpleNamespace
@@ -799,6 +909,10 @@ def test_store_change_cannot_read_delete_or_forget_old_body(tier):
     different = InMemoryArtifactStore()
     different.store_id = "gcs:other-artifacts"
     alternate = ArtifactService(repo, different, clock=lambda: NOW)
+    assert alternate.write(
+        {"score": 2}, owner_id="owner", scope=SCOPE, kind="evaluation",
+        identity="alternate-store", schema_version="test-v1",
+    ) is None
     with pytest.raises(ArtifactUnavailable, match="store_identity_mismatch"):
         alternate.read(ref.artifact_id, owner_id="owner", scope=SCOPE)
     with pytest.raises(ArtifactUnavailable, match="store_identity_mismatch"):
@@ -806,3 +920,48 @@ def test_store_change_cannot_read_delete_or_forget_old_body(tier):
     assert alternate.reconcile()["failed"] == 1
     assert repo.records[ref.artifact_id].status == "ready"
     assert ref.key in store.objects
+    service.delete(ref)
+    with pytest.raises(ArtifactUnavailable, match="store_rotation_has_live_references"):
+        repo.assert_store_compatible(different.store_id)
+    tier[3][0] += timedelta(minutes=11)
+    repo.assert_store_compatible(different.store_id)
+    alternate_ref = alternate.write(
+        {"score": 2}, owner_id="owner", scope=SCOPE, kind="evaluation",
+        identity="alternate-store", schema_version="test-v1", required=True,
+    )
+    assert alternate_ref.store_id == different.store_id
+    assert service.write(
+        {"score": 1}, owner_id="owner", scope=SCOPE, kind="evaluation",
+        identity="old-store-after-rotation", schema_version="test-v1",
+    ) is None
+
+
+def test_context_evaluation_emit_retains_the_same_json_normalization(
+    tier, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+
+    from personal_ai.evaluation.context import evaluate
+    from personal_ai.evaluation.output import emit
+
+    service, repo, _, _ = tier
+    settings = SimpleNamespace(artifacts_enabled=True)
+    factory = SimpleNamespace(
+        principal_directory=lambda: SimpleNamespace(active_owner_ids=lambda limit: ["owner"]),
+        artifact_service=lambda _settings: service,
+    )
+    monkeypatch.setattr("personal_ai.settings.get_settings", lambda: settings)
+    monkeypatch.setattr("personal_ai.persistence.factory.persistence_factory", lambda _settings: factory)
+    report = evaluate()
+
+    emit(report, default=str)
+
+    normalized_output = __import__("json").loads(capsys.readouterr().out)
+    assert normalized_output == report
+    refs = [ref for ref in repo.records.values() if ref.kind == "evaluation"]
+    assert len(refs) == 1 and refs[0].status == "ready"
+    retained = service.read(refs[0].artifact_id, owner_id="owner", scope=SCOPE)
+    assert retained[0]["schema_version"] == "evaluation-observations-v1"
+    assert len(retained[0]["cases"]) == len(report)
+    assert "ai_api_key" not in str(retained)
+    assert "SecretStr" not in str(retained)

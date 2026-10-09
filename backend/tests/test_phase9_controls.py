@@ -130,9 +130,23 @@ def test_scheduled_maintenance_runs_bounded_usage_budget_cleanup(monkeypatch) ->
             calls.append(("republish", limit))
             return 1
 
+    class Artifacts:
+        class Metadata:
+            def observations(self):
+                return {"gcs": {"live_body_bytes": 0}}
+
+        metadata = Metadata()
+
+        def reconcile(self, *, limit):
+            calls.append(("artifact_reconcile", limit))
+            return {"checked": 2, "deleted": 1}
+
     class Factory:
         def provider_usage_accounting(self, _settings):
             return ProviderUsage()
+
+        def artifact_maintenance_service(self, _settings):
+            return Artifacts()
 
         def safeguard_store(self):
             return Safeguards()
@@ -161,13 +175,16 @@ def test_scheduled_maintenance_runs_bounded_usage_budget_cleanup(monkeypatch) ->
 
     assert response.status_code == 200
     assert response.body == (
-        b'{"republished_jobs": 1, "expired_sessions": 2, "expired_usage_budgets": 4, '
+        b'{"artifact_reconciliation": {"checked": 2, "deleted": 1}, '
+        b'"artifact_storage": {"gcs": {"live_body_bytes": 0}}, '
+        b'"republished_jobs": 1, "expired_sessions": 2, "expired_usage_budgets": 4, '
         b'"provider_attempts_resolved": 3, "provider_events_synchronized": 2, '
         b'"expired_provider_usage_records": 5}'
     )
     assert calls == [
         ("resolve_stale", 3), ("sync_events", 3), ("purge_provider_usage", 3),
-        ("purge", 3), ("republish", configured.memory_job_candidate_limit), ("research", 3),
+        ("artifact_reconcile", 3), ("purge", 3),
+        ("republish", configured.memory_job_candidate_limit), ("research", 3),
     ]
 
 

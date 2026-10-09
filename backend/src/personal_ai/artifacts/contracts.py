@@ -115,8 +115,18 @@ class ArtifactStore(Protocol):
 
 class ArtifactMetadataRepository(Protocol):
     def begin(self, ref: ArtifactRef) -> ArtifactRef: ...
+    def begin_reserved(
+        self,
+        ref: ArtifactRef,
+        *,
+        operations: int,
+        byte_count: int,
+        objects: int = 0,
+        read_bytes: int = 0,
+    ) -> ArtifactRef: ...
     def get(self, artifact_id: UUID, *, owner_id: str, scope: ApplicationScope) -> ArtifactRef: ...
     def update(self, ref: ArtifactRef, *, expected_revision: int) -> ArtifactRef: ...
+    def claim_owner_deletion(self, ref: ArtifactRef) -> ArtifactRef: ...
     def batch(self, *, limit: int, owner_id: str | None = None) -> tuple[ArtifactRef, ...]: ...
     def reserve(
         self, *, operations: int, byte_count: int, objects: int = 0, read_bytes: int = 0
@@ -124,6 +134,7 @@ class ArtifactMetadataRepository(Protocol):
     def active(self, owner_id: str) -> bool: ...
     def fence(self, owner_id: str) -> None: ...
     def observations(self) -> dict: ...
+    def assert_store_compatible(self, store_id: str) -> None: ...
 
 
 def validate_transition(previous: ArtifactRef, updated: ArtifactRef):
@@ -141,3 +152,9 @@ def validate_transition(previous: ArtifactRef, updated: ArtifactRef):
         raise ArtifactConflict("artifact_state_transition")
     if previous.generation is not None and previous.generation != updated.generation:
         raise ArtifactConflict("artifact_generation_immutable")
+
+
+def same_publication_identity(previous: ArtifactRef, proposed: ArtifactRef) -> bool:
+    """Compare immutable content while allowing concurrent writers' creation clocks to differ."""
+    variable = {"status", "revision", "generation", "created_at", "expires_at"}
+    return previous.model_dump(exclude=variable) == proposed.model_dump(exclude=variable)

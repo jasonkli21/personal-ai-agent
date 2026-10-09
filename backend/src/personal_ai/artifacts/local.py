@@ -11,6 +11,7 @@ from personal_ai.artifacts.contracts import (
     ArtifactConflict,
     ArtifactRef,
     ArtifactUnavailable,
+    same_publication_identity,
     validate_transition,
 )
 
@@ -22,6 +23,7 @@ class InMemoryArtifactStore:
         self.objects = {}
         self.next_generation = 1
         self.lock = RLock()
+        self.read_calls = 0
 
     def put(self, key, body):
         from personal_ai.artifacts.gcs import _KEY
@@ -43,6 +45,7 @@ class InMemoryArtifactStore:
         return self.objects.get(key, (None,))[0]
 
     def read(self, key, generation, *, max_bytes):
+        self.read_calls += 1
         if key not in self.objects or self.objects[key][0] != generation:
             raise ArtifactUnavailable("artifact_object_missing")
         body = self.objects[key][1]
@@ -93,11 +96,10 @@ class InMemoryArtifactMetadataRepository:
         with self.lock:
             if not self.active(ref.owner_id):
                 raise ArtifactUnavailable("artifact_owner_fenced")
+            self.assert_store_compatible(ref.store_id)
             existing = self.records.get(ref.artifact_id)
             if existing is not None:
-                expected = ref.model_dump(exclude={"revision", "status", "generation"})
-                actual = existing.model_dump(exclude={"revision", "status", "generation"})
-                if expected != actual:
+                if not same_publication_identity(existing, ref):
                     raise ArtifactConflict("artifact_identity_conflict")
                 return existing
             if ref.status != "pending" or ref.generation is not None or ref.revision != 1:
@@ -109,6 +111,43 @@ class InMemoryArtifactMetadataRepository:
                 > self.max_live_bytes
             ):
                 raise ArtifactBudgetExceeded("artifact_stock_budget")
+            self.records[ref.artifact_id] = ref
+            return ref
+
+    def begin_reserved(
+        self, ref, *, operations, byte_count, objects=0, read_bytes=0
+    ):
+        with self.lock:
+            if not self.active(ref.owner_id):
+                raise ArtifactUnavailable("artifact_owner_fenced")
+            self.assert_store_compatible(ref.store_id)
+            existing = self.records.get(ref.artifact_id)
+            if existing is not None:
+                if not same_publication_identity(existing, ref):
+                    raise ArtifactConflict("artifact_identity_conflict")
+                if existing.status == "pending":
+                    self.reserve(
+                        operations=operations,
+                        byte_count=byte_count,
+                        objects=objects,
+                        read_bytes=read_bytes,
+                    )
+                return existing
+            live = [item for item in self.records.values() if item.status != "deleted"]
+            if (
+                len(live) >= self.max_objects
+                or sum(item.compressed_bytes for item in live) + ref.compressed_bytes
+                > self.max_live_bytes
+            ):
+                raise ArtifactBudgetExceeded("artifact_stock_budget")
+            if ref.status != "pending" or ref.generation is not None or ref.revision != 1:
+                raise ArtifactConflict("artifact_initial_state")
+            self.reserve(
+                operations=operations,
+                byte_count=byte_count,
+                objects=objects,
+                read_bytes=read_bytes,
+            )
             self.records[ref.artifact_id] = ref
             return ref
 
@@ -131,6 +170,20 @@ class InMemoryArtifactMetadataRepository:
             )
             self.records[ref.artifact_id] = updated
             return updated
+
+    def claim_owner_deletion(self, ref):
+        with self.lock:
+            if self.active(ref.owner_id):
+                raise ArtifactUnavailable("artifact_owner_deletion_fence_missing")
+            current = self.records.get(ref.artifact_id)
+            if current is None or current.revision != ref.revision:
+                raise ArtifactConflict("artifact_revision_conflict")
+            if current.status == "deleting":
+                return current
+            updated = ArtifactRef.model_validate(
+                {**current.model_dump(), "status": "deleting"}
+            )
+            return self.update(updated, expected_revision=current.revision)
 
     def batch(self, *, limit, owner_id=None):
         if not 1 <= limit <= 100:
@@ -185,6 +238,19 @@ class InMemoryArtifactMetadataRepository:
             self.read_bytes += read_bytes
             self.bytes_reserved += byte_count
             self.objects_reserved += objects
+
+    def assert_store_compatible(self, store_id):
+        with self.lock:
+            now = self.clock()
+            if any(
+                ref.store_id != store_id
+                and (
+                    ref.status != "deleted"
+                    or now - ref.created_at <= timedelta(minutes=10)
+                )
+                for ref in self.records.values()
+            ):
+                raise ArtifactUnavailable("artifact_store_rotation_has_live_references")
 
     def observations(self):
         refs = tuple(self.records.values())

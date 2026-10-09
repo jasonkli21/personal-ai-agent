@@ -1,4 +1,4 @@
-"""CLI output stays portable; opt-in raw observation batches use the shared tier."""
+"""CLI output stays portable; opt-in safe observation batches use the shared tier."""
 
 import json
 import logging
@@ -7,7 +7,11 @@ logger = logging.getLogger(__name__)
 
 
 def emit(report, *, default=None, ensure_ascii=True):
-    print(json.dumps(report, indent=2, default=default, ensure_ascii=ensure_ascii))
+    serialized = json.dumps(
+        report, default=default, ensure_ascii=ensure_ascii, allow_nan=False
+    )
+    normalized = json.loads(serialized)
+    print(json.dumps(normalized, indent=2, ensure_ascii=ensure_ascii))
     try:
         from personal_ai.artifacts.consumers import retain_evaluation
         from personal_ai.auth.scope import ApplicationScope
@@ -22,7 +26,7 @@ def emit(report, *, default=None, ensure_ascii=True):
         owners = factory.principal_directory().active_owner_ids(limit=2)
         if len(owners) != 1:
             return
-        rows = report if isinstance(report, list) else [report]
+        rows = normalized if isinstance(normalized, list) else [normalized]
         retain_evaluation(
             factory.artifact_service(settings), rows, owner_id=owners[0], scope=ApplicationScope()
         )

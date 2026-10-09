@@ -51,6 +51,7 @@ class PersistenceFactory(Protocol):
     def provider_rate_limiter(self, provider: str, repository=None): ...
     def provider_usage_accounting(self, settings): ...
     def artifact_service(self, settings): ...
+    def artifact_maintenance_service(self, settings): ...
 
 
 class PostgresDynamoPersistenceFactory:
@@ -84,6 +85,13 @@ class PostgresDynamoPersistenceFactory:
     def artifact_service(self, settings):
         if not settings.artifacts_enabled:
             return None
+        return self._artifact_service(settings, writes_enabled=True)
+
+    def artifact_maintenance_service(self, settings):
+        """Keep expiry, revocation and deletion cleanup running with writes disabled."""
+        return self._artifact_service(settings, writes_enabled=False)
+
+    def _artifact_service(self, settings, *, writes_enabled):
         from personal_ai.artifacts.local import InMemoryArtifactStore
         from personal_ai.artifacts.service import ArtifactService
         from personal_ai.persistence.postgres_artifacts import PostgresArtifactMetadataRepository
@@ -91,16 +99,22 @@ class PostgresDynamoPersistenceFactory:
         key = (settings.artifact_store, settings.artifact_gcs_bucket,
                settings.artifact_gcs_region, settings.artifact_gcs_preflight_reference,
                settings.artifact_max_operations_per_day, settings.artifact_max_write_bytes_per_day,
-               settings.artifact_max_live_bytes, settings.artifact_max_objects)
+               settings.artifact_max_live_bytes, settings.artifact_max_objects, writes_enabled)
+        store_id = (
+            f"gcs:{settings.artifact_gcs_bucket}"
+            if settings.artifact_store == "gcs"
+            else "memory:local"
+        )
         with _FACTORY_LOCK:
-            if key in self._artifact_services:
-                return self._artifact_services[key]
             metadata = PostgresArtifactMetadataRepository(
                 self.database, max_operations=settings.artifact_max_operations_per_day,
                 max_daily_bytes=settings.artifact_max_write_bytes_per_day,
                 max_live_bytes=settings.artifact_max_live_bytes,
                 max_objects=settings.artifact_max_objects,
             )
+            metadata.assert_store_compatible(store_id)
+            if key in self._artifact_services:
+                return self._artifact_services[key]
             if settings.artifact_store == "gcs":
                 from personal_ai.artifacts.gcs import PrivateGCSArtifactStore
                 metadata.reserve(operations=1, byte_count=0)
@@ -115,7 +129,7 @@ class PostgresDynamoPersistenceFactory:
                     raise
             else:
                 store = InMemoryArtifactStore()
-            service = ArtifactService(metadata, store)
+            service = ArtifactService(metadata, store, writes_enabled=writes_enabled)
             self._artifact_services[key] = service
             return service
 

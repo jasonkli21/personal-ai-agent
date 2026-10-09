@@ -273,6 +273,14 @@ def _cloudflare_profile(settings: Settings) -> EndpointProfile:
 def _brave_search_profile(settings: Settings) -> EndpointProfile:
     """Represent search's account and prepaid no-overflow facts explicitly."""
     account_scope = settings.research_brave_account_scope_id.strip() or None
+    preflight_reference = settings.research_brave_preflight_reference.strip()
+    prepaid_attested = bool(
+        settings.research_brave_prepaid_verified
+        and settings.research_brave_auto_reload_disabled
+        and settings.research_brave_no_paid_balance_verified
+        and account_scope
+        and preflight_reference
+    )
     quota_buckets = _parse_buckets(settings.research_brave_quota_buckets)
     if not quota_buckets and account_scope is not None:
         quota_buckets = (
@@ -300,8 +308,8 @@ def _brave_search_profile(settings: Settings) -> EndpointProfile:
         credential_reference="env:RESEARCH_API_KEY",
         credential_scope_id=settings.research_brave_credential_scope_id,
         account_scope_id=account_scope,
-        tier_id="prepaid" if settings.research_brave_prepaid_verified else "unverified",
-        tier_verified=settings.research_brave_prepaid_verified,
+        tier_id="prepaid" if prepaid_attested else "unverified",
+        tier_verified=prepaid_attested,
         execution_mode="STRICT_FREE",
         cost_class="UNKNOWN",
         billing_owner="unknown",
@@ -326,6 +334,24 @@ def _brave_search_profile(settings: Settings) -> EndpointProfile:
         runtime_id="httpx-v1",
         quota_membership=("verified" if settings.research_brave_quota_buckets else "unknown"),
         quota_buckets=quota_buckets,
+        strict_free_attestation=(
+            StrictFreeEligibilityAttestation(
+                endpoint_profile_id="brave:search",
+                provider_id="brave_search",
+                model_id="web-search-v1",
+                endpoint_id="brave-web-search-v1",
+                deployment_id="api.search.brave.com-res-v1",
+                account_scope_id=account_scope,
+                credential_scope_id=settings.research_brave_credential_scope_id,
+                tier_id="prepaid",
+                reference=preflight_reference,
+                source="operator_preflight",
+                zero_cost_verified=True,
+                paid_overflow_excluded=True,
+            )
+            if prepaid_attested
+            else None
+        ),
     )
 
 

@@ -50,3 +50,20 @@ Real Postgres cases are explicitly added to the existing GitHub Actions Postgres
 - Account deletion fences future artifact access/publication, verified API use, provider reservations and new worker claims, and reconciles artifact body cleanup. Full canonical physical deletion, in-flight non-provider effects, deletion-aware restore and deployed acceptance retain their existing Phase 9/security gates. Tombstones remain compact canonical metadata; no raw artifact body has indefinite retention.
 
 Phase 20's **local implementation is delivered**. Full phase acceptance remains open at the prerequisite, target-store and deployed/privacy/free-tier gates above. See the [guide](phase-20-implementation-guide.md) and [current state](../current-state.md).
+
+## Independent review follow-up
+
+**Date:** 2026-10-08 (America/Los_Angeles).
+
+**Reviewed revision:** `3a92cee31b09baa402568a2e1e92c62ca0d84edc`, using `phase-20-independent-review-handoff.md`. The changes below were tested in a working tree based on that revision.
+
+The follow-up closes the listed lifecycle, privacy, budget, maintenance, and evaluation-retention findings. Owner-deletion cleanup now claims `deleting` under the same owner advisory lock used by cancellation, and rechecks the fence in that transaction. Feature disablement prevents new writes while scheduled cleanup still runs; exports fail closed when live artifact bodies would otherwise be omitted. Store changes are rejected while another store has live references or recent tombstones, allowing operators to restore and drain the old store before rotation. The store check is enforced inside the reference-creation transaction as well, so concurrently running application instances cannot create live references in different stores. Typed observation projections reject arbitrary text-bearing fields and vectors; context evaluation output retains only an explicit configuration summary. Flow-budget admission and pending metadata creation are atomic, and routine reconciliation no longer reads healthy ready bodies. The follow-up also fixes the three provider-usage issues called out by the review run: terminal rejection accounting, Brave prepaid attestation construction, and quota-summary joins through provider attempts.
+
+| Check | Result |
+| --- | --- |
+| `make backend-test backend-lint backend-build` | **Passed:** 971 passed, 46 skipped, 1 existing Starlette/httpx deprecation warning; Ruff passed; sdist and wheel built. |
+| Nine offline evaluation suites (`context`, `context-plan`, `memory`, `memory-lifecycle`, `research`, `decision`, `domain`, `iterative-research`, `itinerary-proposal`) | **Passed.** A separate retention-projection audit accepted all nine reports and retained only the typed bounded projection. |
+| `git diff --check` | **Passed** for the review follow-up. |
+| New real-Postgres artifact cancellation and store-admission race cases | **Not run locally:** no `PERSISTENCE_TEST_POSTGRES_DSN` or Docker/Postgres engine was available. Both cancellation orderings and the concurrent store-admission case are covered by opt-in tests and remain unverified until the configured integration job runs. |
+
+The review handoff cites GitHub Actions run `37874529856` on the pre-fix reviewed revision; its provider-usage integration failures are the baseline that prompted the three provider fixes above. No post-fix CI run is claimed. Cloud GCS behavior, bucket rotation in deployment, IAM/free-tier eligibility, and deployed account-deletion acceptance remain open gates.

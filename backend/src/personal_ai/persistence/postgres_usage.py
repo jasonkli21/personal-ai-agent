@@ -226,8 +226,9 @@ class PostgresProviderUsageAccounting:
                     # Denied admission did not dispatch a physical provider send.
                     # Keep the logical outcome without inflating attempt/retry counts.
                     connection.execute(
-                        "UPDATE provider_invocations SET outcome='rejected',completed_at=%s "
-                        "WHERE invocation_id=%s",
+                        "UPDATE provider_invocations SET outcome='rejected',"
+                        "completed_at=GREATEST(%s,started_at) "
+                        "WHERE invocation_id=%s AND outcome='running'",
                         (now, invocation.invocation_id),
                     )
                 else:
@@ -435,7 +436,9 @@ class PostgresProviderUsageAccounting:
                     "SELECT DISTINCT b.bucket_id,b.authority_scope_id,b.unit,b.window_start,"
                     "b.window_seconds,b.reset_at,b.source,b.confidence,b.limit_units,"
                     "b.reported_remaining,b.observed_at,b.fresh_until "
-                    "FROM provider_quota_reservations r JOIN provider_invocations i USING(invocation_id) "
+                    "FROM provider_quota_reservations r "
+                    "JOIN provider_attempts a USING(attempt_id) "
+                    "JOIN provider_invocations i USING(invocation_id) "
                     "JOIN provider_quota_bucket_windows b USING(bucket_id,window_start) "
                     "WHERE i.owner_id=%s AND i.application_id=%s AND i.workspace_id IS NOT DISTINCT FROM %s "
                     "AND i.started_at >= %s ORDER BY b.bucket_id,b.window_start DESC LIMIT 32",
@@ -445,6 +448,7 @@ class PostgresProviderUsageAccounting:
                     row[0]
                     for row in connection.execute(
                         "SELECT DISTINCT i.endpoint_profile_id FROM provider_quota_reservations r "
+                        "JOIN provider_attempts a USING(attempt_id) "
                         "JOIN provider_invocations i USING(invocation_id) WHERE i.owner_id=%s "
                         "AND i.application_id=%s AND i.workspace_id IS NOT DISTINCT FROM %s "
                         "AND i.started_at >= %s",

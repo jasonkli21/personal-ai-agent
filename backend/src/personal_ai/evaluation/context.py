@@ -106,6 +106,15 @@ def build_fixture(fixture: dict) -> tuple[list[Message], Message, list[Message]]
 
 def evaluate() -> list[dict]:
     rows = []
+    settings = fixture_settings()
+    safe_configuration = {
+        "max_context_tokens": settings.max_context_tokens,
+        "max_response_tokens": settings.max_response_tokens,
+        "context_safety_margin_tokens": settings.context_safety_margin_tokens,
+        "summary_trigger_tokens": settings.summary_trigger_tokens,
+        "max_summary_tokens": settings.max_summary_tokens,
+        "token_counter": "fake-estimated",
+    }
     for fixture in load_fixtures():
         active, pending, audit = build_fixture(fixture)
         summaries = InMemorySummaryRepository()
@@ -118,7 +127,7 @@ def evaluate() -> list[dict]:
         base = {
             "fixture": fixture["name"],
             "fixture_version": 2,
-            "configuration": fixture_settings().model_dump(exclude={"ai_api_key"}),
+            "configuration": safe_configuration,
             "phase_1": {
                 "input_message_count": len(active) + 1,
                 "result": "fixed_cap_rejected" if len(active) + 1 > 40 else "accepted",

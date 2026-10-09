@@ -91,7 +91,10 @@ authoritative observations remain unknown.
 The optional artifact tier stores compact references in Postgres and immutable
 compressed bodies in private GCS, with bounded retention, storage budgets and
 account deletion fences. Both backend and browser proxy gates default off;
-cloud/IAM/free-tier acceptance remains unverified. See the [Phase 20 guide](docs/personal-ai-chapter-2/phase-20-implementation-guide.md) for setup and prerequisite gates.
+the worker still reconciles retained bodies while new writes are disabled. Store
+rotation waits until old references and recent deletion tombstones are drained;
+exports fail explicitly if live artifact bodies exist while storage is disabled.
+Cloud/IAM/free-tier acceptance remains unverified. See the [Phase 20 guide](docs/personal-ai-chapter-2/phase-20-implementation-guide.md) for setup and prerequisite gates.
 
 ## Repository layout
 

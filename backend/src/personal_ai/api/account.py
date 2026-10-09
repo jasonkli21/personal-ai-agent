@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from personal_ai.api.dependencies import get_current_owner_id, require_recent_auth
-from personal_ai.artifacts.contracts import ArtifactUnavailable
+from personal_ai.artifacts.contracts import ArtifactRef, ArtifactUnavailable
 from personal_ai.auth.account_data import (
     AccountDataRepository,
     AccountDataUnavailable,
@@ -83,6 +83,8 @@ def export_account(
                                         scope=current_application_scope())
             except Exception as error:
                 raise ArtifactUnavailable("required_export_artifact_failed") from error
+        elif _has_live_artifacts(exported):
+            raise ArtifactUnavailable("export_artifacts_disabled")
         repository.record_export(
             owner_id=principal.owner_id,
             idempotency_key=payload.idempotency_key,
@@ -100,6 +102,19 @@ def export_account(
             "Content-Disposition": f'attachment; filename="personal-ai-export-{filename_date}.json"',
         },
     )
+
+
+def _has_live_artifacts(exported: dict) -> bool:
+    rows = exported.get("collections", {}).get("artifact_metadata", [])
+    now = datetime.now(UTC)
+    for row in rows:
+        try:
+            ref = ArtifactRef.model_validate(row["data"])
+        except Exception as error:
+            raise ArtifactUnavailable("export_artifact_metadata_invalid") from error
+        if ref.kind != "export" and ref.status != "deleted" and ref.expires_at > now:
+            return True
+    return False
 
 
 @router.post("/deletion")

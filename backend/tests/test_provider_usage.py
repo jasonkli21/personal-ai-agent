@@ -12,6 +12,8 @@ from personal_ai.persistence.dynamodb_usage import (
     DynamoDBProviderUsageEventRepository,
 )
 from personal_ai.persistence.postgres_usage import _operational_event
+from personal_ai.routing.configured import build_initial_endpoint_profiles
+from personal_ai.settings import Settings
 from personal_ai.usage.accounting import new_invocation, unit_reservations
 from personal_ai.usage.async_call import AsyncProviderCall, rate_limit_metadata
 from personal_ai.usage.context import bind_usage_task
@@ -84,6 +86,33 @@ def test_public_lookup_profile_keeps_quota_capacity_unknown():
     assert bucket.confidence == "unknown"
     assert bucket.limit is None and bucket.remaining is None
     assert endpoint.quota_membership == "verified"
+
+
+def test_brave_prepaid_tier_requires_and_carries_its_attestation():
+    settings = Settings(
+        _env_file=None,
+        ai_provider="gemini",
+        ai_model="synthetic",
+        research_enabled=True,
+        research_search_adapter="brave",
+        research_provider_storage_approved=True,
+        research_api_key="synthetic-secret",
+        research_brave_prepaid_verified=True,
+        research_brave_auto_reload_disabled=True,
+        research_brave_no_paid_balance_verified=True,
+        research_brave_source_rights_verified=True,
+        research_brave_account_scope_id="synthetic-brave-account",
+        research_brave_preflight_reference="operator-preflight:synthetic-brave",
+    )
+    profile = next(
+        item for item in build_initial_endpoint_profiles(settings)
+        if item.endpoint_profile_id == "brave:search"
+    )
+
+    assert profile.tier_verified
+    assert profile.strict_free_attestation is not None
+    assert profile.strict_free_attestation.paid_overflow_excluded
+    assert profile.strict_free_attestation.account_scope_id == "synthetic-brave-account"
 
 
 def test_rate_limit_metadata_parses_only_bounded_numeric_facts():

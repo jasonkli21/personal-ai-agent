@@ -8,6 +8,7 @@ from threading import BoundedSemaphore
 from time import monotonic
 from uuid import uuid4
 
+from personal_ai.artifacts.observations import debug_replay_batch, evaluation_batch
 from personal_ai.auth.scope import ApplicationScope
 
 logger = logging.getLogger(__name__)
@@ -68,8 +69,12 @@ class ArtifactContextTraceRepository:
 
 def retain_evaluation(service, rows, *, owner_id, scope, evaluation_run_id=None):
     run_id = evaluation_run_id or uuid4()
+    try:
+        batch = evaluation_batch(rows)
+    except Exception:  # noqa: BLE001 - optional retention is advisory
+        return None
     return service.write(
-        rows,
+        [batch.model_dump(mode="json")],
         owner_id=owner_id,
         scope=scope,
         kind="evaluation",
@@ -77,7 +82,7 @@ def retain_evaluation(service, rows, *, owner_id, scope, evaluation_run_id=None)
         evaluation_run_id=run_id,
         schema_version="evaluation-observations-v1",
         jsonl=True,
-        summary={"row_count": len(rows)},
+        summary={"row_count": len(batch.cases)},
         retention_days=30,
     )
 
@@ -108,8 +113,12 @@ def retain_debug_replay(
     source_rights_until=None,
     source_rights_verified=False,
 ):
+    try:
+        batch = debug_replay_batch(observations)
+    except Exception:  # noqa: BLE001 - optional retention is advisory
+        return None
     return service.write(
-        observations,
+        [batch.model_dump(mode="json")],
         owner_id=owner_id,
         scope=scope,
         kind="debug_replay",
