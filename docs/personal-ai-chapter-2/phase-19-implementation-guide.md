@@ -51,6 +51,11 @@ Iterative research keeps its distinct task and run attribution.
   buckets deny before dispatch. All required bucket reservations commit
   together. Unknown capacity is retained as unknown and tracked with local
   reserved/consumed units; it is not replaced with a guessed limit.
+- Request attempt/token budgets and unresolved-send fences use the key
+  `(owner_id, application_id, workspace_id, request_id)`. Workspace equality is
+  null-safe. `run_id` is attribution inside one logical request and does not
+  create a separate budget; runs in the same application/workspace/request
+  share attempt and token ceilings. The advisory lock uses the same scope.
 - Fixed-provider accounting resolves the exact profile ID from the current
   durable registry and rechecks its exact profile identity/facts inside the
   reservation transaction. Unknown or ambiguous quota-bucket membership is

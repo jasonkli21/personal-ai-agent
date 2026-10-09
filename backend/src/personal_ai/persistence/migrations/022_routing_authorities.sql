@@ -1,3 +1,5 @@
+-- Migration 022 is frozen together with migrations_py/022_routing_authorities.py
+-- after release. Later corrections belong in a new numbered migration.
 -- Preserve retained V1 audit records. There are no new V1 writes or executors.
 ALTER TABLE artifact_owner_fences RENAME TO owner_lifecycle_fences;
 ALTER TABLE routing_decisions RENAME TO routing_decisions_legacy;
@@ -6,6 +8,7 @@ ALTER TABLE provider_attempts ADD COLUMN dispatch_claimed_at timestamptz;
 CREATE TABLE endpoint_profile_definitions (
     endpoint_profile_id text NOT NULL,
     profile_version integer NOT NULL CHECK(profile_version>0),
+    definition_schema_version integer NOT NULL CHECK(definition_schema_version>0),
     payload jsonb NOT NULL CHECK(octet_length(payload::text)<=262144),
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY(endpoint_profile_id,profile_version)
@@ -43,7 +46,7 @@ CREATE TABLE routing_decision_events (
     scope_id text NOT NULL,
     decision_id uuid NOT NULL,
     event_id uuid NOT NULL,
-    sequence smallint NOT NULL CHECK(sequence BETWEEN 1 AND 32),
+    sequence smallint NOT NULL CHECK(sequence BETWEEN 1 AND 128),
     owner_id text NOT NULL,
     application_id text NOT NULL,
     workspace_id text,
@@ -55,3 +58,6 @@ CREATE TABLE routing_decision_events (
     FOREIGN KEY(scope_id,decision_id) REFERENCES routing_decisions(scope_id,decision_id) ON DELETE CASCADE
 );
 CREATE INDEX routing_v2_attempt ON routing_decision_events(attempt_id) WHERE attempt_id IS NOT NULL;
+
+CREATE INDEX provider_invocations_scoped_request_idx
+    ON provider_invocations(owner_id,application_id,workspace_id,request_id,started_at DESC,invocation_id);

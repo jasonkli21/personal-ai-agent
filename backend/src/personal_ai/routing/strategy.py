@@ -17,8 +17,10 @@ class RoutingReplayUnavailable(LookupError):
 
 
 class DeterministicScoringStrategy:
-    # Deliberate semantic identity: formatting/comments do not change replay.
-    # Bump when scoring, rounding, missing-value or tie-break semantics change.
+    # Manual replay identity, not a source/build digest. Bump semantic_version
+    # when externally visible scoring semantics change; bump artifact_id for
+    # every implementation behavior change, including bug fixes that preserve
+    # the declared policy. Build-level provenance is not mechanically enforced.
     ref = StrategyRef(
         strategy_id="deterministic-scoring",
         semantic_version="1",

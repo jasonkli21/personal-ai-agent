@@ -19,6 +19,10 @@ from personal_ai.routing.contracts import (
     confidence_meets,
     sensitivity_exceeds,
 )
+from personal_ai.routing.definitions import (
+    EndpointProfileDefinition,
+    encode_current_endpoint_profile,
+)
 
 MAX_ENDPOINT_CANDIDATES = 32
 MAX_ENDPOINT_REGISTRY_JSON_BYTES = 128 * 1024
@@ -82,7 +86,7 @@ class EndpointRegistry:
         repository: EndpointRegistryRepository | None = None,
     ) -> None:
         self._lock = RLock()
-        self._definitions: dict[tuple[str, int], EndpointProfile] = {}
+        self._definitions: dict[tuple[str, int], EndpointProfileDefinition] = {}
         self._repository = repository
         configured = self._validate_profiles(profiles) if profiles is not None else None
         if repository is not None:
@@ -156,7 +160,8 @@ class EndpointRegistry:
                 assessments=assessments,
             )
 
-    def historical(self, ref: EndpointRef) -> EndpointProfile:
+    def historical(self, ref: EndpointRef) -> EndpointProfileDefinition:
+        """Return the exact retained schema-versioned audit definition."""
         if self._repository is not None:
             return self._repository.load_definition(ref)
         try:
@@ -288,7 +293,9 @@ class EndpointRegistry:
 
     def _remember_active_versions(self, profiles: Sequence[EndpointProfile]) -> None:
         for profile in profiles:
-            self._definitions[(profile.endpoint_profile_id, profile.profile_version)] = profile
+            self._definitions[(profile.endpoint_profile_id, profile.profile_version)] = (
+                encode_current_endpoint_profile(profile)
+            )
             self._profile_versions[profile.endpoint_profile_id] = max(
                 profile.profile_version,
                 self._profile_versions.get(profile.endpoint_profile_id, 0),

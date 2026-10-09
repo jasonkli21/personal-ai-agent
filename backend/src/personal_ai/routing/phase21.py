@@ -24,7 +24,9 @@ from personal_ai.routing.contracts import (
 
 MAX_ROUTING_DECISION_BYTES = 65_536
 MAX_ROUTING_OUTCOME_BYTES = 16_384
-MAX_ROUTING_OUTCOMES = 32
+MAX_ROUTING_OUTCOMES = 128
+MAX_ROUTING_EVENTS_BYTES = MAX_ROUTING_OUTCOMES * MAX_ROUTING_OUTCOME_BYTES
+MAX_ROUTING_TERMINAL_EVENT_BYTES = 1_024
 MAX_ROUTING_SOURCE_REFERENCES = 64
 MAX_REPLAY_SECONDS = 90 * 24 * 60 * 60
 _SAFE_ID = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9._:/@+_-]{0,199}$")
@@ -598,6 +600,16 @@ class RoutingRecord(_FrozenModel):
     status: RoutingStatus
     events: tuple[RoutingEvent, ...] = Field(min_length=1, max_length=MAX_ROUTING_OUTCOMES)
 
+    def ensure_append_capacity(self, *, event_count: int, event_bytes: int) -> None:
+        """Fail before authorizing work if its required lifecycle cannot be stored."""
+        if event_count < 0 or event_bytes < 0:
+            raise ValueError("routing_event_capacity_invalid")
+        if len(self.events) + event_count > MAX_ROUTING_OUTCOMES:
+            raise ValueError("routing_event_capacity_exhausted")
+        current_bytes = sum(len(event.model_dump_json().encode("utf-8")) for event in self.events)
+        if current_bytes + event_bytes > MAX_ROUTING_EVENTS_BYTES:
+            raise ValueError("routing_events_payload_too_large")
+
     @model_validator(mode="after")
     def coherent(self):
         expected = "selected" if self.decision.selected else "no_route"
@@ -630,7 +642,7 @@ class RoutingRecord(_FrozenModel):
                 raise ValueError("routing_dispatch_receipt_mismatch")
             if i:
                 expected = transition(expected, event.kind)
-        if sum(len(e.model_dump_json().encode()) for e in self.events) > MAX_ROUTING_DECISION_BYTES:
+        if sum(len(e.model_dump_json().encode("utf-8")) for e in self.events) > MAX_ROUTING_EVENTS_BYTES:
             raise ValueError("routing_events_payload_too_large")
         if expected != self.status:
             raise ValueError("routing_materialized_status_invalid")

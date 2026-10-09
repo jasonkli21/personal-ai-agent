@@ -8,6 +8,7 @@ for repositories that are introduced with async-native contracts later.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -59,6 +60,17 @@ class PersistenceConflict(RuntimeError):
 
 class PersistenceRecordNotFound(LookupError):
     """An identifier does not resolve inside the caller's authorized scope."""
+
+
+def migration_checksum(version: int, sql: str, *, migration_package=None) -> str:
+    """Checksum SQL and the immutable implementation paired with migration 022."""
+    checksum_payload = sql.encode("utf-8")
+    if version == 22:
+        package = migration_package or files("personal_ai.persistence")
+        versioned_directory = package.joinpath("migrations_py")
+        checksum_payload += b"\0" + versioned_directory.joinpath("__init__.py").read_bytes()
+        checksum_payload += b"\0" + versioned_directory.joinpath("022_routing_authorities.py").read_bytes()
+    return hashlib.sha256(checksum_payload).hexdigest()
 
 
 class _DeadlineConnection:
@@ -298,12 +310,7 @@ class PostgresDatabase:
             except ValueError as error:
                 raise RuntimeError("migration_filename_invalid") from error
             sql = resource.read_text(encoding="utf-8")
-            checksum_payload = sql.encode("utf-8")
-            if version == 22:
-                checksum_payload += (
-                    files("personal_ai.persistence").joinpath("routing_migration.py").read_bytes()
-                )
-            checksum = hashlib.sha256(checksum_payload).hexdigest()
+            checksum = migration_checksum(version, sql)
             with self.transaction() as connection:
                 connection.execute("SELECT pg_advisory_xact_lock(%s, %s)", (0x504149, 10))
                 connection.execute(
@@ -321,11 +328,10 @@ class PostgresDatabase:
                     continue
                 connection.execute(sql, prepare=False)
                 if version == 22:
-                    from personal_ai.persistence.routing_migration import (
-                        migrate_routing_authorities,
+                    migration = importlib.import_module(
+                        "personal_ai.persistence.migrations_py.022_routing_authorities"
                     )
-
-                    migrate_routing_authorities(connection)
+                    migration.migrate_routing_authorities(connection)
                 connection.execute(
                     "INSERT INTO schema_migrations(version, checksum) VALUES (%s, %s)",
                     (version, checksum),

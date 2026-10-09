@@ -18,6 +18,10 @@ from personal_ai.routing.contracts import (
     EndpointRegistrySnapshot,
     compute_registry_version,
 )
+from personal_ai.routing.definitions import (
+    decode_endpoint_profile_definition,
+    encode_current_endpoint_profile,
+)
 from personal_ai.routing.registry import (
     MAX_ENDPOINT_REGISTRY_JSON_BYTES,
     EndpointRegistry,
@@ -61,18 +65,24 @@ class PostgresEndpointRegistryRepository:
     def load_definition(self, ref: EndpointRef):
         with self.database.connection() as connection:
             row = connection.execute(
-                "SELECT payload FROM endpoint_profile_definitions "
+                "SELECT definition_schema_version,payload FROM endpoint_profile_definitions "
                 "WHERE endpoint_profile_id=%s AND profile_version=%s",
                 (ref.endpoint_profile_id, ref.profile_version),
             ).fetchone()
         if row is None:
             raise LookupError("historical_endpoint_profile_unavailable")
-        from personal_ai.persistence.routing_migration import historical_profile
-
-        profile = historical_profile(row[0])
-        if profile.ref != ref:
+        try:
+            definition = decode_endpoint_profile_definition(
+                int(row[0]),
+                row[1],
+                expected_endpoint_profile_id=ref.endpoint_profile_id,
+                expected_profile_version=ref.profile_version,
+            )
+        except ValueError as error:
+            raise RuntimeError("historical_endpoint_profile_corrupt") from error
+        if definition.ref != ref:
             raise RuntimeError("historical_endpoint_profile_corrupt")
-        return profile
+        return definition
 
     def load_profile_version_history(self) -> dict[str, int]:
         scope_id = PostgresPayloadRepository.scope_id(_OWNER_ID, _SCOPE)
@@ -244,18 +254,38 @@ def _write_profile_version_history(
     existing: dict[str, int],
 ) -> None:
     for profile in profiles:
-        payload = profile.model_dump_json()
+        definition = encode_current_endpoint_profile(profile)
+        payload = definition.serialized_payload
         connection.execute(
-            "INSERT INTO endpoint_profile_definitions(endpoint_profile_id,profile_version,payload) "
-            "VALUES (%s,%s,%s::jsonb) ON CONFLICT DO NOTHING",
-            (profile.endpoint_profile_id, profile.profile_version, payload),
+            "INSERT INTO endpoint_profile_definitions(endpoint_profile_id,profile_version,"
+            "definition_schema_version,payload) VALUES (%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING",
+            (
+                profile.endpoint_profile_id,
+                profile.profile_version,
+                definition.definition_schema_version,
+                payload,
+            ),
         )
         stored = connection.execute(
-            "SELECT payload FROM endpoint_profile_definitions WHERE endpoint_profile_id=%s "
+            "SELECT definition_schema_version,payload FROM endpoint_profile_definitions "
+            "WHERE endpoint_profile_id=%s "
             "AND profile_version=%s",
             (profile.endpoint_profile_id, profile.profile_version),
         ).fetchone()
-        if stored is None or EndpointProfile.model_validate(stored[0]) != profile:
+        try:
+            decoded_existing = (
+                decode_endpoint_profile_definition(
+                    int(stored[0]),
+                    stored[1],
+                    expected_endpoint_profile_id=profile.endpoint_profile_id,
+                    expected_profile_version=profile.profile_version,
+                )
+                if stored is not None
+                else None
+            )
+        except ValueError:
+            existing = None
+        if decoded_existing != definition:
             raise RegistryConflictError("immutable_endpoint_definition_conflict")
         prior = existing.get(profile.endpoint_profile_id, 0)
         version = max(prior, profile.profile_version)

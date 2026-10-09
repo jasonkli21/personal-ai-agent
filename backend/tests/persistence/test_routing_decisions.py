@@ -50,8 +50,8 @@ def database():
         db.close()
 
 
-def setup(database, **task_changes):
-    owner = f"route-owner-{uuid4()}"
+def setup(database, *, owner_id=None, scope=SCOPE, request_id=None, **task_changes):
+    owner = owner_id or f"route-owner-{uuid4()}"
     p = _profile(f"route-endpoint-{uuid4()}")
     catalog = PostgresEndpointRegistryRepository(database)
     registry = EndpointRegistry((p,), repository=catalog)
@@ -71,11 +71,11 @@ def setup(database, **task_changes):
         **task_changes,
     )
     request = RoutingRequestFacts(
-        request_id=f"request-{uuid4()}",
+        request_id=request_id or f"request-{uuid4()}",
         policy_version="policy:v1",
         requirements=_requirements(input_tokens=64, output_tokens=16),
     )
-    d = service.route(owner_id=owner, scope=SCOPE, task=t, request=request)
+    d = service.route(owner_id=owner, scope=scope, task=t, request=request)
     assert d.selected
     prep = PreparationIdentity(
         endpoint=d.selected,
@@ -254,6 +254,85 @@ def test_auxiliary_root_budget_concurrent_single_winner_and_idempotency(database
         )
         == 1
     )
+
+
+def test_maximum_attempt_and_auxiliary_budgets_fit_postgres_event_sequence(database):
+    system = setup(database, max_physical_attempts=32, max_auxiliary_calls=16)
+    owner, service, decision, _prep, repo, _usage, _auth = system
+    for _ in range(16):
+        service.consume_auxiliary_call(
+            owner_id=owner,
+            scope=SCOPE,
+            decision_id=decision.routing_decision_id,
+            event_id=uuid4(),
+        )
+
+    def failed_send(_profile, _invocation, _attempt):
+        return None, AttemptResult(
+            outcome="failure", completed_at=datetime.now(UTC), latency_ms=1
+        )
+
+    for _ in range(32):
+        permit = finalize(system)
+        service.dispatch(
+            owner_id=owner,
+            scope=SCOPE,
+            permit=permit,
+            operation="bounded_generation",
+            send=failed_send,
+        )
+
+    record = repo.get(owner_id=owner, scope=SCOPE, decision_id=decision.routing_decision_id)
+    assert record.status == "failed"
+    assert len(record.events) == 113
+
+
+def test_reselection_unresolved_send_fence_isolated_by_application_scope(database):
+    owner = f"route-owner-{uuid4()}"
+    request_id = f"shared-request-{uuid4()}"
+    first_scope = ApplicationScope(application_id="application-a")
+    second_scope = ApplicationScope(application_id="application-b")
+    first = setup(
+        database,
+        owner_id=owner,
+        scope=first_scope,
+        request_id=request_id,
+        max_reselections=1,
+    )
+    first_permit = first[1].finalize(
+        owner_id=owner,
+        scope=first_scope,
+        decision_id=first[2].routing_decision_id,
+        preparation=first[3],
+        operation="bounded_generation",
+    )
+    first[1].claim(
+        owner_id=owner,
+        scope=first_scope,
+        permit=first_permit,
+        operation="bounded_generation",
+    )
+
+    second = setup(
+        database,
+        owner_id=owner,
+        scope=second_scope,
+        request_id=request_id,
+        max_reselections=1,
+    )
+    second[1].finish(
+        owner_id=owner,
+        scope=second_scope,
+        decision_id=second[2].routing_decision_id,
+    )
+    child = second[1].route(
+        owner_id=owner,
+        scope=second_scope,
+        task=second[2].task,
+        request=second[2].request,
+        parent_decision_id=second[2].routing_decision_id,
+    )
+    assert child.parent_decision_id == second[2].routing_decision_id
 
 
 def test_dispatch_callback_runs_after_commit_and_settles_exact_attempt(database):

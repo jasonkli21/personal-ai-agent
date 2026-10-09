@@ -9,6 +9,8 @@ from uuid import NAMESPACE_URL, uuid5
 from personal_ai.persistence.postgres_routing_observations import database_time
 from personal_ai.routing.contracts import confidence_meets
 from personal_ai.routing.phase21 import (
+    MAX_ROUTING_OUTCOME_BYTES,
+    MAX_ROUTING_TERMINAL_EVENT_BYTES,
     AuthorizationEvidence,
     CandidateFact,
     DispatchPermit,
@@ -407,6 +409,17 @@ class RoutingDecisionService:
             if record.status not in {"selected", "failed"}:
                 raise RoutingFinalizationError("routing_decision_not_finalizable")
             try:
+                # Authorization consumes one event and the next required terminal
+                # transition consumes another. Check both before reserving P19.
+                record.ensure_append_capacity(
+                    event_count=2,
+                    event_bytes=(
+                        MAX_ROUTING_OUTCOME_BYTES + MAX_ROUTING_TERMINAL_EVENT_BYTES
+                    ),
+                )
+            except ValueError as error:
+                raise RoutingFinalizationError(str(error)) from error
+            try:
                 # A savepoint ensures failed authorization/publication rolls back every reserve.
                 with c.transaction():
                     profile, evidence = self._check_dispatch(
@@ -496,6 +509,24 @@ class RoutingDecisionService:
             now = database_time(c)
             if now >= min(permit.expires_at, evidence.valid_until):
                 raise RoutingFinalizationError("routing_permit_expired")
+            dispatched_event = RoutingEvent(
+                kind="dispatched",
+                occurred_at=now,
+                attempt_id=permit.attempt_id,
+                authorization_reference=evidence.reference,
+            )
+            try:
+                # The provider callback is enabled only after both the dispatch
+                # event and its eventual closed/failed event fit in the record.
+                record.ensure_append_capacity(
+                    event_count=2,
+                    event_bytes=(
+                        len(dispatched_event.model_dump_json().encode("utf-8"))
+                        + MAX_ROUTING_TERMINAL_EVENT_BYTES
+                    ),
+                )
+            except ValueError as error:
+                raise RoutingFinalizationError(str(error)) from error
             invocation = _invocation(record.decision, profile, preparation, operation)
             attempt = self.usage.reserved_attempt_in_transaction(
                 c,
@@ -513,12 +544,7 @@ class RoutingDecisionService:
                 c,
                 scope=scope,
                 record=record,
-                event=RoutingEvent(
-                    kind="dispatched",
-                    occurred_at=database_time(c),
-                    attempt_id=attempt.attempt_id,
-                    authorization_reference=evidence.reference,
-                ),
+                event=dispatched_event,
             )
             invocation = _invocation(record.decision, profile, preparation, operation)
             if database_time(c) >= min(

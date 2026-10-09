@@ -172,8 +172,15 @@ class PostgresRoutingDecisionRepository:
             # An unresolved physical send can never authorize another selection.
             unresolved = c.execute(
                 "SELECT 1 FROM provider_invocations i JOIN provider_attempts a USING(invocation_id) "
-                "WHERE i.owner_id=%s AND i.request_id=%s AND a.status IN ('pending','unknown','timeout') LIMIT 1",
-                (owner_id, decision.request.request_id),
+                "WHERE i.owner_id=%s AND i.application_id=%s "
+                "AND i.workspace_id IS NOT DISTINCT FROM %s AND i.request_id=%s "
+                "AND a.status IN ('pending','unknown','timeout') LIMIT 1",
+                (
+                    owner_id,
+                    decision.application_id,
+                    decision.workspace_id,
+                    decision.request.request_id,
+                ),
             ).fetchone()
             if unresolved:
                 raise PersistenceConflict("provider_outcome_unresolved")

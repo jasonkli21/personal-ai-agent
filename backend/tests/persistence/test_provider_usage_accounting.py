@@ -71,16 +71,19 @@ def _invocation(
     *,
     invocation_id=None,
     task_id="provider_usage_test",
+    application_id="personal_ai",
+    workspace_id=None,
+    run_id=None,
 ) -> InvocationMetadata:
     return InvocationMetadata(
         invocation_id=invocation_id or uuid4(),
         owner_id=owner,
-        application_id="personal_ai",
-        workspace_id=None,
+        application_id=application_id,
+        workspace_id=workspace_id,
         task_id=task_id,
         operation="bounded_generation",
         request_id=request_id,
-        run_id=None,
+        run_id=run_id,
         endpoint=endpoint,
     )
 
@@ -240,6 +243,71 @@ def test_unknown_quota_keeps_unknown_confidence_and_tracks_local_usage(postgres_
 
     assert before == (authority, "requests", "unknown", None, None, 0, 1)
     assert after == (authority, "requests", "unknown", None, None, 1, 0)
+
+
+def test_request_budgets_are_isolated_between_applications(postgres_database):
+    owner = f"owner-{uuid4()}"
+    request_id = f"same-request-{uuid4()}"
+    authority = f"account-{uuid4()}"
+    bucket = _bucket(f"bucket-{uuid4()}", authority, limit=1000)
+    endpoint = _endpoint(
+        f"endpoint-{uuid4()}", account=authority, credential="key", buckets=(bucket,)
+    )
+    accounting = PostgresProviderUsageAccounting(postgres_database)
+    invocations = (
+        _invocation(owner, request_id, endpoint, application_id="application-a"),
+        _invocation(owner, request_id, endpoint, application_id="application-b"),
+    )
+
+    for invocation in invocations:
+        accounting.reserve_attempt(invocation, _attempt(), max_attempts=1)
+
+
+def test_request_budgets_and_unresolved_sends_are_isolated_between_workspaces(
+    postgres_database,
+):
+    owner = f"owner-{uuid4()}"
+    request_id = f"same-request-{uuid4()}"
+    authority = f"account-{uuid4()}"
+    bucket = _bucket(f"bucket-{uuid4()}", authority, limit=1000)
+    endpoint = _endpoint(
+        f"endpoint-{uuid4()}", account=authority, credential="key", buckets=(bucket,)
+    )
+    accounting = PostgresProviderUsageAccounting(postgres_database)
+    first = _invocation(
+        owner, request_id, endpoint, application_id="shared-app", workspace_id="workspace-a"
+    )
+    other_workspace = _invocation(
+        owner, request_id, endpoint, application_id="shared-app", workspace_id="workspace-b"
+    )
+
+    accounting.reserve_attempt(first, _attempt(), max_attempts=1)
+    # The unresolved first send and its request budget do not cross workspace scope.
+    accounting.reserve_attempt(other_workspace, _attempt(), max_attempts=1)
+
+
+def test_same_scope_shares_budget_across_runs(postgres_database):
+    owner = f"owner-{uuid4()}"
+    request_id = f"same-request-{uuid4()}"
+    authority = f"account-{uuid4()}"
+    bucket = _bucket(f"bucket-{uuid4()}", authority, limit=1000)
+    endpoint = _endpoint(
+        f"endpoint-{uuid4()}", account=authority, credential="key", buckets=(bucket,)
+    )
+    accounting = PostgresProviderUsageAccounting(postgres_database)
+    first = _invocation(
+        owner, request_id, endpoint, application_id="shared-app", run_id="run-a"
+    )
+    second_run = _invocation(
+        owner, request_id, endpoint, application_id="shared-app", run_id="run-b"
+    )
+    first_attempt = _attempt()
+
+    accounting.reserve_attempt(first, first_attempt, max_attempts=1)
+    _settle(accounting, first, first_attempt, outcome="success")
+
+    with pytest.raises(UsageAdmissionDenied, match="provider_attempt_budget_exceeded"):
+        accounting.reserve_attempt(second_run, _attempt(), max_attempts=1)
 
 
 def test_all_required_quota_buckets_reserve_or_deny_without_partial_units(

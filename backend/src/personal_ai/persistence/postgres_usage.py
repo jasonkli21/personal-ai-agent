@@ -108,17 +108,24 @@ class PostgresProviderUsageAccounting:
             invocation.owner_id,
             _scope(invocation.application_id, invocation.workspace_id),
         )
+        request_scope = _request_budget_scope(invocation)
         connection.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
-            (f"provider-usage:{invocation.owner_id}:{invocation.request_id}",),
+            (f"provider-usage:{request_scope}",),
         )
         _insert_invocation(connection, invocation, scope_id, now, retention_until)
 
         unresolved = connection.execute(
             "SELECT 1 FROM provider_attempts a JOIN provider_invocations i USING(invocation_id) "
-            "WHERE i.owner_id=%s AND i.request_id=%s "
+            "WHERE i.owner_id=%s AND i.application_id=%s "
+            "AND i.workspace_id IS NOT DISTINCT FROM %s AND i.request_id=%s "
             "AND a.status IN ('pending','unknown','timeout') LIMIT 1",
-            (invocation.owner_id, invocation.request_id),
+            (
+                invocation.owner_id,
+                invocation.application_id,
+                invocation.workspace_id,
+                invocation.request_id,
+            ),
         ).fetchone()
         if unresolved is not None:
             denial = "provider_outcome_unresolved"
@@ -126,8 +133,14 @@ class PostgresProviderUsageAccounting:
         attempt_count, reserved_tokens = connection.execute(
             "SELECT count(*),COALESCE(sum(reserved_tokens),0) "
             "FROM provider_attempts a JOIN provider_invocations i USING (invocation_id) "
-            "WHERE i.owner_id=%s AND i.request_id=%s",
-            (invocation.owner_id, invocation.request_id),
+            "WHERE i.owner_id=%s AND i.application_id=%s "
+            "AND i.workspace_id IS NOT DISTINCT FROM %s AND i.request_id=%s",
+            (
+                invocation.owner_id,
+                invocation.application_id,
+                invocation.workspace_id,
+                invocation.request_id,
+            ),
         ).fetchone()
         call_tokens = max(0, attempt.reserved_tokens)
         if denial is None and attempt_count >= min(max_attempts, self.request_attempt_limit):
@@ -960,6 +973,20 @@ def _health_unavailable(health, now):
     if cooldown is not None:
         return cooldown > now
     return status != "healthy"
+
+
+def _request_budget_scope(invocation: InvocationMetadata) -> str:
+    """Canonical logical-request key; separate apps/workspaces, share across runs."""
+    return json.dumps(
+        [
+            invocation.owner_id,
+            invocation.application_id,
+            invocation.workspace_id,
+            invocation.request_id,
+        ],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
 
 
 def _scope(application_id, workspace_id):

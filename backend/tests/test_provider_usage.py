@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -65,6 +66,29 @@ def test_provider_unit_reservations_preserve_separate_token_and_request_units():
         "requests": 1,
         "tokens": 18,
     }
+
+
+def test_postgres_request_budget_key_scopes_application_and_workspace_but_shares_runs():
+    from personal_ai.persistence.postgres_usage import _request_budget_scope
+
+    base = new_invocation(
+        _endpoint(), operation="generation", quota_operation="bounded_generation"
+    )
+    scoped = replace(
+        base,
+        owner_id="owner-a",
+        application_id="application-a",
+        workspace_id=None,
+        request_id="request-1",
+        run_id="run-a",
+    )
+    other_run = replace(scoped, run_id="run-b")
+    other_application = replace(scoped, application_id="application-b")
+    other_workspace = replace(scoped, workspace_id="workspace-a")
+
+    assert _request_budget_scope(scoped) == _request_budget_scope(other_run)
+    assert _request_budget_scope(scoped) != _request_budget_scope(other_application)
+    assert _request_budget_scope(scoped) != _request_budget_scope(other_workspace)
     assert dict(unit_reservations(additional_units={"neurons": 250})) == {
         "neurons": 250,
         "requests": 1,

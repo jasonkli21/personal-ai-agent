@@ -132,11 +132,13 @@ class _MemoryConnection:
                 for profile_id, version in sorted(self.profile_versions.items())
             ])
         if query.startswith("INSERT INTO endpoint_profile_definitions"):
-            self.definitions.setdefault((params[0],params[1]),json.loads(params[2]))
+            self.definitions.setdefault(
+                (params[0], params[1]), (params[2], json.loads(params[3]))
+            )
             return _Cursor(rowcount=1)
-        if query.startswith("SELECT payload FROM endpoint_profile_definitions"):
-            value = self.definitions.get((params[0],params[1]))
-            return _Cursor((value,) if value is not None else None)
+        if query.startswith("SELECT definition_schema_version,payload FROM endpoint_profile_definitions"):
+            value = self.definitions.get((params[0], params[1]))
+            return _Cursor(value)
         if query.startswith("INSERT INTO endpoint_registry_snapshots"):
             if self.registry is not None:
                 return _Cursor()
@@ -198,6 +200,10 @@ def test_postgres_repository_seeds_updates_and_reloads_registry_snapshot():
     assert restored.snapshot == registry.snapshot
     assert restored.snapshot.revision == 2
     assert restored.profiles[0].context_limit_tokens == 2048
+    historical = restored.historical(initial.ref)
+    assert historical.ref == initial.ref
+    assert historical.definition_schema_version == 2
+    assert historical.payload["context_limit_tokens"] == 4096
 
 
 def test_postgres_repository_rejects_stale_registry_compare_and_swap():

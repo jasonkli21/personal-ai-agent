@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from pathlib import Path
 from threading import RLock
 from types import SimpleNamespace
 from uuid import uuid4
@@ -21,6 +22,7 @@ from personal_ai.persistence.postgres_owner_lifecycle import OwnerFenced
 from personal_ai.routing import (
     AuthorizationEvidence,
     DeterministicScoringStrategy,
+    DispatchPermit,
     EndpointPriority,
     EndpointRegistry,
     PreparationIdentity,
@@ -384,6 +386,147 @@ def test_semantic_identity_replay_retention_and_registry_changes(system):
             decision, DeterministicScoringStrategy(), now=decision.replay_until
         )
     assert system[0].registry.historical(decision.selected).ref == decision.selected
+
+
+def test_maximum_attempt_and_auxiliary_budgets_fit_bounded_lifecycle_storage(system):
+    decision = route(
+        system,
+        task=task(max_physical_attempts=32, max_auxiliary_calls=16, deadline_ms=600_000),
+    )
+    preparation = prepare(decision, system[1])
+    events = [RoutingEvent(kind="selected", occurred_at=decision.created_at)]
+    for index in range(16):
+        events.append(
+            RoutingEvent(
+                kind="auxiliary",
+                occurred_at=decision.created_at + timedelta(milliseconds=index + 1),
+            )
+        )
+    for index in range(32):
+        started = decision.created_at + timedelta(milliseconds=100 + index * 3)
+        attempt_id = uuid4()
+        permit = DispatchPermit(
+            decision_id=decision.routing_decision_id,
+            invocation_id=uuid4(),
+            attempt_id=attempt_id,
+            expires_at=started + timedelta(seconds=1),
+        )
+        events.extend(
+            (
+                RoutingEvent(
+                    kind="authorized",
+                    occurred_at=started,
+                    preparation=preparation,
+                    permit=permit,
+                    authorization_reference="grant:v1",
+                    attempt_id=attempt_id,
+                ),
+                RoutingEvent(
+                    kind="dispatched",
+                    occurred_at=started + timedelta(milliseconds=1),
+                    attempt_id=attempt_id,
+                    authorization_reference="grant:v1",
+                ),
+                RoutingEvent(
+                    kind="failed",
+                    occurred_at=started + timedelta(milliseconds=2),
+                    attempt_id=attempt_id,
+                    reason="attempt-failed",
+                ),
+            )
+        )
+
+    record = RoutingRecord(decision=decision, status="failed", events=tuple(events))
+    assert len(record.events) == 113
+
+    migration = (
+        Path(__file__).parents[1]
+        / "src/personal_ai/persistence/migrations/022_routing_authorities.sql"
+    ).read_text(encoding="utf-8")
+    assert "sequence BETWEEN 1 AND 128" in migration
+
+
+def test_finalization_does_not_reserve_when_required_followup_events_cannot_fit(system):
+    decision = route(
+        system,
+        task=task(max_physical_attempts=32, max_auxiliary_calls=16, deadline_ms=600_000),
+    )
+    preparation = prepare(decision, system[1])
+    events = [RoutingEvent(kind="selected", occurred_at=decision.created_at)]
+    for index in range(16):
+        events.append(
+            RoutingEvent(
+                kind="auxiliary",
+                occurred_at=decision.created_at + timedelta(milliseconds=index + 1),
+            )
+        )
+    for index in range(36):
+        started = decision.created_at + timedelta(milliseconds=100 + index * 3)
+        attempt_id = uuid4()
+        permit = DispatchPermit(
+            decision_id=decision.routing_decision_id,
+            invocation_id=uuid4(),
+            attempt_id=attempt_id,
+            expires_at=started + timedelta(seconds=1),
+        )
+        events.extend(
+            (
+                RoutingEvent(
+                    kind="authorized",
+                    occurred_at=started,
+                    preparation=preparation,
+                    permit=permit,
+                    authorization_reference="grant:v1",
+                    attempt_id=attempt_id,
+                ),
+                RoutingEvent(
+                    kind="dispatched",
+                    occurred_at=started + timedelta(milliseconds=1),
+                    attempt_id=attempt_id,
+                    authorization_reference="grant:v1",
+                ),
+                RoutingEvent(
+                    kind="failed",
+                    occurred_at=started + timedelta(milliseconds=2),
+                    attempt_id=attempt_id,
+                    reason="attempt-failed",
+                ),
+            )
+        )
+    last_started = decision.created_at + timedelta(milliseconds=300)
+    last_attempt_id = uuid4()
+    last_permit = DispatchPermit(
+        decision_id=decision.routing_decision_id,
+        invocation_id=uuid4(),
+        attempt_id=last_attempt_id,
+        expires_at=last_started + timedelta(seconds=1),
+    )
+    events.extend(
+        (
+            RoutingEvent(
+                kind="authorized",
+                occurred_at=last_started,
+                preparation=preparation,
+                permit=last_permit,
+                authorization_reference="grant:v1",
+                attempt_id=last_attempt_id,
+            ),
+            RoutingEvent(
+                kind="failed",
+                occurred_at=last_started + timedelta(milliseconds=1),
+                reason="attempt-failed",
+            ),
+        )
+    )
+    assert len(events) == 127
+    system[1].records[decision.routing_decision_id] = RoutingRecord(
+        decision=decision, status="failed", events=tuple(events)
+    )
+
+    with pytest.raises(RoutingFinalizationError, match="routing_event_capacity_exhausted"):
+        finalize(system, decision, preparation)
+    assert system[2].reserve_calls == 0
+    assert not system[1].attempts
 
 
 def test_unrelated_profile_change_does_not_invalidate_dispatch(system):
