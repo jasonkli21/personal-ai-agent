@@ -156,3 +156,31 @@ Validation on 2026-10-09:
 | Documentation link/content review and `git diff --check` | Passed; all relative targets in seven changed Markdown files resolve, with no whitespace errors. |
 
 The real-engine acceptance requirement remains: run migration 022 and the opt-in persistence suites against isolated, healthy PostgreSQL/pgvector and DynamoDB Local services before deployment. No cloud, provider, deployed, or production-security acceptance is inferred from these offline results.
+
+## 9. Final follow-up review
+
+Date: 2026-10-09. Reviewed and tested tree: baseline `03d0ebf271cb36e26aaa0b048e92a6f8484ce41c` plus the follow-up changes in this commit.
+
+Follow-up backend code/test SHA-256: **90cc6821fdeb5a44c7dd0e0c369beca253c5c5e2e0a77d674329b2174e0f5d73**. The digest covers sorted changed Python paths under `backend/src` and `backend/tests`, hashing each repo-relative UTF-8 path, a NUL byte, an eight-byte big-endian file length, and the file bytes.
+
+| Finding | Status | Disposition |
+| --- | --- | --- |
+| Historical endpoint definitions were not canonical across semantically unordered list fields. | Confirmed; modified. | V1/V2 decoders now sort capabilities, profile and counter schema IDs, quota buckets by ID, and bucket operations before producing serialized payloads. V1 first strips its dynamic quota fields. Differently ordered payloads decode equally, and the migration-produced V2 record equals the runtime encoder. |
+| Corrupt retained definitions used an invalid exception path in registry persistence. | Confirmed; modified. | Missing, unsupported, malformed, or identity-mismatched stored definitions now raise `RegistryConflictError("immutable_endpoint_definition_conflict")`; decoding failures are chained as the cause. The profile-version history dictionary is not reassigned. Repository tests cover each corrupt form and a valid row followed by a corrupt row. |
+| The earlier migration 022 checksum may exist in a durable database. | Confirmed as a deployment precondition; external status unresolved. | No Postgres DSN or test DSN is configured in this environment; ports 54329/54330 have no listener. The earlier local `initdb` attempts failed at shared-memory allocation, so no local schema row is available. No external developer/staging/cloud database was accessible to inspect. The checksum from baseline `7a29e841` is `d3e211d70c66e564293663006198dda987c1de5f3c1b49875199de21f38ea197` (SQL plus its mutable `routing_migration.py`); current `03d0ebf` expects `5cdfc9c6a4b913384431cb6928fc57d8231d7620eb378f016cd823f10a9ffb21`. No forward migration was added because no database row could establish that the old form was applied. Before deployment, inspect `schema_migrations` in every target; if any row has the old checksum, preserve that migration and introduce a forward migration rather than editing history. |
+| The shared package initializer is part of migration 022's checksum. | Confirmed; initializer exclusion rejected for now. | The initializer is docstring-only, but removing it from the checksum changes the value again. With durable application history unverified, the existing checksum boundary is preserved; keep the initializer immutable with the SQL and frozen module until target databases are inventoried. |
+| Real Postgres/DynamoDB Local acceptance remains unexecuted. | Confirmed; environmentally blocked. | Docker, DynamoDB Local, configured DSNs, and local database listeners are unavailable. Existing opt-in tests remain intact and skipped; no engine behavior is inferred from in-memory adapters. |
+
+Migration 022's current SQL, frozen implementation, and checksum contract were not changed in this follow-up. The current revision must remain frozen while the target-database inventory is pending, but release compatibility is not certified until the old/current checksum comparison is completed for every durable environment.
+
+### Follow-up validation
+
+| Check | Result |
+| --- | --- |
+| `PATH="$PWD/backend/.venv/bin:$PATH" PYTEST_ADDOPTS=-q make backend-test backend-lint` | 1,041 passed, 67 skipped, one existing Starlette deprecation warning; Ruff passed. |
+| `cd backend && .venv/bin/python -m pytest -q tests/test_routing_migration.py tests/test_postgres_routing.py` | 23 passed. |
+| `PATH="$PWD/backend/.venv/bin:$PATH" UV_CACHE_DIR=/private/tmp/personal-ai-followup-uv-cache make backend-build` | Source distribution and wheel built successfully. |
+| `cd backend && .venv/bin/python -m compileall -q src` | Passed. |
+| Nine Makefile offline evaluation targets: context, context-plan, memory, memory-lifecycle, research, decision, domain, iterative-research, itinerary-proposal | Passed; synthetic/offline only. |
+| Documentation link review and `git diff --check` | Passed; all relative targets in changed Markdown files resolve, no whitespace errors. |
+| Real Postgres/DynamoDB Local suites | Not run: no configured DSNs, local listeners, Docker, or DynamoDB Local executable. No real migration/concurrency behavior is claimed. |

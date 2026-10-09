@@ -160,12 +160,44 @@ def _decode_v1(payload: dict[str, Any]) -> dict[str, Any]:
         {key: value for key, value in bucket.items() if key not in _V1_DYNAMIC_FIELDS}
         for bucket in normalized["quota_buckets"]
     ]
+    _canonicalize_unordered_fields(normalized)
     return normalized
 
 
 def _decode_v2(payload: dict[str, Any]) -> dict[str, Any]:
     """Freeze the V2 static profile shape independently of future P18 models."""
-    return _validate_profile_shape(payload, dynamic_quota_fields=False)
+    normalized = _validate_profile_shape(payload, dynamic_quota_fields=False)
+    _canonicalize_unordered_fields(normalized)
+    return normalized
+
+
+def _canonicalize_unordered_fields(profile: dict[str, Any]) -> None:
+    """Normalize the set-like fields shared by the frozen V1 and V2 shapes."""
+    profile["capabilities"] = _sorted_string_values(profile["capabilities"])
+    profile["structured_schema_ids"] = _sorted_string_values(
+        profile["structured_schema_ids"]
+    )
+    buckets = profile["quota_buckets"]
+    for bucket in buckets:
+        bucket["operations"] = _sorted_string_values(bucket["operations"])
+    buckets.sort(key=lambda bucket: bucket["bucket_id"])
+    counter = profile.get("counter")
+    if counter is not None:
+        if not isinstance(counter, dict):
+            raise ValueError("endpoint_definition_payload_invalid")
+        counter["structured_schema_ids"] = _sorted_string_values(
+            counter.get("structured_schema_ids")
+        )
+
+
+def _sorted_string_values(values: Any) -> list[str]:
+    if (
+        not isinstance(values, list)
+        or any(not isinstance(value, str) for value in values)
+        or len(set(values)) != len(values)
+    ):
+        raise ValueError("endpoint_definition_payload_invalid")
+    return sorted(values)
 
 
 def _validate_profile_shape(
@@ -221,6 +253,7 @@ def _validate_profile_shape(
             or not isinstance(bucket.get("authority_scope_id"), str)
             or not isinstance(bucket.get("unit"), str)
             or not isinstance(bucket.get("operations"), list)
+            or any(not isinstance(operation, str) for operation in bucket["operations"])
         ):
             raise ValueError("endpoint_definition_payload_invalid")
     return json.loads(json.dumps(payload, separators=(",", ":")))

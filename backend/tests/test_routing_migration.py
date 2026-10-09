@@ -11,11 +11,14 @@ from types import SimpleNamespace
 import pytest
 
 from personal_ai.persistence.postgres import migration_checksum
-from personal_ai.routing import EndpointRegistrySnapshot
+from personal_ai.routing import CounterCompatibility, EndpointRegistrySnapshot
 from personal_ai.routing.contracts import EndpointProfile
-from personal_ai.routing.definitions import decode_endpoint_profile_definition
+from personal_ai.routing.definitions import (
+    decode_endpoint_profile_definition,
+    encode_current_endpoint_profile,
+)
 from personal_ai.usage.quota import QuotaObservation
-from tests.test_endpoint_registry import _profile
+from tests.test_endpoint_registry import _bucket, _profile
 
 _ROOT = Path(__file__).resolve().parents[1]
 migrate_routing_authorities = importlib.import_module(
@@ -23,26 +26,94 @@ migrate_routing_authorities = importlib.import_module(
 ).migrate_routing_authorities
 
 
-def old_snapshot():
-    profile = _profile("legacy:profile").model_dump(mode="json")
+def _canonical_legacy_profile(profile):
+    profile = copy.deepcopy(profile)
+    profile["capabilities"] = sorted(profile["capabilities"])
+    profile["structured_schema_ids"] = sorted(profile["structured_schema_ids"])
+    for bucket in profile["quota_buckets"]:
+        bucket["operations"] = sorted(bucket["operations"])
+    profile["quota_buckets"].sort(key=lambda bucket: bucket["bucket_id"])
+    if profile["counter"] is not None:
+        profile["counter"]["structured_schema_ids"] = sorted(
+            profile["counter"]["structured_schema_ids"]
+        )
+    return profile
+
+
+def old_snapshot(profile=None, *, reorder=False):
+    profile = (profile or _profile("legacy:profile")).model_dump(mode="json")
     for bucket in profile["quota_buckets"]:
         bucket.update(remaining=0, reset_at=None, observed_at=None, fresh_until=None)
-        bucket["operations"] = sorted(bucket["operations"])
-    profile["capabilities"] = sorted(profile["capabilities"])
+    canonical = _canonical_legacy_profile(profile)
     digest = hashlib.sha256(
         json.dumps(
-            {"revision": 1, "profiles": [profile]},
+            {"revision": 1, "profiles": [canonical]},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=True,
         ).encode("ascii")
     ).hexdigest()
+    if reorder:
+        profile["capabilities"].reverse()
+        profile["structured_schema_ids"].reverse()
+        profile["quota_buckets"].reverse()
+        for bucket in profile["quota_buckets"]:
+            bucket["operations"].reverse()
+        if profile["counter"] is not None:
+            profile["counter"]["structured_schema_ids"].reverse()
     return {
         "schema_version": "endpoint-registry-v1",
         "revision": 1,
         "registry_version": digest,
         "profiles": [profile],
     }
+
+
+def _profile_with_unordered_fields(profile_id="canonical:profile"):
+    operations = frozenset({"bounded_generation", "token_counting"})
+    counter = CounterCompatibility(
+        endpoint_profile_id=profile_id,
+        endpoint_id="synthetic-endpoint-v1",
+        deployment_id="synthetic-deployment-a",
+        credential_scope_id="credential-a",
+        account_scope_id="account-a",
+        provider_id="synthetic",
+        model_id="model-a",
+        serializer_id="synthetic-chat-v1",
+        counter_id="synthetic-counter-v1",
+        structured_schema_ids=("schema:z", "schema:a"),
+    )
+    return _profile(
+        profile_id,
+        capabilities=frozenset({"bounded_generation", "token_counting"}),
+        counter=counter,
+        structured_schema_ids=("schema:z", "schema:a"),
+        quota_buckets=(
+            _bucket("bucket:z", operations=operations),
+            _bucket("bucket:a", operations=operations),
+        ),
+    )
+
+
+def _unordered_payload_variants(profile, *, schema_version):
+    first = profile.model_dump(mode="json")
+    first["capabilities"] = ["token_counting", "bounded_generation"]
+    first["structured_schema_ids"] = ["schema:z", "schema:a"]
+    first["quota_buckets"].sort(key=lambda bucket: bucket["bucket_id"], reverse=True)
+    for bucket in first["quota_buckets"]:
+        bucket["operations"] = ["token_counting", "bounded_generation"]
+        if schema_version == 1:
+            bucket.update(remaining=0, reset_at=None, observed_at=None, fresh_until=None)
+    first["counter"]["structured_schema_ids"] = ["schema:z", "schema:a"]
+
+    second = copy.deepcopy(first)
+    second["capabilities"].reverse()
+    second["structured_schema_ids"].reverse()
+    second["quota_buckets"].reverse()
+    for bucket in second["quota_buckets"]:
+        bucket["operations"].reverse()
+    second["counter"]["structured_schema_ids"].reverse()
+    return first, second
 
 
 class MigrationConnection:
@@ -181,6 +252,52 @@ def test_endpoint_definition_decoders_are_versioned_and_independent_of_current_m
     assert v2.definition_schema_version == 2
     with pytest.raises(ValueError, match="endpoint_definition_schema_unsupported"):
         decode_endpoint_profile_definition(3, v2_profile)
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_endpoint_definition_decoders_canonicalize_unordered_collections(schema_version):
+    profile = _profile_with_unordered_fields()
+    first, second = _unordered_payload_variants(profile, schema_version=schema_version)
+
+    decoded_first = decode_endpoint_profile_definition(schema_version, first)
+    decoded_second = decode_endpoint_profile_definition(schema_version, second)
+
+    assert decoded_first == decoded_second
+    assert decoded_first.serialized_payload == decoded_second.serialized_payload
+    canonical = decoded_first.payload
+    assert canonical["capabilities"] == ["bounded_generation", "token_counting"]
+    assert canonical["structured_schema_ids"] == ["schema:a", "schema:z"]
+    assert [bucket["bucket_id"] for bucket in canonical["quota_buckets"]] == [
+        "bucket:a",
+        "bucket:z",
+    ]
+    assert all(
+        bucket["operations"] == ["bounded_generation", "token_counting"]
+        for bucket in canonical["quota_buckets"]
+    )
+    assert canonical["counter"]["structured_schema_ids"] == ["schema:a", "schema:z"]
+    if schema_version == 1:
+        assert all("remaining" not in bucket for bucket in canonical["quota_buckets"])
+
+
+def test_migration_v1_and_v2_definitions_match_runtime_canonical_encoding():
+    profile = _profile_with_unordered_fields("legacy:profile")
+    legacy = old_snapshot(profile, reorder=True)
+    connection = MigrationConnection(copy.deepcopy(legacy))
+
+    migrate_routing_authorities(connection)
+
+    v1_schema, v1_payload = connection.definitions[("legacy:profile", 1)]
+    v2_schema, v2_payload = connection.definitions[("legacy:profile", 2)]
+    assert v1_schema == 1
+    assert decode_endpoint_profile_definition(1, v1_payload) == decode_endpoint_profile_definition(
+        1, legacy["profiles"][0]
+    )
+
+    migrated_v2 = decode_endpoint_profile_definition(v2_schema, v2_payload)
+    runtime_profile = EndpointProfile.model_validate(connection.upgraded["profiles"][0])
+    assert v2_schema == 2
+    assert migrated_v2 == encode_current_endpoint_profile(runtime_profile)
 
 
 def test_runtime_quota_observations_validate_freshness_and_remaining():

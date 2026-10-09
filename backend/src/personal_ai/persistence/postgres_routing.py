@@ -272,19 +272,19 @@ def _write_profile_version_history(
             "AND profile_version=%s",
             (profile.endpoint_profile_id, profile.profile_version),
         ).fetchone()
+        if stored is None:
+            raise RegistryConflictError("immutable_endpoint_definition_conflict")
         try:
-            decoded_existing = (
-                decode_endpoint_profile_definition(
-                    int(stored[0]),
-                    stored[1],
-                    expected_endpoint_profile_id=profile.endpoint_profile_id,
-                    expected_profile_version=profile.profile_version,
-                )
-                if stored is not None
-                else None
+            decoded_existing = decode_endpoint_profile_definition(
+                int(stored[0]),
+                stored[1],
+                expected_endpoint_profile_id=profile.endpoint_profile_id,
+                expected_profile_version=profile.profile_version,
             )
-        except ValueError:
-            existing = None
+        except (TypeError, ValueError, OverflowError) as error:
+            raise RegistryConflictError(
+                "immutable_endpoint_definition_conflict"
+            ) from error
         if decoded_existing != definition:
             raise RegistryConflictError("immutable_endpoint_definition_conflict")
         prior = existing.get(profile.endpoint_profile_id, 0)

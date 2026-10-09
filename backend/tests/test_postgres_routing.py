@@ -6,8 +6,12 @@ from contextlib import contextmanager
 import pytest
 from pydantic import ValidationError
 
-from personal_ai.persistence.postgres_routing import PostgresEndpointRegistryRepository
+from personal_ai.persistence.postgres_routing import (
+    PostgresEndpointRegistryRepository,
+    _write_profile_version_history,
+)
 from personal_ai.routing import (
+    CounterCompatibility,
     DataUsePolicy,
     EndpointProfile,
     EndpointRegistry,
@@ -16,6 +20,7 @@ from personal_ai.routing import (
     RegistryPayloadTooLargeError,
     StrictFreeEligibilityAttestation,
 )
+from personal_ai.routing.definitions import encode_current_endpoint_profile
 
 
 def _profile(
@@ -25,6 +30,8 @@ def _profile(
     profile_id: str = "synthetic:account-a:key-a:model-a",
     account_scope_id: str = "account-a",
     structured_schema_ids: tuple[str, ...] = (),
+    capabilities: frozenset[str] = frozenset({"bounded_generation"}),
+    counter: CounterCompatibility | None = None,
     quota_buckets: tuple[QuotaBucket, ...] | None = None,
 ) -> EndpointProfile:
     return EndpointProfile(
@@ -45,7 +52,7 @@ def _profile(
         billing_owner="provider_account",
         enabled=True,
         strict_free_enabled=True,
-        capabilities=frozenset({"bounded_generation"}),
+        capabilities=capabilities,
         context_limit_tokens=4096,
         max_output_tokens=1024,
         strict_free_attestation=StrictFreeEligibilityAttestation(
@@ -66,6 +73,7 @@ def _profile(
             status="approved", max_sensitivity="personal", policy_reference="policy:v1"
         ),
         structured_schema_ids=structured_schema_ids,
+        counter=counter,
         serializer_id="synthetic-chat-v1",
         runtime_id="synthetic-runtime-v1",
         quota_membership="verified",
@@ -204,6 +212,139 @@ def test_postgres_repository_seeds_updates_and_reloads_registry_snapshot():
     assert historical.ref == initial.ref
     assert historical.definition_schema_version == 2
     assert historical.payload["context_limit_tokens"] == 4096
+
+
+def test_repository_restart_and_reconciliation_accept_noncanonical_historical_payload():
+    database = _MemoryDatabase()
+    repository = PostgresEndpointRegistryRepository(database)
+    profile_id = "synthetic:canonical-history"
+    operations = frozenset(
+        {"bounded_generation", "structured_generation", "token_counting"}
+    )
+    counter = CounterCompatibility(
+        endpoint_profile_id=profile_id,
+        endpoint_id="synthetic-chat-v1",
+        deployment_id="synthetic-deployment-a",
+        credential_scope_id="credential-a",
+        account_scope_id="account-a",
+        provider_id="synthetic",
+        model_id="model-a",
+        serializer_id="synthetic-chat-v1",
+        counter_id="synthetic-counter-v1",
+        structured_schema_ids=("schema:z", "schema:a"),
+    )
+    profile = _profile(
+        profile_id=profile_id,
+        capabilities=frozenset(
+            {"bounded_generation", "structured_generation", "token_counting"}
+        ),
+        structured_schema_ids=("schema:z", "schema:a"),
+        counter=counter,
+        quota_buckets=(
+            QuotaBucket(
+                bucket_id="quota:z",
+                authority_scope_id="account-a",
+                operations=operations,
+                unit="requests",
+                window_seconds=3600,
+                source="provider_contract",
+                confidence="verified",
+                evidence_reference="quota:synthetic-z",
+            ),
+            QuotaBucket(
+                bucket_id="quota:a",
+                authority_scope_id="account-a",
+                operations=operations,
+                unit="requests",
+                window_seconds=3600,
+                source="provider_contract",
+                confidence="verified",
+                evidence_reference="quota:synthetic-a",
+            ),
+        ),
+    )
+    registry = EndpointRegistry((profile,), repository=repository)
+
+    key = (profile.endpoint_profile_id, profile.profile_version)
+    schema_version, stored = database.connection_value.definitions[key]
+    stored["capabilities"].reverse()
+    stored["structured_schema_ids"].reverse()
+    stored["quota_buckets"].reverse()
+    for bucket in stored["quota_buckets"]:
+        bucket["operations"].reverse()
+    stored["counter"]["structured_schema_ids"].reverse()
+    database.connection_value.definitions[key] = (schema_version, stored)
+
+    repository.save((profile,), expected_registry_version=registry.registry_version)
+    restarted = EndpointRegistry((profile,), repository=repository)
+
+    assert restarted.historical(profile.ref) == encode_current_endpoint_profile(profile)
+
+
+@pytest.mark.parametrize("corruption", ["unsupported_schema", "malformed_payload", "identity_mismatch"])
+def test_repository_rejects_corrupt_existing_definition_as_registry_conflict(corruption):
+    database = _MemoryDatabase()
+    repository = PostgresEndpointRegistryRepository(database)
+    profile = _profile()
+    valid_payload = encode_current_endpoint_profile(profile).payload
+    if corruption == "unsupported_schema":
+        definition = (99, valid_payload)
+    elif corruption == "malformed_payload":
+        definition = (2, {"unexpected": "shape"})
+    else:
+        definition = (
+            2,
+            encode_current_endpoint_profile(_profile(profile_id="synthetic:wrong-id")).payload,
+        )
+    database.connection_value.definitions[
+        (profile.endpoint_profile_id, profile.profile_version)
+    ] = definition
+
+    with pytest.raises(
+        RegistryConflictError, match="immutable_endpoint_definition_conflict"
+    ):
+        repository.save((profile,), expected_registry_version=None)
+
+
+def test_corrupt_definition_after_valid_profile_fails_without_stale_decode_state():
+    database = _MemoryDatabase()
+    repository = PostgresEndpointRegistryRepository(database)
+    first = _profile(profile_id="synthetic:first-profile")
+    corrupt = _profile(profile_id="synthetic:corrupt-profile")
+    later = _profile(profile_id="synthetic:later-profile")
+    database.connection_value.definitions[
+        (corrupt.endpoint_profile_id, corrupt.profile_version)
+    ] = (99, encode_current_endpoint_profile(corrupt).payload)
+
+    with pytest.raises(
+        RegistryConflictError, match="immutable_endpoint_definition_conflict"
+    ):
+        repository.save((first, corrupt, later), expected_registry_version=None)
+
+    assert (first.endpoint_profile_id, first.profile_version) in database.connection_value.definitions
+    assert (later.endpoint_profile_id, later.profile_version) not in database.connection_value.definitions
+
+
+def test_corrupt_definition_does_not_reassign_profile_version_history_state():
+    connection = _MemoryConnection()
+    first = _profile(profile_id="synthetic:first-history-profile")
+    corrupt = _profile(profile_id="synthetic:corrupt-history-profile")
+    later = _profile(profile_id="synthetic:later-history-profile")
+    connection.definitions[
+        (corrupt.endpoint_profile_id, corrupt.profile_version)
+    ] = (99, encode_current_endpoint_profile(corrupt).payload)
+    history = {"preserved:profile": 7}
+
+    with pytest.raises(
+        RegistryConflictError, match="immutable_endpoint_definition_conflict"
+    ):
+        _write_profile_version_history(
+            connection, "scope", (first, corrupt, later), history
+        )
+
+    assert history == {"preserved:profile": 7, first.endpoint_profile_id: 1}
+    assert corrupt.endpoint_profile_id not in history
+    assert later.endpoint_profile_id not in history
 
 
 def test_postgres_repository_rejects_stale_registry_compare_and_swap():
