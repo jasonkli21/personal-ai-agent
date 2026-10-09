@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Literal, Protocol
@@ -18,10 +18,14 @@ from personal_ai.context.builder import SOURCE_CLASSES, ContextBuilder, ContextB
 from personal_ai.context.tokens import EstimatedTokenCounter
 from personal_ai.evaluation.provider_matrix import (
     build_quality_profile,
+    evaluation_suite_identity,
     fixture_manifest_sha256,
+    git_revision,
+    load_provider_matrix_configuration,
     score_output,
 )
 from personal_ai.evaluation.provider_matrix_contracts import (
+    EvaluationArtifactPublication,
     EvaluationCaseSummary,
     EvaluationFixture,
     EvaluationRunStart,
@@ -61,6 +65,7 @@ class EvaluationRunConflict(RuntimeError):
 
 class EvaluationRunRepository(Protocol):
     def begin_run(self, run: EvaluationRunStart) -> None: ...
+    def get_run_state(self, evaluation_run_id: UUID): ...
     def save_case(self, case: EvaluationCaseSummary) -> None: ...
     def complete_run(self, summary: EvaluationRunSummary) -> None: ...
     def save_quality_profile(self, profile: QualityProfile) -> None: ...
@@ -199,10 +204,20 @@ class InMemoryEvaluationRunRepository:
         with self.lock:
             if run.evaluation_run_id in self.runs:
                 previous = self.runs[run.evaluation_run_id][0]
-                if previous != run:
+                if _run_start_identity(previous) != _run_start_identity(run) or previous.gate_bindings != run.gate_bindings:
                     raise EvaluationRunConflict("evaluation_run_idempotency_conflict")
-                raise EvaluationRunConflict("evaluation_run_already_started")
+                return
             self.runs[run.evaluation_run_id] = (run, "running", None)
+
+    def get_run_state(self, evaluation_run_id):
+        with self.lock:
+            stored = self.runs.get(evaluation_run_id)
+            if stored is None:
+                raise LookupError("evaluation_run_unavailable")
+            cases = tuple(
+                case for key, case in self.cases.items() if key[0] == evaluation_run_id
+            )
+            return stored[0], stored[2], cases
 
     def save_case(self, case):
         key = (
@@ -232,6 +247,8 @@ class InMemoryEvaluationRunRepository:
 
     def save_quality_profile(self, profile):
         with self.lock:
+            if profile.status != "unpromoted" or profile.revision != 1:
+                raise EvaluationRunConflict("quality_profile_must_start_unpromoted")
             previous = self.quality_profiles.get(profile.quality_evidence_id)
             if previous is not None and previous != profile:
                 raise EvaluationRunConflict("quality_profile_identity_conflict")
@@ -248,6 +265,22 @@ class InMemoryEvaluationRunRepository:
             previous = self.get_quality_profile(profile.quality_evidence_id)
             if previous.revision != expected_revision or profile.revision != expected_revision + 1:
                 raise EvaluationRunConflict("quality_profile_revision_conflict")
+            if profile.status != "qualified" or previous.status != "unpromoted":
+                raise EvaluationRunConflict("quality_profile_publication_invalid")
+            if profile.baseline_evidence_id is not None:
+                baseline = self.get_quality_profile(profile.baseline_evidence_id)
+                if (
+                    baseline.endpoint == profile.endpoint
+                    or baseline.evaluation_suite_id != profile.evaluation_suite_id
+                    or baseline.evaluation_suite_version != profile.evaluation_suite_version
+                    or baseline.fixture_manifest_sha256 != profile.fixture_manifest_sha256
+                    or baseline.evaluation_configuration_sha256 != profile.evaluation_configuration_sha256
+                    or profile.comparison_baseline_endpoint != baseline.endpoint
+                    or profile.comparison_baseline_configuration_sha256
+                    != baseline.endpoint_configuration_sha256
+                    or profile.score - baseline.score < profile.promotion_minimum_benefit
+                ):
+                    raise EvaluationRunConflict("quality_profile_baseline_mismatch")
             self.quality_profiles[profile.quality_evidence_id] = profile
 
     def quality_evidence(
@@ -328,6 +361,7 @@ class ProviderMatrixRunner:
         artifact_service: ArtifactService | None = None,
         retention_authority: EvaluationOutputRetentionAuthority | None = None,
         deterministic_baseline_strategy=None,
+        approved_evaluation_suites: Mapping[tuple[str, int], str] | None = None,
         owner_id: str = SYSTEM_EVALUATION_OWNER,
         scope: ApplicationScope = SYSTEM_EVALUATION_SCOPE,
         clock=None,
@@ -340,6 +374,11 @@ class ProviderMatrixRunner:
         self.deterministic_baseline_strategy = (
             deterministic_baseline_strategy or DeterministicScoringStrategy()
         )
+        if approved_evaluation_suites is None:
+            canonical_fixtures, _, _ = load_provider_matrix_configuration()
+            suite_id, suite_version, _, _, suite_digest = evaluation_suite_identity(canonical_fixtures)
+            approved_evaluation_suites = {(suite_id, suite_version): suite_digest}
+        self.approved_evaluation_suites = dict(approved_evaluation_suites)
         self.owner_id = owner_id
         self.scope = scope
         self.clock = clock or (lambda: datetime.now(UTC))
@@ -355,11 +394,11 @@ class ProviderMatrixRunner:
         fixtures: Sequence[EvaluationFixture],
         task: RoutingTaskProfile,
         policy_version: str,
-        tested_revision: str,
         single_provider_baseline: EndpointRef | None = None,
-        seed: int | None = None,
         output_tokens: int = 256,
     ) -> tuple[EvaluationRunSummary, tuple[EvaluationCaseSummary, ...], tuple[QualityProfile, ...]]:
+        tested_revision = git_revision()
+        seed = None
         fixtures = tuple(EvaluationFixture.model_validate(item.model_dump()) for item in fixtures)
         task = RoutingTaskProfile.model_validate(task.model_dump())
         if not 1 <= len(fixtures) <= MAX_CASES_PER_RUN:
@@ -375,6 +414,9 @@ class ProviderMatrixRunner:
             for fixture in fixtures
         ):
             raise ValueError("evaluation_fixture_policy_mismatch")
+        suite_id, suite_version, scoring_id, scoring_version, suite_digest = evaluation_suite_identity(fixtures)
+        if self.approved_evaluation_suites.get((suite_id, suite_version)) != suite_digest:
+            raise ValueError("evaluation_suite_not_approved")
         if (
             task.quality.mode != "measured_floor"
             or task.max_physical_attempts != 1
@@ -402,7 +444,7 @@ class ProviderMatrixRunner:
         }
         prepared_identities = {
             fixture_id: {
-                "prepared_input_sha256": _prepared_input_digest(context.messages),
+                "fixture_input_sha256": _prepared_input_digest(context.messages),
                 "context_manifest_sha256": _context_manifest_digest(context.manifest),
                 "input_tokens": context.token_count,
                 "count_source": context.manifest.counter_version,
@@ -419,9 +461,19 @@ class ProviderMatrixRunner:
             )
             for fixture in fixtures
         }
-        profiles = tuple(self.routing_service.registry.profiles)
+        profiles = tuple(
+            profile for profile in self.routing_service.registry.profiles
+            if operation in profile.capabilities
+        )
         if not profiles:
             raise ValueError("evaluation_endpoint_profiles_unavailable")
+        baseline_profile = None
+        if single_provider_baseline is not None:
+            baseline_profile = next(
+                (profile for profile in profiles if profile.ref == single_provider_baseline), None
+            )
+            if baseline_profile is None:
+                raise ValueError("evaluation_baseline_endpoint_unavailable")
         if len(fixtures) * len(profiles) > MAX_CASES_TOTAL:
             raise ValueError("evaluation_matrix_case_limit")
         source = getattr(self.executor, "evidence_source", None)
@@ -437,16 +489,32 @@ class ProviderMatrixRunner:
             source=source,
             seed=seed,
             prepared_identities=prepared_identities,
+            evaluation_suite_sha256=suite_digest,
+            scoring_policy_id=scoring_id,
+            scoring_policy_version=scoring_version,
+            output_tokens=output_tokens,
+            single_provider_baseline=baseline_profile,
         )
-        created_at = self.clock()
+        endpoint_prepared_identities = {
+            (fixture.fixture_id, endpoint.ref): {
+                **prepared_identities[fixture.fixture_id],
+                "prepared_input_sha256": _prepared_input_digest(
+                    prepared_contexts[fixture.fixture_id].messages,
+                    endpoint.serializer_id,
+                ),
+            }
+            for fixture in fixtures
+            for endpoint in profiles
+        }
+        created_at = self.routing_service.current_time(owner_id=self.owner_id)
         gate_bindings = tuple(
             EvaluationQualityGate(
                 evaluation_run_id=evaluation_run_id,
                 request_id=_case_request_id(evaluation_run_id, fixture, endpoint),
                 fixture_id=fixture.fixture_id,
-                prepared_input_sha256=prepared_identities[fixture.fixture_id][
-                    "prepared_input_sha256"
-                ],
+                prepared_input_sha256=endpoint_prepared_identities[
+                    (fixture.fixture_id, endpoint.ref)
+                ]["prepared_input_sha256"],
                 endpoint=endpoint.ref,
                 endpoint_configuration_sha256=endpoint_configuration_sha256(endpoint),
                 task_configuration_sha256=task_configuration_sha256(task),
@@ -459,12 +527,16 @@ class ProviderMatrixRunner:
                     fixture,
                     endpoint,
                     task,
-                    prepared_input_sha256=prepared_identities[fixture.fixture_id][
+                    prepared_input_sha256=endpoint_prepared_identities[
+                        (fixture.fixture_id, endpoint.ref)
+                    ][
                         "prepared_input_sha256"
                     ],
                     context_manifest_sha256=prepared_identities[fixture.fixture_id][
                         "context_manifest_sha256"
                     ],
+                    evaluation_suite_sha256=suite_digest,
+                    output_tokens=output_tokens,
                 ),
                 mode=source,
             )
@@ -482,6 +554,11 @@ class ProviderMatrixRunner:
             task_profile_id=task.profile_id,
             task_profile_version=task.profile_version,
             task_configuration_sha256=task_configuration_sha256(task),
+            evaluation_suite_id=suite_id,
+            evaluation_suite_version=suite_version,
+            scoring_policy_id=scoring_id,
+            scoring_policy_version=scoring_version,
+            output_tokens=output_tokens,
             source=source,
             seed=seed,
             expected_cases=len(fixtures) * len(profiles),
@@ -489,13 +566,46 @@ class ProviderMatrixRunner:
             gate_bindings=gate_bindings,
         )
         self.repository.begin_run(start)
+        stored_start, stored_completion, stored_cases = self.repository.get_run_state(
+            evaluation_run_id
+        )
+        created_at = stored_start.created_at
 
-        summaries: list[EvaluationCaseSummary] = []
+        def case_for(evaluation_run_id, fixture, endpoint, policy_version, tested_revision, **values):
+            return self._case(
+                evaluation_run_id,
+                fixture,
+                endpoint,
+                policy_version,
+                tested_revision,
+                evaluation_configuration_sha256=configuration_digest,
+                output_tokens=output_tokens,
+                **values,
+            )
+
+        summaries: list[EvaluationCaseSummary] = list(stored_cases)
+        existing_cases_by_identity = {
+            (case.fixture_id, case.endpoint): case for case in stored_cases
+        }
         decision_baselines: list[str] = []
         raw_output_buffers: dict[tuple[str, str, datetime], list[dict]] = {}
         raw_output_bytes: dict[tuple[str, str, datetime], int] = {}
         raw_output_sequences: dict[tuple[str, str, datetime], int] = {}
-        for fixture in fixtures:
+        artifact_publications = {
+            endpoint.ref: {
+                "approved": False,
+                "failed": False,
+                "artifact_ids": [],
+            }
+            for endpoint in profiles
+        }
+        retention_approvals = {}
+        for fixture in (() if stored_completion is not None else fixtures):
+            if all(
+                (fixture.fixture_id, endpoint.ref) in existing_cases_by_identity
+                for endpoint in profiles
+            ):
+                continue
             decisions = []
             endpoint_cases = []
             prepared_context = prepared_contexts[fixture.fixture_id]
@@ -505,6 +615,11 @@ class ProviderMatrixRunner:
                 sorted(hashlib.sha256(item.encode("utf-8")).hexdigest() for item in fixture.source_ids)
             )
             for endpoint in profiles:
+                if (fixture.fixture_id, endpoint.ref) in existing_cases_by_identity:
+                    continue
+                endpoint_prepared_identity = endpoint_prepared_identities[
+                    (fixture.fixture_id, endpoint.ref)
+                ]
                 gate = next(
                     binding
                     for binding in gate_bindings
@@ -541,13 +656,13 @@ class ProviderMatrixRunner:
                 except Exception as error:  # noqa: BLE001 - no provider IO on route failure
                     code = _safe_code(error, "evaluation_routing_unavailable")
                     endpoint_cases.append(
-                        self._case(
+                        case_for(
                             evaluation_run_id,
                             fixture,
                             endpoint,
                             policy_version,
                             tested_revision,
-                            status="not_run",
+                            status="failed",
                             reason=code,
                             single_provider_baseline=endpoint.ref == single_provider_baseline,
                         )
@@ -563,7 +678,7 @@ class ProviderMatrixRunner:
                         or (candidate.rejection_reasons[0] if candidate and candidate.rejection_reasons else "endpoint_not_eligible")
                     )
                     endpoint_cases.append(
-                        self._case(
+                        case_for(
                             evaluation_run_id,
                             fixture,
                             endpoint,
@@ -599,6 +714,9 @@ class ProviderMatrixRunner:
             }
             cases_by_endpoint = {case.endpoint: case for case in endpoint_cases}
             for endpoint in profiles:
+                endpoint_prepared_identity = endpoint_prepared_identities[
+                    (fixture.fixture_id, endpoint.ref)
+                ]
                 case = cases_by_endpoint.get(endpoint.ref)
                 if case is None:
                     decision = decisions_by_endpoint.get(endpoint.ref)
@@ -615,7 +733,7 @@ class ProviderMatrixRunner:
                             decision_id=decision.routing_decision_id,
                             reason="evaluation-executor-unavailable",
                         )
-                        case = self._case(
+                        case = case_for(
                             evaluation_run_id,
                             fixture,
                             endpoint,
@@ -633,18 +751,25 @@ class ProviderMatrixRunner:
                         summaries.append(case)
                         continue
                     prepared_input = prepared_context.messages
+                    preparation_counter = EstimatedTokenCounter()
+                    prepared_count = preparation_counter.count(prepared_input)
+                    prepared_input_sha256 = _prepared_input_digest(
+                        prepared_input, endpoint.serializer_id
+                    )
+                    if prepared_input_sha256 != endpoint_prepared_identity["prepared_input_sha256"]:
+                        raise EvaluationRunConflict("evaluation_preparation_identity_changed")
                     preparation = PreparationIdentity(
                         endpoint=endpoint.ref,
                         serializer_id=endpoint.serializer_id,
                         counter_id=None,
-                        input_tokens=prepared_context.token_count,
-                        count_source=prepared_identity["count_source"],
-                        count_confidence=prepared_identity["count_confidence"],
+                        input_tokens=prepared_count.tokens,
+                        count_source=preparation_counter.counter_version,
+                        count_confidence=prepared_count.kind,
                         source_reference_sha256s=source_digests,
-                        prepared_input_sha256=prepared_identity[
+                        prepared_input_sha256=endpoint_prepared_identity[
                             "prepared_input_sha256"
                         ],
-                        prepared_at=decision.created_at,
+                        prepared_at=self.routing_service.current_time(owner_id=self.owner_id),
                     )
                     try:
                         permit = self.routing_service.finalize(
@@ -655,13 +780,13 @@ class ProviderMatrixRunner:
                             operation=operation,
                         )
                     except Exception as error:  # noqa: BLE001 - reservation failure means no send
-                        case = self._case(
+                        case = case_for(
                             evaluation_run_id,
                             fixture,
                             endpoint,
                             policy_version,
                             tested_revision,
-                            status="not_run",
+                            status="failed",
                             reason=_safe_code(error, "evaluation_dispatch_not_authorized"),
                             routing_decision_id=decision.routing_decision_id,
                             single_provider_baseline=endpoint.ref == single_provider_baseline,
@@ -775,7 +900,7 @@ class ProviderMatrixRunner:
                     except Exception as error:  # noqa: BLE001 - P21 already settled the send outcome
                         attempt = attempt_results[-1] if attempt_results else None
                         physical_send_started = bool(send_state)
-                        case = self._case(
+                        case = case_for(
                             evaluation_run_id,
                             fixture,
                             endpoint,
@@ -807,7 +932,7 @@ class ProviderMatrixRunner:
                         )
                     )
                     if result.metadata.status != "success" or not identity_matches:
-                        case = self._case(
+                        case = case_for(
                             evaluation_run_id,
                             fixture,
                             endpoint,
@@ -835,7 +960,7 @@ class ProviderMatrixRunner:
                         continue
 
                     if len(result.text) > MAX_OUTPUT_TEXT_CHARS:
-                        case = self._case(
+                        case = case_for(
                             evaluation_run_id,
                             fixture,
                             endpoint,
@@ -882,7 +1007,7 @@ class ProviderMatrixRunner:
                         quota_units=quota_units,
                         quota_confidence=quota_confidence,
                     )
-                    case = self._case(
+                    case = case_for(
                         evaluation_run_id,
                         fixture,
                         endpoint,
@@ -898,6 +1023,15 @@ class ProviderMatrixRunner:
                         deterministic_strategy_score=position[1] if position else None,
                         deterministic_strategy_baseline=bool(position and position[0] == 1),
                     )
+                    case = case.model_copy(
+                        update={
+                            "preparation_counter_id": preparation.counter_id,
+                            "preparation_counter_confidence": preparation.count_confidence,
+                            "preparation_count_source": preparation.count_source,
+                            "preparation_input_tokens": preparation.input_tokens,
+                            "prepared_input_sha256": preparation.prepared_input_sha256,
+                        }
+                    )
                     self.repository.save_case(case)
                     summaries.append(case)
                     self._buffer_raw_output(
@@ -912,20 +1046,22 @@ class ProviderMatrixRunner:
                         attempt,
                         source,
                         raw_output_sequences,
+                        artifact_publications,
+                        retention_approvals,
                     )
             for case in endpoint_cases:
                 if case.endpoint in cases_by_endpoint and case not in summaries:
                     self.repository.save_case(case)
                     summaries.append(case)
 
-        artifact_ids_by_identity = self._flush_raw_output_buffers(
+        self._flush_raw_output_buffers(
             raw_output_buffers,
             raw_output_bytes,
             raw_output_sequences,
             evaluation_run_id,
             profiles,
+            artifact_publications,
         )
-        del artifact_ids_by_identity
         # Persisted case summaries intentionally do not duplicate artifact references;
         # Phase20 metadata is queried by its canonical evaluation_run_id link.
         if not summaries:
@@ -934,8 +1070,13 @@ class ProviderMatrixRunner:
         synthetic = sum(case.status == "synthetic_baseline" for case in summaries)
         failed = sum(case.status == "failed" for case in summaries)
         skipped = sum(case.status == "not_run" for case in summaries)
-        completed_at = self.clock()
-        if source == "synthetic":
+        completed_at = (
+            stored_completion.completed_at
+            if stored_completion else self.routing_service.current_time(owner_id=self.owner_id)
+        )
+        if stored_completion is not None:
+            summary = stored_completion
+        elif source == "synthetic":
             status = (
                 "offline_baseline"
                 if synthetic == len(summaries)
@@ -952,11 +1093,17 @@ class ProviderMatrixRunner:
                 else "failed"
             )
         strategy_ref = self.deterministic_baseline_strategy.ref
-        summary = EvaluationRunSummary(
+        if stored_completion is None:
+            summary = EvaluationRunSummary(
             evaluation_run_id=evaluation_run_id,
             task_profile_id=task.profile_id,
             task_profile_version=task.profile_version,
             task_configuration_sha256=task_configuration_sha256(task),
+            evaluation_suite_id=suite_id,
+            evaluation_suite_version=suite_version,
+            scoring_policy_id=scoring_id,
+            scoring_policy_version=scoring_version,
+            output_tokens=output_tokens,
             source=source,
             status=status,
             tested_revision=tested_revision,
@@ -970,15 +1117,33 @@ class ProviderMatrixRunner:
             skipped_cases=skipped,
             failed_cases=failed,
             single_provider_baseline_endpoint_profile_id=(
-                single_provider_baseline.endpoint_profile_id if single_provider_baseline else None
+                baseline_profile.endpoint_profile_id if baseline_profile else None
+            ),
+            single_provider_baseline_endpoint_profile_version=(
+                baseline_profile.profile_version if baseline_profile else None
+            ),
+            single_provider_baseline_configuration_sha256=(
+                endpoint_configuration_sha256(baseline_profile) if baseline_profile else None
             ),
             deterministic_strategy_id=strategy_ref.strategy_id,
             deterministic_strategy_version=strategy_ref.semantic_version,
             deterministic_baseline_endpoint_profile_ids=tuple(decision_baselines),
+            artifact_publications=tuple(
+                EvaluationArtifactPublication(
+                    endpoint=endpoint.ref,
+                    status=_artifact_publication_status(artifact_publications[endpoint.ref]),
+                    artifact_ids=tuple(artifact_publications[endpoint.ref]["artifact_ids"]),
+                    error_code=(
+                        "artifact_write_not_ready"
+                        if artifact_publications[endpoint.ref]["failed"] else None
+                    ),
+                )
+                for endpoint in profiles
+            ),
             created_at=created_at,
             completed_at=completed_at,
-        )
-        self.repository.complete_run(summary)
+            )
+            self.repository.complete_run(summary)
 
         quality_profiles: list[QualityProfile] = []
         if source == "live":
@@ -994,6 +1159,11 @@ class ProviderMatrixRunner:
                     fixture_manifest_sha256=manifest_sha,
                     seed=seed,
                     measured_at=completed_at,
+                    evaluation_configuration_sha256=configuration_digest,
+                    output_tokens=output_tokens,
+                    evaluation_suite_id=suite_id,
+                    evaluation_suite_version=suite_version,
+                    comparison_baseline=baseline_profile,
                 )
                 if quality is not None:
                     self.repository.save_quality_profile(quality)
@@ -1036,12 +1206,20 @@ class ProviderMatrixRunner:
         deterministic_strategy_baseline=False,
         deterministic_strategy_rank=None,
         deterministic_strategy_score=None,
+        evaluation_configuration_sha256,
+        output_tokens,
     ):
         return EvaluationCaseSummary(
             evaluation_run_id=evaluation_run_id,
             fixture_id=fixture.fixture_id,
             task_profile_id=fixture.task_profile_id,
             task_profile_version=fixture.task_profile_version,
+            evaluation_suite_id=fixture.evaluation_suite_id,
+            evaluation_suite_version=fixture.evaluation_suite_version,
+            scoring_policy_id=fixture.scoring_policy_id,
+            scoring_policy_version=fixture.scoring_policy_version,
+            evaluation_configuration_sha256=evaluation_configuration_sha256,
+            output_tokens=output_tokens,
             endpoint=endpoint.ref,
             provider_id=endpoint.provider_id,
             model_id=endpoint.model_id,
@@ -1080,20 +1258,28 @@ class ProviderMatrixRunner:
         attempt,
         source,
         sequences,
+        publication_state,
+        approval_cache,
     ):
         if self.artifact_service is None or len(result.text) > MAX_RETAINED_OUTPUT_CHARS:
             return
         now = self.clock()
-        try:
-            approval = self.retention_authority.authorize(
-                evaluation_run_id=evaluation_run_id,
-                endpoint=endpoint,
-                now=now,
-            )
-            if approval is None:
-                return
-            approval = OutputRetentionApproval.model_validate(approval.model_dump())
-        except Exception:  # noqa: BLE001 - retention is fail closed and optional
+        approval = approval_cache.get(endpoint.ref)
+        if endpoint.ref not in approval_cache or approval is None or approval.valid_until <= now:
+            try:
+                approval = self.retention_authority.authorize(
+                    evaluation_run_id=evaluation_run_id,
+                    endpoint=endpoint,
+                    now=now,
+                )
+                approval = (
+                    OutputRetentionApproval.model_validate(approval.model_dump())
+                    if approval is not None else None
+                )
+            except Exception:  # noqa: BLE001 - retention is fail closed and optional
+                approval = None
+            approval_cache[endpoint.ref] = approval
+        if approval is None:
             return
         if (
             approval.evaluation_run_id != evaluation_run_id
@@ -1104,6 +1290,7 @@ class ProviderMatrixRunner:
             or (source == "live" and not self.artifact_service.store.store_id.startswith("gcs:"))
         ):
             return
+        publication_state[endpoint.ref]["approved"] = True
         usage = result.metadata.usage
         usage_confidence = _usage_confidence(usage)
         output = {
@@ -1125,7 +1312,14 @@ class ProviderMatrixRunner:
             "latency_ms": attempt.latency_ms,
         }
         key = (approval.reference, approval.valid_until, endpoint.endpoint_profile_id)
-        size = len(json.dumps(output, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        size = len(
+            json.dumps(
+                output,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        )
         if key not in buffers:
             buffers[key] = []
             byte_counts[key] = 0
@@ -1137,12 +1331,17 @@ class ProviderMatrixRunner:
                 key, buffers, byte_counts, evaluation_run_id, endpoint,
                 approval.reference, approval.valid_until,
                 sequence=sequences.get(key, 0) + 1,
+                publication_state=publication_state,
             )
             sequences[key] = sequences.get(key, 0) + 1
+            buffers[key] = []
+            byte_counts[key] = 0
         buffers[key].append(output)
         byte_counts[key] += size
 
-    def _flush_raw_output_buffers(self, buffers, byte_counts, sequences, evaluation_run_id, profiles):
+    def _flush_raw_output_buffers(
+        self, buffers, byte_counts, sequences, evaluation_run_id, profiles, publication_state
+    ):
         written = {}
         by_id = {profile.endpoint_profile_id: profile for profile in profiles}
         for key in tuple(buffers):
@@ -1156,6 +1355,7 @@ class ProviderMatrixRunner:
             written[key] = self._flush_buffer(
                 key, buffers, byte_counts, evaluation_run_id, endpoint, reference, valid_until,
                 sequence=sequence,
+                publication_state=publication_state,
             )
             sequences[key] = sequence
         return written
@@ -1171,6 +1371,7 @@ class ProviderMatrixRunner:
         retention_until,
         *,
         sequence=None,
+        publication_state,
     ):
         values = buffers.pop(key, [])
         raw_bytes = byte_counts.pop(key, 0)
@@ -1191,20 +1392,28 @@ class ProviderMatrixRunner:
                 f"{retention_reference}:{sequence}"
             ).encode()
         ).hexdigest()[:32]
-        ref = self.artifact_service.write(
-            body,
-            owner_id=self.owner_id,
-            scope=self.scope,
-            kind="evaluation",
-            identity=f"evaluation:{identity_digest}",
-            schema_version="evaluation-raw-outputs-v1",
-            sensitivity="public",
-            retention_days=ARTIFACT_RETENTION_DAYS,
-            source_rights_until=retention_until,
-            source_rights_verified=True,
-            summary={"case_count": len(values), "output_bytes": raw_bytes},
-            evaluation_run_id=evaluation_run_id,
-        )
+        try:
+            ref = self.artifact_service.write(
+                body,
+                owner_id=self.owner_id,
+                scope=self.scope,
+                kind="evaluation",
+                identity=f"evaluation:{identity_digest}",
+                schema_version="evaluation-raw-outputs-v1",
+                sensitivity="public",
+                retention_days=ARTIFACT_RETENTION_DAYS,
+                source_rights_until=retention_until,
+                source_rights_verified=True,
+                summary={"case_count": len(values), "output_bytes": raw_bytes},
+                evaluation_run_id=evaluation_run_id,
+            )
+        except Exception:  # noqa: BLE001 - optional retention failures are recorded safely
+            ref = None
+        state = publication_state[endpoint.ref]
+        if ref is None:
+            state["failed"] = True
+        else:
+            state["artifact_ids"].append(ref.artifact_id)
         return ref
 
 
@@ -1215,6 +1424,10 @@ def _task_operation(task: RoutingTaskProfile) -> EndpointOperation:
     if "bounded_generation" in required:
         return "bounded_generation"
     raise ValueError("evaluation_task_generation_capability_required")
+
+
+def _run_start_identity(run: EvaluationRunStart):
+    return run.model_dump(mode="json", exclude={"created_at", "gate_bindings"})
 
 
 def _requirements(*, task, fixture, input_tokens, output_tokens):
@@ -1253,10 +1466,16 @@ def _usage_confidence(usage) -> Literal["exact", "derived", "configured", "unkno
     return "derived"
 
 
-def _prepared_input_digest(messages):
+def _prepared_input_digest(messages, serializer_id=None):
     payload = json.dumps(
-        [{"role": message.role, "content": message.content} for message in messages],
+        {
+            "serializer_id": serializer_id,
+            "messages": [
+                {"role": message.role, "content": message.content} for message in messages
+            ],
+        },
         ensure_ascii=False,
+        sort_keys=True,
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -1311,16 +1530,20 @@ def _case_identity(
     *,
     prepared_input_sha256,
     context_manifest_sha256,
+    evaluation_suite_sha256,
+    output_tokens,
 ):
     payload = json.dumps(
         {
             "context_manifest_sha256": context_manifest_sha256,
+            "evaluation_suite_sha256": evaluation_suite_sha256,
             "endpoint_configuration_sha256": endpoint_configuration_sha256(endpoint),
             "endpoint_profile_id": endpoint.endpoint_profile_id,
             "endpoint_profile_version": endpoint.profile_version,
             "fixture_identity_sha256": fixture.case_identity_sha256,
             "policy_version": fixture.policy_version,
             "prepared_input_sha256": prepared_input_sha256,
+            "output_tokens": output_tokens,
             "task_configuration_sha256": task_configuration_sha256(task),
         },
         sort_keys=True,
@@ -1347,6 +1570,11 @@ def _configuration_digest(
     source,
     seed,
     prepared_identities,
+    evaluation_suite_sha256,
+    scoring_policy_id,
+    scoring_policy_version,
+    output_tokens,
+    single_provider_baseline,
 ):
     payload = {
         "endpoint_configurations": sorted(
@@ -1355,13 +1583,32 @@ def _configuration_digest(
             for profile in profiles
         ),
         "fixture_manifest_sha256": fixture_manifest_sha256(fixtures),
+        "evaluation_suite_sha256": evaluation_suite_sha256,
         "prepared_contexts": sorted(
-            (fixture_id, identity["prepared_input_sha256"], identity["context_manifest_sha256"])
+            (
+                fixture_id,
+                identity["fixture_input_sha256"],
+                identity["context_manifest_sha256"],
+                identity["input_tokens"],
+                identity["count_source"],
+                identity["count_confidence"],
+            )
             for fixture_id, identity in prepared_identities.items()
         ),
         "policy_version": policy_version,
         "quality_policy": task.quality.model_dump(mode="json"),
         "seed": seed,
+        "output_tokens": output_tokens,
+        "single_provider_baseline": (
+            {
+                "endpoint_profile_id": single_provider_baseline.endpoint_profile_id,
+                "profile_version": single_provider_baseline.profile_version,
+                "configuration_sha256": endpoint_configuration_sha256(single_provider_baseline),
+            }
+            if single_provider_baseline is not None else None
+        ),
+        "scoring_policy_id": scoring_policy_id,
+        "scoring_policy_version": scoring_policy_version,
         "source": source,
         "task_configuration_sha256": task_configuration_sha256(task),
         "tested_revision": tested_revision,
@@ -1383,3 +1630,11 @@ def _safe_result_code(code, default: str) -> str:
     ):
         return default
     return code
+
+
+def _artifact_publication_status(state):
+    if not state["approved"]:
+        return "not_approved"
+    if state["failed"] or not state["artifact_ids"]:
+        return "publication_failed"
+    return "retained"

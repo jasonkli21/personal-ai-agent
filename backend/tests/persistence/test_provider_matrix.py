@@ -13,6 +13,7 @@ import pytest
 from personal_ai.auth.scope import ApplicationScope
 from personal_ai.evaluation.provider_matrix import (
     load_provider_matrix_configuration,
+    qualify_quality_profile,
 )
 from personal_ai.evaluation.provider_matrix_contracts import EvaluationRunStart
 from personal_ai.evaluation.provider_matrix_runner import (
@@ -54,6 +55,12 @@ class _PostgresSyntheticExecutor:
         return _PostgresSyntheticGenerator(endpoint)
 
 
+class _PostgresMeasuredFixtureExecutor(_PostgresSyntheticExecutor):
+    """Fixture-backed executor for exercising the live-quality persistence path only."""
+
+    evidence_source = "live"
+
+
 class _UnknownOutcomeExecutor:
     evidence_source = "synthetic"
 
@@ -70,9 +77,9 @@ class _PostgresSyntheticGenerator:
         )
         self.capabilities = ProviderCapabilities(frozenset({"bounded_generation"}))
 
-    def complete(self, *_args, **_kwargs):
+    def complete(self, messages, *_args, **_kwargs):
         return GenerationResult(
-            text=_valid_output(),
+            text=_valid_output(messages),
             metadata=GenerationMetadata(
                 status="success",
                 identity=self.identity,
@@ -134,8 +141,6 @@ def test_synthetic_matrix_persists_through_postgres_and_p21_p19(database):
         fixtures=fixtures,
         task=task,
         policy_version=fixtures[0].policy_version,
-        tested_revision="a1b2c3d",
-        seed=13,
     )
 
     assert summary.status == "offline_baseline"
@@ -197,6 +202,96 @@ def test_synthetic_matrix_persists_through_postgres_and_p21_p19(database):
         )
 
 
+def test_postgres_floor_publication_is_consumed_by_p21(database):
+    scope = ApplicationScope(application_id="personal_ai")
+    owner_id = "personal-ai-system"
+    run_id = uuid4()
+    endpoint = _profile(
+        f"matrix:quality-publication:{run_id.hex}",
+        provider_id="synthetic-quality-provider",
+        model_id="synthetic-quality-model",
+        quota_buckets=(_bucket(f"matrix-quality-bucket:{run_id.hex}"),),
+    )
+    catalog = PostgresEndpointRegistryRepository(database)
+    registry = EndpointRegistry((endpoint,), repository=catalog)
+    usage = PostgresProviderUsageAccounting(
+        database,
+        endpoint_profile_resolver=EndpointProfileResolver(registry, catalog),
+    )
+    evaluation_repository = PostgresProviderMatrixRepository(database)
+    routing = RoutingDecisionService(
+        registry,
+        PostgresRoutingDecisionRepository(database),
+        usage=usage,
+        authorization=Authorization(),
+        evaluation_quality_authority=evaluation_repository,
+    )
+    fixtures, task, _ = load_provider_matrix_configuration()
+    runner = ProviderMatrixRunner(
+        routing_service=routing,
+        repository=evaluation_repository,
+        executor=_PostgresMeasuredFixtureExecutor(),
+    )
+
+    summary, cases, profiles = runner.run(
+        evaluation_run_id=run_id,
+        fixtures=fixtures,
+        task=task,
+        policy_version=fixtures[0].policy_version,
+    )
+
+    assert summary.status == "completed"
+    assert len(cases) == len(fixtures)
+    assert len(profiles) == 1
+    unpromoted = profiles[0]
+    assert unpromoted.status == "unpromoted"
+    qualified = qualify_quality_profile(
+        unpromoted,
+        task=task,
+        now=routing.current_time(owner_id=owner_id),
+    )
+    evaluation_repository.publish_quality_profile(qualified, expected_revision=1)
+    evidence = evaluation_repository.quality_evidence(
+        task_profile_id=task.profile_id,
+        task_profile_version=task.profile_version,
+        endpoint=endpoint.ref,
+        quality_profile_id=task.quality.quality_profile_id,
+        quality_profile_version=task.quality.quality_profile_version,
+        policy_version=fixtures[0].policy_version,
+        now=routing.current_time(owner_id=owner_id),
+        owner_id=owner_id,
+        scope=scope,
+    )
+    assert evidence is not None
+
+    request = RoutingRequestFacts(
+        request_id=f"quality-consumer:{uuid4().hex}",
+        run_id="quality-consumer-run",
+        requirements=EndpointCandidateRequirements(
+            execution_mode="STRICT_FREE",
+            sensitivity="public",
+            required_capabilities=task.required_capabilities,
+            input_tokens=64,
+            output_tokens=256,
+            automatic=True,
+        ),
+        policy_version=fixtures[0].policy_version,
+        prepared_context_tokens=64,
+        count_source="estimated-byte-upper-v1",
+        count_confidence="estimated",
+    )
+    decision = routing.route(
+        owner_id=owner_id,
+        scope=scope,
+        task=task,
+        request=request,
+        quality_evidence=(evidence,),
+    )
+    assert decision.selected == endpoint.ref
+    candidate = next(row for row in decision.candidates if row.endpoint == endpoint.ref)
+    assert candidate.quality_evidence_id == qualified.quality_evidence_id
+
+
 def test_unresolved_unknown_attempt_blocks_same_case_under_new_run_id(database):
     endpoint = _profile(
         f"matrix:unknown:{uuid4().hex}",
@@ -230,7 +325,6 @@ def test_unresolved_unknown_attempt_blocks_same_case_under_new_run_id(database):
         fixtures=fixtures,
         task=task,
         policy_version=fixtures[0].policy_version,
-        tested_revision="a1b2c3d",
     )
     assert first_summary.status == "failed"
     assert all(case.status == "failed" for case in first_cases)
@@ -246,7 +340,6 @@ def test_unresolved_unknown_attempt_blocks_same_case_under_new_run_id(database):
         fixtures=fixtures,
         task=task,
         policy_version=fixtures[0].policy_version,
-        tested_revision="a1b2c3d",
     )
     assert retry_summary.status == "partial"
     assert all(case.status == "not_run" for case in retry_cases)
@@ -287,6 +380,11 @@ def test_concurrent_same_case_gate_authorization_has_one_oldest_run_winner(datab
             endpoint=endpoint.ref,
             endpoint_configuration_sha256=endpoint_configuration_sha256(endpoint),
             task_configuration_sha256=task_configuration_sha256(task),
+            evaluation_suite_id=fixture.evaluation_suite_id,
+            evaluation_suite_version=fixture.evaluation_suite_version,
+            scoring_policy_id=fixture.scoring_policy_id,
+            scoring_policy_version=fixture.scoring_policy_version,
+            output_tokens=256,
             task_profile_id=task.profile_id,
             task_profile_version=task.profile_version,
             quality_profile_id=task.quality.quality_profile_id,

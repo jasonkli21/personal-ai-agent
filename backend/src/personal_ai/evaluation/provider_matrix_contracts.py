@@ -12,7 +12,7 @@ from personal_ai.routing.contracts import CounterConfidence, EndpointRef
 from personal_ai.routing.phase21 import EvaluationQualityGate, QualityEvidence
 
 _SAFE_ID = r"^[A-Za-z0-9@][A-Za-z0-9._:/@+_-]{0,199}$"
-_REVISION = r"^[0-9a-f]{7,64}(-working-tree)?$"
+_REVISION = r"^[0-9a-f]{7,64}(-working-tree-[0-9a-f]{12})?$"
 
 
 class FrozenContract(BaseModel):
@@ -62,6 +62,10 @@ class HardConstraint(FrozenContract):
 class EvaluationFixture(FrozenContract):
     """Synthetic input and deterministic rubric; fixture text is never persisted."""
 
+    evaluation_suite_id: str = Field(pattern=_SAFE_ID)
+    evaluation_suite_version: int = Field(ge=1, le=2_147_483_647)
+    scoring_policy_id: str = Field(pattern=_SAFE_ID)
+    scoring_policy_version: int = Field(ge=1, le=2_147_483_647)
     fixture_id: str = Field(pattern=_SAFE_ID)
     data_classification: Literal["synthetic_public"]
     task_profile_id: str = Field(pattern=_SAFE_ID)
@@ -94,6 +98,9 @@ class EvaluationFixture(FrozenContract):
             raise ValueError("evaluation_fixture_claim_source_invalid")
         if len({claim.claim_id for claim in self.expected_claims}) != len(self.expected_claims):
             raise ValueError("evaluation_fixture_claim_duplicate")
+        visible_input = "\n".join(message.content for message in self.messages)
+        if any(source_id not in visible_input for source_id in self.source_ids):
+            raise ValueError("evaluation_fixture_source_id_not_visible")
         if len(str(self.reference_output).encode("utf-8")) > 16_384:
             raise ValueError("evaluation_fixture_reference_output_too_large")
         return self
@@ -131,6 +138,12 @@ class EvaluationCaseSummary(FrozenContract):
     fixture_id: str = Field(pattern=_SAFE_ID)
     task_profile_id: str = Field(pattern=_SAFE_ID)
     task_profile_version: int = Field(ge=1, le=2_147_483_647)
+    evaluation_suite_id: str = Field(pattern=_SAFE_ID)
+    evaluation_suite_version: int = Field(ge=1, le=2_147_483_647)
+    scoring_policy_id: str = Field(pattern=_SAFE_ID)
+    scoring_policy_version: int = Field(ge=1, le=2_147_483_647)
+    evaluation_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_tokens: int = Field(ge=1, le=4096)
     endpoint: EndpointRef
     provider_id: str = Field(pattern=_SAFE_ID)
     model_id: str = Field(pattern=_SAFE_ID)
@@ -140,6 +153,11 @@ class EvaluationCaseSummary(FrozenContract):
     runtime_id: str = Field(pattern=_SAFE_ID)
     counter_id: str | None = None
     counter_confidence: CounterConfidence = "unknown"
+    preparation_counter_id: str | None = None
+    preparation_counter_confidence: CounterConfidence = "unknown"
+    preparation_count_source: str | None = None
+    preparation_input_tokens: int | None = Field(default=None, ge=0, le=2_000_000)
+    prepared_input_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     endpoint_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_version: str = Field(pattern=_SAFE_ID)
     tested_revision: str = Field(pattern=_REVISION)
@@ -174,12 +192,24 @@ class EvaluationCaseSummary(FrozenContract):
         return self
 
 
+class EvaluationArtifactPublication(FrozenContract):
+    endpoint: EndpointRef
+    status: Literal["not_approved", "retained", "publication_failed"]
+    artifact_ids: tuple[UUID, ...] = Field(default=(), max_length=1024)
+    error_code: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._:+/-]{1,100}$")
+
+
 class EvaluationRunSummary(FrozenContract):
     schema_version: Literal[1] = 1
     evaluation_run_id: UUID
     task_profile_id: str = Field(pattern=_SAFE_ID)
     task_profile_version: int = Field(ge=1, le=2_147_483_647)
     task_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluation_suite_id: str = Field(pattern=_SAFE_ID)
+    evaluation_suite_version: int = Field(ge=1, le=2_147_483_647)
+    scoring_policy_id: str = Field(pattern=_SAFE_ID)
+    scoring_policy_version: int = Field(ge=1, le=2_147_483_647)
+    output_tokens: int = Field(ge=1, le=4096)
     source: Literal["synthetic", "live"]
     status: Literal["completed", "partial", "failed", "offline_baseline"]
     tested_revision: str = Field(pattern=_REVISION)
@@ -193,14 +223,28 @@ class EvaluationRunSummary(FrozenContract):
     skipped_cases: int = Field(ge=0, le=10_000)
     failed_cases: int = Field(ge=0, le=10_000)
     single_provider_baseline_endpoint_profile_id: str | None = None
+    single_provider_baseline_endpoint_profile_version: int | None = Field(default=None, ge=1)
+    single_provider_baseline_configuration_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     deterministic_strategy_id: str = Field(pattern=_SAFE_ID)
     deterministic_strategy_version: str = Field(pattern=_SAFE_ID)
     deterministic_baseline_endpoint_profile_ids: tuple[str, ...] = Field(default=(), max_length=128)
+    artifact_publications: tuple[EvaluationArtifactPublication, ...] = Field(default=(), max_length=128)
     created_at: datetime
     completed_at: datetime
 
     @model_validator(mode="after")
     def counts_and_timestamps_are_coherent(self):
+        baseline_identity = (
+            self.single_provider_baseline_endpoint_profile_id,
+            self.single_provider_baseline_endpoint_profile_version,
+            self.single_provider_baseline_configuration_sha256,
+        )
+        if any(value is not None for value in baseline_identity) and any(
+            value is None for value in baseline_identity
+        ):
+            raise ValueError("evaluation_single_provider_baseline_identity_incomplete")
         if (
             self.measured_cases + self.synthetic_cases + self.skipped_cases + self.failed_cases
             != self.total_cases
@@ -248,6 +292,14 @@ class QualityProfile(FrozenContract):
     quality_profile_version: int = Field(ge=1, le=2_147_483_647)
     task_profile_id: str = Field(pattern=_SAFE_ID)
     task_profile_version: int = Field(ge=1, le=2_147_483_647)
+    evaluation_suite_id: str = Field(pattern=_SAFE_ID)
+    evaluation_suite_version: int = Field(ge=1, le=2_147_483_647)
+    evaluation_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_tokens: int = Field(ge=1, le=4096)
+    comparison_baseline_endpoint: EndpointRef | None = None
+    comparison_baseline_configuration_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
     endpoint: EndpointRef
     provider_id: str = Field(pattern=_SAFE_ID)
     model_id: str = Field(pattern=_SAFE_ID)
@@ -259,6 +311,9 @@ class QualityProfile(FrozenContract):
     runtime_id: str = Field(pattern=_SAFE_ID)
     counter_id: str | None = None
     counter_confidence: CounterConfidence = "unknown"
+    preparation_counter_id: str | None = None
+    preparation_counter_confidence: CounterConfidence = "unknown"
+    preparation_count_source: str = Field(pattern=_SAFE_ID)
     policy_version: str = Field(pattern=_SAFE_ID)
     endpoint_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     task_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -301,18 +356,21 @@ class QualityProfile(FrozenContract):
         if any(not key or len(key) > 80 or not 0 <= value <= 1 for key, value in self.mean_metrics.items()):
             raise ValueError("quality_profile_metric_invalid")
         if self.status == "qualified" and (
-            self.baseline_evidence_id is None or self.promotion_minimum_benefit is None
-        ):
-            raise ValueError("quality_profile_promotion_proof_missing")
-        if self.status == "qualified" and (
             self.sample_count < self.minimum_samples
             or self.coverage < self.minimum_coverage
             or self.score < self.minimum_score
             or self.confidence < self.minimum_confidence
             or not self.hard_boundaries_passed
-            or self.promotion_minimum_benefit < self.minimum_benefit
         ):
             raise ValueError("quality_profile_threshold_not_met")
+        if (self.baseline_evidence_id is None) != (self.promotion_minimum_benefit is None):
+            raise ValueError("quality_profile_comparison_proof_incomplete")
+        if (self.comparison_baseline_endpoint is None) != (
+            self.comparison_baseline_configuration_sha256 is None
+        ):
+            raise ValueError("quality_profile_declared_baseline_identity_incomplete")
+        if self.baseline_evidence_id is not None and self.promotion_minimum_benefit < 0:
+            raise ValueError("quality_profile_comparison_benefit_invalid")
         return self
 
     def as_routing_evidence(self) -> QualityEvidence:
@@ -340,6 +398,14 @@ class QualityProfile(FrozenContract):
             policy_version=self.policy_version,
             endpoint_configuration_sha256=self.endpoint_configuration_sha256,
             task_configuration_sha256=self.task_configuration_sha256,
+            evaluation_suite_id=self.evaluation_suite_id,
+            evaluation_suite_version=self.evaluation_suite_version,
+            fixture_manifest_sha256=self.fixture_manifest_sha256,
+            evaluation_configuration_sha256=self.evaluation_configuration_sha256,
+            output_tokens=self.output_tokens,
+            preparation_counter_id=self.preparation_counter_id,
+            preparation_counter_confidence=self.preparation_counter_confidence,
+            preparation_count_source=self.preparation_count_source,
             quality_identity_sha256=self.quality_identity_sha256,
             scoring_policy_id=self.scoring_policy_id,
             scoring_policy_version=self.scoring_policy_version,
@@ -365,6 +431,11 @@ class EvaluationRunStart(FrozenContract):
     task_profile_id: str = Field(pattern=_SAFE_ID)
     task_profile_version: int = Field(ge=1, le=2_147_483_647)
     task_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluation_suite_id: str = Field(pattern=_SAFE_ID)
+    evaluation_suite_version: int = Field(ge=1, le=2_147_483_647)
+    scoring_policy_id: str = Field(pattern=_SAFE_ID)
+    scoring_policy_version: int = Field(ge=1, le=2_147_483_647)
+    output_tokens: int = Field(ge=1, le=4096)
     source: Literal["synthetic", "live"]
     seed: int | None = Field(default=None, ge=0, le=2_147_483_647)
     expected_cases: int = Field(ge=1, le=10_000)

@@ -96,6 +96,11 @@ class RoutingDecisionService:
         self.authorization = authorization
         self.evaluation_quality_authority = evaluation_quality_authority
 
+    def current_time(self, *, owner_id):
+        """Return the routing store's clock for persisted lifecycle timestamps."""
+        with self.observations.transaction(owner_id=owner_id) as connection:
+            return database_time(connection)
+
     def _authorize_evaluation_gate(self, c, owner_id, scope, gate, task, request, now):
         if gate is None:
             return
@@ -819,6 +824,14 @@ def _quality_current(task, policy_version, profile, evidence, now):
             scoring_policy_id=evidence.scoring_policy_id,
             scoring_policy_version=evidence.scoring_policy_version,
             tested_revision=evidence.tested_revision,
+            evaluation_suite_id=evidence.evaluation_suite_id,
+            evaluation_suite_version=evidence.evaluation_suite_version,
+            fixture_manifest_sha256=evidence.fixture_manifest_sha256,
+            evaluation_configuration_sha256=evidence.evaluation_configuration_sha256,
+            output_tokens=evidence.output_tokens,
+            preparation_counter_id=evidence.preparation_counter_id,
+            preparation_counter_confidence=evidence.preparation_counter_confidence,
+            preparation_count_source=evidence.preparation_count_source,
         )
         and evidence.policy_version == policy_version
         and (

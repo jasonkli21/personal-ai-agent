@@ -1,12 +1,18 @@
 {
-  "schema_version": "provider-matrix-fixtures-v1",
+  "schema_version": "provider-matrix-fixtures-v2",
+  "evaluation_suite": {
+    "id": "evaluation-suite:synthetic-synthesis",
+    "version": 2
+  },
   "synthetic": true,
   "task_profile": {
     "task_id": "evaluation:synthetic-synthesis",
     "profile_id": "task-profile:provider-matrix-synthesis",
     "profile_version": 1,
     "task_type": "research_synthesis",
-    "required_capabilities": ["bounded_generation"],
+    "required_capabilities": [
+      "bounded_generation"
+    ],
     "quality": {
       "mode": "measured_floor",
       "quality_profile_id": "quality-policy:provider-matrix-synthesis",
@@ -26,126 +32,2509 @@
     "deadline_ms": 30000,
     "replay_retention_seconds": 7776000
   },
-  "scoring_policy": {"id": "deterministic-task-matrix", "version": 1},
+  "scoring_policy": {
+    "id": "deterministic-task-matrix",
+    "version": 1
+  },
   "fixtures": [
     {
-      "fixture_id": "synthesis-riverton-01",
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:01",
       "data_classification": "synthetic_public",
       "task_profile_id": "task-profile:provider-matrix-synthesis",
       "task_profile_version": 1,
       "policy_version": "evaluation-policy:v1",
       "messages": [
-        {"role": "system", "content": "Return one JSON object with answer, claims, citations, budget_usd, and recommended_action. Only state facts supported by the supplied sources. Each claim must include its claim_id, exact value, and source_ids."},
-        {"role": "user", "content": "Compare the supplied family-day options for Riverton. The park guide says Riverton has 3 public parks. The travel quote totals 55 USD. The museum source says it is closed Mondays. Recommend the option within a 60 USD budget and cite the source IDs."}
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Cedar Bay. Evidence: guide:cedar-bay-parks lists 4 public parks; quote:cedar-bay-family-option prices the family option at 42 USD; hours:cedar-bay-gallery says the gallery is closed on Wednesday. The family limit is 50 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
       ],
-      "source_ids": ["source:parks", "source:budget", "source:museum-hours"],
+      "source_ids": [
+        "guide:cedar-bay-parks",
+        "quote:cedar-bay-family-option",
+        "hours:cedar-bay-gallery"
+      ],
       "expected_claims": [
-        {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
-        {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
-        {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+        {
+          "claim_id": "park_count",
+          "value": "4",
+          "source_ids": [
+            "guide:cedar-bay-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "42",
+          "source_ids": [
+            "quote:cedar-bay-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:cedar-bay-gallery"
+          ]
+        }
       ],
-      "required_terms": ["Riverton", "3 parks", "55 USD", "Monday"],
-      "forbidden_literals": ["PRIVATE_NOTE_", "secret-token-"],
-      "output_schema_id": "evaluation:synthesis-json-v1",
+      "required_terms": [
+        "Cedar Bay",
+        "4 public parks",
+        "42 USD",
+        "Wednesday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
       "output_schema": {
-        "required_fields": ["answer", "claims", "citations", "budget_usd", "recommended_action"],
-        "field_types": {"answer": "string", "claims": "array", "citations": "array", "budget_usd": "number", "recommended_action": "string"}
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
       },
       "hard_constraints": [
-        {"path": "budget_usd", "operator": "lte", "value": 60},
-        {"path": "recommended_action", "operator": "not_contains", "value": "museum"}
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 50
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
       ],
       "held_out": true,
       "reference_output": {
-        "answer": "Riverton has 3 parks. The 55 USD quote is within budget. The museum is closed Monday, so choose a park day.",
+        "answer": "Cedar Bay has 4 public parks. The 42 USD family option is within the 50 USD limit. The gallery is closed Wednesday, so choose the riverside walk.",
         "claims": [
-          {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
-          {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
-          {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+          {
+            "claim_id": "park_count",
+            "value": "4",
+            "source_ids": [
+              "guide:cedar-bay-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "42",
+            "source_ids": [
+              "quote:cedar-bay-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:cedar-bay-gallery"
+            ]
+          }
         ],
-        "citations": ["source:parks", "source:budget", "source:museum-hours"],
-        "budget_usd": 55,
-        "recommended_action": "Choose a park day"
+        "citations": [
+          "guide:cedar-bay-parks",
+          "quote:cedar-bay-family-option",
+          "hours:cedar-bay-gallery"
+        ],
+        "budget_usd": 42,
+        "recommended_action": "Choose the riverside walk",
+        "museum_visit_allowed": false
       }
     },
     {
-      "fixture_id": "synthesis-riverton-02",
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:02",
       "data_classification": "synthetic_public",
       "task_profile_id": "task-profile:provider-matrix-synthesis",
       "task_profile_version": 1,
       "policy_version": "evaluation-policy:v1",
       "messages": [
-        {"role": "system", "content": "Return one JSON object with answer, claims, citations, budget_usd, and recommended_action. Only state facts supported by the supplied sources. Each claim must include its claim_id, exact value, and source_ids."},
-        {"role": "user", "content": "Plan a short Riverton visit. Source source:parks lists 3 public parks. Source source:budget quotes a 55 USD total. Source source:museum-hours says the museum closes on Mondays. Stay within 60 USD and do not recommend a Monday museum visit."}
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Northbridge. Evidence: guide:northbridge-parks lists 2 public parks; quote:northbridge-family-option prices the family option at 68 USD; hours:northbridge-gallery says the gallery is closed on Tuesday. The family limit is 75 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
       ],
-      "source_ids": ["source:parks", "source:budget", "source:museum-hours"],
+      "source_ids": [
+        "guide:northbridge-parks",
+        "quote:northbridge-family-option",
+        "hours:northbridge-gallery"
+      ],
       "expected_claims": [
-        {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
-        {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
-        {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+        {
+          "claim_id": "park_count",
+          "value": "2",
+          "source_ids": [
+            "guide:northbridge-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "68",
+          "source_ids": [
+            "quote:northbridge-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:northbridge-gallery"
+          ]
+        }
       ],
-      "required_terms": ["Riverton", "3 parks", "55 USD", "Monday"],
-      "forbidden_literals": ["PRIVATE_NOTE_", "secret-token-"],
-      "output_schema_id": "evaluation:synthesis-json-v1",
+      "required_terms": [
+        "Northbridge",
+        "2 public parks",
+        "68 USD",
+        "Tuesday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
       "output_schema": {
-        "required_fields": ["answer", "claims", "citations", "budget_usd", "recommended_action"],
-        "field_types": {"answer": "string", "claims": "array", "citations": "array", "budget_usd": "number", "recommended_action": "string"}
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
       },
       "hard_constraints": [
-        {"path": "budget_usd", "operator": "lte", "value": 60},
-        {"path": "recommended_action", "operator": "not_contains", "value": "museum"}
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 75
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
       ],
       "held_out": true,
       "reference_output": {
-        "answer": "Riverton has 3 parks. The 55 USD option is within the 60 USD limit. Avoid visiting the museum on Monday.",
+        "answer": "Northbridge has 2 public parks. The 68 USD family option is within the 75 USD limit. The gallery is closed Tuesday, so choose the botanical garden visit.",
         "claims": [
-          {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
-          {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
-          {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+          {
+            "claim_id": "park_count",
+            "value": "2",
+            "source_ids": [
+              "guide:northbridge-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "68",
+            "source_ids": [
+              "quote:northbridge-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:northbridge-gallery"
+            ]
+          }
         ],
-        "citations": ["source:parks", "source:budget", "source:museum-hours"],
-        "budget_usd": 55,
-        "recommended_action": "Choose a park day"
+        "citations": [
+          "guide:northbridge-parks",
+          "quote:northbridge-family-option",
+          "hours:northbridge-gallery"
+        ],
+        "budget_usd": 68,
+        "recommended_action": "Choose the botanical garden visit",
+        "museum_visit_allowed": false
       }
     },
     {
-      "fixture_id": "synthesis-riverton-03",
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:03",
       "data_classification": "synthetic_public",
       "task_profile_id": "task-profile:provider-matrix-synthesis",
       "task_profile_version": 1,
       "policy_version": "evaluation-policy:v1",
       "messages": [
-        {"role": "system", "content": "Return one JSON object with answer, claims, citations, budget_usd, and recommended_action. Only state facts supported by the supplied sources. Each claim must include its claim_id, exact value, and source_ids."},
-        {"role": "user", "content": "Summarize these Riverton choices: 3 parks are listed; the quoted option costs 55 USD; the museum is closed Mondays. The family budget is at most 60 USD. Give a concise recommendation with citations."}
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Lake Alder. Evidence: guide:lake-alder-parks lists 6 public parks; quote:lake-alder-family-option prices the family option at 31 USD; hours:lake-alder-gallery says the gallery is closed on Thursday. The family limit is 40 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
       ],
-      "source_ids": ["source:parks", "source:budget", "source:museum-hours"],
+      "source_ids": [
+        "guide:lake-alder-parks",
+        "quote:lake-alder-family-option",
+        "hours:lake-alder-gallery"
+      ],
       "expected_claims": [
-        {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
-        {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
-        {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+        {
+          "claim_id": "park_count",
+          "value": "6",
+          "source_ids": [
+            "guide:lake-alder-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "31",
+          "source_ids": [
+            "quote:lake-alder-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:lake-alder-gallery"
+          ]
+        }
       ],
-      "required_terms": ["Riverton", "3 parks", "55 USD", "Monday"],
-      "forbidden_literals": ["PRIVATE_NOTE_", "secret-token-"],
-      "output_schema_id": "evaluation:synthesis-json-v1",
+      "required_terms": [
+        "Lake Alder",
+        "6 public parks",
+        "31 USD",
+        "Thursday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
       "output_schema": {
-        "required_fields": ["answer", "claims", "citations", "budget_usd", "recommended_action"],
-        "field_types": {"answer": "string", "claims": "array", "citations": "array", "budget_usd": "number", "recommended_action": "string"}
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
       },
       "hard_constraints": [
-        {"path": "budget_usd", "operator": "lte", "value": 60},
-        {"path": "recommended_action", "operator": "not_contains", "value": "museum"}
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 40
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
       ],
       "held_out": true,
       "reference_output": {
-        "answer": "Riverton has 3 parks. The quote costs 55 USD, within the 60 USD budget. Avoid the museum on Monday.",
+        "answer": "Lake Alder has 6 public parks. The 31 USD family option is within the 40 USD limit. The gallery is closed Thursday, so choose the lakeside picnic.",
         "claims": [
-          {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
-          {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
-          {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+          {
+            "claim_id": "park_count",
+            "value": "6",
+            "source_ids": [
+              "guide:lake-alder-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "31",
+            "source_ids": [
+              "quote:lake-alder-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:lake-alder-gallery"
+            ]
+          }
         ],
-        "citations": ["source:parks", "source:budget", "source:museum-hours"],
-        "budget_usd": 55,
-        "recommended_action": "Choose a park day"
+        "citations": [
+          "guide:lake-alder-parks",
+          "quote:lake-alder-family-option",
+          "hours:lake-alder-gallery"
+        ],
+        "budget_usd": 31,
+        "recommended_action": "Choose the lakeside picnic",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:04",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Redstone. Evidence: guide:redstone-parks lists 3 public parks; quote:redstone-family-option prices the family option at 84 USD; hours:redstone-gallery says the gallery is closed on Monday. The family limit is 90 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:redstone-parks",
+        "quote:redstone-family-option",
+        "hours:redstone-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "3",
+          "source_ids": [
+            "guide:redstone-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "84",
+          "source_ids": [
+            "quote:redstone-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:redstone-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Redstone",
+        "3 public parks",
+        "84 USD",
+        "Monday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 90
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Redstone has 3 public parks. The 84 USD family option is within the 90 USD limit. The gallery is closed Monday, so choose the historic district walk.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "3",
+            "source_ids": [
+              "guide:redstone-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "84",
+            "source_ids": [
+              "quote:redstone-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:redstone-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:redstone-parks",
+          "quote:redstone-family-option",
+          "hours:redstone-gallery"
+        ],
+        "budget_usd": 84,
+        "recommended_action": "Choose the historic district walk",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:05",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Maple Junction. Evidence: guide:maple-junction-parks lists 5 public parks; quote:maple-junction-family-option prices the family option at 27 USD; hours:maple-junction-gallery says the gallery is closed on Friday. The family limit is 35 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:maple-junction-parks",
+        "quote:maple-junction-family-option",
+        "hours:maple-junction-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "5",
+          "source_ids": [
+            "guide:maple-junction-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "27",
+          "source_ids": [
+            "quote:maple-junction-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:maple-junction-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Maple Junction",
+        "5 public parks",
+        "27 USD",
+        "Friday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 35
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Maple Junction has 5 public parks. The 27 USD family option is within the 35 USD limit. The gallery is closed Friday, so choose the nature trail outing.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "5",
+            "source_ids": [
+              "guide:maple-junction-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "27",
+            "source_ids": [
+              "quote:maple-junction-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:maple-junction-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:maple-junction-parks",
+          "quote:maple-junction-family-option",
+          "hours:maple-junction-gallery"
+        ],
+        "budget_usd": 27,
+        "recommended_action": "Choose the nature trail outing",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:06",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Westhaven. Evidence: guide:westhaven-parks lists 1 public parks; quote:westhaven-family-option prices the family option at 53 USD; hours:westhaven-gallery says the gallery is closed on Saturday. The family limit is 60 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:westhaven-parks",
+        "quote:westhaven-family-option",
+        "hours:westhaven-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "1",
+          "source_ids": [
+            "guide:westhaven-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "53",
+          "source_ids": [
+            "quote:westhaven-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:westhaven-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Westhaven",
+        "1 public parks",
+        "53 USD",
+        "Saturday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 60
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Westhaven has 1 public parks. The 53 USD family option is within the 60 USD limit. The gallery is closed Saturday, so choose the harbor walk.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "1",
+            "source_ids": [
+              "guide:westhaven-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "53",
+            "source_ids": [
+              "quote:westhaven-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:westhaven-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:westhaven-parks",
+          "quote:westhaven-family-option",
+          "hours:westhaven-gallery"
+        ],
+        "budget_usd": 53,
+        "recommended_action": "Choose the harbor walk",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:07",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Pinecrest. Evidence: guide:pinecrest-parks lists 8 public parks; quote:pinecrest-family-option prices the family option at 96 USD; hours:pinecrest-gallery says the gallery is closed on Sunday. The family limit is 100 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:pinecrest-parks",
+        "quote:pinecrest-family-option",
+        "hours:pinecrest-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "8",
+          "source_ids": [
+            "guide:pinecrest-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "96",
+          "source_ids": [
+            "quote:pinecrest-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:pinecrest-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Pinecrest",
+        "8 public parks",
+        "96 USD",
+        "Sunday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 100
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Pinecrest has 8 public parks. The 96 USD family option is within the 100 USD limit. The gallery is closed Sunday, so choose the mountain overlook visit.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "8",
+            "source_ids": [
+              "guide:pinecrest-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "96",
+            "source_ids": [
+              "quote:pinecrest-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:pinecrest-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:pinecrest-parks",
+          "quote:pinecrest-family-option",
+          "hours:pinecrest-gallery"
+        ],
+        "budget_usd": 96,
+        "recommended_action": "Choose the mountain overlook visit",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:08",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Silverbrook. Evidence: guide:silverbrook-parks lists 7 public parks; quote:silverbrook-family-option prices the family option at 44 USD; hours:silverbrook-gallery says the gallery is closed on Tuesday. The family limit is 55 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:silverbrook-parks",
+        "quote:silverbrook-family-option",
+        "hours:silverbrook-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "7",
+          "source_ids": [
+            "guide:silverbrook-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "44",
+          "source_ids": [
+            "quote:silverbrook-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:silverbrook-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Silverbrook",
+        "7 public parks",
+        "44 USD",
+        "Tuesday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 55
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Silverbrook has 7 public parks. The 44 USD family option is within the 55 USD limit. The gallery is closed Tuesday, so choose the covered market visit.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "7",
+            "source_ids": [
+              "guide:silverbrook-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "44",
+            "source_ids": [
+              "quote:silverbrook-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:silverbrook-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:silverbrook-parks",
+          "quote:silverbrook-family-option",
+          "hours:silverbrook-gallery"
+        ],
+        "budget_usd": 44,
+        "recommended_action": "Choose the covered market visit",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:09",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Eastmere. Evidence: guide:eastmere-parks lists 2 public parks; quote:eastmere-family-option prices the family option at 39 USD; hours:eastmere-gallery says the gallery is closed on Monday. The family limit is 45 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:eastmere-parks",
+        "quote:eastmere-family-option",
+        "hours:eastmere-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "2",
+          "source_ids": [
+            "guide:eastmere-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "39",
+          "source_ids": [
+            "quote:eastmere-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:eastmere-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Eastmere",
+        "2 public parks",
+        "39 USD",
+        "Monday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 45
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Eastmere has 2 public parks. The 39 USD family option is within the 45 USD limit. The gallery is closed Monday, so choose the canal walk.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "2",
+            "source_ids": [
+              "guide:eastmere-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "39",
+            "source_ids": [
+              "quote:eastmere-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:eastmere-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:eastmere-parks",
+          "quote:eastmere-family-option",
+          "hours:eastmere-gallery"
+        ],
+        "budget_usd": 39,
+        "recommended_action": "Choose the canal walk",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:10",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Juniper Falls. Evidence: guide:juniper-falls-parks lists 9 public parks; quote:juniper-falls-family-option prices the family option at 72 USD; hours:juniper-falls-gallery says the gallery is closed on Thursday. The family limit is 80 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:juniper-falls-parks",
+        "quote:juniper-falls-family-option",
+        "hours:juniper-falls-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "9",
+          "source_ids": [
+            "guide:juniper-falls-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "72",
+          "source_ids": [
+            "quote:juniper-falls-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:juniper-falls-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Juniper Falls",
+        "9 public parks",
+        "72 USD",
+        "Thursday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 80
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Juniper Falls has 9 public parks. The 72 USD family option is within the 80 USD limit. The gallery is closed Thursday, so choose the waterfall trail visit.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "9",
+            "source_ids": [
+              "guide:juniper-falls-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "72",
+            "source_ids": [
+              "quote:juniper-falls-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:juniper-falls-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:juniper-falls-parks",
+          "quote:juniper-falls-family-option",
+          "hours:juniper-falls-gallery"
+        ],
+        "budget_usd": 72,
+        "recommended_action": "Choose the waterfall trail visit",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:11",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Stonefield. Evidence: guide:stonefield-parks lists 4 public parks; quote:stonefield-family-option prices the family option at 118 USD; hours:stonefield-gallery says the gallery is closed on Friday. The family limit is 125 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:stonefield-parks",
+        "quote:stonefield-family-option",
+        "hours:stonefield-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "4",
+          "source_ids": [
+            "guide:stonefield-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "118",
+          "source_ids": [
+            "quote:stonefield-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:stonefield-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Stonefield",
+        "4 public parks",
+        "118 USD",
+        "Friday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 125
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Stonefield has 4 public parks. The 118 USD family option is within the 125 USD limit. The gallery is closed Friday, so choose the farm tour.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "4",
+            "source_ids": [
+              "guide:stonefield-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "118",
+            "source_ids": [
+              "quote:stonefield-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:stonefield-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:stonefield-parks",
+          "quote:stonefield-family-option",
+          "hours:stonefield-gallery"
+        ],
+        "budget_usd": 118,
+        "recommended_action": "Choose the farm tour",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:12",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Brightwater. Evidence: guide:brightwater-parks lists 3 public parks; quote:brightwater-family-option prices the family option at 24 USD; hours:brightwater-gallery says the gallery is closed on Wednesday. The family limit is 30 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:brightwater-parks",
+        "quote:brightwater-family-option",
+        "hours:brightwater-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "3",
+          "source_ids": [
+            "guide:brightwater-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "24",
+          "source_ids": [
+            "quote:brightwater-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:brightwater-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Brightwater",
+        "3 public parks",
+        "24 USD",
+        "Wednesday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 30
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Brightwater has 3 public parks. The 24 USD family option is within the 30 USD limit. The gallery is closed Wednesday, so choose the beach walk.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "3",
+            "source_ids": [
+              "guide:brightwater-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "24",
+            "source_ids": [
+              "quote:brightwater-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:brightwater-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:brightwater-parks",
+          "quote:brightwater-family-option",
+          "hours:brightwater-gallery"
+        ],
+        "budget_usd": 24,
+        "recommended_action": "Choose the beach walk",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:13",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Fox Hollow. Evidence: guide:fox-hollow-parks lists 6 public parks; quote:fox-hollow-family-option prices the family option at 61 USD; hours:fox-hollow-gallery says the gallery is closed on Saturday. The family limit is 70 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:fox-hollow-parks",
+        "quote:fox-hollow-family-option",
+        "hours:fox-hollow-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "6",
+          "source_ids": [
+            "guide:fox-hollow-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "61",
+          "source_ids": [
+            "quote:fox-hollow-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:fox-hollow-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Fox Hollow",
+        "6 public parks",
+        "61 USD",
+        "Saturday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 70
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Fox Hollow has 6 public parks. The 61 USD family option is within the 70 USD limit. The gallery is closed Saturday, so choose the orchard visit.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "6",
+            "source_ids": [
+              "guide:fox-hollow-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "61",
+            "source_ids": [
+              "quote:fox-hollow-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:fox-hollow-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:fox-hollow-parks",
+          "quote:fox-hollow-family-option",
+          "hours:fox-hollow-gallery"
+        ],
+        "budget_usd": 61,
+        "recommended_action": "Choose the orchard visit",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:14",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Meadowgate. Evidence: guide:meadowgate-parks lists 5 public parks; quote:meadowgate-family-option prices the family option at 33 USD; hours:meadowgate-gallery says the gallery is closed on Sunday. The family limit is 40 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:meadowgate-parks",
+        "quote:meadowgate-family-option",
+        "hours:meadowgate-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "5",
+          "source_ids": [
+            "guide:meadowgate-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "33",
+          "source_ids": [
+            "quote:meadowgate-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:meadowgate-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Meadowgate",
+        "5 public parks",
+        "33 USD",
+        "Sunday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 40
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Meadowgate has 5 public parks. The 33 USD family option is within the 40 USD limit. The gallery is closed Sunday, so choose the wildlife refuge walk.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "5",
+            "source_ids": [
+              "guide:meadowgate-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "33",
+            "source_ids": [
+              "quote:meadowgate-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:meadowgate-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:meadowgate-parks",
+          "quote:meadowgate-family-option",
+          "hours:meadowgate-gallery"
+        ],
+        "budget_usd": 33,
+        "recommended_action": "Choose the wildlife refuge walk",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:15",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Harbor Point. Evidence: guide:harbor-point-parks lists 2 public parks; quote:harbor-point-family-option prices the family option at 47 USD; hours:harbor-point-gallery says the gallery is closed on Thursday. The family limit is 55 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:harbor-point-parks",
+        "quote:harbor-point-family-option",
+        "hours:harbor-point-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "2",
+          "source_ids": [
+            "guide:harbor-point-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "47",
+          "source_ids": [
+            "quote:harbor-point-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:harbor-point-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Harbor Point",
+        "2 public parks",
+        "47 USD",
+        "Thursday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 55
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Harbor Point has 2 public parks. The 47 USD family option is within the 55 USD limit. The gallery is closed Thursday, so choose the pier visit.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "2",
+            "source_ids": [
+              "guide:harbor-point-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "47",
+            "source_ids": [
+              "quote:harbor-point-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:harbor-point-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:harbor-point-parks",
+          "quote:harbor-point-family-option",
+          "hours:harbor-point-gallery"
+        ],
+        "budget_usd": 47,
+        "recommended_action": "Choose the pier visit",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:16",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Willowmere. Evidence: guide:willowmere-parks lists 7 public parks; quote:willowmere-family-option prices the family option at 88 USD; hours:willowmere-gallery says the gallery is closed on Monday. The family limit is 95 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:willowmere-parks",
+        "quote:willowmere-family-option",
+        "hours:willowmere-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "7",
+          "source_ids": [
+            "guide:willowmere-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "88",
+          "source_ids": [
+            "quote:willowmere-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:willowmere-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Willowmere",
+        "7 public parks",
+        "88 USD",
+        "Monday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 95
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Willowmere has 7 public parks. The 88 USD family option is within the 95 USD limit. The gallery is closed Monday, so choose the forest preserve walk.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "7",
+            "source_ids": [
+              "guide:willowmere-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "88",
+            "source_ids": [
+              "quote:willowmere-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:willowmere-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:willowmere-parks",
+          "quote:willowmere-family-option",
+          "hours:willowmere-gallery"
+        ],
+        "budget_usd": 88,
+        "recommended_action": "Choose the forest preserve walk",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:17",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Granite Bay. Evidence: guide:granite-bay-parks lists 3 public parks; quote:granite-bay-family-option prices the family option at 56 USD; hours:granite-bay-gallery says the gallery is closed on Tuesday. The family limit is 65 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:granite-bay-parks",
+        "quote:granite-bay-family-option",
+        "hours:granite-bay-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "3",
+          "source_ids": [
+            "guide:granite-bay-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "56",
+          "source_ids": [
+            "quote:granite-bay-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:granite-bay-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Granite Bay",
+        "3 public parks",
+        "56 USD",
+        "Tuesday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 65
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Granite Bay has 3 public parks. The 56 USD family option is within the 65 USD limit. The gallery is closed Tuesday, so choose the cliffside path outing.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "3",
+            "source_ids": [
+              "guide:granite-bay-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "56",
+            "source_ids": [
+              "quote:granite-bay-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:granite-bay-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:granite-bay-parks",
+          "quote:granite-bay-family-option",
+          "hours:granite-bay-gallery"
+        ],
+        "budget_usd": 56,
+        "recommended_action": "Choose the cliffside path outing",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:18",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Ashford. Evidence: guide:ashford-parks lists 10 public parks; quote:ashford-family-option prices the family option at 103 USD; hours:ashford-gallery says the gallery is closed on Wednesday. The family limit is 110 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:ashford-parks",
+        "quote:ashford-family-option",
+        "hours:ashford-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "10",
+          "source_ids": [
+            "guide:ashford-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "103",
+          "source_ids": [
+            "quote:ashford-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:ashford-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Ashford",
+        "10 public parks",
+        "103 USD",
+        "Wednesday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 110
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Ashford has 10 public parks. The 103 USD family option is within the 110 USD limit. The gallery is closed Wednesday, so choose the arboretum visit.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "10",
+            "source_ids": [
+              "guide:ashford-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "103",
+            "source_ids": [
+              "quote:ashford-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:ashford-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:ashford-parks",
+          "quote:ashford-family-option",
+          "hours:ashford-gallery"
+        ],
+        "budget_usd": 103,
+        "recommended_action": "Choose the arboretum visit",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:19",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Blue Summit. Evidence: guide:blue-summit-parks lists 4 public parks; quote:blue-summit-family-option prices the family option at 29 USD; hours:blue-summit-gallery says the gallery is closed on Friday. The family limit is 35 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:blue-summit-parks",
+        "quote:blue-summit-family-option",
+        "hours:blue-summit-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "4",
+          "source_ids": [
+            "guide:blue-summit-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "29",
+          "source_ids": [
+            "quote:blue-summit-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:blue-summit-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Blue Summit",
+        "4 public parks",
+        "29 USD",
+        "Friday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 35
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Blue Summit has 4 public parks. The 29 USD family option is within the 35 USD limit. The gallery is closed Friday, so choose the creekside picnic.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "4",
+            "source_ids": [
+              "guide:blue-summit-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "29",
+            "source_ids": [
+              "quote:blue-summit-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:blue-summit-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:blue-summit-parks",
+          "quote:blue-summit-family-option",
+          "hours:blue-summit-gallery"
+        ],
+        "budget_usd": 29,
+        "recommended_action": "Choose the creekside picnic",
+        "museum_visit_allowed": false
+      }
+    },
+    {
+      "evaluation_suite_id": "evaluation-suite:synthetic-synthesis",
+      "evaluation_suite_version": 2,
+      "scoring_policy_id": "deterministic-task-matrix",
+      "scoring_policy_version": 1,
+      "fixture_id": "synthesis:family-day:20",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return one JSON object with answer, claims, citations, budget_usd, recommended_action, and museum_visit_allowed. Use only the supplied evidence. Each claim must include its exact claim_id, value, and source_ids; cite the source IDs exactly as shown."
+        },
+        {
+          "role": "user",
+          "content": "Plan a family day in Old Mill Crossing. Evidence: guide:old-mill-crossing-parks lists 6 public parks; quote:old-mill-crossing-family-option prices the family option at 74 USD; hours:old-mill-crossing-gallery says the gallery is closed on Sunday. The family limit is 85 USD. Recommend an option within budget and do not schedule a gallery visit on its closed day. Include the source IDs in claims and citations."
+        }
+      ],
+      "source_ids": [
+        "guide:old-mill-crossing-parks",
+        "quote:old-mill-crossing-family-option",
+        "hours:old-mill-crossing-gallery"
+      ],
+      "expected_claims": [
+        {
+          "claim_id": "park_count",
+          "value": "6",
+          "source_ids": [
+            "guide:old-mill-crossing-parks"
+          ]
+        },
+        {
+          "claim_id": "budget_usd",
+          "value": "74",
+          "source_ids": [
+            "quote:old-mill-crossing-family-option"
+          ]
+        },
+        {
+          "claim_id": "gallery_closed_requested_day",
+          "value": "true",
+          "source_ids": [
+            "hours:old-mill-crossing-gallery"
+          ]
+        }
+      ],
+      "required_terms": [
+        "Old Mill Crossing",
+        "6 public parks",
+        "74 USD",
+        "Sunday"
+      ],
+      "forbidden_literals": [
+        "PRIVATE_NOTE_",
+        "secret-token-"
+      ],
+      "output_schema_id": "evaluation:synthesis-json-v2",
+      "output_schema": {
+        "required_fields": [
+          "answer",
+          "claims",
+          "citations",
+          "budget_usd",
+          "recommended_action",
+          "museum_visit_allowed"
+        ],
+        "field_types": {
+          "answer": "string",
+          "claims": "array",
+          "citations": "array",
+          "budget_usd": "number",
+          "recommended_action": "string",
+          "museum_visit_allowed": "boolean"
+        }
+      },
+      "hard_constraints": [
+        {
+          "path": "budget_usd",
+          "operator": "lte",
+          "value": 85
+        },
+        {
+          "path": "museum_visit_allowed",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Old Mill Crossing has 6 public parks. The 74 USD family option is within the 85 USD limit. The gallery is closed Sunday, so choose the mill trail walk.",
+        "claims": [
+          {
+            "claim_id": "park_count",
+            "value": "6",
+            "source_ids": [
+              "guide:old-mill-crossing-parks"
+            ]
+          },
+          {
+            "claim_id": "budget_usd",
+            "value": "74",
+            "source_ids": [
+              "quote:old-mill-crossing-family-option"
+            ]
+          },
+          {
+            "claim_id": "gallery_closed_requested_day",
+            "value": "true",
+            "source_ids": [
+              "hours:old-mill-crossing-gallery"
+            ]
+          }
+        ],
+        "citations": [
+          "guide:old-mill-crossing-parks",
+          "quote:old-mill-crossing-family-option",
+          "hours:old-mill-crossing-gallery"
+        ],
+        "budget_usd": 74,
+        "recommended_action": "Choose the mill trail walk",
+        "museum_visit_allowed": false
       }
     }
   ]

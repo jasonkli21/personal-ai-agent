@@ -32,7 +32,7 @@ MAX_ROUTING_SOURCE_REFERENCES = 64
 MAX_REPLAY_SECONDS = 90 * 24 * 60 * 60
 _SAFE_ID = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9._:/@+_-]{0,199}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_REVISION = re.compile(r"^[0-9a-f]{7,64}(-working-tree)?$")
+_REVISION = re.compile(r"^[0-9a-f]{7,64}(-working-tree-[0-9a-f]{12})?$")
 _CONFIDENCE_RANK: dict[CounterConfidence, int] = {
     "unknown": 0,
     "estimated": 1,
@@ -70,11 +70,27 @@ def quality_identity_sha256(
     scoring_policy_id: str,
     scoring_policy_version: int,
     tested_revision: str,
+    evaluation_suite_id: str | None = None,
+    evaluation_suite_version: int | None = None,
+    fixture_manifest_sha256: str | None = None,
+    evaluation_configuration_sha256: str | None = None,
+    output_tokens: int | None = None,
+    preparation_counter_id: str | None = None,
+    preparation_counter_confidence: str | None = None,
+    preparation_count_source: str | None = None,
 ) -> str:
     payload = json.dumps(
         {
             "endpoint_configuration_sha256": endpoint_digest,
+            "evaluation_configuration_sha256": evaluation_configuration_sha256,
+            "evaluation_suite_id": evaluation_suite_id,
+            "evaluation_suite_version": evaluation_suite_version,
+            "fixture_manifest_sha256": fixture_manifest_sha256,
+            "output_tokens": output_tokens,
             "policy_version": policy_version,
+            "preparation_count_source": preparation_count_source,
+            "preparation_counter_confidence": preparation_counter_confidence,
+            "preparation_counter_id": preparation_counter_id,
             "quality_profile_id": quality_profile_id,
             "quality_profile_version": quality_profile_version,
             "scoring_policy_id": scoring_policy_id,
@@ -333,6 +349,14 @@ class QualityEvidence(_FrozenModel):
     policy_version: str
     endpoint_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     task_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluation_suite_id: str | None = None
+    evaluation_suite_version: int | None = Field(default=None, ge=1, le=2_147_483_647)
+    fixture_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evaluation_configuration_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    output_tokens: int | None = Field(default=None, ge=1, le=4096)
+    preparation_counter_id: str | None = None
+    preparation_counter_confidence: CounterConfidence | None = None
+    preparation_count_source: str | None = None
     quality_identity_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     scoring_policy_id: str
     scoring_policy_version: int = Field(ge=1, le=2_147_483_647)
@@ -349,10 +373,11 @@ class QualityEvidence(_FrozenModel):
         "task_profile_id", "endpoint_profile_id", "provider_id", "model_id", "endpoint_id",
         "deployment_id", "serializer_id", "runtime_id", "quality_profile_id", "policy_version",
         "scoring_policy_id", "evidence_reference",
+        "evaluation_suite_id", "preparation_count_source",
     )
     @classmethod
-    def valid_quality_identity(cls, value: str) -> str:
-        return _safe_id(value)
+    def valid_quality_identity(cls, value: str | None) -> str | None:
+        return _safe_id(value) if value is not None else None
 
     @field_validator("measured_at", "fresh_until")
     @classmethod
@@ -368,6 +393,19 @@ class QualityEvidence(_FrozenModel):
     def valid_quality_interval(self) -> QualityEvidence:
         if self.fresh_until <= self.measured_at:
             raise ValueError("routing_quality_freshness_invalid")
+        suite_identity = (
+            self.evaluation_suite_id,
+            self.evaluation_suite_version,
+            self.fixture_manifest_sha256,
+            self.evaluation_configuration_sha256,
+            self.output_tokens,
+            self.preparation_counter_confidence,
+            self.preparation_count_source,
+        )
+        if any(value is not None for value in suite_identity) and any(
+            value is None for value in suite_identity
+        ):
+            raise ValueError("routing_quality_evaluation_identity_incomplete")
         return self
 
 

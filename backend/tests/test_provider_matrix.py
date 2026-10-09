@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -13,8 +16,12 @@ from personal_ai.artifacts.observations import validate_observation
 from personal_ai.auth.scope import ApplicationScope
 from personal_ai.evaluation.provider_matrix import (
     build_quality_profile,
+    evaluation_suite_identity,
+    fixture_manifest_sha256,
+    git_revision,
     load_provider_matrix_configuration,
     promote_quality_profile,
+    qualify_quality_profile,
     score_output,
 )
 from personal_ai.evaluation.provider_matrix_contracts import (
@@ -26,8 +33,10 @@ from personal_ai.evaluation.provider_matrix_contracts import (
 from personal_ai.evaluation.provider_matrix_runner import (
     SYSTEM_EVALUATION_OWNER,
     SYSTEM_EVALUATION_SCOPE,
+    EvaluationRunConflict,
     InMemoryEvaluationRunRepository,
     ProviderMatrixRunner,
+    SyntheticEvaluationOutputRetention,
     _usage_confidence,
 )
 from personal_ai.llm.client import (
@@ -55,24 +64,13 @@ from tests.test_endpoint_registry import _bucket, _profile
 from tests.test_routing_phase21 import Authorization, MemoryRepository, Usage
 
 
-def _valid_output():
-    return json.dumps(
-        {
-            "answer": "Riverton has 3 parks. The 55 USD quote fits the budget. Avoid the museum Monday.",
-            "claims": [
-                {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
-                {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
-                {
-                    "claim_id": "museum_closed_mondays",
-                    "value": "true",
-                    "source_ids": ["source:museum-hours"],
-                },
-            ],
-            "citations": ["source:parks", "source:budget", "source:museum-hours"],
-            "budget_usd": 55,
-            "recommended_action": "Choose a park day",
-        }
+def _valid_output(messages=None):
+    fixtures, _, _ = load_provider_matrix_configuration()
+    fixture = next(
+        (row for row in fixtures if messages and row.messages[-1].content == messages[-1].content),
+        fixtures[0],
     )
+    return json.dumps(fixture.reference_output)
 
 
 class _Generator:
@@ -84,9 +82,9 @@ class _Generator:
         )
         self.capabilities = ProviderCapabilities(frozenset({"bounded_generation"}))
 
-    def complete(self, *_args, **_kwargs):
+    def complete(self, messages, *_args, **_kwargs):
         return GenerationResult(
-            text=_valid_output(),
+            text=_valid_output(messages),
             metadata=GenerationMetadata(
                 status="success",
                 identity=self.identity,
@@ -106,6 +104,32 @@ class _SyntheticExecutor:
         return _Generator(endpoint)
 
 
+class _FailOnceRepository(InMemoryEvaluationRunRepository):
+    def __init__(self):
+        super().__init__()
+        self.failed_first_case = False
+
+    def save_case(self, case):
+        if not self.failed_first_case and case.status == "synthetic_baseline":
+            self.failed_first_case = True
+            raise RuntimeError("simulated process interruption")
+        super().save_case(case)
+
+
+class _FakeArtifactService:
+    def __init__(self, outcomes):
+        self.store = SimpleNamespace(store_id="memory:test")
+        self.outcomes = list(outcomes)
+        self.write_calls = 0
+
+    def write(self, *_args, **_kwargs):
+        self.write_calls += 1
+        outcome = self.outcomes.pop(0)
+        if outcome is None:
+            return None
+        return SimpleNamespace(artifact_id=outcome)
+
+
 def _matrix(*, include_blocked=True):
     profiles = [
         _profile(
@@ -123,6 +147,7 @@ def _matrix(*, include_blocked=True):
         _profile(
             "extension:generic", provider_id="new-provider", model_id="synthesis-d",
             quota_buckets=(_bucket("bucket-extension"),),
+            serializer_id="extension-chat-v2",
         ),
     ]
     if include_blocked:
@@ -139,17 +164,24 @@ def _matrix(*, include_blocked=True):
             )
         )
     fixtures, task, _ = load_provider_matrix_configuration()
-    # A new task identity and endpoint family reuse the same fixture/profile contracts.
+    # Test-only task/suite registration models an explicit trusted suite extension.
+    task_profile_id = "task-profile:extension-synthesis"
     task = task.model_copy(
         update={
             "task_id": "evaluation:extension-task",
-            "profile_id": "task-profile:extension-synthesis",
+            "profile_id": task_profile_id,
         }
     )
     fixtures = tuple(
-        fixture.model_copy(update={"task_profile_id": task.profile_id})
+        fixture.model_copy(
+            update={
+                "task_profile_id": task.profile_id,
+                "evaluation_suite_id": "evaluation-suite:matrix-test",
+            }
+        )
         for fixture in fixtures
     )
+    suite_id, suite_version, _, _, suite_digest = evaluation_suite_identity(fixtures)
     run_repository = InMemoryEvaluationRunRepository()
     observations = MemoryRepository()
     registry = EndpointRegistry(tuple(profiles))
@@ -168,6 +200,7 @@ def _matrix(*, include_blocked=True):
         routing_service=routing,
         repository=run_repository,
         executor=executor,
+        approved_evaluation_suites={(suite_id, suite_version): suite_digest},
     )
     return runner, run_repository, observations, executor, tuple(profiles), fixtures, task
 
@@ -186,7 +219,7 @@ def test_fixture_scoring_is_deterministic_and_hard_boundaries_fail_closed():
 
     unsafe = json.loads(_valid_output())
     unsafe["citations"][-1] = "source:unregistered"
-    unsafe["recommended_action"] = "Visit the museum on Monday"
+    unsafe["museum_visit_allowed"] = True
     unsafe["answer"] += " PRIVATE_NOTE_exposed"
     failed = score_output(fixtures[0], json.dumps(unsafe))
     assert not failed.hard_boundaries_passed
@@ -195,7 +228,7 @@ def test_fixture_scoring_is_deterministic_and_hard_boundaries_fail_closed():
     assert failed.privacy == 0
 
     malformed_citations = json.loads(_valid_output())
-    malformed_citations["citations"] = ["source:parks", 7, {"unexpected": "shape"}]
+    malformed_citations["citations"] = [fixtures[0].source_ids[0], 7, {"unexpected": "shape"}]
     malformed_score = score_output(fixtures[0], json.dumps(malformed_citations))
     assert malformed_score.citation_precision == pytest.approx(1 / 3)
 
@@ -203,6 +236,96 @@ def test_fixture_scoring_is_deterministic_and_hard_boundaries_fail_closed():
 def test_numeric_hard_constraints_reject_string_thresholds():
     with pytest.raises(ValidationError, match="evaluation_constraint_numeric_value_required"):
         HardConstraint(path="budget_usd", operator="lte", value="55")
+
+
+def test_registered_generic_scorer_supports_a_different_task_output_shape():
+    fixtures, _, _ = load_provider_matrix_configuration()
+    numeric = type(fixtures[0]).model_validate(
+        {
+            **fixtures[0].model_dump(),
+            "evaluation_suite_id": "evaluation-suite:numeric-output-test",
+            "scoring_policy_id": "structured-output",
+            "fixture_id": "fixture:numeric-output-test",
+            "messages": (
+                {"role": "system", "content": "Return JSON with an integer result."},
+                {"role": "user", "content": "Return the result 42."},
+            ),
+            "source_ids": (),
+            "expected_claims": (),
+            "required_terms": (),
+            "output_schema_id": "evaluation:integer-result-v1",
+            "output_schema": {
+                "required_fields": ["result"],
+                "field_types": {"result": "integer"},
+            },
+            "hard_constraints": (HardConstraint(path="result", operator="equals", value=42),),
+            "reference_output": {"result": 42},
+        }
+    )
+    score = score_output(numeric, '{"result":42}')
+    assert score.overall_score == 1
+    assert score.hard_boundaries_passed
+    assert not score_output(numeric, '{"result":"42"}').hard_boundaries_passed
+
+
+def test_packaged_held_out_suite_can_qualify_from_its_actual_fixtures():
+    fixtures, task, _ = load_provider_matrix_configuration()
+    endpoint = _profile("suite:quality-endpoint", quota_buckets=(_bucket("suite-quality"),))
+    run_id = uuid4()
+    now = datetime.now(UTC)
+    cases = []
+    for fixture in fixtures:
+        metrics = score_output(fixture, json.dumps(fixture.reference_output))
+        cases.append(
+            EvaluationCaseSummary(
+                evaluation_run_id=run_id,
+                fixture_id=fixture.fixture_id,
+                task_profile_id=task.profile_id,
+                task_profile_version=task.profile_version,
+                evaluation_suite_id=fixture.evaluation_suite_id,
+                evaluation_suite_version=fixture.evaluation_suite_version,
+                scoring_policy_id=fixture.scoring_policy_id,
+                scoring_policy_version=fixture.scoring_policy_version,
+                evaluation_configuration_sha256="d" * 64,
+                output_tokens=256,
+                endpoint=endpoint.ref,
+                provider_id=endpoint.provider_id,
+                model_id=endpoint.model_id,
+                serializer_id=endpoint.serializer_id,
+                runtime_id=endpoint.runtime_id,
+                counter_id=endpoint.counter.counter_id if endpoint.counter else None,
+                counter_confidence=endpoint.counter.confidence if endpoint.counter else "unknown",
+                preparation_counter_confidence="estimated",
+                preparation_count_source="estimated-byte-upper-v1",
+                preparation_input_tokens=128,
+                prepared_input_sha256="e" * 64,
+                endpoint_configuration_sha256=endpoint_configuration_sha256(endpoint),
+                policy_version=fixture.policy_version,
+                tested_revision="a1b2c3d",
+                status="measured",
+                routing_decision_id=uuid4(),
+                invocation_id=uuid4(),
+                attempt_id=uuid4(),
+                metrics=metrics,
+                measured_at=now,
+            )
+        )
+    candidate = build_quality_profile(
+        evaluation_run_id=run_id,
+        task=task,
+        endpoint=endpoint,
+        policy_version=fixtures[0].policy_version,
+        case_summaries=cases,
+        tested_revision="a1b2c3d",
+        fixture_manifest_sha256=fixture_manifest_sha256(fixtures),
+        seed=None,
+        measured_at=now,
+        output_tokens=256,
+    )
+    assert candidate is not None
+    assert candidate.sample_count == task.quality.minimum_samples
+    assert candidate.confidence >= task.quality.minimum_confidence
+    assert qualify_quality_profile(candidate, task=task, now=now).status == "qualified"
 
 
 def test_usage_confidence_does_not_promote_estimates_to_provider_facts():
@@ -221,9 +344,7 @@ def test_matrix_uses_generic_profiles_task_contract_and_p21_p19_seams():
         fixtures=fixtures,
         task=task,
         policy_version=fixtures[0].policy_version,
-        tested_revision="a1b2c3d",
         single_provider_baseline=profiles[0].ref,
-        seed=41,
     )
 
     assert summary.status == "partial"
@@ -250,6 +371,144 @@ def test_matrix_uses_generic_profiles_task_contract_and_p21_p19_seams():
     assert all(case.endpoint_configuration_sha256 == endpoint_configuration_sha256(
         next(p for p in profiles if p.ref == case.endpoint)
     ) for case in cases)
+    prepared_events = [
+        event
+        for record in observations.records.values()
+        for event in record.events
+        if event.kind == "authorized" and event.preparation is not None
+    ]
+    assert prepared_events
+    assert all(event.preparation.prepared_at >= observations.now for event in prepared_events)
+    assert all(
+        event.preparation.count_confidence == "estimated"
+        and event.preparation.counter_id is None
+        for event in prepared_events
+    )
+    first_fixture_digests = {
+        case.endpoint: case.prepared_input_sha256
+        for case in cases
+        if case.fixture_id == fixtures[0].fixture_id and case.metrics is not None
+    }
+    assert first_fixture_digests[profiles[0].ref] != first_fixture_digests[profiles[3].ref]
+    assert all(row.status == "not_approved" for row in summary.artifact_publications)
+
+
+def test_matrix_excludes_non_generation_profiles_from_case_universe():
+    runner, _repository, _observations, executor, profiles, fixtures, task = _matrix(
+        include_blocked=False
+    )
+    embedding = _profile(
+        "extension:embedding",
+        provider_id="embedding-provider",
+        model_id="embedding-model",
+        capabilities=frozenset({"embeddings"}),
+        embedding_dimensions=768,
+        quota_buckets=(_bucket("embedding-bucket", operations=frozenset({"embeddings"})),),
+    )
+    search = _profile(
+        "extension:search",
+        provider_id="search-provider",
+        model_id="search-model",
+        capabilities=frozenset({"search"}),
+        max_search_query_chars=500,
+        max_search_results=10,
+        quota_buckets=(_bucket("search-bucket", operations=frozenset({"search"})),),
+    )
+    runner.routing_service.registry = EndpointRegistry((*profiles, embedding, search))
+
+    summary, cases, _ = runner.run(
+        evaluation_run_id=uuid4(),
+        fixtures=fixtures,
+        task=task,
+        policy_version=fixtures[0].policy_version,
+    )
+
+    assert summary.total_cases == len(fixtures) * len(profiles)
+    assert all(case.endpoint not in {embedding.ref, search.ref} for case in cases)
+    assert embedding.endpoint_profile_id not in executor.prepared
+    assert search.endpoint_profile_id not in executor.prepared
+
+
+def test_identical_run_resumes_without_repeating_a_settled_send():
+    runner, _repository, observations, _executor, profiles, fixtures, task = _matrix(
+        include_blocked=False
+    )
+    repository = _FailOnceRepository()
+    runner.repository = repository
+    runner.routing_service.evaluation_quality_authority = repository
+    run_id = uuid4()
+
+    with pytest.raises(RuntimeError, match="simulated process interruption"):
+        runner.run(
+            evaluation_run_id=run_id,
+            fixtures=fixtures,
+            task=task,
+            policy_version=fixtures[0].policy_version,
+        )
+    sent_before_resume = len(observations.attempts)
+    assert sent_before_resume == 1
+
+    summary, cases, _ = runner.run(
+        evaluation_run_id=run_id,
+        fixtures=fixtures,
+        task=task,
+        policy_version=fixtures[0].policy_version,
+    )
+
+    assert summary.status == "partial"
+    assert summary.failed_cases == 1
+    assert len(cases) == summary.total_cases
+    assert len(observations.attempts) == len(fixtures) * len(profiles)
+    assert len(observations.attempts) == sent_before_resume + len(fixtures) * len(profiles) - 1
+    assert repository.runs[run_id][1] == "partial"
+
+
+def test_routing_exceptions_are_failed_cases_not_eligibility_skips():
+    runner, repository, observations, _executor, _profiles, fixtures, task = _matrix(
+        include_blocked=False
+    )
+
+    def fail_route(**_kwargs):
+        raise RuntimeError("internal routing failure")
+
+    runner.routing_service.route = fail_route
+    summary, cases, _ = runner.run(
+        evaluation_run_id=uuid4(),
+        fixtures=fixtures,
+        task=task,
+        policy_version=fixtures[0].policy_version,
+    )
+
+    assert summary.status == "failed"
+    assert summary.failed_cases == summary.total_cases
+    assert summary.skipped_cases == 0
+    assert all(case.status == "failed" for case in cases)
+    assert not observations.attempts
+    assert repository.runs[summary.evaluation_run_id][1] == "failed"
+
+
+def test_artifact_publication_reports_partial_batch_failure():
+    runner, _repository, _observations, _executor, profiles, fixtures, task = _matrix(
+        include_blocked=False
+    )
+    runner.routing_service.registry = EndpointRegistry((profiles[0],))
+    first_artifact_id = uuid4()
+    artifact_service = _FakeArtifactService((None, first_artifact_id))
+    runner.artifact_service = artifact_service
+    runner.retention_authority = SyntheticEvaluationOutputRetention()
+
+    summary, _cases, _ = runner.run(
+        evaluation_run_id=uuid4(),
+        fixtures=fixtures,
+        task=task,
+        policy_version=fixtures[0].policy_version,
+    )
+
+    publication = summary.artifact_publications[0]
+    assert artifact_service.write_calls == 2
+    assert publication.status == "publication_failed"
+    assert publication.error_code == "artifact_write_not_ready"
+    assert publication.artifact_ids == (first_artifact_id,)
 
 
 def test_evaluation_gate_rejects_preparation_for_different_fixture_before_reservation():
@@ -287,6 +546,11 @@ def test_evaluation_gate_rejects_preparation_for_different_fixture_before_reserv
             task_profile_id=task.profile_id,
             task_profile_version=task.profile_version,
             task_configuration_sha256=task_configuration_sha256(task),
+            evaluation_suite_id=fixture.evaluation_suite_id,
+            evaluation_suite_version=fixture.evaluation_suite_version,
+            scoring_policy_id=fixture.scoring_policy_id,
+            scoring_policy_version=fixture.scoring_policy_version,
+            output_tokens=256,
             source="synthetic",
             expected_cases=1,
             created_at=observations.now,
@@ -346,13 +610,12 @@ def test_quality_waiver_keeps_phase21_quota_authority_in_force():
     runner.routing_service.usage.exhausted = True
     summary, cases, _ = runner.run(
         evaluation_run_id=uuid4(),
-        fixtures=fixtures[:1],
+        fixtures=fixtures,
         task=task,
         policy_version=fixtures[0].policy_version,
-        tested_revision="a1b2c3d",
     )
     assert summary.status == "partial"
-    assert summary.total_cases == len(profiles)
+    assert summary.total_cases == len(fixtures) * len(profiles)
     assert summary.measured_cases == 0
     assert all(case.status == "not_run" for case in cases)
     assert not executor.prepared
@@ -398,6 +661,12 @@ def test_quality_profile_requires_same_held_out_sample_and_explicit_benefit():
                     fixture_id=f"fixture:{index}",
                     task_profile_id=task.profile_id,
                     task_profile_version=task.profile_version,
+                    evaluation_suite_id=_fixtures[0].evaluation_suite_id,
+                    evaluation_suite_version=_fixtures[0].evaluation_suite_version,
+                    scoring_policy_id=_fixtures[0].scoring_policy_id,
+                    scoring_policy_version=_fixtures[0].scoring_policy_version,
+                    evaluation_configuration_sha256="b" * 64,
+                    output_tokens=256,
                     endpoint=endpoint.ref,
                     provider_id=endpoint.provider_id,
                     model_id=endpoint.model_id,
@@ -405,6 +674,10 @@ def test_quality_profile_requires_same_held_out_sample_and_explicit_benefit():
                     credential_scope_id=endpoint.credential_scope_id,
                     serializer_id=endpoint.serializer_id,
                     runtime_id=endpoint.runtime_id,
+                    preparation_counter_confidence="estimated",
+                    preparation_count_source="estimated-byte-upper-v1",
+                    preparation_input_tokens=64,
+                    prepared_input_sha256="c" * 64,
                     endpoint_configuration_sha256=endpoint_configuration_sha256(endpoint),
                     policy_version="evaluation-policy:v1",
                     tested_revision="a1b2c3d",
@@ -426,8 +699,9 @@ def test_quality_profile_requires_same_held_out_sample_and_explicit_benefit():
         case_summaries=candidate_cases,
         tested_revision="a1b2c3d",
         fixture_manifest_sha256=manifest,
-        seed=41,
+        seed=None,
         measured_at=now,
+        comparison_baseline=endpoints[1],
     )
     baseline = build_quality_profile(
         evaluation_run_id=baseline_run,
@@ -437,7 +711,7 @@ def test_quality_profile_requires_same_held_out_sample_and_explicit_benefit():
         case_summaries=baseline_cases,
         tested_revision="a1b2c3d",
         fixture_manifest_sha256=manifest,
-        seed=41,
+        seed=None,
         measured_at=now,
     )
     assert candidate and baseline
@@ -448,8 +722,29 @@ def test_quality_profile_requires_same_held_out_sample_and_explicit_benefit():
     assert promoted.quality_evidence_version == candidate.quality_evidence_version + 1
     assert promoted.as_routing_evidence().quality_evidence_id == promoted.quality_evidence_id
 
+    comparison_repository = InMemoryEvaluationRunRepository()
+    comparison_repository.save_quality_profile(candidate)
+    comparison_repository.save_quality_profile(baseline)
+    comparison_repository.publish_quality_profile(promoted, expected_revision=1)
+    assert comparison_repository.get_quality_profile(
+        promoted.quality_evidence_id
+    ).baseline_evidence_id == baseline.quality_evidence_id
+    mismatched_baseline = promoted.model_copy(
+        update={"comparison_baseline_configuration_sha256": "f" * 64}
+    )
+    mismatched_repository = InMemoryEvaluationRunRepository()
+    mismatched_repository.save_quality_profile(candidate)
+    mismatched_repository.save_quality_profile(baseline)
+    with pytest.raises(EvaluationRunConflict, match="quality_profile_baseline_mismatch"):
+        mismatched_repository.publish_quality_profile(
+            mismatched_baseline, expected_revision=1
+        )
+
     evidence_repository = InMemoryEvaluationRunRepository()
-    evidence_repository.save_quality_profile(promoted)
+    evidence_repository.save_quality_profile(candidate)
+    evidence_repository.save_quality_profile(baseline)
+    floor_qualified = qualify_quality_profile(candidate, task=task, now=now)
+    evidence_repository.publish_quality_profile(floor_qualified, expected_revision=1)
     routing_evidence = evidence_repository.quality_evidence(
         task_profile_id=task.profile_id,
         task_profile_version=task.profile_version,
@@ -492,11 +787,55 @@ def test_quality_profile_requires_same_held_out_sample_and_explicit_benefit():
     )
     assert decision.selected == endpoints[0].ref
     candidate_fact = next(row for row in decision.candidates if row.endpoint == endpoints[0].ref)
-    assert candidate_fact.quality_evidence_id == promoted.quality_evidence_id
+    assert candidate_fact.quality_evidence_id == floor_qualified.quality_evidence_id
 
     under_sampled = candidate.model_copy(update={"sample_count": 3})
     with pytest.raises(ValueError, match="quality_profile_promotion_threshold_not_met"):
         promote_quality_profile(under_sampled, baseline, task=task, now=now)
+
+    wrong_baseline = build_quality_profile(
+        evaluation_run_id=baseline_run,
+        task=task,
+        endpoint=endpoints[0],
+        policy_version="evaluation-policy:v1",
+        case_summaries=candidate_cases,
+        tested_revision="a1b2c3d",
+        fixture_manifest_sha256=manifest,
+        seed=None,
+        measured_at=now,
+        comparison_baseline=endpoints[0],
+    )
+    with pytest.raises(ValueError, match="quality_profile_promotion_threshold_not_met"):
+        promote_quality_profile(wrong_baseline, baseline, task=task, now=now)
+
+
+def test_git_revision_binds_dirty_tracked_source_content(tmp_path: Path):
+    def git(*arguments):
+        subprocess.run(
+            ["git", *arguments],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "review@example.invalid")
+    git("config", "user.name", "Review Test")
+    source = tmp_path / "backend" / "src" / "evaluation.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("revision = 1\n", encoding="utf-8")
+    git("add", "backend/src/evaluation.py")
+    git("commit", "-q", "-m", "baseline")
+
+    clean_revision = git_revision(tmp_path)
+    source.write_text("revision = 2\n", encoding="utf-8")
+    first_dirty_revision = git_revision(tmp_path)
+    source.write_text("revision = 3\n", encoding="utf-8")
+    second_dirty_revision = git_revision(tmp_path)
+
+    assert clean_revision != first_dirty_revision
+    assert first_dirty_revision != second_dirty_revision
+    assert "-working-tree-" in first_dirty_revision
 
 
 def test_evaluation_fixtures_require_explicit_synthetic_public_classification():

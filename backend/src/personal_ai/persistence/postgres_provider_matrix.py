@@ -54,7 +54,7 @@ class PostgresProviderMatrixRepository:
             now = _database_time(connection)
             if run.created_at > now:
                 raise PersistenceConflict("evaluation_run_creation_in_future")
-            payload = run.model_dump(mode="json", exclude={"gate_bindings"})
+            payload = run.model_dump(mode="json", exclude={"gate_bindings", "created_at"})
             inserted = connection.execute(
                 "INSERT INTO provider_matrix_runs(scope_id,evaluation_run_id,owner_id,application_id,"
                 "workspace_id,status,start_payload,created_at) VALUES(%s,%s,%s,%s,%s,'running',%s::jsonb,%s) "
@@ -70,7 +70,30 @@ class PostgresProviderMatrixRepository:
                 ),
             ).fetchone()
             if inserted is None:
-                raise PersistenceConflict("evaluation_run_already_started")
+                existing = connection.execute(
+                    "SELECT start_payload,created_at FROM provider_matrix_runs "
+                    "WHERE scope_id=%s AND evaluation_run_id=%s",
+                    (scope_id, run.evaluation_run_id),
+                ).fetchone()
+                if existing is None or _json_payload(existing[0]) != payload:
+                    raise PersistenceConflict("evaluation_run_idempotency_conflict")
+                stored_gates = connection.execute(
+                    "SELECT gate_payload FROM provider_matrix_cases WHERE scope_id=%s "
+                    "AND evaluation_run_id=%s ORDER BY fixture_id,endpoint_profile_id,endpoint_profile_version",
+                    (scope_id, run.evaluation_run_id),
+                ).fetchall()
+                if tuple(EvaluationQualityGate.model_validate(row[0]) for row in stored_gates) != tuple(
+                    sorted(
+                        run.gate_bindings,
+                        key=lambda gate: (
+                            gate.fixture_id,
+                            gate.endpoint.endpoint_profile_id,
+                            gate.endpoint.profile_version,
+                        ),
+                    )
+                ):
+                    raise PersistenceConflict("evaluation_run_gate_binding_conflict")
+                return
             for gate in run.gate_bindings:
                 connection.execute(
                     "INSERT INTO provider_matrix_cases(scope_id,evaluation_run_id,fixture_id,"
@@ -90,6 +113,40 @@ class PostgresProviderMatrixRepository:
                         run.created_at,
                     ),
                 )
+
+    def get_run_state(self, evaluation_run_id, *, owner_id=_SYSTEM_OWNER, scope=None):
+        scope = scope or _system_scope()
+        with self.transaction(owner_id=owner_id) as connection:
+            scope_id = _ensure_namespace(connection, owner_id, scope)
+            row = connection.execute(
+                "SELECT status,start_payload,completion_payload,created_at FROM provider_matrix_runs "
+                "WHERE scope_id=%s AND evaluation_run_id=%s",
+                (scope_id, evaluation_run_id),
+            ).fetchone()
+            if row is None:
+                raise ProviderMatrixRecordUnavailable("evaluation_run_unavailable")
+            gate_rows = connection.execute(
+                "SELECT gate_payload FROM provider_matrix_cases WHERE scope_id=%s "
+                "AND evaluation_run_id=%s ORDER BY fixture_id,endpoint_profile_id,endpoint_profile_version",
+                (scope_id, evaluation_run_id),
+            ).fetchall()
+            gates = tuple(EvaluationQualityGate.model_validate(item[0]) for item in gate_rows)
+            start_payload = _json_payload(row[1])
+            start = EvaluationRunStart.model_validate(
+                {**start_payload, "created_at": row[3], "gate_bindings": gates}
+            )
+            completion = (
+                EvaluationRunSummary.model_validate(_json_payload(row[2]))
+                if row[2] is not None else None
+            )
+            case_rows = connection.execute(
+                "SELECT case_payload FROM provider_matrix_cases WHERE scope_id=%s "
+                "AND evaluation_run_id=%s AND status<>'planned' "
+                "ORDER BY fixture_id,endpoint_profile_id,endpoint_profile_version",
+                (scope_id, evaluation_run_id),
+            ).fetchall()
+            cases = tuple(EvaluationCaseSummary.model_validate(_json_payload(item[0])) for item in case_rows)
+            return start, completion, cases
 
     def authorize(
         self,
@@ -336,24 +393,27 @@ class PostgresProviderMatrixRepository:
             if row[1] != expected_revision or previous.status != "unpromoted":
                 raise PersistenceConflict("quality_profile_revision_conflict")
             _assert_promotion_preserves_measurement(previous, profile)
-            baseline = connection.execute(
-                "SELECT payload FROM provider_matrix_quality_heads h JOIN provider_matrix_quality_profiles p "
-                "ON p.scope_id=h.scope_id AND p.quality_evidence_id=h.quality_evidence_id "
-                "AND p.revision=h.current_revision WHERE h.scope_id=%s AND h.quality_evidence_id=%s",
-                (scope_id, profile.baseline_evidence_id),
-            ).fetchone()
-            if baseline is None:
-                raise PersistenceConflict("quality_profile_baseline_unavailable")
-            baseline_profile = QualityProfile.model_validate(baseline[0])
             now = _database_time(connection)
-            if (
-                not _compatible_baseline(profile, baseline_profile)
-                or profile.measured_at > now
-                or profile.fresh_until <= now
-                or baseline_profile.measured_at > now
-                or baseline_profile.fresh_until <= now
-                or profile.score - baseline_profile.score < profile.minimum_benefit
-            ):
+            if profile.measured_at > now or profile.fresh_until <= now:
+                raise PersistenceConflict("quality_profile_freshness_invalid")
+            if profile.baseline_evidence_id is not None:
+                baseline = connection.execute(
+                    "SELECT payload FROM provider_matrix_quality_heads h JOIN provider_matrix_quality_profiles p "
+                    "ON p.scope_id=h.scope_id AND p.quality_evidence_id=h.quality_evidence_id "
+                    "AND p.revision=h.current_revision WHERE h.scope_id=%s AND h.quality_evidence_id=%s",
+                    (scope_id, profile.baseline_evidence_id),
+                ).fetchone()
+                if baseline is None:
+                    raise PersistenceConflict("quality_profile_baseline_unavailable")
+                baseline_profile = QualityProfile.model_validate(baseline[0])
+                if (
+                    not _compatible_baseline(profile, baseline_profile)
+                    or baseline_profile.measured_at > now
+                    or baseline_profile.fresh_until <= now
+                    or profile.score - baseline_profile.score < profile.promotion_minimum_benefit
+                ):
+                    raise PersistenceConflict("quality_profile_baseline_mismatch")
+            elif profile.promotion_minimum_benefit is not None:
                 raise PersistenceConflict("quality_profile_baseline_mismatch")
             connection.execute(
                 "INSERT INTO provider_matrix_quality_profiles(scope_id,quality_evidence_id,revision,"
@@ -400,7 +460,8 @@ class PostgresProviderMatrixRepository:
                 "AND p.task_profile_version=%s AND p.endpoint_profile_id=%s "
                 "AND p.endpoint_profile_version=%s AND p.quality_profile_id=%s "
                 "AND p.quality_profile_version=%s AND p.policy_version=%s AND p.status='qualified' "
-                "AND p.measured_at<=%s AND p.fresh_until>%s ORDER BY p.measured_at DESC LIMIT 1",
+                "AND p.measured_at<=%s AND p.fresh_until>%s "
+                "ORDER BY p.measured_at DESC,p.quality_evidence_id DESC LIMIT 1",
                 (
                     scope_id,
                     task_profile_id,
@@ -432,11 +493,29 @@ class PostgresProviderMatrixRepository:
         if (
             summary.tested_revision != profile.tested_revision
             or summary.fixture_manifest_sha256 != profile.fixture_manifest_sha256
+            or summary.configuration_sha256 != profile.evaluation_configuration_sha256
+            or summary.evaluation_suite_id != profile.evaluation_suite_id
+            or summary.evaluation_suite_version != profile.evaluation_suite_version
+            or summary.scoring_policy_id != profile.scoring_policy_id
+            or summary.scoring_policy_version != profile.scoring_policy_version
+            or summary.output_tokens != profile.output_tokens
             or summary.policy_version != profile.policy_version
             or summary.source != "live"
             or summary.task_profile_id != profile.task_profile_id
             or summary.task_profile_version != profile.task_profile_version
             or summary.task_configuration_sha256 != profile.task_configuration_sha256
+            or summary.single_provider_baseline_endpoint_profile_id
+            != (
+                profile.comparison_baseline_endpoint.endpoint_profile_id
+                if profile.comparison_baseline_endpoint else None
+            )
+            or summary.single_provider_baseline_endpoint_profile_version
+            != (
+                profile.comparison_baseline_endpoint.profile_version
+                if profile.comparison_baseline_endpoint else None
+            )
+            or summary.single_provider_baseline_configuration_sha256
+            != profile.comparison_baseline_configuration_sha256
         ):
             raise PersistenceConflict("quality_profile_run_identity_mismatch")
         rows = connection.execute(
@@ -566,9 +645,19 @@ def _compatible_baseline(candidate, baseline):
         and baseline.tested_revision == candidate.tested_revision
         and baseline.seed == candidate.seed
         and baseline.fixture_manifest_sha256 == candidate.fixture_manifest_sha256
+        and baseline.evaluation_suite_id == candidate.evaluation_suite_id
+        and baseline.evaluation_suite_version == candidate.evaluation_suite_version
+        and baseline.evaluation_configuration_sha256 == candidate.evaluation_configuration_sha256
+        and baseline.output_tokens == candidate.output_tokens
+        and baseline.preparation_counter_id == candidate.preparation_counter_id
+        and baseline.preparation_counter_confidence == candidate.preparation_counter_confidence
+        and baseline.preparation_count_source == candidate.preparation_count_source
         and baseline.task_configuration_sha256 == candidate.task_configuration_sha256
         and baseline.scoring_policy_id == candidate.scoring_policy_id
         and baseline.scoring_policy_version == candidate.scoring_policy_version
+        and baseline.endpoint == candidate.comparison_baseline_endpoint
+        and baseline.endpoint_configuration_sha256
+        == candidate.comparison_baseline_configuration_sha256
         and baseline.minimum_score == candidate.minimum_score
         and baseline.minimum_coverage == candidate.minimum_coverage
         and baseline.minimum_confidence == candidate.minimum_confidence
@@ -585,6 +674,12 @@ def _compatible_baseline(candidate, baseline):
 
 def _database_time(connection):
     return connection.execute("SELECT clock_timestamp()").fetchone()[0]
+
+
+def _json_payload(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
 
 
 def _scope(application_id, workspace_id):
