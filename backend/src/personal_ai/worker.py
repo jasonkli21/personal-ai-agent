@@ -60,6 +60,7 @@ class _PubSubEnvelope(BaseModel):
 
 def _components(settings: Settings):
     factory = persistence_factory(settings)
+    usage = factory.provider_usage_accounting(settings)
     memories = factory.memory_repository()
     messages = factory.message_repository()
     lifecycle = factory.memory_lifecycle_repository(memories, messages)
@@ -70,7 +71,7 @@ def _components(settings: Settings):
         lifecycle,
         memories,
         messages,
-        GeminiMemoryAdapter(settings),
+        GeminiMemoryAdapter(settings, usage_accounting=usage),
     )
     return worker, republisher
 
@@ -179,6 +180,16 @@ async def run_scheduled_maintenance(request: Request) -> Response:
 
     try:
         factory = persistence_factory(settings)
+        usage = factory.provider_usage_accounting(settings)
+        stale_attempts = await anyio.to_thread.run_sync(
+            partial(usage.resolve_stale_attempts, limit=min(settings.maintenance_batch_size, 100))
+        )
+        synchronized_events = await anyio.to_thread.run_sync(
+            partial(usage.reconcile_operational_events, limit=min(settings.maintenance_batch_size, 100))
+        )
+        expired_provider_usage = await anyio.to_thread.run_sync(
+            partial(usage.purge_expired, limit=settings.maintenance_batch_size)
+        )
         safeguards = factory.safeguard_store()
         expired_budgets = await anyio.to_thread.run_sync(
             partial(
@@ -220,14 +231,19 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         logger.info("Scheduled maintenance failed error_class=%s", type(error).__name__)
         return Response(status_code=503)
     logger.info(
-        "Scheduled maintenance completed republished=%d expired_sessions=%d expired_budgets=%d",
-        published, expired, expired_budgets,
+        "Scheduled maintenance completed republished=%d expired_sessions=%d expired_budgets=%d "
+        "provider_attempts_resolved=%d provider_events_synced=%d provider_usage_expired=%d",
+        published, expired, expired_budgets, stale_attempts, synchronized_events,
+        expired_provider_usage,
     )
     return Response(
         content=json.dumps({
             "republished_jobs": published,
             "expired_sessions": expired,
             "expired_usage_budgets": expired_budgets,
+            "provider_attempts_resolved": stale_attempts,
+            "provider_events_synchronized": synchronized_events,
+            "expired_provider_usage_records": expired_provider_usage,
         }),
         media_type="application/json",
     )

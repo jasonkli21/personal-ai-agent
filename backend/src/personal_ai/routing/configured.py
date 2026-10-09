@@ -29,6 +29,8 @@ def build_initial_endpoint_profiles(settings: Settings) -> tuple[EndpointProfile
         profiles.append(_groq_profile(settings))
     if settings.cloudflare_model:
         profiles.append(_cloudflare_profile(settings))
+    if settings.research_search_adapter == "brave":
+        profiles.append(_brave_search_profile(settings))
     by_id = {profile.endpoint_profile_id: profile for profile in profiles}
     for raw_profile in settings.inference_additional_endpoint_profiles:
         profile = EndpointProfile.model_validate(raw_profile)
@@ -265,6 +267,65 @@ def _cloudflare_profile(settings: Settings) -> EndpointProfile:
             "verified" if settings.cloudflare_quota_membership_verified else "unknown"
         ),
         quota_buckets=_parse_buckets(settings.cloudflare_quota_buckets),
+    )
+
+
+def _brave_search_profile(settings: Settings) -> EndpointProfile:
+    """Represent search's account and prepaid no-overflow facts explicitly."""
+    account_scope = settings.research_brave_account_scope_id.strip() or None
+    quota_buckets = _parse_buckets(settings.research_brave_quota_buckets)
+    if not quota_buckets and account_scope is not None:
+        quota_buckets = (
+            QuotaBucket(
+                bucket_id=f"brave:{account_scope}:requests",
+                authority_scope_id=account_scope,
+                operations=frozenset({"search"}),
+                unit="requests",
+                source="unknown",
+                confidence="unknown",
+            ),
+        )
+    source_rights_verified = (
+        settings.research_provider_storage_approved
+        and settings.research_brave_source_rights_verified
+    )
+    return EndpointProfile(
+        endpoint_profile_id="brave:search",
+        profile_version=1,
+        provider_id="brave_search",
+        model_id="web-search-v1",
+        endpoint_id="brave-web-search-v1",
+        deployment_id="api.search.brave.com-res-v1",
+        credential_source="environment",
+        credential_reference="env:RESEARCH_API_KEY",
+        credential_scope_id=settings.research_brave_credential_scope_id,
+        account_scope_id=account_scope,
+        tier_id="prepaid" if settings.research_brave_prepaid_verified else "unverified",
+        tier_verified=settings.research_brave_prepaid_verified,
+        execution_mode="STRICT_FREE",
+        cost_class="UNKNOWN",
+        billing_owner="unknown",
+        enabled=(
+            settings.research_enabled
+            and settings.research_search_adapter == "brave"
+            and bool(settings.research_api_key.get_secret_value())
+        ),
+        strict_free_enabled=False,
+        capabilities=frozenset({"search"}),
+        max_search_query_chars=500,
+        max_search_results=12,
+        data_use_policy=DataUsePolicy(
+            status=("approved" if source_rights_verified else "unknown"),
+            policy_reference=(
+                settings.research_brave_preflight_reference.strip() or None
+                if source_rights_verified
+                else None
+            ),
+        ),
+        serializer_id="brave-search-query-v1",
+        runtime_id="httpx-v1",
+        quota_membership=("verified" if settings.research_brave_quota_buckets else "unknown"),
+        quota_buckets=quota_buckets,
     )
 
 

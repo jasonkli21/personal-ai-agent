@@ -1,10 +1,10 @@
 # Detailed implementation plans
 
-This directory contains 34 implementation plans for the regenerated chapter. `manifest.json` is the machine-readable index and prerequisite graph; phase IDs are strings, so the new `17R` gate is represented directly without changing later phase identifiers.
+This directory contains 34 implementation plans for the regenerated chapter. `manifest.json` is the machine-readable index and prerequisite graph; phase IDs are strings, so the `17R` gate is represented directly without changing later phase identifiers.
 
 ## Plan authority
 
-This is an index of plans, not a living implementation-status record. See [current state](../../current-state.md) for delivered work and remaining acceptance gates. Phases 11–13 and 16–17 are implemented locally; Phase 14 is partial pending immutable Postgres policy/source-version references; Phase 15 is partial pending end-to-end derived-context revocation and external acceptance; Phase 17R is planned and not implemented; Phases 18–36 remain future work under the preserved-scope [numbering map](../NUMBERING-MAP.md). Phase 17's new adapters remain disabled pending account/model, privacy, and live compatibility evidence, and are not wired into current workflows without matching authoritative counters. Reading a plan does not authorize implementation.
+This is an index of plans, not a living implementation-status record. See [current state](../../current-state.md) for delivered work and remaining acceptance gates. Phases 10–13, 16–19, and 17R are implemented locally; Phase 14 is partial pending immutable Postgres policy/source-version references; Phase 15 is partial pending end-to-end derived-context revocation and external acceptance; Phases 20–36 remain future work under the preserved-scope [numbering map](../NUMBERING-MAP.md). Phase 17's new adapters remain disabled pending account/model, privacy, and live compatibility evidence, and are not wired into current workflows without matching authoritative counters. Phases 18 and 19 retain database migration and external provider/account acceptance gates. Reading a plan does not authorize implementation.
 
 See [ADR 0021](../../decisions/0021-polyglot-persistence-foundation.md), the [Phase 10 storage contract](../phase-10-storage-ownership-and-access-patterns.md) and [migration/verification plan](../phase-10-migration-cutover-and-verification-plan.md) for the reviewed foundation.
 

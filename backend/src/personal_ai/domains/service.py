@@ -49,6 +49,7 @@ class DomainService:
         clock=lambda: datetime.now(UTC),
         adapters: dict[str, object] | None = None,
         provider_rate_limiter_factory=None,
+        provider_usage_accounting=None,
     ):
         self.settings = settings
         self.decision_repository = decision_repository
@@ -58,6 +59,7 @@ class DomainService:
         self.clock = clock
         self.adapters = adapters or {}
         self.provider_rate_limiter_factory = provider_rate_limiter_factory
+        self.provider_usage_accounting = provider_usage_accounting
 
     def registrations(self):
         return tuple(
@@ -242,7 +244,11 @@ class DomainService:
                     rate_limiter = self._provider_rate_limiter("osm_nominatim")
                 elif domain_id == "shopping" and self.settings.shopping_products_adapter == "open_food_facts":
                     rate_limiter = self._provider_rate_limiter("open_food_facts")
-                adapter = module.get_adapter(self.settings, rate_limiter=rate_limiter)
+                adapter = module.get_adapter(
+                    self.settings,
+                    rate_limiter=rate_limiter,
+                    usage_accounting=self.provider_usage_accounting,
+                )
             if domain_id == "travel":
                 records = await adapter.lookup(request.query, request.max_results)
                 if len(records) > request.max_results:

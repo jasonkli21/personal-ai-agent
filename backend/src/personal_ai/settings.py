@@ -126,6 +126,13 @@ class Settings(BaseSettings):
     api_rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
     provider_calls_per_day_limit: int = Field(default=100, ge=1, le=100000)
     input_tokens_per_day_limit: int = Field(default=200000, ge=1, le=100000000)
+    provider_usage_retention_days: int = Field(default=90, ge=7, le=365)
+    provider_usage_max_attempts_per_request: int = Field(default=64, ge=1, le=256)
+    provider_usage_max_tokens_per_request: int = Field(default=200000, ge=1, le=2000000)
+    provider_usage_default_cooldown_seconds: int = Field(default=60, ge=1, le=3600)
+    provider_usage_header_freshness_seconds: int = Field(default=60, ge=1, le=3600)
+    provider_usage_stale_attempt_seconds: int = Field(default=300, ge=30, le=3600)
+    provider_usage_inspection_enabled: bool = False
     chat_kill_switch_enabled: bool = False
     research_kill_switch_enabled: bool = False
     worker_kill_switch_enabled: bool = False
@@ -191,6 +198,14 @@ class Settings(BaseSettings):
     research_reranker: str = Field(default="deterministic", pattern=r"^deterministic$")
     research_provider_storage_approved: bool = False
     research_api_key: SecretStr = Field(default=SecretStr(""))
+    research_brave_prepaid_verified: bool = False
+    research_brave_auto_reload_disabled: bool = False
+    research_brave_no_paid_balance_verified: bool = False
+    research_brave_source_rights_verified: bool = False
+    research_brave_account_scope_id: str = Field(default="", max_length=200)
+    research_brave_credential_scope_id: str = Field(default="brave-primary-key", max_length=200)
+    research_brave_preflight_reference: str = Field(default="", max_length=500)
+    research_brave_quota_buckets: tuple[dict[str, object], ...] = Field(default=(), max_length=32)
     research_max_queries: int = Field(default=1, ge=1, le=3)
     research_max_sources: int = Field(default=8, ge=1, le=12)
     research_max_response_bytes: int = Field(default=131072, ge=1024, le=262144)
@@ -486,6 +501,12 @@ class Settings(BaseSettings):
                 self.research_storage != "postgres"
                 or not self.research_provider_storage_approved
                 or not self.research_api_key.get_secret_value()
+                or not self.research_brave_prepaid_verified
+                or not self.research_brave_auto_reload_disabled
+                or not self.research_brave_no_paid_balance_verified
+                or not self.research_brave_source_rights_verified
+                or not self.research_brave_account_scope_id.strip()
+                or not self.research_brave_preflight_reference.strip()
             )
         ):
             raise ValueError("research_configuration_invalid")

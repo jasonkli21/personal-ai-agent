@@ -23,6 +23,7 @@ from personal_ai.llm.preparation import require_matching_endpoint
 from personal_ai.search.contracts import SearchResult
 from personal_ai.search.policy import DeterministicPlanner, SnippetExtractor, planned_queries
 from personal_ai.storage.async_io import io_call
+from personal_ai.usage.context import bind_usage_task
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +172,13 @@ class ResearchService:
                         )
                         await save(attempts=(*current.attempts, begun))
                         try:
-                            fetched = await self.adapter.search(
-                                query.normalized_query,
-                                self.settings.research_max_sources - len(results),
-                            )
+                            with bind_usage_task(
+                                "web_research_search", run_id=str(current.id)
+                            ):
+                                fetched = await self.adapter.search(
+                                    query.normalized_query,
+                                    self.settings.research_max_sources - len(results),
+                                )
                             if not isinstance(fetched, (list, tuple)) or any(
                                 not isinstance(r, SearchResult) for r in fetched
                             ):
@@ -306,10 +310,13 @@ class ResearchService:
                         else self.llm.stream(messages, inference_context=inference_context)
                     )
                     try:
-                        async for delta in stream:
-                            if not isinstance(delta, str) or len(output) + len(delta) > 20000:
-                                raise ResearchError("synthesis_oversized")
-                            output += delta
+                        with bind_usage_task(
+                            "web_research_synthesis", run_id=str(current.id)
+                        ):
+                            async for delta in stream:
+                                if not isinstance(delta, str) or len(output) + len(delta) > 20000:
+                                    raise ResearchError("synthesis_oversized")
+                                output += delta
                     finally:
                         close = getattr(stream, "aclose", None)
                         if close is not None:

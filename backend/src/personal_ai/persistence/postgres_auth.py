@@ -18,6 +18,7 @@ from personal_ai.auth.directory import (
     IdentityMappingConflict,
 )
 from personal_ai.auth.scope import ApplicationScope, current_application_scope
+from personal_ai.persistence.dynamodb_usage import PROVIDER_USAGE_EVENT_FIELDS
 from personal_ai.persistence.postgres import (
     PostgresDatabase,
     PostgresPayloadRepository,
@@ -293,6 +294,61 @@ class PostgresAccountLifecycleRepository:
                     })
                     p_revision_max = max(p_revision_max, int(revision or 0))
                     p_count += 1
+                provider_usage_queries = {
+                    "provider_invocations": (
+                        (
+                            "SELECT i.invocation_id,to_jsonb(i) FROM provider_invocations i "
+                            "WHERE i.owner_id=%s AND i.application_id=%s "
+                            "AND i.workspace_id IS NOT DISTINCT FROM %s "
+                            "ORDER BY i.started_at,i.invocation_id LIMIT %s"
+                        ),
+                        (owner_id, scope.application_id, scope.workspace_id,
+                         MAX_EXPORT_SCAN_RECORDS + 1),
+                    ),
+                    "provider_attempts": (
+                        (
+                            "SELECT a.attempt_id,to_jsonb(a) FROM provider_attempts a "
+                            "JOIN provider_invocations i USING(invocation_id) WHERE i.owner_id=%s "
+                            "AND i.application_id=%s AND i.workspace_id IS NOT DISTINCT FROM %s "
+                            "ORDER BY a.started_at,a.attempt_id LIMIT %s"
+                        ),
+                        (owner_id, scope.application_id, scope.workspace_id,
+                         MAX_EXPORT_SCAN_RECORDS + 1),
+                    ),
+                    "provider_quota_reservations": (
+                        (
+                            "SELECT r.attempt_id || ':' || r.bucket_id,to_jsonb(r) || "
+                            "jsonb_build_object('owner_id',i.owner_id,'application_id',i.application_id,"
+                            "'workspace_id',i.workspace_id) FROM provider_quota_reservations r "
+                            "JOIN provider_attempts a USING(attempt_id) "
+                            "JOIN provider_invocations i USING(invocation_id) WHERE i.owner_id=%s "
+                            "AND i.application_id=%s AND i.workspace_id IS NOT DISTINCT FROM %s "
+                            "ORDER BY a.started_at,r.attempt_id,r.bucket_id LIMIT %s"
+                        ),
+                        (owner_id, scope.application_id, scope.workspace_id,
+                         MAX_EXPORT_SCAN_RECORDS + 1),
+                    ),
+                    "provider_usage_daily_aggregates": (
+                        (
+                            "SELECT md5(jsonb_build_array(owner_id,application_id,workspace_id,"
+                            "usage_day::text,endpoint_profile_id,task_id,operation)::text),"
+                            "to_jsonb(a) FROM provider_usage_daily_aggregates a WHERE owner_id=%s "
+                            "AND application_id=%s AND workspace_id IS NOT DISTINCT FROM %s "
+                            "ORDER BY usage_day,endpoint_profile_id,task_id,operation LIMIT %s"
+                        ),
+                        (owner_id, scope.application_id, scope.workspace_id,
+                         MAX_EXPORT_SCAN_RECORDS + 1),
+                    ),
+                }
+                for family, (query, parameters) in provider_usage_queries.items():
+                    rows = connection.execute(query, parameters).fetchall()
+                    if len(rows) > MAX_EXPORT_SCAN_RECORDS:
+                        raise ExportTooLarge
+                    p_collection_counts[family] = len(rows)
+                    p_revision_coverage[family] = "identity_set_in_repeatable_read_snapshot"
+                    for record_id, payload in rows:
+                        add(family, record_id, payload)
+                        p_count += 1
                 for family in ("memories", "derived_memories"):
                     rows = connection.execute(
                         f"SELECT record_id,payload,embedding FROM {family} "
@@ -376,6 +432,7 @@ class PostgresAccountLifecycleRepository:
         d_count = 0
         namespace = _namespace(scope, owner_id)
         catalog_partition = f"{namespace}#CATALOG"
+        usage_partition = f"{namespace}#USAGE"
         deadline = monotonic() + 60
         summary_repository = DynamoDBSummaryRepository(self.runtime_table)
         try:
@@ -387,9 +444,48 @@ class PostgresAccountLifecycleRepository:
                 partition=catalog_partition, sort_prefix="JOB#", consistent=True,
                 deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
             )
+            usage_entries = self.runtime_table.query(
+                partition=usage_partition, sort_prefix="PUE#", consistent=True,
+                deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
+            )
             if len(conversation_entries) > MAX_EXPORT_SCAN_RECORDS or len(job_entries) > MAX_EXPORT_SCAN_RECORDS:
                 raise ExportTooLarge
+            if len(usage_entries) > MAX_EXPORT_SCAN_RECORDS:
+                raise ExportTooLarge
             conversation_keys = []
+            usage_event_keys = []
+            usage_event_fields = PROVIDER_USAGE_EVENT_FIELDS
+            for item in usage_entries:
+                if not _authorized(item, owner_id, scope):
+                    raise AccountDataUnavailable("provider usage event scope mismatch")
+                if item.get("kind") != "provider-usage-event":
+                    raise AccountDataUnavailable("provider usage event kind mismatch")
+                payload = json.loads(item["payload"])
+                attempt_id = item.get("attempt_id")
+                invocation_id = item.get("invocation_id")
+                if (
+                    not isinstance(payload, dict)
+                    or set(payload) != usage_event_fields
+                    or payload.get("schema_version") != "provider-usage-event-v1"
+                    or payload.get("owner_id") != owner_id
+                    or payload.get("application_id") != scope.application_id
+                    or payload.get("workspace_id") != scope.workspace_id
+                    or payload.get("attempt_id") != attempt_id
+                    or payload.get("invocation_id") != invocation_id
+                    or payload.get("event_id") != attempt_id
+                    or item.get("event_id") != attempt_id
+                    or item.get("request_id") != payload.get("request_id")
+                ):
+                    raise AccountDataUnavailable("provider usage event identity mismatch")
+                try:
+                    UUID(str(attempt_id))
+                    UUID(str(invocation_id))
+                except (TypeError, ValueError) as error:
+                    raise AccountDataUnavailable("provider usage event identity invalid") from error
+                add("provider_usage_events", attempt_id, payload)
+                d_count += 1
+                dynamo_revisions[f"provider_usage_event:{attempt_id}"] = payload["completed_at"]
+                usage_event_keys.append((item["SK"], attempt_id, invocation_id))
             summary_directory = {}
             trace_directory = {}
             for entry in conversation_entries:
@@ -527,6 +623,15 @@ class PostgresAccountLifecycleRepository:
                 (sk, job_id) for sk, job_id, _, _, _ in job_keys
             ]:
                 raise AccountDataUnavailable("job directory changed during export")
+            final_usage_events = self.runtime_table.query(
+                partition=usage_partition, sort_prefix="PUE#", consistent=True,
+                deadline=deadline, limit=MAX_EXPORT_SCAN_RECORDS + 1,
+            )
+            if [
+                (item["SK"], item.get("attempt_id"), item.get("invocation_id"))
+                for item in final_usage_events
+            ] != usage_event_keys:
+                raise AccountDataUnavailable("provider usage events changed during export")
             for _, job_id, record_pk, record_sk, revision in job_keys:
                 current = self.runtime_table.get({"PK": record_pk, "SK": record_sk})
                 if current is None or int(current["revision"]) != revision:

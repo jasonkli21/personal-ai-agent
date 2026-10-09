@@ -22,6 +22,12 @@ def adapter(response):
         research_search_adapter="brave",
         research_provider_storage_approved=True,
         research_api_key="synthetic-secret",
+        research_brave_prepaid_verified=True,
+        research_brave_auto_reload_disabled=True,
+        research_brave_no_paid_balance_verified=True,
+        research_brave_source_rights_verified=True,
+        research_brave_account_scope_id="synthetic-brave-account",
+        research_brave_preflight_reference="operator-preflight:synthetic-brave",
     )
     brave._NEXT_REQUEST = 0
 

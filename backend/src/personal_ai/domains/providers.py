@@ -7,10 +7,14 @@ from threading import Lock
 from time import monotonic
 from typing import Protocol
 
+import anyio
 import httpx
 from pydantic import Field, ValidationError
 
 from personal_ai.decisions.contracts import DecisionRecord
+from personal_ai.usage.async_call import AsyncProviderCall, rate_limit_metadata
+from personal_ai.usage.contracts import UsageAdmissionDenied
+from personal_ai.usage.profiles import public_lookup_endpoint
 
 
 class DomainProviderError(Exception):
@@ -112,9 +116,10 @@ class NominatimPlaceAdapter:
     name = "osm_nominatim"
     endpoint = "https://nominatim.openstreetmap.org/search"
 
-    def __init__(self, settings, transport=None, *, rate_limiter=None):
+    def __init__(self, settings, transport=None, *, rate_limiter=None, usage_accounting=None):
         self.settings, self.transport = settings, transport
         self.rate_limiter = rate_limiter or _NOMINATIM_RATE_LIMITER
+        self.usage_accounting = usage_accounting
 
     async def lookup(self, query: str, limit: int):
         if not self.settings.travel_provider_policy_approved:
@@ -123,6 +128,21 @@ class NominatimPlaceAdapter:
             raise DomainProviderError("travel_provider_configuration_invalid", 503)
         if not query.strip() or len(query) > 300 or not 1 <= limit <= self.settings.domain_max_results:
             raise DomainProviderError("travel_lookup_invalid", 422)
+        usage_call = await AsyncProviderCall.begin(
+            self.usage_accounting,
+            public_lookup_endpoint(
+                provider_id="osm_nominatim",
+                model_id="place-search-v1",
+                endpoint_id="nominatim-search-v1",
+                deployment_id="nominatim.openstreetmap.org",
+                authority_scope_id="nominatim-public-service",
+            ),
+            operation="lookup",
+            quota_operation="lookup",
+            max_attempts=self.settings.provider_usage_max_attempts_per_request,
+            task_id="travel_place_lookup",
+        )
+        outcome, error_code, response_status, rate_limits = "unknown", None, None, None
         deadline = monotonic() + self.settings.domain_provider_timeout_seconds
         try:
             async with asyncio.timeout_at(deadline):
@@ -133,6 +153,8 @@ class NominatimPlaceAdapter:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     raise TimeoutError("provider request deadline")
+                if usage_call is not None:
+                    await usage_call.reserve()
                 async with (
                     httpx.AsyncClient(
                         timeout=remaining,
@@ -156,17 +178,24 @@ class NominatimPlaceAdapter:
                         },
                     ) as response,
                 ):
-                    if response.status_code == 429:
+                    response_status = response.status_code
+                    rate_limits = rate_limit_metadata(response.headers)
+                    if response_status == 429:
+                        outcome, error_code = "rate_limited", "travel_provider_quota"
                         raise DomainProviderError("travel_provider_quota")
-                    if response.status_code >= 500:
+                    if response_status >= 500:
+                        outcome, error_code = "server_error", "travel_provider_unavailable"
                         raise DomainProviderError("travel_provider_unavailable")
-                    if response.status_code != 200:
+                    if response_status != 200:
+                        outcome, error_code = "rejected", "travel_provider_rejected"
                         raise DomainProviderError("travel_provider_rejected")
                     if "application/json" not in response.headers.get("content-type", ""):
+                        outcome, error_code = "failure", "travel_provider_invalid_response"
                         raise DomainProviderError("travel_provider_invalid_response")
                     body = bytearray()
                     async for chunk in response.aiter_bytes():
                         if len(body) + len(chunk) > self.settings.domain_max_response_bytes:
+                            outcome, error_code = "failure", "travel_provider_response_oversized"
                             raise DomainProviderError("travel_provider_response_oversized")
                         body.extend(chunk)
             payload = json.loads(body)
@@ -202,17 +231,45 @@ class NominatimPlaceAdapter:
                         url=f"https://www.openstreetmap.org/{osm_type}/{osm_id}",
                     )
                 )
+            outcome = "success"
             return tuple(records)
-        except DomainProviderError:
+        except UsageAdmissionDenied as error:
+            error_code = error.code
+            outcome = "rate_limited" if error.code in {
+                "provider_quota_exhausted", "provider_endpoint_cooling_down"
+            } else "rejected"
+            raise DomainProviderError("travel_provider_quota" if outcome == "rate_limited" else "travel_provider_unavailable") from None
+        except DomainProviderError as error:
+            error_code = error.code
+            if outcome == "unknown":
+                outcome = (
+                    "rate_limited" if response_status == 429
+                    else "server_error" if response_status is not None and response_status >= 500
+                    else "rejected" if response_status is not None and response_status >= 400
+                    else "failure"
+                )
             raise
         except httpx.TimeoutException as error:
+            outcome, error_code = "timeout", "travel_provider_timeout"
             raise DomainProviderError("travel_provider_timeout") from error
         except TimeoutError as error:
+            outcome, error_code = "timeout", "travel_provider_timeout"
             raise DomainProviderError("travel_provider_timeout") from error
         except httpx.TransportError as error:
+            outcome, error_code = "unknown", "travel_provider_unavailable"
             raise DomainProviderError("travel_provider_unavailable") from error
         except (ValueError, KeyError, TypeError, ValidationError) as error:
+            outcome, error_code = "failure", "travel_provider_invalid_response"
             raise DomainProviderError("travel_provider_invalid_response") from error
+        finally:
+            if usage_call is not None:
+                with anyio.CancelScope(shield=True):
+                    await usage_call.finish(
+                        outcome,
+                        http_status=response_status,
+                        error_code=error_code,
+                        rate_limits=rate_limits,
+                    )
 
 
 class OpenFoodFactsAdapter:
@@ -220,9 +277,10 @@ class OpenFoodFactsAdapter:
 
     name = "open_food_facts"
 
-    def __init__(self, settings, transport=None, *, rate_limiter=None):
+    def __init__(self, settings, transport=None, *, rate_limiter=None, usage_accounting=None):
         self.settings, self.transport = settings, transport
         self.rate_limiter = rate_limiter or _OFF_RATE_LIMITER
+        self.usage_accounting = usage_accounting
 
     async def lookup_barcode(self, barcode: str):
         if not self.settings.shopping_provider_policy_approved:
@@ -239,6 +297,21 @@ class OpenFoodFactsAdapter:
         }
         if self.settings.shopping_off_base_url.host == "world.openfoodfacts.net":
             headers["Authorization"] = "Basic " + base64.b64encode(b"off:off").decode("ascii")
+        usage_call = await AsyncProviderCall.begin(
+            self.usage_accounting,
+            public_lookup_endpoint(
+                provider_id="open_food_facts",
+                model_id="barcode-product-v3.6",
+                endpoint_id="off-product-v3.6",
+                deployment_id=f"{self.settings.shopping_off_base_url.host}-api-v3.6",
+                authority_scope_id="open-food-facts-public-service",
+            ),
+            operation="lookup",
+            quota_operation="lookup",
+            max_attempts=self.settings.provider_usage_max_attempts_per_request,
+            task_id="shopping_barcode_lookup",
+        )
+        outcome, error_code, response_status, rate_limits = "unknown", None, None, None
         deadline = monotonic() + self.settings.domain_provider_timeout_seconds
         try:
             async with asyncio.timeout_at(deadline):
@@ -249,6 +322,8 @@ class OpenFoodFactsAdapter:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     raise TimeoutError("provider request deadline")
+                if usage_call is not None:
+                    await usage_call.reserve()
                 async with (
                     httpx.AsyncClient(
                         timeout=remaining,
@@ -263,17 +338,24 @@ class OpenFoodFactsAdapter:
                         headers=headers,
                     ) as response,
                 ):
-                    if response.status_code == 429:
+                    response_status = response.status_code
+                    rate_limits = rate_limit_metadata(response.headers)
+                    if response_status == 429:
+                        outcome, error_code = "rate_limited", "shopping_provider_quota"
                         raise DomainProviderError("shopping_provider_quota")
-                    if response.status_code >= 500:
+                    if response_status >= 500:
+                        outcome, error_code = "server_error", "shopping_provider_unavailable"
                         raise DomainProviderError("shopping_provider_unavailable")
-                    if response.status_code not in {200, 404}:
+                    if response_status not in {200, 404}:
+                        outcome, error_code = "rejected", "shopping_provider_rejected"
                         raise DomainProviderError("shopping_provider_rejected")
                     if "application/json" not in response.headers.get("content-type", ""):
+                        outcome, error_code = "failure", "shopping_provider_invalid_response"
                         raise DomainProviderError("shopping_provider_invalid_response")
                     body = bytearray()
                     async for chunk in response.aiter_bytes():
                         if len(body) + len(chunk) > self.settings.domain_max_response_bytes:
+                            outcome, error_code = "failure", "shopping_provider_response_oversized"
                             raise DomainProviderError("shopping_provider_response_oversized")
                         body.extend(chunk)
             payload = json.loads(body)
@@ -289,6 +371,7 @@ class OpenFoodFactsAdapter:
                 and payload.get("status") == "failure"
                 and result.get("id") == "product_not_found"
             ):
+                outcome = "success"
                 return None
             if (
                 response.status_code != 200
@@ -306,6 +389,7 @@ class OpenFoodFactsAdapter:
                 raise TypeError("invalid product identity")
             product_name, code = product_name.strip(), code.strip()
             if not product_name or code != barcode:
+                outcome = "success"
                 return None
             categories = product.get("categories_tags", ())
             if not isinstance(categories, (list, tuple)) or any(not isinstance(item, str) for item in categories):
@@ -313,7 +397,7 @@ class OpenFoodFactsAdapter:
             brand, quantity = product.get("brands"), product.get("quantity")
             if any(value is not None and not isinstance(value, str) for value in (brand, quantity)):
                 raise TypeError("invalid product text")
-            return ShoppingProductRecord(
+            product_record = ShoppingProductRecord(
                 barcode=barcode,
                 name=product_name[:300],
                 brand=((brand or "").split(",")[0].strip() or None),
@@ -321,13 +405,42 @@ class OpenFoodFactsAdapter:
                 categories=tuple(item[:100] for item in categories[:12] if item.strip()),
                 url=f"https://world.openfoodfacts.org/product/{barcode}",
             )
-        except DomainProviderError:
+            outcome = "success"
+            return product_record
+        except UsageAdmissionDenied as error:
+            error_code = error.code
+            outcome = "rate_limited" if error.code in {
+                "provider_quota_exhausted", "provider_endpoint_cooling_down"
+            } else "rejected"
+            raise DomainProviderError("shopping_provider_quota" if outcome == "rate_limited" else "shopping_provider_unavailable") from None
+        except DomainProviderError as error:
+            error_code = error.code
+            if outcome == "unknown":
+                outcome = (
+                    "rate_limited" if response_status == 429
+                    else "server_error" if response_status is not None and response_status >= 500
+                    else "rejected" if response_status is not None and response_status >= 400
+                    else "failure"
+                )
             raise
         except httpx.TimeoutException as error:
+            outcome, error_code = "timeout", "shopping_provider_timeout"
             raise DomainProviderError("shopping_provider_timeout") from error
         except TimeoutError as error:
+            outcome, error_code = "timeout", "shopping_provider_timeout"
             raise DomainProviderError("shopping_provider_timeout") from error
         except httpx.TransportError as error:
+            outcome, error_code = "unknown", "shopping_provider_unavailable"
             raise DomainProviderError("shopping_provider_unavailable") from error
         except (ValueError, KeyError, TypeError, ValidationError) as error:
+            outcome, error_code = "failure", "shopping_provider_invalid_response"
             raise DomainProviderError("shopping_provider_invalid_response") from error
+        finally:
+            if usage_call is not None:
+                with anyio.CancelScope(shield=True):
+                    await usage_call.finish(
+                        outcome,
+                        http_status=response_status,
+                        error_code=error_code,
+                        rate_limits=rate_limits,
+                    )

@@ -30,6 +30,7 @@ from personal_ai.llm.context import GeminiTokenCounter
 from personal_ai.llm.litellm_gateway import LITELLM_VERSION, LiteLLMEmbeddingClient
 from personal_ai.llm.preparation import prepare_bounded_input
 from personal_ai.settings import Settings
+from personal_ai.usage.contracts import UsageAdmissionDenied
 
 
 def _settings(**overrides) -> Settings:
@@ -1096,6 +1097,113 @@ def test_async_generation_transport_fences_sdk_replay(monkeypatch):
     with pytest.raises(LLMUnavailableError):
         asyncio.run(consume())
     assert len(calls) == 1
+
+
+class _RecordingProviderUsage:
+    def __init__(self, *, deny=False):
+        self.deny = deny
+        self.events = []
+        self.attempts = []
+
+    def begin_invocation(self, invocation):
+        self.events.append(("begin", invocation))
+
+    def reserve_attempt(self, invocation, attempt, *, max_attempts):
+        self.events.append(("reserve", attempt))
+        if self.deny:
+            raise UsageAdmissionDenied("provider_attempt_budget_exceeded")
+        self.attempts.append(attempt)
+
+    def settle_attempt(self, invocation, attempt, result):
+        self.events.append(("settle", result))
+
+    def complete_invocation(self, invocation, *, outcome, completed_at):
+        self.events.append(("complete", outcome))
+
+
+def test_usage_reservation_precedes_send_and_settles_one_attempt(monkeypatch):
+    import personal_ai.llm.litellm_gateway as gateway
+
+    monkeypatch.setattr(gateway, "_assert_litellm_runtime_safe", lambda: None)
+    ledger = _RecordingProviderUsage()
+    sends = []
+
+    def respond(request):
+        assert any(kind == "reserve" for kind, _ in ledger.events)
+        sends.append(request)
+        return httpx.Response(200, json=_response("gemini"))
+
+    adapter = GeminiLLMClient(
+        _settings(),
+        sync_transport_factory=lambda: httpx.MockTransport(respond),
+        usage_accounting=ledger,
+    )
+    result = adapter.complete(
+        [ChatMessage("user", "hello")], max_output_tokens=10,
+        timeout_seconds=2, inference_context=_context(),
+    )
+
+    assert result.metadata.status == "success"
+    assert len(sends) == len(ledger.attempts) == 1
+    assert result.metadata.invocation_id == str(ledger.events[0][1].invocation_id)
+    assert result.metadata.attempt_ids == (str(ledger.attempts[0].attempt_id),)
+    assert [kind for kind, _ in ledger.events] == [
+        "begin", "reserve", "settle", "complete",
+    ]
+
+
+def test_usage_admission_denial_happens_before_provider_send(monkeypatch):
+    import personal_ai.llm.litellm_gateway as gateway
+
+    monkeypatch.setattr(gateway, "_assert_litellm_runtime_safe", lambda: None)
+    ledger = _RecordingProviderUsage(deny=True)
+    sends = []
+    adapter = GeminiLLMClient(
+        _settings(),
+        sync_transport_factory=lambda: httpx.MockTransport(
+            lambda request: (sends.append(request), httpx.Response(200, json=_response("gemini")))[-1]
+        ),
+        usage_accounting=ledger,
+    )
+
+    with pytest.raises(LLMUnavailableError):
+        adapter.complete(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=2, inference_context=_context(),
+        )
+
+    assert sends == []
+    assert ledger.attempts == []
+    assert [kind for kind, _ in ledger.events] == ["begin", "reserve", "complete"]
+
+
+def test_usage_ledger_counts_only_physical_sends_when_sdk_retry_is_intercepted(monkeypatch):
+    import personal_ai.llm.litellm_gateway as gateway
+
+    sdk = gateway._load_litellm()
+    monkeypatch.setattr(sdk, "num_retries", 1)
+    monkeypatch.setattr(gateway, "_assert_litellm_runtime_safe", lambda: None)
+    ledger = _RecordingProviderUsage()
+    sends = []
+
+    def unavailable(request):
+        sends.append(request)
+        return httpx.Response(503, json={"error": {"message": "private"}})
+
+    adapter = GeminiLLMClient(
+        _settings(),
+        sync_transport_factory=lambda: httpx.MockTransport(unavailable),
+        usage_accounting=ledger,
+    )
+    with pytest.raises(LLMUnavailableError):
+        adapter.complete(
+            [ChatMessage("user", "hello")], max_output_tokens=10,
+            timeout_seconds=2, inference_context=_context(),
+        )
+
+    assert len(sends) == len(ledger.attempts) == 1
+    assert [kind for kind, _ in ledger.events].count("reserve") == 1
+    assert [kind for kind, _ in ledger.events].count("settle") == 1
 
 
 @pytest.mark.parametrize("provider", ["gemini", "groq", "cloudflare_workers_ai"])

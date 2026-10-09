@@ -70,7 +70,7 @@ from personal_ai.memory.contracts import (
 )
 from personal_ai.settings import Settings
 
-NOW = datetime(2026, 10, 7, 12, tzinfo=UTC)
+NOW = datetime.now(UTC)
 
 
 class SyntheticDomainPayload(BaseModel):

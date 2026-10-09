@@ -49,6 +49,7 @@ class PersistenceFactory(Protocol):
     def account_data_repository(self) -> AccountDataRepository: ...
     def safeguard_store(self) -> SafeguardStore: ...
     def provider_rate_limiter(self, provider: str, repository=None): ...
+    def provider_usage_accounting(self, settings): ...
 
 
 class PostgresDynamoPersistenceFactory:
@@ -164,6 +165,27 @@ class PostgresDynamoPersistenceFactory:
         from personal_ai.persistence.controls import PostgresDomainProviderRateLimiter
 
         return PostgresDomainProviderRateLimiter(self.database, provider)
+
+    def provider_usage_accounting(self, settings):
+        from personal_ai.persistence.dynamodb_usage import DynamoDBProviderUsageEventRepository
+        from personal_ai.persistence.postgres_usage import PostgresProviderUsageAccounting
+
+        events = DynamoDBProviderUsageEventRepository(
+            self.runtime_table, retention_days=settings.provider_usage_retention_days
+        )
+        return PostgresProviderUsageAccounting(
+            self.database,
+            retention_days=settings.provider_usage_retention_days,
+            request_attempt_limit=settings.provider_usage_max_attempts_per_request,
+            request_token_limit=settings.provider_usage_max_tokens_per_request,
+            default_cooldown_seconds=settings.provider_usage_default_cooldown_seconds,
+            header_freshness_seconds=settings.provider_usage_header_freshness_seconds,
+            stale_attempt_seconds=settings.provider_usage_stale_attempt_seconds,
+            operational_event_writer=events.publish,
+            operational_event_purger=lambda now, limit: events.purge_expired(
+                now=now, limit=limit
+            ),
+        )
 
     def close(self) -> None:
         self.database.close()

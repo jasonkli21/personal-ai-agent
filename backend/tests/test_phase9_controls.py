@@ -100,6 +100,19 @@ def test_scheduled_maintenance_runs_bounded_usage_budget_cleanup(monkeypatch) ->
             calls.append(("purge", limit))
             return 4
 
+    class ProviderUsage:
+        def resolve_stale_attempts(self, *, limit):
+            calls.append(("resolve_stale", limit))
+            return 3
+
+        def reconcile_operational_events(self, *, limit):
+            calls.append(("sync_events", limit))
+            return 2
+
+        def purge_expired(self, *, limit):
+            calls.append(("purge_provider_usage", limit))
+            return 5
+
     class Directory:
         def active_owner_ids(self, *, limit):
             assert limit == 2
@@ -118,6 +131,9 @@ def test_scheduled_maintenance_runs_bounded_usage_budget_cleanup(monkeypatch) ->
             return 1
 
     class Factory:
+        def provider_usage_accounting(self, _settings):
+            return ProviderUsage()
+
         def safeguard_store(self):
             return Safeguards()
 
@@ -145,9 +161,14 @@ def test_scheduled_maintenance_runs_bounded_usage_budget_cleanup(monkeypatch) ->
 
     assert response.status_code == 200
     assert response.body == (
-        b'{"republished_jobs": 1, "expired_sessions": 2, "expired_usage_budgets": 4}'
+        b'{"republished_jobs": 1, "expired_sessions": 2, "expired_usage_budgets": 4, '
+        b'"provider_attempts_resolved": 3, "provider_events_synchronized": 2, '
+        b'"expired_provider_usage_records": 5}'
     )
-    assert calls == [("purge", 3), ("republish", configured.memory_job_candidate_limit), ("research", 3)]
+    assert calls == [
+        ("resolve_stale", 3), ("sync_events", 3), ("purge_provider_usage", 3),
+        ("purge", 3), ("republish", configured.memory_job_candidate_limit), ("research", 3),
+    ]
 
 
 def test_export_encodes_non_finite_numbers_as_portable_values() -> None:

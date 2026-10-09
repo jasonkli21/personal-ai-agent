@@ -12,10 +12,12 @@ boundaries without implementing later profile/provider/grant/artifact features.
 
 ## Repository basis and inventory conventions
 
-Inventory covers all 34 literal collection names in `backend/src/personal_ai`,
-not just [the owner inventory](../../backend/src/personal_ai/auth/owner_data.py).
-Repositories also contain embedded records: these follow their aggregate unless
-a separate family below owns them. No live source contents/counts were inspected.
+The original inventory covers all 34 Firestore-era literal collection names in
+`backend/src/personal_ai`, not just [the owner inventory](../../backend/src/personal_ai/auth/owner_data.py).
+Phase 19 adds normalized relational ledger families and one scoped operational
+event family, listed below. Repositories also contain embedded records: these
+follow their aggregate unless a separate family below owns them. No live source
+contents/counts were inspected.
 
 The inventory reflects the pre-cutover implementation reviewed at
 `e17ebd76afd1feb90fe47d959c43ab23eb553499`; the Firestore adapter files from
@@ -70,6 +72,13 @@ records/bytes rather than extrapolate quotas.
 | `audit_events` | P | Append/replay/scoped export, transaction with P control changes | Per bounded control action; distinguish account-wide and explicitly scoped events; safe metadata only |
 | `usage_budgets` | P | Account-wide owner/day conditional reserve; atomic compact counter | Per owner/day; 90-day expiry and bounded indexed scheduled purge; no actual settlement fabricated |
 | `domain_provider_rate_limits` | P | Provider-wide serialized slot reserve; bounded deadline | One compact shared control per provider; not per-owner/application; no private domain state |
+| `provider_invocations` | P | Get/create by invocation ID; owner/app/workspace and request/run correlation; immutable endpoint/account/profile attribution | One logical operation; 90-day default bounded retention; no prompts, responses or credentials |
+| `provider_attempts` | P | Get/settle by physical attempt ID; parent-attempt lineage; joined to its invocation for owner scope | One row per pre-admitted physical send; unknown outcomes retain reservations and fence replay; cascades with invocation retention |
+| `provider_quota_reservations` | P | Transactional per-attempt reservation/settlement joined to a shared account-authority bucket window | One row per applicable bucket/send; deleted with the attempt; account-wide bucket use does not merge owner attribution |
+| `provider_usage_daily_aggregates` | P | Owner/app/workspace + day + endpoint/task/operation grouped summary | Compact counts/token totals with explicit usage-confidence counts; bounded by explicit 90-day cleanup |
+| `provider_usage_events` | D | Owner/app/workspace namespace and ordered attempt event; minimal maintenance expiry locator | Safe operational metadata only; explicit bounded delete by maintenance, with 90-day record expiry and no reliance on paid TTL |
+| `provider_quota_bucket_windows` | P | Serialized admission by provider/account quota authority, unit and observed window | Shared capacity snapshots are not owner-export rows; old observed windows are explicitly purged while verified operator lifetime limits remain |
+| `provider_endpoint_health` | P | Endpoint profile/version lookup and cooldown admission | Shared operational state; stale versions are explicitly purged after the retention horizon and no recent matching invocation |
 
 Every private family participates in authorized export/deletion inventory,
 including dependencies, operational counters, receipts and projections. Global
@@ -86,8 +95,6 @@ migration/export; absence of `owner_id` is not proof that a row is global.
 | Bounded global profile/preferences/user-set provenance | P, owner-wide with permitted field sharing; Phase 11 creates the provider |
 | Persisted app/provider/model registry versions | P; preserve current code-defined Phase 2 manifests; no new registry product now |
 | Permission/grant/revocation metadata | P; versioned source/destination scope/purpose, Phase 15/30 contracts |
-| Invocation reservations/settlements/quota/health/cooldown | P; account/provider buckets distinct from attributable owner/app usage, Phase 19 |
-| Retained runtime/model/tool/invocation events | D; scoped aggregate/sequence access, bounded safe metadata and retention |
 | Compact routing-decision observations and decision-time task/strategy facts | P; one canonical owner-scoped record, schema-versioned, at most 32 candidates/64 KiB, 90-day default replay horizon; scoped lookup/list by decision ID/time and indexed joins by request/run, invocation/attempt, and evaluation IDs, Phases 19/21–24/35 |
 | Compact actual-build turn/context manifests and producing-model attribution | D; references immutable P policy/registry/grant versions, Phases 14/21 |
 | External-turn preparation/finalization/replay | D; same conversation/branch contract, Phase 25.2 |

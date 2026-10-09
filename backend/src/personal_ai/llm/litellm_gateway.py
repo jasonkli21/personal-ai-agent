@@ -18,9 +18,11 @@ import re
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
+from uuid import uuid4
 
 import anyio
 import httpx
@@ -54,6 +56,15 @@ from personal_ai.llm.errors import (
     LLMUnsupportedCapabilityError,
 )
 from personal_ai.settings import Settings
+from personal_ai.usage.accounting import estimated_tokens, new_invocation, unit_reservations
+from personal_ai.usage.contracts import (
+    AttemptMetadata,
+    AttemptResult,
+    InvocationMetadata,
+    ProviderUsageAccounting,
+    UsageAdmissionDenied,
+)
+from personal_ai.usage.profiles import endpoint_for_operation
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +132,20 @@ class _TransportState:
     sse_done: bool = False
     async_stream: Any | None = None
     stream_error: LLMError | None = None
+    usage_accounting: ProviderUsageAccounting | None = None
+    invocation: InvocationMetadata | None = None
+    invocation_started: bool = False
+    max_attempts: int = 1
+    reservation_units: tuple[tuple[str, int], ...] = (("requests", 1),)
+    expected_request_count: int = 1
+    embedding_batch_index: int | None = None
+    sent_embedding_batches: set[int] = field(default_factory=set)
+    active_attempt: AttemptMetadata | None = None
+    active_attempt_started_monotonic: float | None = None
+    last_attempt_id: Any | None = None
+    attempt_ids: list[str] = field(default_factory=list)
+    invocation_finalized: bool = False
+    accounting_violation: str | None = None
 
     def record_request(self, request: httpx.Request) -> None:
         if not _request_is_approved(
@@ -128,9 +153,6 @@ class _TransportState:
         ):
             self.violation = "endpoint"
             raise _TransportFault("endpoint")
-        if self.operation == "generation" and self.request_count:
-            self.violation = "generation_replay"
-            raise _TransportFault("generation_replay")
         if self.operation == "embeddings":
             self._reset_response_evidence()
             self._rewrite_embedding_request(request)
@@ -148,7 +170,165 @@ class _TransportState:
             if not _request_preserves_schema(request_body, self.profile, self.required_schema):
                 self.violation = "required_parameter"
                 raise _TransportFault("required_parameter")
+
+        if self.operation == "embeddings":
+            batch = self.embedding_batch_index
+            if batch is None or batch in self.sent_embedding_batches:
+                self.violation = "generation_replay"
+                raise _TransportFault("generation_replay")
+            self.sent_embedding_batches.add(batch)
+        elif self.request_count >= self.expected_request_count:
+            self.violation = "generation_replay"
+            raise _TransportFault("generation_replay")
+
+        self._admit_send()
         self.request_count += 1
+
+    async def arecord_request(self, request: httpx.Request) -> None:
+        await anyio.to_thread.run_sync(self.record_request, request)
+
+    def begin_embedding_batch(self, index: int, texts: Sequence[str]) -> None:
+        self.embedding_batch_index = index
+        estimate = sum(estimated_tokens(text) for text in texts)
+        self.reservation_units = unit_reservations(input_tokens=estimate)
+
+    def _admit_send(self) -> None:
+        if self.usage_accounting is None or self.invocation is None:
+            return
+        self.begin_invocation()
+        if self.deadline is not None:
+            _sync_remaining(self.deadline)
+        attempt = self._new_attempt()
+        try:
+            self.usage_accounting.reserve_attempt(
+                self.invocation, attempt, max_attempts=self.max_attempts
+            )
+        except UsageAdmissionDenied as error:
+            self.accounting_violation = error.code
+            self._raise_accounting_denial(error.code)
+        except Exception:  # noqa: BLE001 - block dispatch and hide storage details
+            self.accounting_violation = "provider_usage_ledger_unavailable"
+            raise LLMUnavailableError("provider usage accounting is unavailable") from None
+        self.active_attempt = attempt
+        self.active_attempt_started_monotonic = monotonic()
+        self.last_attempt_id = attempt.attempt_id
+        self.attempt_ids.append(str(attempt.attempt_id))
+
+    def _new_attempt(self, *, parent_attempt_id=None) -> AttemptMetadata:
+        number = self.request_count + 1
+        values = dict(self.reservation_units)
+        input_tokens = values.get("input_tokens", 0)
+        output_tokens = values.get("output_tokens", 0)
+        tokens = values.get("tokens", input_tokens + output_tokens)
+        return AttemptMetadata(
+            attempt_id=uuid4(),
+            parent_attempt_id=parent_attempt_id,
+            send_number=number,
+            started_at=datetime.now(UTC),
+            reservation_units=self.reservation_units,
+            reserved_tokens=max(0, int(tokens)),
+        )
+
+    def begin_invocation(self) -> None:
+        if self.usage_accounting is None or self.invocation is None or self.invocation_started:
+            return
+        try:
+            self.usage_accounting.begin_invocation(self.invocation)
+        except Exception:  # noqa: BLE001 - normalize ledger failures before dispatch
+            self.accounting_violation = "provider_usage_ledger_unavailable"
+            raise LLMUnavailableError("provider usage accounting is unavailable") from None
+        self.invocation_started = True
+
+    async def abegin_invocation(self) -> None:
+        if self.usage_accounting is None or self.invocation is None or self.invocation_started:
+            return
+        try:
+            await anyio.to_thread.run_sync(self.begin_invocation)
+        except LLMError:
+            raise
+        except Exception:  # noqa: BLE001 - normalize ledger failures before dispatch
+            self.accounting_violation = "provider_usage_ledger_unavailable"
+            raise LLMUnavailableError("provider usage accounting is unavailable") from None
+
+    def settle_current(
+        self,
+        outcome: str,
+        *,
+        error_code: str | None = None,
+        usage: UsageMetadata | None = None,
+        rate_limits: ProviderRateLimitMetadata | None = None,
+    ) -> None:
+        attempt = self.active_attempt
+        invocation = self.invocation
+        if attempt is None or invocation is None or self.usage_accounting is None:
+            return
+        completed_at = datetime.now(UTC)
+        latency_ms = int(max(0.0, monotonic() - (self.active_attempt_started_monotonic or monotonic())) * 1000)
+        if usage is None:
+            input_tokens = output_tokens = total_tokens = None
+            usage_source, confidence = "unknown", "unknown"
+        else:
+            input_tokens, output_tokens, total_tokens = (
+                usage.input_tokens, usage.output_tokens, usage.total_tokens
+            )
+            usage_source = usage.source
+            confidence = "exact" if usage.source == "provider" else "derived"
+        result = AttemptResult(
+            outcome=outcome,  # type: ignore[arg-type]
+            completed_at=completed_at,
+            latency_ms=latency_ms,
+            http_status=self.response_status,
+            error_code=error_code,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            usage_source=usage_source,
+            usage_confidence=confidence,  # type: ignore[arg-type]
+            rate_limits=rate_limits or _rate_limit_metadata(self.response_headers),
+        )
+        try:
+            self.usage_accounting.settle_attempt(invocation, attempt, result)
+        except Exception as error:  # noqa: BLE001 - the reserved row remains an unresolved fence
+            logger.info(
+                "provider_usage_settlement_pending attempt_id=%s error_class=%s",
+                attempt.attempt_id,
+                type(error).__name__,
+            )
+        self.active_attempt = None
+        self.active_attempt_started_monotonic = None
+
+    def finish_invocation(self, outcome: str) -> None:
+        if self.invocation_finalized:
+            return
+        self.invocation_finalized = True
+        if self.active_attempt is not None:
+            self.settle_current("unknown", error_code="provider_outcome_unknown")
+        if self.invocation is None or self.usage_accounting is None:
+            return
+        try:
+            self.usage_accounting.complete_invocation(
+                self.invocation,
+                outcome=outcome,  # type: ignore[arg-type]
+                completed_at=datetime.now(UTC),
+            )
+        except Exception as error:  # noqa: BLE001 - completed output remains usable
+            logger.info(
+                "provider_usage_invocation_completion_pending invocation_id=%s error_class=%s",
+                self.invocation.invocation_id,
+                type(error).__name__,
+            )
+
+    async def asettle_current(self, outcome: str, **kwargs) -> None:
+        await anyio.to_thread.run_sync(lambda: self.settle_current(outcome, **kwargs))
+
+    async def afinish_invocation(self, outcome: str) -> None:
+        await anyio.to_thread.run_sync(self.finish_invocation, outcome)
+
+    @staticmethod
+    def _raise_accounting_denial(code: str) -> None:
+        if code in {"provider_quota_exhausted", "provider_endpoint_cooling_down"}:
+            raise LLMRateLimitedError("provider capacity is temporarily unavailable") from None
+        raise LLMUnavailableError("provider dispatch was blocked by its usage budget") from None
 
     def _reset_response_evidence(self) -> None:
         self.response_status = None
@@ -381,7 +561,7 @@ class _BoundedAsyncTransport(httpx.AsyncBaseTransport):
         self._state = state
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        self._state.record_request(request)
+        await self._state.arecord_request(request)
         response = await self._inner.handle_async_request(request)
         self._state.record_response(response)
         if _is_non_success_or_redirect(response.status_code):
@@ -558,6 +738,50 @@ class _CloudflareHTTPContext:
     handler: Any
 
 
+def _outcome_for_error(error: BaseException, http_status: int | None) -> str:
+    if http_status == 429 or isinstance(error, LLMRateLimitedError):
+        return "rate_limited"
+    if http_status is not None and http_status >= 500:
+        return "server_error"
+    if http_status is not None and http_status >= 400:
+        return "rejected"
+    if isinstance(error, (TimeoutError, LLMTimeoutError)) or _exception_chain_contains_timeout(error):
+        return "timeout"
+    if http_status is None:
+        return "unknown"
+    return "failure"
+
+
+def _state_error_outcome(state: _TransportState, error: BaseException) -> str:
+    if state.accounting_violation is not None:
+        if state.accounting_violation in {
+            "provider_quota_exhausted", "provider_endpoint_cooling_down"
+        }:
+            return "rate_limited"
+        return "rejected"
+    return _outcome_for_error(error, state.response_status)
+
+
+def _settle_error(state: _TransportState, error: BaseException) -> str:
+    code = getattr(error, "code", None)
+    outcome = _state_error_outcome(state, error)
+    state.settle_current(
+        outcome,
+        error_code=code if isinstance(code, str) else "provider_transport_failure",
+    )
+    return outcome
+
+
+async def _asettle_error(state: _TransportState, error: BaseException) -> str:
+    code = getattr(error, "code", None)
+    outcome = _state_error_outcome(state, error)
+    await state.asettle_current(
+        outcome,
+        error_code=code if isinstance(code, str) else "provider_transport_failure",
+    )
+    return outcome
+
+
 _cloudflare_http_context: contextvars.ContextVar[_CloudflareHTTPContext | None] = (
     contextvars.ContextVar("personal_ai_litellm_cloudflare_http", default=None)
 )
@@ -575,12 +799,14 @@ class LiteLLMGenerationClient:
         *,
         async_transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
         sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
+        usage_accounting: ProviderUsageAccounting | None = None,
     ):
         self._settings = settings
         selected = provider or settings.ai_provider.lower()
         self._profile = _provider_profile(settings, selected)
         self._async_transport_factory = async_transport_factory
         self._sync_transport_factory = sync_transport_factory
+        self._usage_accounting = usage_accounting
         self.identity = ProviderIdentity(
             self._profile.provider_id, self._profile.model_id, self._profile.serializer_id
         )
@@ -639,7 +865,16 @@ class LiteLLMGenerationClient:
         duration = _bounded_timeout(max_output_tokens, timeout_seconds, self._settings)
         deadline = asyncio.get_running_loop().time() + duration
         state = _TransportState(
-            self._profile, "generation", True, _MAX_STREAM_RESPONSE_BYTES
+            self._profile,
+            "generation",
+            True,
+            _MAX_STREAM_RESPONSE_BYTES,
+            deadline=monotonic() + duration,
+            **self._usage_state_arguments(
+                messages,
+                operation="streaming",
+                max_output_tokens=max_output_tokens,
+            ),
         )
         handler, client = await self._make_async_handler(state, duration)
         stream: Any | None = None
@@ -647,6 +882,7 @@ class LiteLLMGenerationClient:
         sdk_usage: UsageMetadata | None = None
         has_non_whitespace_text = False
         try:
+            await state.abegin_invocation()
             sdk = _load_litellm()
             arguments = self._completion_arguments(
                 messages,
@@ -681,15 +917,28 @@ class LiteLLMGenerationClient:
                 usage=wire.usage or _mark_estimated(sdk_usage),
                 error_code=_terminal_error_code(status),
                 rate_limits=_rate_limit_metadata(state.response_headers),
+                invocation_id=(str(state.invocation.invocation_id) if state.invocation else None),
+                attempt_ids=tuple(state.attempt_ids),
             )
+            await state.asettle_current(
+                status,
+                error_code=metadata.error_code,
+                usage=metadata.usage,
+                rate_limits=metadata.rate_limits,
+            )
+            await state.afinish_invocation(status)
             yield GenerationEvent.terminal(metadata)
         except asyncio.CancelledError:
+            await asyncio.shield(state.afinish_invocation("unknown"))
             raise
-        except LLMError:
+        except LLMError as error:
+            await state.afinish_invocation(await _asettle_error(state, error))
             raise
         except Exception as error:  # noqa: BLE001 - LiteLLM exceptions can contain provider payloads.
+            await state.afinish_invocation(await _asettle_error(state, error))
             _raise_safe_error(error, state)
         finally:
+            await state.afinish_invocation("unknown")
             if stream is not None:
                 await _close_sdk_stream(stream)
             if state.async_stream is not None:
@@ -754,10 +1003,16 @@ class LiteLLMGenerationClient:
             _MAX_COMPLETION_RESPONSE_BYTES,
             required_schema=response_schema,
             deadline=deadline,
+            **self._usage_state_arguments(
+                messages,
+                operation=("structured_generation" if response_schema is not None else "bounded_generation"),
+                max_output_tokens=max_output_tokens,
+            ),
         )
         handler, client = self._make_sync_handler(state, duration)
         context_token = self._set_cloudflare_context(handler)
         try:
+            state.begin_invocation()
             sdk = _load_litellm()
             arguments = self._completion_arguments(
                 messages,
@@ -799,15 +1054,27 @@ class LiteLLMGenerationClient:
                     ),
                     error_code=_terminal_error_code(status),
                     rate_limits=_rate_limit_metadata(state.response_headers),
+                    invocation_id=(str(state.invocation.invocation_id) if state.invocation else None),
+                    attempt_ids=tuple(state.attempt_ids),
                 ),
             )
+            state.settle_current(
+                result.metadata.status,
+                error_code=result.metadata.error_code,
+                usage=result.metadata.usage,
+                rate_limits=result.metadata.rate_limits,
+            )
+            state.finish_invocation(result.metadata.status)
             _sync_remaining(deadline)
             return result
-        except LLMError:
+        except LLMError as error:
+            state.finish_invocation(_settle_error(state, error))
             raise
         except Exception as error:  # noqa: BLE001 - LiteLLM exceptions can contain provider payloads.
+            state.finish_invocation(_settle_error(state, error))
             _raise_safe_error(error, state)
         finally:
+            state.finish_invocation("unknown")
             if context_token is not None:
                 _cloudflare_http_context.reset(context_token)
             _close_sync_client(client)
@@ -870,6 +1137,42 @@ class LiteLLMGenerationClient:
         else:
             _validate_external_provider(self._settings, self._profile, inference_context)
         _assert_litellm_runtime_safe()
+
+    def _usage_state_arguments(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        operation: str,
+        max_output_tokens: int | None,
+    ) -> dict:
+        if self._usage_accounting is None:
+            return {}
+        try:
+            endpoint = endpoint_for_operation(
+                self._settings,
+                provider_id=self._profile.provider_id,
+                model_id=self._profile.model_id,
+                operation=operation,
+            )
+        except Exception as error:  # noqa: BLE001 - profile validation errors stay content-free
+            logger.info("provider_usage_endpoint_profile_unavailable error_class=%s", type(error).__name__)
+            raise LLMInvalidConfigurationError("provider usage endpoint profile is unavailable") from None
+        input_estimate = min(2_000_000, sum(estimated_tokens(message.content) for message in messages))
+        invocation = new_invocation(
+            endpoint,
+            operation=operation,
+            quota_operation=operation,
+            input_tokens_estimate=input_estimate,
+            output_tokens_bound=max_output_tokens,
+        )
+        return {
+            "usage_accounting": self._usage_accounting,
+            "invocation": invocation,
+            "max_attempts": self._settings.provider_usage_max_attempts_per_request,
+            "reservation_units": unit_reservations(
+                input_tokens=input_estimate, output_tokens=max_output_tokens
+            ),
+        }
 
     async def _make_async_handler(
         self, state: _TransportState, timeout_seconds: float
@@ -934,10 +1237,12 @@ class LiteLLMTokenCounter:
         settings: Settings,
         *,
         sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
+        usage_accounting: ProviderUsageAccounting | None = None,
     ):
         self.settings = settings
         self._profile = _provider_profile(settings, "gemini")
         self._sync_transport_factory = sync_transport_factory
+        self._usage_accounting = usage_accounting
         self.identity = ProviderIdentity("gemini", settings.ai_model, "gemini-content-v1")
         self.capabilities = ProviderCapabilities(frozenset({"token_counting"}))
 
@@ -1007,6 +1312,8 @@ class LiteLLMTokenCounter:
             False,
             _MAX_COUNT_RESPONSE_BYTES,
             required_schema=response_schema,
+            deadline=monotonic() + timeout,
+            **self._usage_state_arguments(messages),
         )
         handler_type = _sdk_http_handler_types(_load_litellm())[1]
         handler = handler_type(timeout=timeout)
@@ -1028,6 +1335,7 @@ class LiteLLMTokenCounter:
             f"{quote(self._profile.model_id.removeprefix('models/'), safe='-_.~')}:countTokens"
         )
         try:
+            state.begin_invocation()
             response = handler.post(
                 url,
                 json=request_body,
@@ -1044,7 +1352,7 @@ class LiteLLMTokenCounter:
             token_count = payload.get("totalTokens", payload.get("total_tokens"))
             if isinstance(token_count, bool) or not isinstance(token_count, int) or token_count < 0:
                 raise LLMInvalidResponseError("provider token count was invalid")
-            return TokenCount(
+            result = TokenCount(
                 token_count,
                 "provider",
                 provider_id="gemini",
@@ -1052,12 +1360,49 @@ class LiteLLMTokenCounter:
                 serializer_id="gemini-content-v1",
                 confidence="authoritative",
             )
-        except LLMError:
+            usage = UsageMetadata(
+                input_tokens=token_count, total_tokens=token_count,
+                source="provider", confidence="reported",
+            )
+            state.settle_current("success", usage=usage, rate_limits=rate_limits)
+            state.finish_invocation("success")
+            return result
+        except LLMError as error:
+            state.finish_invocation(_settle_error(state, error))
             raise
         except Exception as error:  # noqa: BLE001 - SDK errors may contain provider payloads.
+            state.finish_invocation(_settle_error(state, error))
             _raise_safe_error(error, state)
         finally:
+            state.finish_invocation("unknown")
             _close_sync_client(http_client)
+
+    def _usage_state_arguments(self, messages: Sequence[ChatMessage]) -> dict:
+        if self._usage_accounting is None:
+            return {}
+        input_estimate = min(2_000_000, sum(estimated_tokens(message.content) for message in messages))
+        try:
+            endpoint = endpoint_for_operation(
+                self.settings,
+                provider_id="gemini",
+                model_id=self.settings.ai_model,
+                operation="token_counting",
+            )
+        except Exception as error:  # noqa: BLE001 - profile validation errors stay content-free
+            logger.info("provider_usage_endpoint_profile_unavailable error_class=%s", type(error).__name__)
+            raise LLMInvalidConfigurationError("provider usage endpoint profile is unavailable") from None
+        invocation = new_invocation(
+            endpoint,
+            operation="token_counting",
+            quota_operation="token_counting",
+            input_tokens_estimate=input_estimate,
+        )
+        return {
+            "usage_accounting": self._usage_accounting,
+            "invocation": invocation,
+            "max_attempts": self.settings.provider_usage_max_attempts_per_request,
+            "reservation_units": unit_reservations(input_tokens=input_estimate),
+        }
 
 
 class LiteLLMEmbeddingClient:
@@ -1070,10 +1415,12 @@ class LiteLLMEmbeddingClient:
         settings: Settings,
         *,
         sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
+        usage_accounting: ProviderUsageAccounting | None = None,
     ):
         self.settings = settings
         self._profile = _provider_profile(settings, "gemini")
         self._sync_transport_factory = sync_transport_factory
+        self._usage_accounting = usage_accounting
         self.identity = ProviderIdentity(
             "google_genai", settings.memory_embedding_model, "gemini-embedding-v1"
         )
@@ -1115,6 +1462,7 @@ class LiteLLMEmbeddingClient:
             _MAX_EMBEDDING_RESPONSE_BYTES,
             request_model_id=self.settings.memory_embedding_model,
             deadline=deadline,
+            **self._usage_state_arguments(texts),
         )
         handler_type = _sdk_http_handler_types(_load_litellm())[1]
         handler = handler_type(timeout=duration)
@@ -1145,13 +1493,16 @@ class LiteLLMEmbeddingClient:
         )
         results: list[EmbeddingResult] = []
         try:
+            state.begin_invocation()
             sdk = _load_litellm()
             batch_size = self.settings.memory_embedding_batch_size
+            state.expected_request_count = math.ceil(len(texts) / batch_size)
             for start in range(0, len(texts), batch_size):
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     raise LLMTimeoutError("embedding request timed out")
                 batch = list(texts[start : start + batch_size])
+                state.begin_embedding_batch(start // batch_size, batch)
                 state.embedding_texts = tuple(batch)
                 response = sdk.embedding(
                     model=f"gemini/{self.settings.memory_embedding_model}",
@@ -1183,18 +1534,50 @@ class LiteLLMEmbeddingClient:
                         space=space,
                         task=task,
                     ))
+                state.settle_current("success")
                 if monotonic() >= deadline:
                     raise LLMTimeoutError("embedding request timed out")
             if monotonic() > deadline:
                 raise LLMTimeoutError("embedding request timed out")
+            state.finish_invocation("success")
             return tuple(results)
-        except LLMError:
+        except LLMError as error:
+            state.finish_invocation(_settle_error(state, error))
             raise
         except Exception as error:  # noqa: BLE001 - SDK errors may contain provider payloads.
+            state.finish_invocation(_settle_error(state, error))
             _raise_safe_error(error, state)
         finally:
+            state.finish_invocation("unknown")
             _close_sync_client(client)
             _reset_sdk_cache_callbacks()
+
+    def _usage_state_arguments(self, texts: Sequence[str]) -> dict:
+        if self._usage_accounting is None:
+            return {}
+        input_estimate = min(2_000_000, sum(estimated_tokens(text) for text in texts))
+        try:
+            endpoint = endpoint_for_operation(
+                self.settings,
+                provider_id="google_genai",
+                model_id=self.settings.memory_embedding_model,
+                operation="embeddings",
+            )
+        except Exception as error:  # noqa: BLE001 - profile validation errors stay content-free
+            logger.info("provider_usage_endpoint_profile_unavailable error_class=%s", type(error).__name__)
+            raise LLMInvalidConfigurationError("provider usage endpoint profile is unavailable") from None
+        invocation = new_invocation(
+            endpoint,
+            operation="embeddings",
+            quota_operation="embeddings",
+            input_tokens_estimate=input_estimate,
+        )
+        return {
+            "usage_accounting": self._usage_accounting,
+            "invocation": invocation,
+            "max_attempts": self.settings.provider_usage_max_attempts_per_request,
+            "reservation_units": unit_reservations(input_tokens=input_estimate),
+        }
 
 
 @dataclass(frozen=True, slots=True)

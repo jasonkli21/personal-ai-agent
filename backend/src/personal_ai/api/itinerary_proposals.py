@@ -73,8 +73,9 @@ def proposal_service(
         llm = FakeItineraryProposalLLMClient()
         counter = EstimatedTokenCounter()
     else:
-        llm = GeminiLLMClient(settings)
-        counter = GeminiTokenCounter(settings)
+        usage = persistence_factory(settings).provider_usage_accounting(settings)
+        llm = GeminiLLMClient(settings, usage_accounting=usage)
+        counter = GeminiTokenCounter(settings, usage_accounting=usage)
     return ItineraryProposalService(
         settings,
         repository,

@@ -58,6 +58,7 @@ from personal_ai.search.policy import SnippetExtractor, canonical_url
 from personal_ai.settings import Settings
 from personal_ai.storage.async_io import io_call
 from personal_ai.storage.errors import ResourceNotFoundError
+from personal_ai.usage.context import bind_usage_task
 
 TERMINAL_STATES = {RunState.COMPLETED, RunState.INSUFFICIENT, RunState.FAILED, RunState.CANCELLED}
 logger = logging.getLogger(__name__)
@@ -1292,7 +1293,10 @@ class IterativeResearchService:
         try:
             timeout_seconds = max(0.001, float(call_elapsed))
             async with asyncio.timeout(timeout_seconds):
-                fetched = await self.adapter.search(query.normalized_query, source_reserve)
+                with bind_usage_task(
+                    "iterative_research_search", run_id=str(run.id)
+                ):
+                    fetched = await self.adapter.search(query.normalized_query, source_reserve)
             if not isinstance(fetched, (tuple, list)) or len(fetched) > source_reserve:
                 raise ResearchError("search_invalid_response")
             if any(not isinstance(item, SearchResult) for item in fetched):
@@ -1590,10 +1594,13 @@ class IterativeResearchService:
                 else self.llm.stream(messages, inference_context=inference_context)
             )
             async with asyncio.timeout(synth_timeout):
-                async for delta in iterator:
-                    if not isinstance(delta, str) or len(response) + len(delta) > min(20000, output_tokens * 4):
-                        raise ResearchError("synthesis_oversized")
-                    response += delta
+                with bind_usage_task(
+                    "iterative_research_synthesis", run_id=str(run.id)
+                ):
+                    async for delta in iterator:
+                        if not isinstance(delta, str) or len(response) + len(delta) > min(20000, output_tokens * 4):
+                            raise ResearchError("synthesis_oversized")
+                        response += delta
             self._assert_lease(run, run.lease_owner)
             answer, citations = validate_synthesis(
                 session.model_copy(update={"selection": selection}), response

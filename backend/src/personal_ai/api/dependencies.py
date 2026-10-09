@@ -33,6 +33,7 @@ from personal_ai.persistence.factory import persistence_factory
 from personal_ai.services import ChatTurnService, ConversationService
 from personal_ai.settings import Settings, get_settings
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
+from personal_ai.usage.contracts import ProviderUsageAccounting
 
 
 def get_current_owner_id(request: Request) -> str:
@@ -128,6 +129,13 @@ def get_message_repository(
     return persistence_factory(settings).message_repository()
 
 
+def get_provider_usage_accounting(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ProviderUsageAccounting:
+    """Build the Postgres admission ledger and its bounded DynamoDB event writer."""
+    return persistence_factory(settings).provider_usage_accounting(settings)
+
+
 def get_conversation_service(
     conversations: Annotated[ConversationRepository, Depends(get_conversation_repository)],
     messages: Annotated[MessageRepository, Depends(get_message_repository)],
@@ -142,9 +150,10 @@ def get_conversation_service(
 
 def get_llm_client(
     settings: Annotated[Settings, Depends(get_settings)],
+    usage: Annotated[ProviderUsageAccounting, Depends(get_provider_usage_accounting)],
 ) -> GenerationClient:
     """Build the configured provider behind the replaceable streaming contract."""
-    return GeminiLLMClient(settings)
+    return GeminiLLMClient(settings, usage_accounting=usage)
 
 
 def get_summary_repository(
@@ -169,6 +178,7 @@ def get_context_assembler(
     settings: Annotated[Settings, Depends(get_settings)],
     summaries: Annotated[ConversationSummaryRepository, Depends(get_summary_repository)],
     profile_repository: Annotated[object, Depends(get_global_profile_repository)],
+    usage: Annotated[ProviderUsageAccounting, Depends(get_provider_usage_accounting)],
 ) -> ContextAssembler:
     providers = ContextProviderCoordinator(
         {
@@ -182,9 +192,9 @@ def get_context_assembler(
     )
     return ContextAssembler(
         settings,
-        GeminiTokenCounter(settings),
+        GeminiTokenCounter(settings, usage_accounting=usage),
         summaries,
-        GeminiConversationSummarizer(settings),
+        GeminiConversationSummarizer(settings, usage_accounting=usage),
         context_provider_coordinator=providers,
         permission_revalidator=BuiltInContextPermissionRevalidator(
             settings, profile_repository
@@ -198,8 +208,11 @@ def get_memory_repository(settings: Annotated[Settings, Depends(get_settings)]):
     return persistence_factory(settings).memory_repository()
 
 
-def get_memory_adapter(settings: Annotated[Settings, Depends(get_settings)]):
-    return GeminiMemoryAdapter(settings)
+def get_memory_adapter(
+    settings: Annotated[Settings, Depends(get_settings)],
+    usage: Annotated[ProviderUsageAccounting, Depends(get_provider_usage_accounting)],
+):
+    return GeminiMemoryAdapter(settings, usage_accounting=usage)
 
 
 def get_lifecycle_repository(

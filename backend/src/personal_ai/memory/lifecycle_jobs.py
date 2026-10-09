@@ -353,9 +353,19 @@ class MemoryLifecycleWorker:
                 raise ValueError("unsupported_job_policy")
             if claimed.job_type == "consolidation":
                 application_context = self._resolve_application_context(claimed)
-                result = self._consolidate(
-                    claimed, token, deadline, application_context=application_context
-                )
+                from personal_ai.usage.context import UsageExecutionContext, bind_usage_context
+
+                with bind_usage_context(UsageExecutionContext(
+                    owner_id=claimed.owner_id,
+                    application_id=claimed.application_id,
+                    workspace_id=claimed.workspace_id,
+                    request_id=f"memory-lifecycle-{claimed.id}",
+                    task_id=f"memory_{claimed.job_type}",
+                    run_id=str(claimed.id),
+                )):
+                    result = self._consolidate(
+                        claimed, token, deadline, application_context=application_context
+                    )
             else:
                 result = self._maintenance(claimed, token, deadline)
             if result == "stale_lease":

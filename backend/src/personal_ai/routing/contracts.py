@@ -22,6 +22,7 @@ EndpointOperation = Literal[
     "token_counting",
     "embeddings",
     "search",
+    "lookup",
 ]
 
 _SAFE_FACT_ID = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9._:/@+-]{0,199}$")
@@ -131,12 +132,13 @@ class QuotaBucket(_FrozenContract):
 
     bucket_id: str = Field(min_length=1, max_length=200)
     authority_scope_id: str = Field(min_length=1, max_length=200)
-    operations: frozenset[EndpointOperation] = Field(min_length=1, max_length=6)
+    operations: frozenset[EndpointOperation] = Field(min_length=1, max_length=7)
     unit: str = Field(min_length=1, max_length=80)
     window_seconds: int | None = Field(default=None, ge=1, le=31_536_000)
     reset_at: datetime | None = None
     source: Literal["provider_contract", "provider_headers", "operator_attestation", "unknown"]
     confidence: Literal["verified", "reported", "unknown"]
+    reservation_units_per_request: int | None = Field(default=None, ge=0)
     observed_at: datetime | None = None
     fresh_until: datetime | None = None
     evidence_reference: str | None = Field(default=None, max_length=500)

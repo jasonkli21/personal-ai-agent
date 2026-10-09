@@ -66,7 +66,9 @@ def extraction_service(
     if settings.booking_extraction_generator == "fake":
         llm, counter = FakeBookingExtractionLLMClient(), EstimatedTokenCounter()
     else:
-        llm, counter = GeminiLLMClient(settings), GeminiTokenCounter(settings)
+        usage = persistence_factory(settings).provider_usage_accounting(settings)
+        llm = GeminiLLMClient(settings, usage_accounting=usage)
+        counter = GeminiTokenCounter(settings, usage_accounting=usage)
     return BookingExtractionService(
         settings,
         repository,

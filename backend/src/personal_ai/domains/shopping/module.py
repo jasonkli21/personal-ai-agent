@@ -151,9 +151,11 @@ class ShoppingModule:
             if item.attribute not in self.registration.supported_constraints:
                 raise DomainContractError("shopping_constraint_unregistered")
 
-    def get_adapter(self, settings, *, rate_limiter=None):
+    def get_adapter(self, settings, *, rate_limiter=None, usage_accounting=None):
         if settings.shopping_products_adapter == "open_food_facts":
-            return OpenFoodFactsAdapter(settings, rate_limiter=rate_limiter)
+            return OpenFoodFactsAdapter(
+                settings, rate_limiter=rate_limiter, usage_accounting=usage_accounting
+            )
         product = ShoppingProductRecord(
             barcode="000000000001",
             name="Cedar Oat Drink (synthetic)",

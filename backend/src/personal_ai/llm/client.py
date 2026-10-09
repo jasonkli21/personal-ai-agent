@@ -100,6 +100,8 @@ class GenerationMetadata:
     usage: UsageMetadata | None = None
     error_code: str | None = None
     rate_limits: ProviderRateLimitMetadata | None = None
+    invocation_id: str | None = None
+    attempt_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

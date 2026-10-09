@@ -6,6 +6,7 @@ import httpx
 
 from personal_ai.llm.litellm_gateway import LiteLLMGenerationClient
 from personal_ai.settings import Settings
+from personal_ai.usage.contracts import ProviderUsageAccounting
 
 
 class GroqLLMClient(LiteLLMGenerationClient):
@@ -17,10 +18,12 @@ class GroqLLMClient(LiteLLMGenerationClient):
         *,
         async_transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
         sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
+        usage_accounting: ProviderUsageAccounting | None = None,
     ) -> None:
         super().__init__(
             settings,
             "groq",
             async_transport_factory=async_transport_factory,
             sync_transport_factory=sync_transport_factory,
+            usage_accounting=usage_accounting,
         )

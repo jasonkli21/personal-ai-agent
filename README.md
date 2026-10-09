@@ -26,6 +26,7 @@ Core capabilities include:
 - travel and shopping comparison modules;
 - itinerary-proposal and booking-extraction capability boundaries;
 - owner-scoped application/workspace identity foundations;
+- bounded provider-attempt accounting with a default-off owner-scoped developer summary;
 - account export/deletion workflow foundations;
 - synthetic evaluation suites for memory, context, research, decisions, and domain behavior.
 
@@ -59,6 +60,7 @@ Core capabilities include:
                 |                       |
                 | chat + context        |
                 | endpoint registry     |
+                | usage ledger          |
                 | memory + research     |
                 | evidence + decisions  |
                 | domain capabilities   |
@@ -79,6 +81,11 @@ produce strict-free candidates with deterministic rejection reasons. Current
 application workflows remain Gemini-only; request selection is reserved for a
 later routing phase.
 
+Provider sends have a separate usage ledger for physical attempts, quota
+reservations, endpoint health, and bounded owner-attributed summaries. Its
+developer inspection route is disabled by default; quota values without
+authoritative observations remain unknown.
+
 ## Repository layout
 
 ```text
@@ -97,6 +104,7 @@ later routing phase.
 │   │   ├── ranking/         # deterministic ranking/constraints
 │   │   ├── routing/         # endpoint profiles and strict-free admission
 │   │   ├── search/          # search adapters and pipeline
+│   │   ├── usage/           # provider invocation and attempt accounting contracts
 │   │   ├── services/        # chat/application orchestration
 │   │   ├── storage/         # repository contracts and persistence primitives
 │   │   └── persistence/    # Postgres/DynamoDB adapters and migrations
@@ -131,8 +139,8 @@ later routing phase.
 ### Cloud
 
 - Google Cloud Run
-- Neon Postgres with pgvector for query-rich durable records and embeddings
-- DynamoDB for conversations, messages, summaries, runtime guards, and jobs
+- Neon Postgres with pgvector for query-rich durable records, embeddings, and the canonical provider usage ledger
+- DynamoDB for conversations, messages, summaries, runtime guards, jobs, and scoped provider usage events
 - Pub/Sub
 - AWS STS web-identity federation from Cloud Run for DynamoDB access
 - Secret Manager

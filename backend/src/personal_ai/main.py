@@ -14,6 +14,7 @@ from personal_ai.api.domains import router as domains_router
 from personal_ai.api.iterative_research import router as iterative_research_router
 from personal_ai.api.itinerary_proposals import router as itinerary_proposals_router
 from personal_ai.api.profile import router as profile_router
+from personal_ai.api.provider_usage import router as provider_usage_router
 from personal_ai.api.research import router as research_router
 from personal_ai.api.routes import router as conversations_router
 from personal_ai.applications.registry import default_application_registry
@@ -54,6 +55,7 @@ app.include_router(decisions_router)
 app.include_router(domains_router)
 app.include_router(account_router)
 app.include_router(profile_router)
+app.include_router(provider_usage_router)
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:

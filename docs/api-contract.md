@@ -1,4 +1,4 @@
-# API contract (Phases 1–14 local implementation)
+# API contract (Phases 1–19 local implementation)
 
 This document defines the implemented HTTP boundary. All `/v1` routes require an application principal. Staging/production verify
 Google OIDC and resolve an opaque owner from issuer and stable subject; client
@@ -45,6 +45,7 @@ identity for Travel.
 | `GET` | `/v1/conversations` | — | `{"conversations": [Conversation]}` |
 | `GET` | `/v1/conversations/{conversation_id}` | — | `{"conversation": Conversation, "messages": [Message]}` |
 | `GET` | `/v1/conversations/{conversation_id}/context` | Optional repeated `memory_ids=UUID` | Development-only read-only estimate plus a retained actual-build trace for the latest user turn, when available; 404 when disabled |
+| `GET` | `/v1/developer/provider-usage?days=30` | Optional `days` from 1 through 90 | Bounded owner/application/workspace summary; requires `PROVIDER_USAGE_INSPECTION_ENABLED`, defaults off |
 | `POST` | `/v1/conversations/{conversation_id}/messages` | `{"content": "..."}` | SSE stream |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/regenerate` | — | SSE stream replacing a completed assistant message |
 | `POST` | `/v1/conversations/{conversation_id}/messages/{message_id}/edit-and-retry` | `{"content": "..."}` | SSE stream after replacing a user message |
@@ -404,3 +405,17 @@ The private worker also exposes `/tasks/maintenance`; it verifies the separate
 Scheduler token, requires one active owner mapping, and processes a bounded
 expiry/republish batch. It does not physically delete data. Account and
 maintenance gates stay off by default.
+
+## Phase 19 provider usage inspection
+
+`GET /v1/developer/provider-usage?days=N` requires
+`PROVIDER_USAGE_INSPECTION_ENABLED=true`. The default is disabled and the route
+returns 404 while off. When enabled, owner identity and application/workspace
+scope come only from the validated request principal and envelope. The summary
+is capped at 64 provider/model/endpoint/task/operation groups and 32 quota
+snapshots. It reports attempt outcomes, retries, average latency, token usage
+with confidence counts, endpoint health/cooldown, and observed quota unit,
+source, confidence, and reset facts. It contains no prompts, responses,
+credentials, provider headers, or hidden reasoning. Missing or stale quota
+observations are reported as unknown; remaining capacity is never inferred
+from account usage or application limits.

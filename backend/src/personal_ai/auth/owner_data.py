@@ -33,5 +33,10 @@ OWNER_DATA_COLLECTIONS = (
     "identity_mappings",
     "audit_events",
     "usage_budgets",
+    "provider_invocations",
+    "provider_attempts",
+    "provider_quota_reservations",
+    "provider_usage_daily_aggregates",
+    "provider_usage_events",
     "global_profiles",
 )

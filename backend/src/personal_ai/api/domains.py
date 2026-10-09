@@ -52,6 +52,7 @@ def domain_service(
         provider_rate_limiter_factory=lambda provider: factory.provider_rate_limiter(
             provider, domain_repository
         ),
+        provider_usage_accounting=factory.provider_usage_accounting(settings),
     )
 
 

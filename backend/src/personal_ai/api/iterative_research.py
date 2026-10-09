@@ -79,8 +79,10 @@ def iterative_research_service(
         ),))
         counter, llm = EstimatedTokenCounter(), FakeResearchLLMClient()
     else:
-        adapter = BraveSearchAdapter(settings)
-        counter, llm = GeminiTokenCounter(settings), GeminiLLMClient(settings)
+        usage = persistence_factory(settings).provider_usage_accounting(settings)
+        adapter = BraveSearchAdapter(settings, usage_accounting=usage)
+        counter = GeminiTokenCounter(settings, usage_accounting=usage)
+        llm = GeminiLLMClient(settings, usage_accounting=usage)
     return IterativeResearchService(
         settings,
         sessions,

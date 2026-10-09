@@ -47,6 +47,7 @@ from personal_ai.llm.preparation import require_matching_endpoint
 from personal_ai.search.policy import canonical_url
 from personal_ai.storage.async_io import io_call, sync_call
 from personal_ai.storage.errors import ResourceNotFoundError, StorageUnavailableError
+from personal_ai.usage.context import bind_usage_task
 
 MAX_EXTERNAL_EVIDENCE = 24
 MAX_TERMINAL_WRITE_RESERVE_SECONDS = 3.0
@@ -619,15 +620,16 @@ class ItineraryProposalService:
         try:
             # `deadline` is in time.monotonic()'s domain, not necessarily loop.time()'s.
             async with asyncio.timeout(_remaining(deadline)):
-                async for delta in stream:
-                    if not isinstance(delta, str):
-                        raise _InvalidProposalOutput("non_text_output")
-                    if (
-                        len((output + delta).encode("utf-8"))
-                        > self.settings.itinerary_proposal_max_response_bytes
-                    ):
-                        raise _InvalidProposalOutput("model_output_oversized")
-                    output += delta
+                with bind_usage_task("itinerary_proposal"):
+                    async for delta in stream:
+                        if not isinstance(delta, str):
+                            raise _InvalidProposalOutput("non_text_output")
+                        if (
+                            len((output + delta).encode("utf-8"))
+                            > self.settings.itinerary_proposal_max_response_bytes
+                        ):
+                            raise _InvalidProposalOutput("model_output_oversized")
+                        output += delta
             return output
         finally:
             close = getattr(stream, "aclose", None)

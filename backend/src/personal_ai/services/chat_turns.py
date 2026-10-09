@@ -42,6 +42,7 @@ from personal_ai.llm.preparation import require_matching_endpoint
 from personal_ai.storage import ConversationConflictError
 from personal_ai.storage.async_io import io_call
 from personal_ai.storage.repositories import ConversationRepository, MessageRepository
+from personal_ai.usage.context import bind_usage_task
 
 logger = logging.getLogger(__name__)
 
@@ -461,17 +462,18 @@ class ChatTurnService:
                 yield _sse("message.created", SSEMessageCreated(message=message).model_dump_json())
             events: asyncio.Queue[GenerationEvent | Exception | None] = asyncio.Queue(maxsize=1)
             demand = asyncio.Semaphore(0)
-            provider_iterator = self._llm.stream_events(
-                turn.history,
-                max_output_tokens=self._context.settings.max_response_tokens,
-                timeout_seconds=remaining(turn.deadline),
-                inference_context=turn.inference_context,
-            ).__aiter__()
-            # One task owns the entire iterator: SDK timeout scopes and cleanup
-            # may depend on task identity remaining stable across every yield.
-            provider_task = asyncio.create_task(
-                _produce_deltas(provider_iterator, events, demand, request_id=turn.request_id)
-            )
+            with bind_usage_task("chat_generation"):
+                provider_iterator = self._llm.stream_events(
+                    turn.history,
+                    max_output_tokens=self._context.settings.max_response_tokens,
+                    timeout_seconds=remaining(turn.deadline),
+                    inference_context=turn.inference_context,
+                ).__aiter__()
+                # One task owns the entire iterator: SDK timeout scopes and cleanup
+                # may depend on task identity remaining stable across every yield.
+                provider_task = asyncio.create_task(
+                    _produce_deltas(provider_iterator, events, demand, request_id=turn.request_id)
+                )
             generation_metadata: GenerationMetadata | None = None
             try:
                 while True:

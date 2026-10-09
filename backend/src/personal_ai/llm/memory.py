@@ -10,6 +10,8 @@ from personal_ai.llm.gemini import GeminiLLMClient
 from personal_ai.llm.litellm_gateway import LiteLLMEmbeddingClient
 from personal_ai.memory.extraction import MemoryCandidateExtractor
 from personal_ai.settings import Settings
+from personal_ai.usage.context import bind_usage_task
+from personal_ai.usage.contracts import ProviderUsageAccounting
 
 EMBEDDING_SPACE_VERSION = "v1"
 
@@ -28,16 +30,23 @@ class GeminiMemoryAdapter:
         settings: Settings,
         *,
         sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
+        usage_accounting: ProviderUsageAccounting | None = None,
     ) -> None:
         self.settings = settings
         self.generator = GeminiLLMClient(
-            settings, sync_transport_factory=sync_transport_factory
+            settings,
+            sync_transport_factory=sync_transport_factory,
+            usage_accounting=usage_accounting,
         )
         self.counter = GeminiTokenCounter(
-            settings, sync_transport_factory=sync_transport_factory
+            settings,
+            sync_transport_factory=sync_transport_factory,
+            usage_accounting=usage_accounting,
         )
         self.embedder = GeminiEmbeddingClient(
-            settings, sync_transport_factory=sync_transport_factory
+            settings,
+            sync_transport_factory=sync_transport_factory,
+            usage_accounting=usage_accounting,
         )
         self.extractor = MemoryCandidateExtractor(settings, self.generator, self.counter)
 
@@ -49,9 +58,10 @@ class GeminiMemoryAdapter:
         timeout: float | None = None,
         inference_context: InferenceContext | None = None,
     ) -> tuple[EmbeddingResult, ...]:
-        return self.embedder.embed(
-            texts, query=query, timeout=timeout, inference_context=inference_context
-        )
+        with bind_usage_task("memory_embedding"):
+            return self.embedder.embed(
+                texts, query=query, timeout=timeout, inference_context=inference_context
+            )
 
     def extract(
         self,
@@ -60,6 +70,7 @@ class GeminiMemoryAdapter:
         timeout: float,
         inference_context: InferenceContext | None = None,
     ):
-        return self.extractor.extract(
-            source_turn, timeout=timeout, inference_context=inference_context
-        )
+        with bind_usage_task("memory_extraction"):
+            return self.extractor.extract(
+                source_turn, timeout=timeout, inference_context=inference_context
+            )

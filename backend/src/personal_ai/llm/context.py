@@ -11,6 +11,8 @@ from personal_ai.llm.client import InferenceContext
 from personal_ai.llm.gemini import GeminiLLMClient
 from personal_ai.llm.litellm_gateway import LiteLLMTokenCounter
 from personal_ai.settings import Settings
+from personal_ai.usage.context import bind_usage_task
+from personal_ai.usage.contracts import ProviderUsageAccounting
 
 
 class GeminiTokenCounter(LiteLLMTokenCounter):
@@ -23,10 +25,13 @@ class GeminiConversationSummarizer:
         settings: Settings,
         *,
         sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
+        usage_accounting: ProviderUsageAccounting | None = None,
     ) -> None:
         self.settings = settings
         self._generator = GeminiLLMClient(
-            settings, sync_transport_factory=sync_transport_factory
+            settings,
+            sync_transport_factory=sync_transport_factory,
+            usage_accounting=usage_accounting,
         )
 
     def summarize(
@@ -55,12 +60,13 @@ class GeminiConversationSummarizer:
             if timeout_seconds is not None
             else self.settings.request_timeout_seconds
         )
-        result = self.generator.complete(
-            request,
-            max_output_tokens=self.settings.max_summary_tokens,
-            timeout_seconds=timeout,
-            inference_context=inference_context,
-        ).require_success()
+        with bind_usage_task("conversation_summary"):
+            result = self.generator.complete(
+                request,
+                max_output_tokens=self.settings.max_summary_tokens,
+                timeout_seconds=timeout,
+                inference_context=inference_context,
+            ).require_success()
         return SummaryDraft(
             result.text,
             result.metadata.identity.model_id,

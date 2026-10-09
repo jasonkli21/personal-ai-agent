@@ -135,9 +135,11 @@ class TravelModule:
             if item.attribute not in self.registration.supported_constraints:
                 raise DomainContractError("travel_constraint_unregistered")
 
-    def get_adapter(self, settings, *, rate_limiter=None):
+    def get_adapter(self, settings, *, rate_limiter=None, usage_accounting=None):
         if settings.travel_places_adapter == "osm_nominatim":
-            return NominatimPlaceAdapter(settings, rate_limiter=rate_limiter)
+            return NominatimPlaceAdapter(
+                settings, rate_limiter=rate_limiter, usage_accounting=usage_accounting
+            )
         return FakeTravelPlaceAdapter(_synthetic_places())
 
     def map_place_records(
