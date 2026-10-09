@@ -192,6 +192,10 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         expired_provider_usage = await anyio.to_thread.run_sync(
             partial(usage.purge_expired, limit=settings.maintenance_batch_size)
         )
+        routing_decisions = factory.routing_decision_repository()
+        expired_routing_decisions = await anyio.to_thread.run_sync(
+            partial(routing_decisions.purge_expired, limit=settings.maintenance_batch_size)
+        )
         artifacts = await anyio.to_thread.run_sync(factory.artifact_maintenance_service, settings)
         artifact_reconciliation = await anyio.to_thread.run_sync(
             partial(artifacts.reconcile, limit=min(settings.maintenance_batch_size, 100))
@@ -239,9 +243,10 @@ async def run_scheduled_maintenance(request: Request) -> Response:
         return Response(status_code=503)
     logger.info(
         "Scheduled maintenance completed republished=%d expired_sessions=%d expired_budgets=%d "
-        "provider_attempts_resolved=%d provider_events_synced=%d provider_usage_expired=%d",
+        "provider_attempts_resolved=%d provider_events_synced=%d provider_usage_expired=%d "
+        "routing_decisions_expired=%d",
         published, expired, expired_budgets, stale_attempts, synchronized_events,
-        expired_provider_usage,
+        expired_provider_usage, expired_routing_decisions,
     )
     return Response(
         content=json.dumps({
@@ -253,6 +258,7 @@ async def run_scheduled_maintenance(request: Request) -> Response:
             "provider_attempts_resolved": stale_attempts,
             "provider_events_synchronized": synchronized_events,
             "expired_provider_usage_records": expired_provider_usage,
+            "expired_routing_decisions": expired_routing_decisions,
         }),
         media_type="application/json",
     )

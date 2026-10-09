@@ -281,6 +281,28 @@ class PostgresAccountLifecycleRepository:
                 for artifact_id, payload, revision in artifact_rows:
                     add("artifact_metadata", artifact_id, payload)
                     p_count += 1
+                routing_rows = connection.execute(
+                    "SELECT decision_id::text,jsonb_build_object("
+                    "'decision_facts',decision_facts,'outcome_events',outcome_events,"
+                    "'invocation_ids',invocation_ids,'attempt_ids',attempt_ids,"
+                    "'evaluation_run_ids',evaluation_run_ids,"
+                    "'lifecycle_status',lifecycle_status,'parent_decision_id',parent_decision_id,"
+                    "'created_at',created_at,'replay_until',replay_until) "
+                    "FROM routing_decisions WHERE owner_id=%s AND application_id=%s "
+                    "AND workspace_id IS NOT DISTINCT FROM %s "
+                    "ORDER BY created_at,decision_id LIMIT %s",
+                    (owner_id, scope.application_id, scope.workspace_id,
+                     MAX_EXPORT_SCAN_RECORDS + 1),
+                ).fetchall()
+                if len(routing_rows) > MAX_EXPORT_SCAN_RECORDS:
+                    raise ExportTooLarge
+                p_collection_counts["routing_decisions"] = len(routing_rows)
+                p_revision_coverage["routing_decisions"] = (
+                    "identity_set_in_repeatable_read_snapshot"
+                )
+                for decision_id, payload in routing_rows:
+                    add("routing_decisions", decision_id, payload)
+                    p_count += 1
                 budget_rows = connection.execute(
                     "SELECT record_id,owner_id,application_id,workspace_id,record_version,status,"
                     "revision,created_at,expires_at,budget_day,provider_calls,input_tokens "

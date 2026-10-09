@@ -113,6 +113,11 @@ def test_scheduled_maintenance_runs_bounded_usage_budget_cleanup(monkeypatch) ->
             calls.append(("purge_provider_usage", limit))
             return 5
 
+    class RoutingDecisions:
+        def purge_expired(self, *, limit):
+            calls.append(("purge_routing_decisions", limit))
+            return 6
+
     class Directory:
         def active_owner_ids(self, *, limit):
             assert limit == 2
@@ -144,6 +149,9 @@ def test_scheduled_maintenance_runs_bounded_usage_budget_cleanup(monkeypatch) ->
     class Factory:
         def provider_usage_accounting(self, _settings):
             return ProviderUsage()
+
+        def routing_decision_repository(self):
+            return RoutingDecisions()
 
         def artifact_maintenance_service(self, _settings):
             return Artifacts()
@@ -179,10 +187,11 @@ def test_scheduled_maintenance_runs_bounded_usage_budget_cleanup(monkeypatch) ->
         b'"artifact_storage": {"gcs": {"live_body_bytes": 0}}, '
         b'"republished_jobs": 1, "expired_sessions": 2, "expired_usage_budgets": 4, '
         b'"provider_attempts_resolved": 3, "provider_events_synchronized": 2, '
-        b'"expired_provider_usage_records": 5}'
+        b'"expired_provider_usage_records": 5, "expired_routing_decisions": 6}'
     )
     assert calls == [
         ("resolve_stale", 3), ("sync_events", 3), ("purge_provider_usage", 3),
+        ("purge_routing_decisions", 3),
         ("artifact_reconcile", 3), ("purge", 3),
         ("republish", configured.memory_job_candidate_limit), ("research", 3),
     ]

@@ -88,6 +88,10 @@ and existing app/workspace restrictions. Deleting an owner must not remove
 unrelated shared records. Parent-resolved children must be attributed before
 migration/export; absence of `owner_id` is not proof that a row is global.
 
+## Phase 21 addition
+
+Phase 21 implements canonical owner-scoped routing observations in Postgres migration `020_routing_decisions.sql`. Decision facts are schema-versioned and bounded to 32 candidates/64 KiB with a 90-day default replay horizon; scoped lookup/list is available by decision ID/time, and indexes support request/run, invocation/attempt, and evaluation joins. Target Postgres application and request workflow integration remain unverified/gated.
+
 ## Future families — assignment does not implement them
 
 | Durable family | Canonical target and scope |
@@ -95,7 +99,6 @@ migration/export; absence of `owner_id` is not proof that a row is global.
 | Bounded global profile/preferences/user-set provenance | P, owner-wide with permitted field sharing; Phase 11 creates the provider |
 | Persisted app/provider/model registry versions | P; preserve current code-defined Phase 2 manifests; no new registry product now |
 | Permission/grant/revocation metadata | P; versioned source/destination scope/purpose, Phase 15/30 contracts |
-| Compact routing-decision observations and decision-time task/strategy facts | P; one canonical owner-scoped record, schema-versioned, at most 32 candidates/64 KiB, 90-day default replay horizon; scoped lookup/list by decision ID/time and indexed joins by request/run, invocation/attempt, and evaluation IDs, Phases 19/21–24/35 |
 | Compact actual-build turn/context manifests and producing-model attribution | D; references immutable P policy/registry/grant versions, Phases 14/21 |
 | External-turn preparation/finalization/replay | D; same conversation/branch contract, Phase 25.2 |
 | Knowledge application receipts for cross-store effects | P; same transaction as canonical effects, not D execution state |

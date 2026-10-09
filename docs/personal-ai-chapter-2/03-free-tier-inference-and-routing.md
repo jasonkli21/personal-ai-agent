@@ -4,7 +4,7 @@
 
 The project optimizes for a fully hosted strict-$0 AI system without requiring local AI hardware. Model/search quota is expected to be the near-term throughput limiter, but durable storage and cloud resource use accumulate over time and are tracked separately.
 
-This is future Chapter 2 planning. Strict-free/free-first is the default automatic execution goal; optional explicit user-funded capacity is additive. See [current state](../current-state.md) for implemented behavior.
+This is the Chapter 2 routing contract. Strict-free/free-first is the default automatic execution goal; optional explicit user-funded capacity is additive. Phase 21's deterministic routing core is implemented locally, but request workflows remain Gemini-only until the Phase 15 membership and end-to-end revocation prerequisite is complete. See [current state](../current-state.md) and the [Phase 21 evidence](phase-21-implementation-evidence.md) for delivered behavior and gates.
 
 ## Provider boundary
 
@@ -16,7 +16,7 @@ The intended sequence is:
 17R completed locally: LiteLLM execution-substrate reconciliation
 18  phase-local implementation complete; integration/prerequisite acceptance open
 19  usage/quota ledger and invocation observations
-21  deterministic semantic routing and RoutingStrategy baseline
+21  deterministic semantic routing and RoutingStrategy baseline — local core implemented
 22  task-profile x endpoint-profile quality evidence
 23  deterministic scarcity-aware strategy inputs
 24  bounded Personal AI cascades and deterministic validation
@@ -45,7 +45,7 @@ policy/source/profile revalidation -> atomic quota reservation
 final ExecutionPlan -> Personal AI inference gateway -> LiteLLM SDK -> selected endpoint
 ```
 
-The Phase 21 strategy only makes a provisional choice among hard-eligible endpoints. It does not establish context fit or authorize dispatch. The orchestrator completes endpoint-specific preparation, revalidates policy and source permissions, reserves applicable quota, and finalizes one selected endpoint plan before the gateway sends.
+The Phase 21 strategy only makes a provisional choice among hard-eligible endpoints. It does not establish context fit or authorize dispatch. The implemented `RoutingDecisionService` and `ExecutionPlan` types enforce the local decision/preparation boundary. Request workflows remain disconnected while the explicit Phase 15 membership and end-to-end revocation prerequisite is open. Once integration is authorized, the orchestrator completes endpoint-specific preparation, revalidates policy and source permissions, reserves applicable quota, and finalizes one selected endpoint plan before the gateway sends.
 
 Gemini, Groq, and Cloudflare are initial reference endpoint families, not privileged identities or a closed universe. A LiteLLM-supported provider normally adds endpoint/configuration/profile/evaluation without new provider transport code. A narrow provider-specific shim remains only for a demonstrated LiteLLM compatibility gap. OpenRouter is a possible later provider family through endpoint profiles, credential/account/cost metadata, privacy eligibility, evaluation, and quota handling; it is not a Phase 17R or Phase 18–24 live-provider requirement.
 
@@ -116,7 +116,7 @@ Phases 25.1–25.4 add explicit user-controlled ChatGPT-plan execution through a
 
 ## Routing strategy and execution plan
 
-Phase 21 introduces a project-owned `RoutingStrategy` (or equivalent) that consumes a versioned task/profile, the eligible endpoint profiles and versions, decision-time policy context, quality evidence, latency/reliability inputs when used, and quota/scarcity inputs when available. The Phase 21 deterministic scorer is the baseline implementation of this seam, not the architecture embedded in request orchestration. Phase 23 may enrich that baseline or add another deterministic strategy. Phase 35 can add interchangeable learned strategies without rewriting orchestration or provider transport.
+Phase 21 introduced a project-owned `RoutingStrategy` that consumes a versioned task/profile, the eligible endpoint profiles and versions, decision-time policy context, quality evidence, and configured latency/reliability inputs. The local deterministic scorer is the baseline implementation of this seam, not the architecture embedded in request orchestration. Phase 23 may enrich that baseline or add another deterministic strategy and quota/scarcity inputs. Phase 35 can add interchangeable learned strategies without rewriting orchestration or provider transport.
 
 The strategy returns a bounded, explainable provisional result: selected eligible endpoint, optional ranked eligible candidates/scores, strategy ID/version, and reason. Personal AI assembles/counts for that endpoint, revalidates policy/source/profile, reserves quota, and then finalizes an `ExecutionPlan` containing task/profile identity, selected endpoint, advisory `reselection_candidate_refs`, execution mode, required capabilities, endpoint-specific prepared-input/count identity and fit, validator/escalation permission, physical-attempt/time/token/auxiliary-call/quota bounds, registry/policy versions, decision ID, strategy identity/version, and reason. These references are not executable fallbacks. Selecting another endpoint requires a linked decision, recomputed endpoint-specific preparation/count, revalidation, reservation, and a new final plan. The execution layer carries out only the final selected endpoint through the Personal AI inference gateway. Provider/model names are profile and provenance data, never generic fallback order.
 

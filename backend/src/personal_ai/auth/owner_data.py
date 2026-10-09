@@ -38,6 +38,7 @@ OWNER_DATA_COLLECTIONS = (
     "provider_quota_reservations",
     "provider_usage_daily_aggregates",
     "provider_usage_events",
+    "routing_decisions",
     "global_profiles",
     "artifact_metadata",
 )
