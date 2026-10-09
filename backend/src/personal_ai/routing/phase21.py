@@ -11,7 +11,7 @@ import json
 import re
 from datetime import UTC, datetime
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -24,8 +24,9 @@ from personal_ai.routing.contracts import (
 )
 
 MAX_ROUTING_DECISION_BYTES = 65_536
-MAX_ROUTING_OUTCOME_BYTES = 2_048
+MAX_ROUTING_OUTCOME_BYTES = 16_384
 MAX_ROUTING_OUTCOMES = 32
+MAX_ROUTING_SOURCE_REFERENCES = 64
 MAX_REPLAY_SECONDS = 90 * 24 * 60 * 60
 _SAFE_ID = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9._:/@+_-]{0,199}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -35,6 +36,15 @@ _CONFIDENCE_RANK: dict[CounterConfidence, int] = {
     "reported": 2,
     "authoritative": 3,
 }
+_SENSITIVITY_RANK = {"public": 0, "personal": 1, "sensitive": 2, "restricted": 3}
+
+
+def source_reference_manifest_sha256(references: tuple[str, ...]) -> str:
+    """Hash a canonical set of opaque, per-source digests for subset checks."""
+    normalized = tuple(sorted(references))
+    return hashlib.sha256(
+        json.dumps(normalized, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _safe_id(value: str) -> str:
@@ -47,6 +57,51 @@ def _aware(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("routing_timestamp_must_be_aware")
     return value.astimezone(UTC)
+
+
+def reselection_requirements_preserved(parent, child) -> bool:
+    """Return true when child routing facts preserve or tighten root policy."""
+    def narrower(parent_value, child_value):
+        return parent_value is None or (
+            child_value is not None and child_value <= parent_value
+        )
+
+    if (
+        child.execution_mode != parent.execution_mode
+        or child.automatic != parent.automatic
+        or _SENSITIVITY_RANK[child.sensitivity] < _SENSITIVITY_RANK[parent.sensitivity]
+        or not parent.required_capabilities.issubset(child.required_capabilities)
+        or not narrower(parent.input_tokens, child.input_tokens)
+        or not narrower(parent.output_tokens, child.output_tokens)
+        or not narrower(parent.search_query_chars, child.search_query_chars)
+        or not narrower(parent.search_results, child.search_results)
+        or (
+            parent.embedding_dimensions is not None
+            and child.embedding_dimensions != parent.embedding_dimensions
+        )
+        or (
+            parent.structured_schema_id is not None
+            and child.structured_schema_id != parent.structured_schema_id
+        )
+    ):
+        return False
+    if parent.count is not None:
+        if child.count is None:
+            return False
+        if _CONFIDENCE_RANK[child.count.minimum_confidence] < _CONFIDENCE_RANK[
+            parent.count.minimum_confidence
+        ]:
+            return False
+        if (
+            parent.count.structured_schema_id is not None
+            and child.count.structured_schema_id != parent.count.structured_schema_id
+        ):
+            return False
+    return True
+
+
+def source_references_are_subset(candidate: tuple[str, ...], parent: tuple[str, ...]) -> bool:
+    return set(candidate).issubset(parent)
 
 
 class _FrozenModel(BaseModel):
@@ -168,8 +223,11 @@ class RoutingRequestFacts(_FrozenModel):
     run_id: str | None = None
     requirements: EndpointCandidateRequirements
     policy_version: str
-    source_count: int | None = Field(default=None, ge=0, le=10_000)
+    source_count: int | None = Field(default=None, ge=0, le=MAX_ROUTING_SOURCE_REFERENCES)
     source_manifest_sha256: str | None = None
+    source_reference_sha256s: tuple[str, ...] = Field(
+        default=(), max_length=MAX_ROUTING_SOURCE_REFERENCES
+    )
     prepared_context_tokens: int | None = Field(default=None, ge=0, le=2_000_000)
     count_source: str | None = Field(default=None, max_length=100)
     count_confidence: CounterConfidence = "unknown"
@@ -187,12 +245,32 @@ class RoutingRequestFacts(_FrozenModel):
             raise ValueError("routing_manifest_hash_invalid")
         return value
 
+    @field_validator("source_reference_sha256s")
+    @classmethod
+    def valid_source_references(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if tuple(sorted(values)) != values or len(set(values)) != len(values):
+            raise ValueError("routing_source_references_must_be_sorted_unique")
+        if any(not _SHA256.fullmatch(value) for value in values):
+            raise ValueError("routing_source_reference_digest_invalid")
+        return values
+
     @field_validator("excluded_endpoint_profile_ids")
     @classmethod
     def valid_excluded_endpoints(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         if len(set(values)) != len(values):
             raise ValueError("routing_excluded_endpoint_duplicate")
         return tuple(_safe_id(value) for value in values)
+
+    @model_validator(mode="after")
+    def validate_source_set(self) -> RoutingRequestFacts:
+        if self.source_count is not None and self.source_count != len(self.source_reference_sha256s):
+            raise ValueError("routing_source_reference_count_mismatch")
+        if self.source_manifest_sha256 is not None and (
+            self.source_manifest_sha256
+            != source_reference_manifest_sha256(self.source_reference_sha256s)
+        ):
+            raise ValueError("routing_source_manifest_reference_mismatch")
+        return self
 
 
 class RuntimeCandidateFacts(_FrozenModel):
@@ -471,7 +549,11 @@ class PreparationIdentity(_FrozenModel):
     count_source: str
     count_confidence: CounterConfidence
     source_manifest_sha256: str
+    source_reference_sha256s: tuple[str, ...] = Field(
+        default=(), max_length=MAX_ROUTING_SOURCE_REFERENCES
+    )
     prepared_input_sha256: str
+    prepared_at: datetime
 
     @field_validator(
         "endpoint_profile_id", "serializer_id", "counter_id", "count_source"
@@ -487,10 +569,43 @@ class PreparationIdentity(_FrozenModel):
             raise ValueError("routing_preparation_hash_invalid")
         return value
 
+    @field_validator("prepared_at")
+    @classmethod
+    def valid_prepared_at(cls, value: datetime) -> datetime:
+        return _aware(value)
+
+    @field_validator("source_reference_sha256s")
+    @classmethod
+    def valid_prepared_source_references(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if tuple(sorted(values)) != values or len(set(values)) != len(values):
+            raise ValueError("routing_source_references_must_be_sorted_unique")
+        if any(not _SHA256.fullmatch(value) for value in values):
+            raise ValueError("routing_source_reference_digest_invalid")
+        return values
+
+    @model_validator(mode="after")
+    def preparation_manifest_matches_references(self) -> PreparationIdentity:
+        if self.source_manifest_sha256 != source_reference_manifest_sha256(
+            self.source_reference_sha256s
+        ):
+            raise ValueError("routing_source_manifest_reference_mismatch")
+        return self
+
 
 class QuotaReservationRef(_FrozenModel):
-    reservation_id: UUID
+    """Verified Phase 19 physical-attempt identity and its current bucket rows."""
+
+    invocation_id: UUID
+    attempt_id: UUID
+    send_number: int = Field(ge=1, le=256)
+    operation: EndpointOperation
+    reserved_at: datetime
     buckets: tuple[tuple[str, int], ...] = Field(max_length=32)
+
+    @field_validator("reserved_at")
+    @classmethod
+    def valid_reservation_time(cls, value: datetime) -> datetime:
+        return _aware(value)
 
     @field_validator("buckets")
     @classmethod
@@ -519,7 +634,9 @@ class DispatchRevalidation(_FrozenModel):
     sources_authorized: bool
     source_permission_reference: str = Field(min_length=1, max_length=500)
     source_manifest_sha256: str
-    source_set_narrowed: bool = False
+    source_reference_sha256s: tuple[str, ...] = Field(
+        default=(), max_length=MAX_ROUTING_SOURCE_REFERENCES
+    )
 
     @field_validator(
         "endpoint_profile_id", "policy_version", "authorization_reference",
@@ -541,10 +658,23 @@ class DispatchRevalidation(_FrozenModel):
             raise ValueError("routing_manifest_hash_invalid")
         return value
 
+    @field_validator("source_reference_sha256s")
+    @classmethod
+    def valid_revalidation_source_references(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if tuple(sorted(values)) != values or len(set(values)) != len(values):
+            raise ValueError("routing_source_references_must_be_sorted_unique")
+        if any(not _SHA256.fullmatch(value) for value in values):
+            raise ValueError("routing_source_reference_digest_invalid")
+        return values
+
     @model_validator(mode="after")
     def valid_revalidation_interval(self) -> DispatchRevalidation:
         if self.fresh_until <= self.validated_at:
             raise ValueError("routing_revalidation_freshness_invalid")
+        if self.source_manifest_sha256 != source_reference_manifest_sha256(
+            self.source_reference_sha256s
+        ):
+            raise ValueError("routing_source_manifest_reference_mismatch")
         return self
 
 
@@ -564,6 +694,8 @@ class ExecutionPlan(_FrozenModel):
     reselection_candidate_refs: tuple[tuple[str, int], ...] = Field(max_length=31)
     execution_mode: ExecutionMode
     required_capabilities: frozenset[EndpointOperation] = Field(min_length=1, max_length=6)
+    root_deadline_at: datetime
+    physical_operation: EndpointOperation | None = None
     preparation: PreparationIdentity | None = None
     final_fit: bool | None = None
     reservation: QuotaReservationRef | None = None
@@ -592,6 +724,11 @@ class ExecutionPlan(_FrozenModel):
     def valid_plan_identity(cls, value: str | None) -> str | None:
         return _safe_id(value) if value is not None else None
 
+    @field_validator("root_deadline_at")
+    @classmethod
+    def valid_root_deadline(cls, value: datetime) -> datetime:
+        return _aware(value)
+
     @field_validator("reselection_candidate_refs")
     @classmethod
     def unique_reselection_refs(cls, values: tuple[tuple[str, int], ...]):
@@ -611,10 +748,16 @@ class ExecutionPlan(_FrozenModel):
         if (self.validator_id is None) != (self.validator_version is None):
             raise ValueError("execution_plan_validator_identity_incomplete")
         if self.state == "preparing":
-            if self.preparation is not None or self.final_fit is not None or self.reservation is not None:
+            if (
+                self.preparation is not None or self.final_fit is not None
+                or self.reservation is not None or self.physical_operation is not None
+            ):
                 raise ValueError("provisional_execution_plan_has_final_facts")
         else:
-            if self.preparation is None or self.final_fit is not True or self.reservation is None:
+            if (
+                self.preparation is None or self.final_fit is not True
+                or self.reservation is None or self.physical_operation is None
+            ):
                 raise ValueError("ready_execution_plan_requires_fit_and_reservation")
             if (
                 self.preparation.endpoint_profile_id != self.selected_endpoint_profile_id
@@ -623,6 +766,8 @@ class ExecutionPlan(_FrozenModel):
                 raise ValueError("execution_plan_preparation_endpoint_mismatch")
             if self.preparation.input_tokens > self.input_tokens_bound:
                 raise ValueError("execution_plan_prepared_input_exceeds_bound")
+            if self.reservation.operation != self.physical_operation:
+                raise ValueError("execution_plan_reservation_operation_mismatch")
         return self
 
 
@@ -638,6 +783,7 @@ class RoutingDecisionObservation(_FrozenModel):
     application_id: str = Field(min_length=2, max_length=42)
     workspace_id: str | None = Field(default=None, max_length=100)
     created_at: datetime
+    root_deadline_at: datetime
     replay_until: datetime
     request: RoutingRequestFacts
     task: RoutingTaskProfile
@@ -654,7 +800,7 @@ class RoutingDecisionObservation(_FrozenModel):
     provisional_plan: ExecutionPlan | None = None
     no_route_reason: str | None = None
 
-    @field_validator("created_at", "replay_until")
+    @field_validator("created_at", "root_deadline_at", "replay_until")
     @classmethod
     def valid_decision_timestamp(cls, value: datetime) -> datetime:
         return _aware(value)
@@ -675,6 +821,10 @@ class RoutingDecisionObservation(_FrozenModel):
     def validate_replay_observation(self) -> RoutingDecisionObservation:
         if self.replay_until <= self.created_at:
             raise ValueError("routing_replay_horizon_invalid")
+        if (
+            self.parent_decision_id is None or self.lifecycle_status == "preparing"
+        ) and self.root_deadline_at <= self.created_at:
+            raise ValueError("routing_root_deadline_invalid")
         if (self.replay_until - self.created_at).total_seconds() > MAX_REPLAY_SECONDS:
             raise ValueError("routing_replay_horizon_exceeds_limit")
         if self.parent_decision_id is None:
@@ -748,6 +898,7 @@ class RoutingDecisionObservation(_FrozenModel):
                 or self.provisional_plan.policy_version != self.policy_version
                 or self.provisional_plan.parent_decision_id != self.parent_decision_id
                 or self.provisional_plan.reselection_depth != self.reselection_depth
+                or self.provisional_plan.root_deadline_at != self.root_deadline_at
             ):
                 raise ValueError("routing_observation_plan_facts_mismatch")
             if (
@@ -762,7 +913,11 @@ class RoutingDecisionObservation(_FrozenModel):
                 or self.strategy_result.tie_break_version != self.strategy_identity.tie_break_version
             ):
                 raise ValueError("routing_strategy_identity_mismatch")
-        elif self.no_route_reason is None or self.provisional_plan is not None:
+        elif (
+            self.no_route_reason is None
+            or self.provisional_plan is not None
+            or self.strategy_result is not None
+        ):
             raise ValueError("routing_no_route_observation_invalid")
         encoded = self.model_dump_json().encode("utf-8")
         if len(encoded) > MAX_ROUTING_DECISION_BYTES:
@@ -788,9 +943,11 @@ class RoutingDecisionEvent(_FrozenModel):
         "dispatch_started",
         "dispatch_completed",
         "dispatch_failed",
+        "auxiliary_call_reserved",
         "reselection_linked",
         "replay_unavailable",
     ]
+    event_id: UUID = Field(default_factory=uuid4)
     occurred_at: datetime
     reason_code: str | None = Field(default=None, max_length=100)
     endpoint_profile_id: str | None = Field(default=None, max_length=200)
@@ -832,4 +989,66 @@ class RoutingDecisionRecord(_FrozenModel):
         ).encode("utf-8")
         if len(encoded) > MAX_ROUTING_DECISION_BYTES:
             raise ValueError("routing_outcomes_payload_too_large")
+        if not self.events:
+            raise ValueError("routing_decision_initial_event_missing")
+        first = self.events[0]
+        expected_initial = (
+            "decision_preparing"
+            if self.observation.lifecycle_status == "preparing"
+            else "decision_no_route"
+        )
+        if first.event_type != expected_initial:
+            raise ValueError("routing_decision_initial_event_mismatch")
+        if first.occurred_at < self.observation.created_at:
+            raise ValueError("routing_decision_event_before_creation")
+        event_ids = [event.event_id for event in self.events]
+        if len(event_ids) != len(set(event_ids)):
+            raise ValueError("routing_decision_event_id_duplicate")
+        selected_id = (
+            self.observation.provisional_plan.selected_endpoint_profile_id
+            if self.observation.provisional_plan is not None else None
+        )
+        if first.endpoint_profile_id != selected_id:
+            raise ValueError("routing_decision_initial_endpoint_mismatch")
+        previous = first
+        for event in self.events[1:]:
+            if event.occurred_at < previous.occurred_at:
+                raise ValueError("routing_decision_event_time_reversed")
+            if not _event_transition_allowed(previous.event_type, event.event_type):
+                raise ValueError("routing_decision_event_transition_invalid")
+            if event.event_type in {
+                "preparation_completed", "preparation_failed", "reservation_succeeded",
+                "reservation_failed", "dispatch_started", "dispatch_completed", "dispatch_failed",
+            } and event.endpoint_profile_id != selected_id:
+                raise ValueError("routing_decision_event_endpoint_mismatch")
+            previous = event
         return self
+
+
+def _event_transition_allowed(previous: str, current: str) -> bool:
+    allowed = {
+        "decision_preparing": {
+            "preparation_completed", "preparation_failed", "reservation_succeeded",
+            "reservation_failed", "dispatch_started", "dispatch_failed",
+            "auxiliary_call_reserved", "replay_unavailable",
+        },
+        "decision_no_route": {"replay_unavailable"},
+        "preparation_completed": {
+            "preparation_failed", "reservation_succeeded", "reservation_failed",
+            "auxiliary_call_reserved", "replay_unavailable",
+        },
+        "preparation_failed": {"reselection_linked", "replay_unavailable"},
+        "reservation_succeeded": {"dispatch_started", "dispatch_failed", "replay_unavailable"},
+        "reservation_failed": {"reselection_linked", "replay_unavailable"},
+        "dispatch_started": {"dispatch_completed", "dispatch_failed", "replay_unavailable"},
+        "dispatch_completed": {"replay_unavailable"},
+        "dispatch_failed": {"reservation_succeeded", "reselection_linked", "replay_unavailable"},
+        "auxiliary_call_reserved": {
+            "auxiliary_call_reserved", "preparation_completed", "preparation_failed",
+            "reservation_succeeded", "reservation_failed", "dispatch_started",
+            "dispatch_failed", "replay_unavailable",
+        },
+        "reselection_linked": {"replay_unavailable"},
+        "replay_unavailable": set(),
+    }
+    return current in allowed.get(previous, set())

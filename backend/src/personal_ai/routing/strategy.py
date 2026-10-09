@@ -51,8 +51,10 @@ class DeterministicScoringStrategy:
         ).encode("utf-8")
         try:
             implementation = inspect.getsource(type(self)).encode("utf-8")
-        except (OSError, TypeError):
-            implementation = f"{type(self).__module__}.{type(self).__qualname__}:1".encode()
+        except (OSError, TypeError) as error:
+            raise RoutingReplayUnavailable(
+                "deterministic routing implementation digest unavailable"
+            ) from error
         return RoutingStrategyIdentity(
             strategy_id=self.strategy_id,
             strategy_version=self.strategy_version,
@@ -135,13 +137,13 @@ def replay_deterministic_decision(
         raise ValueError("routing_timestamp_must_be_aware")
     if instant.astimezone(UTC) >= observation.replay_until:
         raise RoutingReplayUnavailable("routing decision replay expired")
+    if observation.lifecycle_status != "preparing" or observation.strategy_result is None:
+        raise RoutingReplayUnavailable("recorded decision has no validated strategy result")
     if observation.replay_completeness != "complete" or observation.strategy_input is None:
         raise RoutingReplayUnavailable("routing decision replay facts incomplete")
     identity = strategy.identity(observation.strategy_input)
     if identity != observation.strategy_identity:
         raise RoutingReplayUnavailable("recorded routing strategy version unavailable")
-    if not observation.strategy_input.candidates:
-        return None
     result = strategy.select(observation.strategy_input)
     if (
         result.strategy_id != identity.strategy_id
@@ -152,4 +154,6 @@ def replay_deterministic_decision(
         or result.tie_break_version != identity.tie_break_version
     ):
         raise RoutingReplayUnavailable("routing strategy replay identity mismatch")
+    if result != observation.strategy_result:
+        raise RoutingReplayUnavailable("routing strategy replay outcome mismatch")
     return result

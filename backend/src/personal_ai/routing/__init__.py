@@ -37,6 +37,8 @@ from personal_ai.routing.phase21 import (
     RoutingStrategyResult,
     RoutingTaskProfile,
     RuntimeCandidateFacts,
+    reselection_requirements_preserved,
+    source_reference_manifest_sha256,
 )
 from personal_ai.routing.registry import (
     CandidateRequirementsChangedError,
@@ -108,4 +110,6 @@ __all__ = [
     "build_initial_endpoint_profiles",
     "compute_registry_version",
     "replay_deterministic_decision",
+    "reselection_requirements_preserved",
+    "source_reference_manifest_sha256",
 ]

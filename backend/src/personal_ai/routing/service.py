@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from personal_ai.auth.scope import ApplicationScope
 from personal_ai.routing.contracts import (
     CandidateAssessment,
     EndpointCandidateSet,
+    EndpointOperation,
     confidence_meets,
 )
 from personal_ai.routing.phase21 import (
@@ -31,6 +33,8 @@ from personal_ai.routing.phase21 import (
     RoutingStrategyResult,
     RoutingTaskProfile,
     RuntimeCandidateFacts,
+    reselection_requirements_preserved,
+    source_references_are_subset,
 )
 from personal_ai.routing.registry import EndpointRegistry, EndpointRegistryError
 from personal_ai.routing.strategy import DeterministicScoringStrategy, RoutingStrategy
@@ -49,6 +53,21 @@ class RoutingDecisionRepository(Protocol):
         self, *, owner_id, scope, observation, initial_event, parent_decision_id,
         max_reselections
     ) -> None: ...
+
+    def consume_auxiliary_call(
+        self, *, owner_id, scope, decision_id, max_auxiliary_calls, event
+    ) -> int: ...
+
+
+class Phase19ReservationAuthority(Protocol):
+    """Read-only verifier for a currently reserved Phase 19 physical attempt."""
+
+    def verify_routing_reservation(
+        self, *, reservation: QuotaReservationRef, owner_id: str, scope: ApplicationScope,
+        request_id: str, run_id: str | None, routing_decision_id: UUID,
+        endpoint_profile_id: str, endpoint_profile_version: int, operation: EndpointOperation,
+        expected_bucket_ids: frozenset[str], max_physical_attempts: int, now: datetime,
+    ) -> bool: ...
 
 
 class RoutingFinalizationError(RuntimeError):
@@ -81,10 +100,12 @@ class RoutingDecisionService:
         registry: EndpointRegistry,
         observations: RoutingDecisionRepository,
         strategy: RoutingStrategy | None = None,
+        reservation_authority: Phase19ReservationAuthority | None = None,
     ) -> None:
         self.registry = registry
         self.observations = observations
         self.strategy = strategy or DeterministicScoringStrategy()
+        self.reservation_authority = reservation_authority
 
     def route(
         self,
@@ -101,17 +122,20 @@ class RoutingDecisionService:
         now: datetime | None = None,
     ) -> RoutingDecisionResult:
         instant = _aware_utc(now or datetime.now(UTC))
-        decision_id = uuid4()
+        decision_id = _root_decision_id(owner_id, scope, request.request_id, request.run_id)
         if request.requirements.execution_mode != "STRICT_FREE" or not request.requirements.automatic:
             raise ValueError("automatic_router_requires_strict_free")
         if not task.required_capabilities.issubset(request.requirements.required_capabilities):
             raise ValueError("routing_task_capability_requirement_mismatch")
-        if request.source_manifest_sha256 is None and request.source_count not in {None, 0}:
+        if request.source_manifest_sha256 is None and (
+            request.source_count not in {None, 0} or request.source_reference_sha256s
+        ):
             raise ValueError("routing_source_manifest_required")
 
         parent_observation = None
         root_decision_id = decision_id
         reselection_depth = 0
+        root_deadline_at = instant + timedelta(milliseconds=task.deadline_ms)
         if parent_decision_id is not None:
             if task.max_reselections < 1:
                 raise ValueError("routing_reselection_not_permitted")
@@ -122,6 +146,42 @@ class RoutingDecisionService:
             )
             parent_observation = getattr(parent_record, "observation", parent_record)
             parent_events = getattr(parent_record, "events", ())
+            if parent_events and parent_events[-1].event_type == "reselection_linked":
+                linked_id = parent_events[-1].linked_decision_id
+                if linked_id is not None:
+                    try:
+                        linked_record = self.observations.get(
+                            owner_id=owner_id, scope=scope, decision_id=linked_id
+                        )
+                    except LookupError:
+                        linked_record = None
+                    if linked_record is not None:
+                        linked_observation = getattr(linked_record, "observation", linked_record)
+                        if (
+                            linked_observation.task == task
+                            and linked_observation.request.request_id == request.request_id
+                            and linked_observation.request.run_id == request.run_id
+                            and linked_observation.policy_version == request.policy_version
+                            and reselection_requirements_preserved(
+                                parent_observation.request.requirements,
+                                request.requirements,
+                            )
+                            and source_references_are_subset(
+                                request.source_reference_sha256s,
+                                parent_observation.request.source_reference_sha256s,
+                            )
+                            and linked_observation.request == request.model_copy(update={
+                                "excluded_endpoint_profile_ids": tuple(sorted(
+                                    set(request.excluded_endpoint_profile_ids)
+                                    | set(parent_observation.request.excluded_endpoint_profile_ids)
+                                    | {parent_observation.provisional_plan.selected_endpoint_profile_id}
+                                )),
+                            })
+                        ):
+                            return RoutingDecisionResult(
+                                linked_observation,
+                                linked_observation.provisional_plan,
+                            )
             if (
                 parent_observation.owner_id != owner_id
                 or parent_observation.application_id != scope.application_id
@@ -131,9 +191,16 @@ class RoutingDecisionService:
                 or parent_observation.provisional_plan is None
                 or parent_observation.task != task
                 or parent_observation.request.request_id != request.request_id
+                or parent_observation.request.run_id != request.run_id
                 or parent_observation.policy_version != request.policy_version
-                or parent_observation.request.source_manifest_sha256
-                != request.source_manifest_sha256
+                or not reselection_requirements_preserved(
+                    parent_observation.request.requirements, request.requirements
+                )
+                or not _source_narrowing_is_allowed(
+                    task,
+                    request.source_reference_sha256s,
+                    parent_observation.request.source_reference_sha256s,
+                )
                 or not parent_events
                 or parent_events[-1].event_type not in {
                     "preparation_failed", "reservation_failed", "dispatch_failed"
@@ -144,12 +211,30 @@ class RoutingDecisionService:
             if reselection_depth > task.max_reselections:
                 raise ValueError("routing_reselection_budget_exceeded")
             root_decision_id = parent_observation.root_decision_id
+            root_deadline_at = parent_observation.root_deadline_at
             excluded_ids = set(request.excluded_endpoint_profile_ids)
+            excluded_ids.update(parent_observation.request.excluded_endpoint_profile_ids)
             excluded_ids.add(parent_observation.provisional_plan.selected_endpoint_profile_id)
             request = RoutingRequestFacts.model_validate({
                 **request.model_dump(mode="python"),
                 "excluded_endpoint_profile_ids": tuple(sorted(excluded_ids)),
             })
+            decision_id = _reselection_decision_id(parent_decision_id, reselection_depth)
+        else:
+            # A lost write acknowledgement can be retried with the same logical request.
+            try:
+                existing = self.observations.get(
+                    owner_id=owner_id, scope=scope, decision_id=decision_id
+                )
+            except LookupError:
+                existing = None
+            if existing is not None:
+                existing_observation = getattr(existing, "observation", existing)
+                if existing_observation.task != task or existing_observation.request != request:
+                    raise ValueError("routing_decision_idempotency_conflict")
+                return RoutingDecisionResult(
+                    existing_observation, existing_observation.provisional_plan
+                )
 
         static = self.registry.candidates(request.requirements, now=instant)
         runtime_by_id = _unique_by_id(runtime_facts, lambda row: row.endpoint_profile_id)
@@ -262,6 +347,7 @@ class RoutingDecisionService:
                     reselection_candidate_refs=alternative_refs,
                     execution_mode=request.requirements.execution_mode,
                     required_capabilities=request.requirements.required_capabilities,
+                    root_deadline_at=root_deadline_at,
                     validator_id=task.validator_id,
                     validator_version=task.validator_version,
                     escalation_allowed=task.escalation_allowed,
@@ -280,7 +366,13 @@ class RoutingDecisionService:
                 )
             except Exception:  # noqa: BLE001 - persist a fail-closed no-route for strategy failures.
                 no_route_reason = "routing-strategy-contract-invalid"
+                strategy_result = None
                 plan = None
+
+        if instant >= root_deadline_at:
+            no_route_reason = "routing-deadline-expired"
+            strategy_result = None
+            plan = None
 
         replay_until = instant + timedelta(seconds=task.replay_retention_seconds)
         if parent_observation is not None:
@@ -305,6 +397,7 @@ class RoutingDecisionService:
             "application_id": scope.application_id,
             "workspace_id": scope.workspace_id,
             "created_at": instant,
+            "root_deadline_at": root_deadline_at,
             "replay_until": replay_until,
             "request": request,
             "task": task,
@@ -345,6 +438,7 @@ class RoutingDecisionService:
         observation = RoutingDecisionObservation.model_validate(observation_values)
         initial_event = RoutingDecisionEvent(
             event_type="decision_preparing" if plan is not None else "decision_no_route",
+            event_id=uuid5(decision_id, "phase21-initial-event-v1"),
             occurred_at=instant,
             reason_code=no_route_reason,
             endpoint_profile_id=plan.selected_endpoint_profile_id if plan else None,
@@ -352,22 +446,50 @@ class RoutingDecisionService:
         )
         # A failed observation write aborts before endpoint-specific remote work.
         if parent_decision_id is None:
-            self.observations.begin(
-                owner_id=owner_id,
-                scope=scope,
-                observation=observation,
-                initial_event=initial_event,
-            )
+            try:
+                self.observations.begin(
+                    owner_id=owner_id,
+                    scope=scope,
+                    observation=observation,
+                    initial_event=initial_event,
+                )
+            except Exception:
+                existing = self._existing_decision(owner_id, scope, decision_id)
+                if existing is None or not _same_logical_decision(
+                    existing.observation, observation
+                ):
+                    raise
+                return existing
         else:
-            self.observations.begin_reselection(
-                owner_id=owner_id,
-                scope=scope,
-                observation=observation,
-                initial_event=initial_event,
-                parent_decision_id=parent_decision_id,
-                max_reselections=task.max_reselections,
-            )
+            try:
+                self.observations.begin_reselection(
+                    owner_id=owner_id,
+                    scope=scope,
+                    observation=observation,
+                    initial_event=initial_event,
+                    parent_decision_id=parent_decision_id,
+                    max_reselections=task.max_reselections,
+                )
+            except Exception:
+                existing = self._existing_decision(owner_id, scope, decision_id)
+                if existing is None or not _same_logical_decision(
+                    existing.observation, observation
+                ):
+                    raise
+                return existing
         return RoutingDecisionResult(observation, plan)
+
+    def _existing_decision(
+        self, owner_id: str, scope: ApplicationScope, decision_id: UUID
+    ) -> RoutingDecisionResult | None:
+        try:
+            record = self.observations.get(
+                owner_id=owner_id, scope=scope, decision_id=decision_id
+            )
+        except LookupError:
+            return None
+        observation = getattr(record, "observation", record)
+        return RoutingDecisionResult(observation, observation.provisional_plan)
 
     def finalize(
         self,
@@ -378,25 +500,58 @@ class RoutingDecisionService:
         preparation: PreparationIdentity,
         reservation: QuotaReservationRef,
         revalidation: DispatchRevalidation,
+        operation: EndpointOperation,
         now: datetime | None = None,
     ) -> ExecutionPlan:
         """Create a ready plan only after revalidation and durable reservation proof."""
         instant = _aware_utc(now or datetime.now(UTC))
+        try:
+            canonical_record = self.observations.get(
+                owner_id=owner_id,
+                scope=scope,
+                decision_id=observation.routing_decision_id,
+            )
+        except LookupError as error:
+            raise RoutingFinalizationError("routing_decision_unavailable") from error
+        canonical_observation = getattr(canonical_record, "observation", canonical_record)
         if (
-            observation.owner_id != owner_id
-            or observation.application_id != scope.application_id
-            or observation.workspace_id != scope.workspace_id
+            canonical_observation.owner_id != owner_id
+            or canonical_observation.application_id != scope.application_id
+            or canonical_observation.workspace_id != scope.workspace_id
         ):
             raise RoutingFinalizationError("routing_decision_scope_mismatch")
+        if canonical_observation.facts_sha256 != observation.facts_sha256:
+            raise RoutingFinalizationError("routing_decision_facts_changed")
+        observation = canonical_observation
         plan = observation.provisional_plan
         if plan is None or observation.lifecycle_status != "preparing":
             raise RoutingFinalizationError("routing_decision_has_no_plan")
-        if instant >= observation.created_at + timedelta(milliseconds=plan.deadline_ms):
+        events = getattr(canonical_record, "events", ())
+        if not events:
+            raise RoutingFinalizationError("routing_decision_lifecycle_missing")
+        latest_event = events[-1]
+        if latest_event.event_type not in {
+            "decision_preparing", "preparation_completed", "auxiliary_call_reserved",
+            "dispatch_failed", "reservation_succeeded",
+        }:
+            raise RoutingFinalizationError("routing_decision_lifecycle_not_finalizable")
+        if latest_event.event_type == "reservation_succeeded" and (
+            latest_event.attempt_id != reservation.attempt_id
+            or latest_event.invocation_id != reservation.invocation_id
+        ):
+            raise RoutingFinalizationError("routing_decision_reservation_already_finalized")
+        if instant >= observation.root_deadline_at:
             self._record_failure(owner_id, scope, observation, "routing-deadline-expired", instant, revalidation)
             raise RoutingFinalizationError("routing_deadline_expired")
-        if revalidation.validated_at > instant or revalidation.fresh_until <= instant:
+        if (
+            preparation.prepared_at < observation.created_at
+            or preparation.prepared_at > instant
+            or revalidation.validated_at < preparation.prepared_at
+            or revalidation.validated_at > instant
+            or revalidation.fresh_until <= instant
+        ):
             self._record_failure(owner_id, scope, observation, "routing-dispatch-revalidation-stale", instant, revalidation)
-            raise RoutingFinalizationError("routing_dispatch_revalidation_stale")
+            raise RoutingFinalizationError("routing_dispatch_revalidation_order_invalid")
         if revalidation.policy_version != observation.policy_version:
             self._record_failure(owner_id, scope, observation, "routing-policy-changed", instant, revalidation)
             raise RoutingFinalizationError("routing_policy_changed")
@@ -415,17 +570,23 @@ class RoutingDecisionService:
         ):
             self._record_failure(owner_id, scope, observation, "routing-endpoint-profile-stale", instant, revalidation)
             raise RoutingFinalizationError("routing_endpoint_profile_stale")
-        source_identity_matches = (
-            observation.request.source_manifest_sha256
-            == preparation.source_manifest_sha256
-            == revalidation.source_manifest_sha256
-        )
-        allowed_narrowing = (
-            observation.task.allow_source_narrowing
-            and revalidation.source_set_narrowed
+        source_refs_match = (
+            preparation.source_reference_sha256s == revalidation.source_reference_sha256s
             and preparation.source_manifest_sha256 == revalidation.source_manifest_sha256
         )
-        if not source_identity_matches and not allowed_narrowing:
+        source_refs_subset = source_references_are_subset(
+            preparation.source_reference_sha256s,
+            observation.request.source_reference_sha256s,
+        )
+        source_identity_matches = (
+            preparation.source_reference_sha256s
+            == observation.request.source_reference_sha256s
+            and preparation.source_manifest_sha256 == observation.request.source_manifest_sha256
+        )
+        allowed_narrowing = (
+            observation.task.allow_source_narrowing and source_refs_subset
+        )
+        if not source_refs_match or not (source_identity_matches or allowed_narrowing):
             self._record_failure(owner_id, scope, observation, "routing-source-set-changed", instant, revalidation)
             raise RoutingFinalizationError("routing_source_set_changed")
 
@@ -456,15 +617,46 @@ class RoutingDecisionService:
         if not _preparation_fits(observation, current, preparation, instant):
             self._record_failure(owner_id, scope, observation, "routing-endpoint-preparation-does-not-fit", instant, revalidation)
             raise RoutingFinalizationError("routing_endpoint_preparation_does_not_fit")
+        if (
+            operation not in observation.request.requirements.required_capabilities
+            or operation not in current.capabilities
+            or reservation.operation != operation
+        ):
+            self._record_failure(owner_id, scope, observation, "routing-dispatch-operation-invalid", instant, revalidation)
+            raise RoutingFinalizationError("routing_dispatch_operation_invalid")
         applicable_buckets = {
             bucket.bucket_id
             for bucket in current.quota_buckets
-            if bucket.operations & observation.request.requirements.required_capabilities
+            if operation in bucket.operations
         }
         reserved_buckets = {bucket_id for bucket_id, _ in reservation.buckets}
-        if reserved_buckets != applicable_buckets:
+        if not applicable_buckets or reserved_buckets != applicable_buckets:
             self._record_failure(owner_id, scope, observation, "routing-reservation-incomplete", instant, revalidation)
             raise RoutingFinalizationError("routing_reservation_incomplete")
+        if (
+            reservation.reserved_at < revalidation.validated_at
+            or reservation.reserved_at < preparation.prepared_at
+            or reservation.reserved_at > instant
+            or reservation.reserved_at >= observation.root_deadline_at
+        ):
+            self._record_failure(owner_id, scope, observation, "routing-reservation-order-invalid", instant, revalidation)
+            raise RoutingFinalizationError("routing_reservation_order_invalid")
+        if self.reservation_authority is None or not self.reservation_authority.verify_routing_reservation(
+            reservation=reservation,
+            owner_id=owner_id,
+            scope=scope,
+            request_id=observation.request.request_id,
+            run_id=observation.request.run_id,
+            routing_decision_id=observation.routing_decision_id,
+            endpoint_profile_id=current.endpoint_profile_id,
+            endpoint_profile_version=current.profile_version,
+            operation=operation,
+            expected_bucket_ids=frozenset(applicable_buckets),
+            max_physical_attempts=plan.max_physical_attempts,
+            now=instant,
+        ):
+            self._record_failure(owner_id, scope, observation, "routing-reservation-not-authoritative", instant, revalidation)
+            raise RoutingFinalizationError("routing_reservation_not_authoritative")
 
         ready_plan = ExecutionPlan.model_validate({
             **plan.model_dump(mode="python"),
@@ -472,13 +664,16 @@ class RoutingDecisionService:
             "preparation": preparation,
             "final_fit": True,
             "reservation": reservation,
+            "physical_operation": operation,
         })
         event = RoutingDecisionEvent(
             event_type="reservation_succeeded",
-            occurred_at=instant,
+            event_id=uuid5(reservation.attempt_id, "phase21-reservation-succeeded-v1"),
+            occurred_at=reservation.reserved_at,
             endpoint_profile_id=current.endpoint_profile_id,
+            invocation_id=reservation.invocation_id,
+            attempt_id=reservation.attempt_id,
             preparation=preparation,
-            reservation_id=reservation.reservation_id,
             outcome_code="execution-plan-ready",
             dispatch_revalidation=revalidation,
         )
@@ -491,6 +686,41 @@ class RoutingDecisionService:
         )
         return ready_plan
 
+    def consume_auxiliary_call(
+        self,
+        *,
+        owner_id: str,
+        scope: ApplicationScope,
+        decision_id: UUID,
+        event: RoutingDecisionEvent,
+        now: datetime | None = None,
+    ) -> int:
+        """Atomically consume the root budget before remote count/summary work."""
+        instant = _aware_utc(now or datetime.now(UTC))
+        if event.event_type != "auxiliary_call_reserved" or event.occurred_at > instant:
+            raise RoutingFinalizationError("routing_auxiliary_call_event_invalid")
+        try:
+            record = self.observations.get(
+                owner_id=owner_id, scope=scope, decision_id=decision_id
+            )
+        except LookupError as error:
+            raise RoutingFinalizationError("routing_decision_unavailable") from error
+        observation = getattr(record, "observation", record)
+        if (
+            observation.lifecycle_status != "preparing"
+            or observation.provisional_plan is None
+        ):
+            raise RoutingFinalizationError("routing_decision_has_no_plan")
+        if instant >= observation.root_deadline_at:
+            raise RoutingFinalizationError("routing_deadline_expired")
+        return self.observations.consume_auxiliary_call(
+            owner_id=owner_id,
+            scope=scope,
+            decision_id=decision_id,
+            max_auxiliary_calls=observation.task.max_auxiliary_calls,
+            event=event,
+        )
+
     def _record_failure(
         self,
         owner_id: str,
@@ -502,7 +732,8 @@ class RoutingDecisionService:
     ) -> None:
         event_type = (
             "reservation_failed"
-            if reason_code == "routing-reservation-incomplete"
+            if reason_code.startswith("routing-reservation")
+            or reason_code == "routing-dispatch-operation-invalid"
             else "preparation_failed"
         )
         self.observations.append_event(
@@ -513,6 +744,10 @@ class RoutingDecisionService:
                 event_type=event_type,
                 occurred_at=at,
                 reason_code=reason_code,
+                endpoint_profile_id=(
+                    observation.provisional_plan.selected_endpoint_profile_id
+                    if observation.provisional_plan is not None else None
+                ),
                 outcome_code="dispatch-denied",
                 dispatch_revalidation=revalidation,
             ),
@@ -686,6 +921,46 @@ def _preparation_fits(
     ):
         return False
     return True
+
+
+def _root_decision_id(
+    owner_id: str, scope: ApplicationScope, request_id: str, run_id: str | None
+) -> UUID:
+    identity = [
+        "phase21-root-v1", owner_id, scope.application_id, scope.workspace_id,
+        request_id, run_id,
+    ]
+    encoded = json.dumps(identity, separators=(",", ":"))
+    return uuid5(NAMESPACE_URL, encoded)
+
+
+def _reselection_decision_id(parent_decision_id: UUID, depth: int) -> UUID:
+    return uuid5(parent_decision_id, f"phase21-reselection-v1:{depth}")
+
+
+def _same_logical_decision(
+    stored: RoutingDecisionObservation, proposed: RoutingDecisionObservation
+) -> bool:
+    return (
+        stored.routing_decision_id == proposed.routing_decision_id
+        and stored.parent_decision_id == proposed.parent_decision_id
+        and stored.root_decision_id == proposed.root_decision_id
+        and stored.reselection_depth == proposed.reselection_depth
+        and stored.owner_id == proposed.owner_id
+        and stored.application_id == proposed.application_id
+        and stored.workspace_id == proposed.workspace_id
+        and stored.request == proposed.request
+        and stored.task == proposed.task
+        and stored.root_deadline_at == proposed.root_deadline_at
+    )
+
+
+def _source_narrowing_is_allowed(
+    task: RoutingTaskProfile, candidate: tuple[str, ...], parent: tuple[str, ...]
+) -> bool:
+    return candidate == parent or (
+        task.allow_source_narrowing and source_references_are_subset(candidate, parent)
+    )
 
 
 def _unique_by_id(values: Sequence, get_id) -> dict:

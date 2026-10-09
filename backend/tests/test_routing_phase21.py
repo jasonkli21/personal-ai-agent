@@ -4,17 +4,20 @@ import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 import pytest
 from pydantic import ValidationError
 
 from personal_ai.auth.scope import ApplicationScope
+from personal_ai.persistence.postgres import PersistenceConflict
 from personal_ai.persistence.postgres_routing_observations import (
     PostgresRoutingDecisionRepository,
     RoutingDecisionUnavailable,
 )
 from personal_ai.routing import (
+    CounterCompatibility,
+    CountRequirement,
     DataUsePolicy,
     DeterministicScoringStrategy,
     DispatchRevalidation,
@@ -40,6 +43,7 @@ from personal_ai.routing import (
     RuntimeCandidateFacts,
     StrictFreeEligibilityAttestation,
     replay_deterministic_decision,
+    source_reference_manifest_sha256,
 )
 from personal_ai.routing.service import RoutingFinalizationError
 
@@ -53,12 +57,19 @@ class _MemoryDecisionRepository:
     def __init__(self):
         self.records = {}
         self.reselection_counts = {}
+        self.auxiliary_counts = {}
 
     def begin(self, *, owner_id, scope, observation, initial_event):
         assert observation.owner_id == owner_id
         assert observation.application_id == scope.application_id
         assert observation.workspace_id == scope.workspace_id
-        assert observation.routing_decision_id not in self.records
+        RoutingDecisionRecord(observation=observation, events=(initial_event,))
+        if observation.routing_decision_id in self.records:
+            if self.records[observation.routing_decision_id] != [
+                observation, [initial_event]
+            ]:
+                raise ValueError("routing decision idempotency conflict")
+            return
         self.records[observation.routing_decision_id] = [observation, [initial_event]]
 
     def get(self, *, owner_id, scope, decision_id):
@@ -71,8 +82,33 @@ class _MemoryDecisionRepository:
         observation, events = self.records[decision_id]
         assert observation.owner_id == owner_id
         assert observation.application_id == scope.application_id
+        duplicate = next((row for row in events if row.event_id == event.event_id), None)
+        if duplicate is not None:
+            if duplicate != event:
+                raise ValueError("routing event idempotency conflict")
+            return RoutingDecisionRecord(observation=observation, events=tuple(events))
+        updated = RoutingDecisionRecord(observation=observation, events=(*events, event))
         events.append(event)
-        return RoutingDecisionRecord(observation=observation, events=tuple(events))
+        return updated
+
+    def consume_auxiliary_call(
+        self, *, owner_id, scope, decision_id, max_auxiliary_calls, event
+    ):
+        observation, events = self.records[decision_id]
+        root_id = observation.root_decision_id
+        used = self.auxiliary_counts.get(root_id, 0)
+        duplicate = next((row for row in events if row.event_id == event.event_id), None)
+        if duplicate is not None:
+            if duplicate != event:
+                raise ValueError("routing event idempotency conflict")
+            return used
+        if used >= max_auxiliary_calls:
+            raise ValueError("routing_auxiliary_call_budget_exceeded")
+        self.append_event(
+            owner_id=owner_id, scope=scope, decision_id=decision_id, event=event
+        )
+        self.auxiliary_counts[root_id] = used + 1
+        return used + 1
 
     def begin_reselection(
         self,
@@ -100,6 +136,7 @@ class _MemoryDecisionRepository:
             decision_id=parent_decision_id,
             event=RoutingDecisionEvent(
                 event_type="reselection_linked",
+                event_id=uuid5(observation.routing_decision_id, "phase21-parent-link-v1"),
                 occurred_at=observation.created_at,
                 linked_decision_id=observation.routing_decision_id,
                 outcome_code="reselection-created",
@@ -171,6 +208,7 @@ class _RoutingSQLConnection:
                 "root_decision_id": params[8],
                 "reselection_depth": params[9],
                 "reselection_count": 0,
+                "auxiliary_calls_used": 0,
                 "lifecycle_status": params[10],
                 "facts": json.loads(params[11]),
                 "events": json.loads(params[12]),
@@ -182,6 +220,48 @@ class _RoutingSQLConnection:
             }
             return _SQLResult((decision_id,), rowcount=1)
         if query.startswith("UPDATE routing_decisions SET"):
+            if "auxiliary_calls_used=auxiliary_calls_used+1" in query:
+                record = self.records.get(params[1])
+                if (
+                    record is None
+                    or record["scope_id"] != params[0]
+                    or record["owner_id"] != params[2]
+                    or record["auxiliary_calls_used"] >= params[3]
+                    or record["replay_until"] <= params[4]
+                ):
+                    return _SQLResult()
+                record["auxiliary_calls_used"] += 1
+                return _SQLResult((record["auxiliary_calls_used"],), rowcount=1)
+            if "outcome_events=%s::jsonb,updated_at=%s" in query and len(params) == 7:
+                record = self.records.get(params[3])
+                if (
+                    record is None
+                    or record["scope_id"] != params[2]
+                    or record["owner_id"] != params[4]
+                    or record["replay_until"] <= params[5]
+                ):
+                    return _SQLResult()
+                record["events"] = json.loads(params[0])
+                return _SQLResult((params[3],), rowcount=1)
+            if "outcome_events=%s::jsonb" in query:
+                record = self.records.get(params[9])
+                if (
+                    record is None
+                    or record["scope_id"] != params[8]
+                    or record["owner_id"] != params[10]
+                    or record["application_id"] != params[11]
+                    or record["workspace_id"] != params[12]
+                    or record["replay_until"] <= params[13]
+                ):
+                    return _SQLResult(rowcount=0)
+                record["events"] = json.loads(params[0])
+                if params[1] is not None:
+                    record["invocation_ids"].append(params[1])
+                if params[4] is not None:
+                    record["attempt_ids"].append(params[4])
+                if params[6] is not None:
+                    record["evaluation_run_ids"].append(params[6])
+                return _SQLResult((params[9],), rowcount=1)
             if "reselection_count=reselection_count+1" in query:
                 record = self.records.get(params[1])
                 if record is None or record["scope_id"] != params[0]:
@@ -224,6 +304,19 @@ class _RoutingSQLConnection:
         if query.startswith("SELECT decision_facts,outcome_events FROM routing_decisions WHERE"):
             if " ORDER BY created_at DESC" in query:
                 return self._list(query, params)
+            if len(params) == 6:
+                scope_id, decision_id, owner_id, application_id, workspace_id, now = params
+                record = self.records.get(decision_id)
+                if (
+                    record is None
+                    or record["scope_id"] != scope_id
+                    or record["owner_id"] != owner_id
+                    or record["application_id"] != application_id
+                    or record["workspace_id"] != workspace_id
+                    or record["replay_until"] <= now
+                ):
+                    return _SQLResult()
+                return _SQLResult((record["facts"], record["events"]))
             scope_id, decision_id, owner_id, application_id, workspace_id, now, _fence_owner = params
             record = self.records.get(decision_id)
             if (
@@ -237,6 +330,25 @@ class _RoutingSQLConnection:
             ):
                 return _SQLResult()
             return _SQLResult((record["facts"], record["events"]))
+        if query.startswith("SELECT decision_facts FROM routing_decisions WHERE"):
+            record = self.records.get(params[1])
+            if (
+                record is None
+                or record["scope_id"] != params[0]
+                or record["owner_id"] != params[2]
+                or record["application_id"] != params[3]
+                or record["workspace_id"] != params[4]
+                or record["replay_until"] <= params[5]
+            ):
+                return _SQLResult()
+            return _SQLResult((record["facts"],))
+        if query.startswith("SELECT auxiliary_calls_used,decision_facts,replay_until"):
+            record = self.records.get(params[1])
+            if record is None or record["owner_id"] != params[2]:
+                return _SQLResult()
+            return _SQLResult((
+                record["auxiliary_calls_used"], record["facts"], record["replay_until"],
+            ))
         raise AssertionError(f"unhandled query: {query}")
 
     def _list(self, query, params):
@@ -296,6 +408,21 @@ class _RoutingSQLDatabase:
         yield self.connection_value
 
 
+class _MemoryReservationAuthority:
+    def __init__(self):
+        self.accepted = {}
+
+    def trust(self, reservation, facts):
+        self.accepted[(reservation.invocation_id, reservation.attempt_id)] = (
+            reservation, facts
+        )
+
+    def verify_routing_reservation(self, *, reservation, **facts):
+        return self.accepted.get((reservation.invocation_id, reservation.attempt_id)) == (
+            reservation, facts
+        )
+
+
 def _profile(
     endpoint_id="model-a",
     *,
@@ -304,10 +431,62 @@ def _profile(
     operations=frozenset({"bounded_generation", "streaming", "structured_generation"}),
     policy=None,
     schemas=("schema:proposal-v1",),
+    with_counter=False,
+    separate_operation_buckets=False,
 ):
     profile_id = f"synthetic:{endpoint_id}"
     account_id = f"account:{endpoint_id}"
     credential_id = f"credential:{endpoint_id}"
+    quota_buckets = (
+        (
+            QuotaBucket(
+                bucket_id=f"quota:{endpoint_id}:generation",
+                authority_scope_id=account_id,
+                operations=frozenset(operations - {"token_counting"}),
+                unit="requests",
+                window_seconds=3600,
+                source="provider_contract",
+                confidence="verified",
+                evidence_reference="quota:synthetic-generation-v1",
+            ),
+            QuotaBucket(
+                bucket_id=f"quota:{endpoint_id}:counter",
+                authority_scope_id=account_id,
+                operations=frozenset({"token_counting"}),
+                unit="requests",
+                window_seconds=3600,
+                source="provider_contract",
+                confidence="verified",
+                evidence_reference="quota:synthetic-counter-v1",
+            ),
+        )
+        if separate_operation_buckets else
+        (QuotaBucket(
+            bucket_id=f"quota:{endpoint_id}",
+            authority_scope_id=account_id,
+            operations=operations,
+            unit="requests",
+            window_seconds=3600,
+            source="provider_contract",
+            confidence="verified",
+            evidence_reference="quota:synthetic-v1",
+        ),)
+    )
+    counter = CounterCompatibility(
+        endpoint_profile_id=profile_id,
+        endpoint_id=f"endpoint:{endpoint_id}",
+        deployment_id=f"deployment:{endpoint_id}",
+        credential_scope_id=credential_id,
+        account_scope_id=account_id,
+        provider_id="synthetic-provider",
+        model_id=endpoint_id,
+        serializer_id="synthetic-chat-v1",
+        counter_id="synthetic-counter-v1",
+        confidence="authoritative",
+        approved=True,
+        provenance_reference="counter:synthetic-v1",
+        structured_schema_ids=schemas,
+    ) if with_counter else None
     return EndpointProfile(
         endpoint_profile_id=profile_id,
         profile_version=version,
@@ -348,18 +527,10 @@ def _profile(
         ),
         serializer_id="synthetic-chat-v1",
         runtime_id="synthetic-runtime-v1",
+        counter=counter,
         structured_schema_ids=schemas,
         quota_membership="verified",
-        quota_buckets=(QuotaBucket(
-            bucket_id=f"quota:{endpoint_id}",
-            authority_scope_id=account_id,
-            operations=operations,
-            unit="requests",
-            window_seconds=3600,
-            source="provider_contract",
-            confidence="verified",
-            evidence_reference="quota:synthetic-v1",
-        ),),
+        quota_buckets=quota_buckets,
     )
 
 
@@ -383,6 +554,7 @@ def _task(
     priorities=(),
     preferences=None,
     allow_source_narrowing=False,
+    max_reselections=1,
 ):
     return RoutingTaskProfile(
         task_id=task_id,
@@ -396,19 +568,21 @@ def _task(
         allow_source_narrowing=allow_source_narrowing,
         deadline_ms=10_000,
         max_physical_attempts=2,
-        max_reselections=1,
+        max_reselections=max_reselections,
         max_auxiliary_calls=2,
     )
 
 
-def _request(requirements=None, *, request_id="request-123"):
+def _request(requirements=None, *, request_id="request-123", source_refs=()):
+    source_refs = tuple(sorted(source_refs))
     return RoutingRequestFacts(
         request_id=request_id,
         run_id="run-123",
         requirements=requirements or _requirements(),
         policy_version="phase15-policy-v1",
-        source_count=0,
-        source_manifest_sha256=SOURCE_HASH,
+        source_count=len(source_refs),
+        source_manifest_sha256=source_reference_manifest_sha256(source_refs),
+        source_reference_sha256s=source_refs,
         prepared_context_tokens=400,
         count_source="synthetic-counter-v1",
         count_confidence="unknown",
@@ -453,9 +627,49 @@ def _quality(profile, *, score=0.9, coverage=0.9, measured_at=None, fresh_until=
     )
 
 
-def _service(profiles, repo=None, strategy=None):
+def _service(profiles, repo=None, strategy=None, reservation_authority=True):
     repository = repo or _MemoryDecisionRepository()
-    return RoutingDecisionService(EndpointRegistry(profiles), repository, strategy), repository
+    authority = (
+        _MemoryReservationAuthority()
+        if reservation_authority is True
+        else None if reservation_authority is False else reservation_authority
+    )
+    return RoutingDecisionService(
+        EndpointRegistry(profiles), repository, strategy, authority
+    ), repository
+
+
+def _reservation(service, decision, profile, *, now, operation="bounded_generation"):
+    invocation_id = uuid4()
+    attempt_id = uuid4()
+    expected_bucket_ids = frozenset(
+        bucket.bucket_id for bucket in profile.quota_buckets
+        if operation in bucket.operations
+    )
+    reservation = QuotaReservationRef(
+        invocation_id=invocation_id,
+        attempt_id=attempt_id,
+        send_number=1,
+        operation=operation,
+        reserved_at=NOW + timedelta(milliseconds=500),
+        buckets=tuple((bucket_id, 0) for bucket_id in sorted(expected_bucket_ids)),
+    )
+    facts = {
+        "owner_id": OWNER,
+        "scope": SCOPE,
+        "request_id": decision.observation.request.request_id,
+        "run_id": decision.observation.request.run_id,
+        "routing_decision_id": decision.observation.routing_decision_id,
+        "endpoint_profile_id": profile.endpoint_profile_id,
+        "endpoint_profile_version": profile.profile_version,
+        "operation": operation,
+        "expected_bucket_ids": expected_bucket_ids,
+        "max_physical_attempts": decision.observation.task.max_physical_attempts,
+        "now": now,
+    }
+    if service.reservation_authority is not None:
+        service.reservation_authority.trust(reservation, facts)
+    return reservation
 
 
 def _route(service, profile, *, task=None, request=None, runtime=None, evidence=(), signals=(), now=NOW):
@@ -468,6 +682,23 @@ def _route(service, profile, *, task=None, request=None, runtime=None, evidence=
         quality_evidence=evidence,
         routing_signals=signals,
         now=now,
+    )
+
+
+def _mark_preparation_failed(repository, observation, at):
+    repository.append_event(
+        owner_id=observation.owner_id,
+        scope=ApplicationScope(
+            application_id=observation.application_id,
+            workspace_id=observation.workspace_id,
+        ),
+        decision_id=observation.routing_decision_id,
+        event=RoutingDecisionEvent(
+            event_type="preparation_failed",
+            occurred_at=at,
+            endpoint_profile_id=observation.provisional_plan.selected_endpoint_profile_id,
+            reason_code="fit-failed",
+        ),
     )
 
 
@@ -670,7 +901,7 @@ def test_deterministic_strategy_uses_task_preferences_and_stable_tie_breaks():
             EndpointPriority(endpoint_profile_id=second.endpoint_profile_id, priority=4),
         )
     )
-    service, _ = _service((second, first))
+    service, repository = _service((second, first))
     first_run = _route(service, first, task=task, runtime=(_runtime(first), _runtime(second)))
     second_run = _route(service, first, task=task, runtime=(_runtime(first), _runtime(second)))
 
@@ -681,6 +912,8 @@ def test_deterministic_strategy_uses_task_preferences_and_stable_tie_breaks():
         "endpoint-profile-id-then-version-ascending-v1"
     )
     assert first_run.observation.strategy_result == second_run.observation.strategy_result
+    assert first_run.observation.routing_decision_id == second_run.observation.routing_decision_id
+    assert len(repository.records) == 1
 
 
 def test_unmeasured_baseline_uses_configured_priority_without_invented_quality():
@@ -750,8 +983,13 @@ def test_strategy_receives_only_eligible_candidates_and_cannot_select_rejected_e
 
     assert result.plan is None
     assert result.observation.no_route_reason == "routing-strategy-contract-invalid"
+    assert result.observation.strategy_result is None
     assert result.observation.strategy_input.candidates[0].profile.endpoint_profile_id == eligible.endpoint_profile_id
     assert len(result.observation.strategy_input.candidates) == 1
+    with pytest.raises(RoutingReplayUnavailable, match="no validated strategy result"):
+        replay_deterministic_decision(
+            result.observation, strategy, now=NOW + timedelta(seconds=1)
+        )
 
 
 def test_strategy_input_does_not_expose_rejected_endpoint_priority_entries():
@@ -800,6 +1038,34 @@ def test_observation_replays_exact_decision_after_registry_changes_and_expires_c
         )
 
 
+def test_replay_returns_unavailable_when_same_identity_produces_a_different_result():
+    profile = _profile()
+    service, _ = _service((profile,))
+    decision = _route(service, profile)
+    strategy = DeterministicScoringStrategy()
+    strategy.select = lambda _value: decision.observation.strategy_result.model_copy(
+        update={"reason_code": "changed-behavior"}
+    )
+
+    with pytest.raises(RoutingReplayUnavailable, match="outcome mismatch"):
+        replay_deterministic_decision(
+            decision.observation, strategy, now=NOW + timedelta(seconds=1)
+        )
+
+
+def test_strategy_identity_fails_closed_when_implementation_source_is_unavailable(monkeypatch):
+    profile = _profile()
+    service, _ = _service((profile,))
+    decision = _route(service, profile)
+    monkeypatch.setattr(
+        "personal_ai.routing.strategy.inspect.getsource",
+        lambda _value: (_ for _ in ()).throw(OSError("source unavailable")),
+    )
+
+    with pytest.raises(RoutingReplayUnavailable, match="implementation digest unavailable"):
+        DeterministicScoringStrategy().identity(decision.observation.strategy_input)
+
+
 def test_observation_overflow_is_explicit_no_route_with_candidate_digests():
     large_schemas = tuple(f"schema:{index}:" + "x" * 175 for index in range(128))
     profiles = tuple(
@@ -836,6 +1102,7 @@ def test_ready_plan_requires_exact_endpoint_preparation_revalidation_and_all_buc
         count_confidence="unknown",
         source_manifest_sha256=SOURCE_HASH,
         prepared_input_sha256=sha256(b"prepared").hexdigest(),
+        prepared_at=NOW,
     )
     revalidation = DispatchRevalidation(
         endpoint_profile_id=profile.endpoint_profile_id,
@@ -852,10 +1119,7 @@ def test_ready_plan_requires_exact_endpoint_preparation_revalidation_and_all_buc
         source_permission_reference="source-policy:phase15-v1",
         source_manifest_sha256=SOURCE_HASH,
     )
-    reservation = QuotaReservationRef(
-        reservation_id=uuid4(),
-        buckets=((profile.quota_buckets[0].bucket_id, 1),),
-    )
+    reservation = _reservation(service, decision, profile, now=NOW + timedelta(seconds=1))
 
     plan = service.finalize(
         owner_id=OWNER,
@@ -864,6 +1128,7 @@ def test_ready_plan_requires_exact_endpoint_preparation_revalidation_and_all_buc
         preparation=preparation,
         reservation=reservation,
         revalidation=revalidation,
+        operation="bounded_generation",
         now=NOW + timedelta(seconds=1),
     )
 
@@ -874,10 +1139,170 @@ def test_ready_plan_requires_exact_endpoint_preparation_revalidation_and_all_buc
     assert repository.records[decision.observation.routing_decision_id][1][-1].dispatch_revalidation == revalidation
 
 
-def test_finalization_denies_fit_failure_revocation_and_incomplete_reservation():
+def test_generation_reservation_uses_only_generation_operation_buckets():
+    capabilities = frozenset({"bounded_generation", "token_counting"})
+    profile = _profile(
+        capabilities=capabilities,
+        operations=capabilities,
+        with_counter=True,
+        separate_operation_buckets=True,
+    )
+    requirements = EndpointCandidateRequirements(
+        execution_mode="STRICT_FREE",
+        sensitivity="personal",
+        required_capabilities=capabilities,
+        input_tokens=500,
+        output_tokens=100,
+        count=CountRequirement(minimum_confidence="authoritative"),
+    )
+    service, _ = _service((profile,))
+    decision = _route(service, profile, request=_request(requirements))
+    preparation = PreparationIdentity(
+        endpoint_profile_id=profile.endpoint_profile_id,
+        endpoint_profile_version=profile.profile_version,
+        serializer_id=profile.serializer_id,
+        counter_id=profile.counter.counter_id,
+        input_tokens=400,
+        count_source="synthetic-count-v1",
+        count_confidence="authoritative",
+        source_manifest_sha256=SOURCE_HASH,
+        prepared_input_sha256=sha256(b"counted-generation-input").hexdigest(),
+        prepared_at=NOW,
+    )
+    revalidation = DispatchRevalidation(
+        endpoint_profile_id=profile.endpoint_profile_id,
+        endpoint_profile_version=profile.profile_version,
+        validated_at=NOW,
+        fresh_until=NOW + timedelta(minutes=5),
+        policy_version="phase15-policy-v1",
+        authorization_current=True,
+        authorization_reference="authorization:phase15-v1",
+        credential_usable=True,
+        health_status="healthy",
+        quota_not_exhausted=True,
+        sources_authorized=True,
+        source_permission_reference="source-policy:phase15-v1",
+        source_manifest_sha256=SOURCE_HASH,
+    )
+    reservation = _reservation(
+        service, decision, profile, now=NOW + timedelta(seconds=1),
+        operation="bounded_generation",
+    )
+
+    ready = service.finalize(
+        owner_id=OWNER, scope=SCOPE, observation=decision.observation,
+        preparation=preparation, reservation=reservation,
+        revalidation=revalidation, operation="bounded_generation",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert ready.physical_operation == "bounded_generation"
+    assert tuple(bucket_id for bucket_id, _ in ready.reservation.buckets) == (
+        f"quota:{profile.model_id}:generation",
+    )
+
+
+def test_finalize_reloads_canonical_decision_and_rejects_stale_or_fabricated_facts():
     profile = _profile()
     service, repository = _service((profile,))
     decision = _route(service, profile)
+    forged_plan = decision.observation.provisional_plan.model_copy(update={
+        "selected_endpoint_profile_id": "synthetic:forged",
+    })
+    forged = decision.observation.model_copy(update={"provisional_plan": forged_plan})
+    preparation = PreparationIdentity(
+        endpoint_profile_id=profile.endpoint_profile_id,
+        endpoint_profile_version=1,
+        serializer_id=profile.serializer_id,
+        input_tokens=400,
+        count_source="synthetic-count-v1",
+        count_confidence="unknown",
+        source_manifest_sha256=SOURCE_HASH,
+        prepared_input_sha256=sha256(b"prepared").hexdigest(),
+        prepared_at=NOW,
+    )
+    revalidation = DispatchRevalidation(
+        endpoint_profile_id=profile.endpoint_profile_id,
+        endpoint_profile_version=1,
+        validated_at=NOW,
+        fresh_until=NOW + timedelta(minutes=5),
+        policy_version="phase15-policy-v1",
+        authorization_current=True,
+        authorization_reference="authorization:phase15-v1",
+        credential_usable=True,
+        health_status="healthy",
+        quota_not_exhausted=True,
+        sources_authorized=True,
+        source_permission_reference="source-policy:phase15-v1",
+        source_manifest_sha256=SOURCE_HASH,
+    )
+    reservation = _reservation(service, decision, profile, now=NOW + timedelta(seconds=1))
+    with pytest.raises(RoutingFinalizationError, match="routing_decision_facts_changed"):
+        service.finalize(
+            owner_id=OWNER, scope=SCOPE, observation=forged, preparation=preparation,
+            reservation=reservation, revalidation=revalidation,
+            operation="bounded_generation", now=NOW + timedelta(seconds=1),
+        )
+
+    _mark_preparation_failed(repository, decision.observation, NOW + timedelta(seconds=1))
+    with pytest.raises(
+        RoutingFinalizationError, match="routing_decision_lifecycle_not_finalizable"
+    ):
+        service.finalize(
+            owner_id=OWNER, scope=SCOPE, observation=decision.observation,
+            preparation=preparation,
+            reservation=_reservation(service, decision, profile, now=NOW + timedelta(seconds=2)),
+            revalidation=revalidation, operation="bounded_generation",
+            now=NOW + timedelta(seconds=2),
+        )
+
+
+def test_fabricated_phase19_attempt_identity_cannot_authorize_a_ready_plan():
+    profile = _profile()
+    service, _ = _service((profile,), reservation_authority=False)
+    decision = _route(service, profile)
+    reservation = QuotaReservationRef(
+        invocation_id=uuid4(), attempt_id=uuid4(), send_number=1,
+        operation="bounded_generation", reserved_at=NOW + timedelta(milliseconds=500),
+        buckets=((profile.quota_buckets[0].bucket_id, 0),),
+    )
+    with pytest.raises(RoutingFinalizationError, match="routing_reservation_not_authoritative"):
+        service.finalize(
+            owner_id=OWNER, scope=SCOPE, observation=decision.observation,
+            preparation=PreparationIdentity(
+                endpoint_profile_id=profile.endpoint_profile_id,
+                endpoint_profile_version=1,
+                serializer_id=profile.serializer_id,
+                input_tokens=400,
+                count_source="synthetic-count-v1",
+                count_confidence="unknown",
+                source_manifest_sha256=SOURCE_HASH,
+                prepared_input_sha256=sha256(b"fabricated").hexdigest(),
+                prepared_at=NOW,
+            ),
+            reservation=reservation,
+            revalidation=DispatchRevalidation(
+                endpoint_profile_id=profile.endpoint_profile_id,
+                endpoint_profile_version=1,
+                validated_at=NOW,
+                fresh_until=NOW + timedelta(minutes=5),
+                policy_version="phase15-policy-v1",
+                authorization_current=True,
+                authorization_reference="authorization:phase15-v1",
+                credential_usable=True,
+                health_status="healthy",
+                quota_not_exhausted=True,
+                sources_authorized=True,
+                source_permission_reference="source-policy:phase15-v1",
+                source_manifest_sha256=SOURCE_HASH,
+            ),
+            operation="bounded_generation", now=NOW + timedelta(seconds=1),
+        )
+
+
+def test_finalization_denies_stale_revalidation_revocation_fit_failure_and_incomplete_reservation():
+    profile = _profile()
+    service, repository = _service((profile,))
     base = {
         "endpoint_profile_id": profile.endpoint_profile_id,
         "endpoint_profile_version": profile.profile_version,
@@ -886,6 +1311,7 @@ def test_finalization_denies_fit_failure_revocation_and_incomplete_reservation()
         "count_confidence": "unknown",
         "source_manifest_sha256": SOURCE_HASH,
         "prepared_input_sha256": sha256(b"prepared").hexdigest(),
+        "prepared_at": NOW,
     }
     revalidation = DispatchRevalidation(
         endpoint_profile_id=profile.endpoint_profile_id,
@@ -904,58 +1330,91 @@ def test_finalization_denies_fit_failure_revocation_and_incomplete_reservation()
     )
     stale_revalidation = revalidation.model_copy(update={
         "validated_at": NOW - timedelta(minutes=2),
-        "fresh_until": NOW,
     })
-    with pytest.raises(RoutingFinalizationError, match="routing_dispatch_revalidation_stale"):
+    stale_decision = _route(
+        service, profile, request=_request(request_id="request:stale-revalidation")
+    )
+    with pytest.raises(
+        RoutingFinalizationError, match="routing_dispatch_revalidation_order_invalid"
+    ):
         service.finalize(
             owner_id=OWNER,
             scope=SCOPE,
-            observation=decision.observation,
+            observation=stale_decision.observation,
             preparation=PreparationIdentity(input_tokens=400, **base),
-            reservation=QuotaReservationRef(
-                reservation_id=uuid4(), buckets=((profile.quota_buckets[0].bucket_id, 1),)
+            reservation=_reservation(
+                service, stale_decision, profile, now=NOW + timedelta(seconds=1)
             ),
             revalidation=stale_revalidation,
+            operation="bounded_generation",
             now=NOW + timedelta(seconds=1),
         )
+    revoked_decision = _route(
+        service, profile, request=_request(request_id="request:revoked")
+    )
     with pytest.raises(RoutingFinalizationError, match="routing_source_permission_revoked"):
         service.finalize(
             owner_id=OWNER,
             scope=SCOPE,
-            observation=decision.observation,
+            observation=revoked_decision.observation,
             preparation=PreparationIdentity(input_tokens=400, **base),
-            reservation=QuotaReservationRef(
-                reservation_id=uuid4(), buckets=((profile.quota_buckets[0].bucket_id, 1),)
+            reservation=_reservation(
+                service, revoked_decision, profile, now=NOW + timedelta(seconds=1)
             ),
             revalidation=revalidation,
+            operation="bounded_generation",
             now=NOW + timedelta(seconds=1),
         )
-    assert repository.records[decision.observation.routing_decision_id][1][-1].event_type == "preparation_failed"
+    assert repository.records[revoked_decision.observation.routing_decision_id][1][-1].event_type == "preparation_failed"
 
     revalidation = revalidation.model_copy(update={"sources_authorized": True})
+    fit_decision = _route(
+        service, profile, request=_request(request_id="request:fit")
+    )
     with pytest.raises(RoutingFinalizationError, match="routing_endpoint_preparation_does_not_fit"):
         service.finalize(
             owner_id=OWNER,
             scope=SCOPE,
-            observation=decision.observation,
+            observation=fit_decision.observation,
             preparation=PreparationIdentity(input_tokens=501, **base),
-            reservation=QuotaReservationRef(
-                reservation_id=uuid4(), buckets=((profile.quota_buckets[0].bucket_id, 1),)
+            reservation=_reservation(
+                service, fit_decision, profile, now=NOW + timedelta(seconds=1)
             ),
             revalidation=revalidation,
-            now=NOW + timedelta(seconds=2),
+            operation="bounded_generation",
+            now=NOW + timedelta(seconds=1),
         )
+    bucket_decision = _route(
+        service, profile, request=_request(request_id="request:bucket")
+    )
+    incomplete = _reservation(
+        service, bucket_decision, profile, now=NOW + timedelta(seconds=1)
+    ).model_copy(update={"buckets": ()})
+    service.reservation_authority.trust(incomplete, {
+        "owner_id": OWNER,
+        "scope": SCOPE,
+        "request_id": bucket_decision.observation.request.request_id,
+        "run_id": bucket_decision.observation.request.run_id,
+        "routing_decision_id": bucket_decision.observation.routing_decision_id,
+        "endpoint_profile_id": profile.endpoint_profile_id,
+        "endpoint_profile_version": profile.profile_version,
+        "operation": "bounded_generation",
+        "expected_bucket_ids": frozenset({profile.quota_buckets[0].bucket_id}),
+        "max_physical_attempts": bucket_decision.observation.task.max_physical_attempts,
+        "now": NOW + timedelta(seconds=1),
+    })
     with pytest.raises(RoutingFinalizationError, match="routing_reservation_incomplete"):
         service.finalize(
             owner_id=OWNER,
             scope=SCOPE,
-            observation=decision.observation,
+            observation=bucket_decision.observation,
             preparation=PreparationIdentity(input_tokens=400, **base),
-            reservation=QuotaReservationRef(reservation_id=uuid4(), buckets=()),
+            reservation=incomplete,
             revalidation=revalidation,
-            now=NOW + timedelta(seconds=3),
+            operation="bounded_generation",
+            now=NOW + timedelta(seconds=2),
         )
-    assert repository.records[decision.observation.routing_decision_id][1][-1].event_type == "reservation_failed"
+    assert repository.records[bucket_decision.observation.routing_decision_id][1][-1].event_type == "reservation_failed"
 
 
 def test_fit_failure_creates_linked_reselection_with_recomputed_bounds_and_finite_depth():
@@ -1005,13 +1464,16 @@ def test_fit_failure_creates_linked_reselection_with_recomputed_bounds_and_finit
                 count_confidence="unknown",
                 source_manifest_sha256=SOURCE_HASH,
                 prepared_input_sha256=sha256(b"does-not-fit").hexdigest(),
+                prepared_at=NOW,
             ),
-            reservation=QuotaReservationRef(
-                reservation_id=uuid4(), buckets=((first.quota_buckets[0].bucket_id, 1),)
+            reservation=_reservation(
+                service, original, first, now=NOW + timedelta(seconds=1)
             ),
             revalidation=revalidation,
+            operation="bounded_generation",
             now=NOW + timedelta(seconds=1),
         )
+
     narrowed = _requirements().model_copy(update={"input_tokens": 450})
     reselection = service.route(
         owner_id=OWNER,
@@ -1034,6 +1496,7 @@ def test_fit_failure_creates_linked_reselection_with_recomputed_bounds_and_finit
 
     child_revalidation = revalidation.model_copy(update={
         "endpoint_profile_id": second.endpoint_profile_id,
+        "validated_at": NOW + timedelta(seconds=2),
     })
     with pytest.raises(RoutingFinalizationError, match="routing_endpoint_preparation_does_not_fit"):
         service.finalize(
@@ -1049,11 +1512,13 @@ def test_fit_failure_creates_linked_reselection_with_recomputed_bounds_and_finit
                 count_confidence="unknown",
                 source_manifest_sha256=SOURCE_HASH,
                 prepared_input_sha256=sha256(b"still-does-not-fit").hexdigest(),
+                prepared_at=NOW + timedelta(seconds=2),
             ),
-            reservation=QuotaReservationRef(
-                reservation_id=uuid4(), buckets=((second.quota_buckets[0].bucket_id, 1),)
+            reservation=_reservation(
+                service, reselection, second, now=NOW + timedelta(seconds=3)
             ),
             revalidation=child_revalidation,
+            operation="bounded_generation",
             now=NOW + timedelta(seconds=3),
         )
     with pytest.raises(ValueError, match="routing_reselection_budget_exceeded"):
@@ -1065,6 +1530,337 @@ def test_fit_failure_creates_linked_reselection_with_recomputed_bounds_and_finit
             runtime_facts=(_runtime(first), _runtime(second)),
             parent_decision_id=reselection.observation.routing_decision_id,
             now=NOW + timedelta(seconds=4),
+        )
+
+
+def test_reselection_preserves_security_schema_and_capability_requirements():
+    profile = _profile()
+    service, repository = _service((profile,))
+    requirements = _requirements(
+        frozenset({"bounded_generation", "streaming", "structured_generation"}),
+        schema="schema:proposal-v1",
+    )
+    task = _task(capabilities=frozenset({"bounded_generation"}))
+    original = _route(service, profile, task=task, request=_request(requirements))
+    _mark_preparation_failed(repository, original.observation, NOW + timedelta(seconds=1))
+
+    downgraded = (
+        requirements.model_copy(update={"sensitivity": "public"}),
+        requirements.model_copy(update={"structured_schema_id": None}),
+        requirements.model_copy(update={
+            "required_capabilities": frozenset({"bounded_generation", "structured_generation"})
+        }),
+    )
+    for index, child_requirements in enumerate(downgraded):
+        with pytest.raises(ValueError, match="routing_reselection_parent_not_retryable"):
+            service.route(
+                owner_id=OWNER,
+                scope=SCOPE,
+                task=task,
+                request=_request(child_requirements),
+                runtime_facts=(_runtime(profile),),
+                parent_decision_id=original.observation.routing_decision_id,
+                now=NOW + timedelta(seconds=2 + index),
+            )
+
+    count_requirements = EndpointCandidateRequirements(
+        execution_mode="STRICT_FREE",
+        sensitivity="personal",
+        required_capabilities=frozenset({"bounded_generation", "token_counting"}),
+        input_tokens=500,
+        output_tokens=100,
+        count=CountRequirement(minimum_confidence="reported"),
+    )
+    weakened_count = count_requirements.model_copy(update={
+        "count": CountRequirement(minimum_confidence="unknown"),
+    })
+    from personal_ai.routing.phase21 import reselection_requirements_preserved
+
+    assert not reselection_requirements_preserved(count_requirements, weakened_count)
+
+
+def test_depth_two_reselection_inherits_all_prior_endpoint_exclusions():
+    first, second, third = (_profile(name) for name in ("first", "second", "third"))
+    task = _task(
+        priorities=(
+            EndpointPriority(endpoint_profile_id=first.endpoint_profile_id, priority=10),
+            EndpointPriority(endpoint_profile_id=second.endpoint_profile_id, priority=5),
+            EndpointPriority(endpoint_profile_id=third.endpoint_profile_id, priority=1),
+        ),
+        max_reselections=2,
+    )
+    service, repository = _service((first, second, third))
+    original = service.route(
+        owner_id=OWNER, scope=SCOPE, task=task, request=_request(),
+        runtime_facts=(_runtime(first), _runtime(second), _runtime(third)), now=NOW,
+    )
+    _mark_preparation_failed(repository, original.observation, NOW + timedelta(seconds=1))
+    child = service.route(
+        owner_id=OWNER, scope=SCOPE, task=task, request=_request(),
+        runtime_facts=(_runtime(first), _runtime(second), _runtime(third)),
+        parent_decision_id=original.observation.routing_decision_id,
+        now=NOW + timedelta(seconds=2),
+    )
+    assert child.plan.selected_endpoint_profile_id == second.endpoint_profile_id
+    _mark_preparation_failed(repository, child.observation, NOW + timedelta(seconds=3))
+
+    grandchild = service.route(
+        owner_id=OWNER, scope=SCOPE, task=task, request=_request(),
+        runtime_facts=(_runtime(first), _runtime(second), _runtime(third)),
+        parent_decision_id=child.observation.routing_decision_id,
+        now=NOW + timedelta(seconds=4),
+    )
+
+    assert grandchild.observation.reselection_depth == 2
+    assert grandchild.observation.request.excluded_endpoint_profile_ids == tuple(sorted((
+        first.endpoint_profile_id, second.endpoint_profile_id,
+    )))
+    assert grandchild.plan.selected_endpoint_profile_id == third.endpoint_profile_id
+
+
+def test_source_narrowing_is_proven_and_broadening_is_rejected_at_depth_two():
+    first, second = _profile("first"), _profile("second")
+    task = _task(
+        allow_source_narrowing=True,
+        max_reselections=2,
+        priorities=(
+            EndpointPriority(endpoint_profile_id=first.endpoint_profile_id, priority=10),
+            EndpointPriority(endpoint_profile_id=second.endpoint_profile_id, priority=1),
+        ),
+    )
+    service, repository = _service((first, second))
+    source_a, source_b, source_c = (
+        sha256(value).hexdigest() for value in (b"source-a", b"source-b", b"source-c")
+    )
+    original = _route(
+        service, first, task=task,
+        request=_request(request_id="request:narrowing", source_refs=(source_a, source_b)),
+        runtime=(_runtime(first), _runtime(second)),
+    )
+    _mark_preparation_failed(repository, original.observation, NOW + timedelta(seconds=1))
+    child = service.route(
+        owner_id=OWNER, scope=SCOPE, task=task,
+        request=_request(request_id="request:narrowing", source_refs=(source_a,)),
+        runtime_facts=(_runtime(first), _runtime(second)),
+        parent_decision_id=original.observation.routing_decision_id,
+        now=NOW + timedelta(seconds=2),
+    )
+    assert child.plan.selected_endpoint_profile_id == second.endpoint_profile_id
+    assert child.observation.request.source_reference_sha256s == (source_a,)
+
+    _mark_preparation_failed(repository, child.observation, NOW + timedelta(seconds=3))
+    with pytest.raises(ValueError, match="routing_reselection_parent_not_retryable"):
+        service.route(
+            owner_id=OWNER, scope=SCOPE, task=task,
+            request=_request(
+                request_id="request:narrowing", source_refs=(source_a, source_b, source_c)
+            ),
+            runtime_facts=(_runtime(first), _runtime(second)),
+            parent_decision_id=child.observation.routing_decision_id,
+            now=NOW + timedelta(seconds=4),
+        )
+
+
+def test_bounded_source_manifest_fits_the_final_lifecycle_event():
+    profile = _profile()
+    service, repository = _service((profile,))
+    source_refs = tuple(sorted(
+        sha256(f"source-{index}".encode()).hexdigest() for index in range(64)
+    ))
+    source_manifest = source_reference_manifest_sha256(source_refs)
+    request = _request(source_refs=source_refs)
+    decision = _route(service, profile, request=request)
+    preparation = PreparationIdentity(
+        endpoint_profile_id=profile.endpoint_profile_id,
+        endpoint_profile_version=profile.profile_version,
+        serializer_id=profile.serializer_id,
+        input_tokens=400,
+        count_source="synthetic-count-v1",
+        count_confidence="unknown",
+        source_manifest_sha256=source_manifest,
+        source_reference_sha256s=source_refs,
+        prepared_input_sha256=sha256(b"prepared-with-bounded-sources").hexdigest(),
+        prepared_at=NOW,
+    )
+    revalidation = DispatchRevalidation(
+        endpoint_profile_id=profile.endpoint_profile_id,
+        endpoint_profile_version=profile.profile_version,
+        validated_at=NOW,
+        fresh_until=NOW + timedelta(minutes=5),
+        policy_version="phase15-policy-v1",
+        authorization_current=True,
+        authorization_reference="authorization:phase15-v1",
+        credential_usable=True,
+        health_status="healthy",
+        quota_not_exhausted=True,
+        sources_authorized=True,
+        source_permission_reference="source-policy:phase15-v1",
+        source_manifest_sha256=source_manifest,
+        source_reference_sha256s=source_refs,
+    )
+
+    plan = service.finalize(
+        owner_id=OWNER,
+        scope=SCOPE,
+        observation=decision.observation,
+        preparation=preparation,
+        reservation=_reservation(service, decision, profile, now=NOW + timedelta(seconds=1)),
+        revalidation=revalidation,
+        operation="bounded_generation",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    event = repository.records[decision.observation.routing_decision_id][1][-1]
+    assert plan.state == "ready"
+    assert len(event.model_dump_json().encode("utf-8")) <= 16_384
+    too_many_refs = tuple(sorted(
+        sha256(f"source-{index}".encode()).hexdigest() for index in range(65)
+    ))
+    with pytest.raises(ValidationError):
+        _request(source_refs=too_many_refs)
+
+
+def test_root_deadline_is_inherited_and_expired_reselection_cannot_finalize():
+    first, second = _profile("first"), _profile("second")
+    task = _task(
+        priorities=(
+            EndpointPriority(endpoint_profile_id=first.endpoint_profile_id, priority=10),
+            EndpointPriority(endpoint_profile_id=second.endpoint_profile_id, priority=1),
+        ),
+    )
+    service, repository = _service((first, second))
+    original = service.route(
+        owner_id=OWNER, scope=SCOPE, task=task, request=_request(),
+        runtime_facts=(_runtime(first), _runtime(second)), now=NOW,
+    )
+    _mark_preparation_failed(repository, original.observation, NOW + timedelta(seconds=1))
+    child = service.route(
+        owner_id=OWNER, scope=SCOPE, task=task, request=_request(),
+        runtime_facts=(_runtime(first, now=NOW + timedelta(seconds=9)),
+                       _runtime(second, now=NOW + timedelta(seconds=9))),
+        parent_decision_id=original.observation.routing_decision_id,
+        now=NOW + timedelta(seconds=9),
+    )
+    assert child.observation.root_deadline_at == original.observation.root_deadline_at
+    assert child.plan.root_deadline_at == original.observation.root_deadline_at
+    revalidation = DispatchRevalidation(
+        endpoint_profile_id=second.endpoint_profile_id,
+        endpoint_profile_version=1,
+        validated_at=NOW + timedelta(seconds=9),
+        fresh_until=NOW + timedelta(minutes=5),
+        policy_version="phase15-policy-v1",
+        authorization_current=True,
+        authorization_reference="authorization:phase15-v1",
+        credential_usable=True,
+        health_status="healthy",
+        quota_not_exhausted=True,
+        sources_authorized=True,
+        source_permission_reference="source-policy:phase15-v1",
+        source_manifest_sha256=SOURCE_HASH,
+    )
+    reservation = _reservation(service, child, second, now=NOW + timedelta(seconds=10))
+    reservation = reservation.model_copy(update={"reserved_at": NOW + timedelta(seconds=9, milliseconds=500)})
+    service.reservation_authority.trust(reservation, {
+        "owner_id": OWNER, "scope": SCOPE,
+        "request_id": child.observation.request.request_id,
+        "run_id": child.observation.request.run_id,
+        "routing_decision_id": child.observation.routing_decision_id,
+        "endpoint_profile_id": second.endpoint_profile_id,
+        "endpoint_profile_version": second.profile_version,
+        "operation": "bounded_generation",
+        "expected_bucket_ids": frozenset({second.quota_buckets[0].bucket_id}),
+        "max_physical_attempts": task.max_physical_attempts,
+        "now": NOW + timedelta(seconds=10),
+    })
+    with pytest.raises(RoutingFinalizationError, match="routing_deadline_expired"):
+        service.finalize(
+            owner_id=OWNER, scope=SCOPE, observation=child.observation,
+            preparation=PreparationIdentity(
+                endpoint_profile_id=second.endpoint_profile_id,
+                endpoint_profile_version=1,
+                serializer_id=second.serializer_id,
+                input_tokens=400,
+                count_source="synthetic-count-v1",
+                count_confidence="unknown",
+                source_manifest_sha256=SOURCE_HASH,
+                prepared_input_sha256=sha256(b"prepared-at-deadline").hexdigest(),
+                prepared_at=NOW + timedelta(seconds=9),
+            ),
+            reservation=reservation, revalidation=revalidation,
+            operation="bounded_generation", now=NOW + timedelta(seconds=10),
+        )
+
+
+def test_auxiliary_call_budget_is_root_scoped_and_event_retry_is_idempotent():
+    profile = _profile()
+    task = _task()
+    task = task.model_copy(update={"max_auxiliary_calls": 1})
+    service, _repository = _service((profile,))
+    original = _route(service, profile, task=task)
+    event = RoutingDecisionEvent(
+        event_type="auxiliary_call_reserved",
+        event_id=uuid4(),
+        occurred_at=NOW + timedelta(seconds=1),
+        outcome_code="count-call-budget-reserved",
+    )
+
+    assert service.consume_auxiliary_call(
+        owner_id=OWNER, scope=SCOPE, decision_id=original.observation.routing_decision_id,
+        event=event, now=NOW + timedelta(seconds=1),
+    ) == 1
+    assert service.consume_auxiliary_call(
+        owner_id=OWNER, scope=SCOPE, decision_id=original.observation.routing_decision_id,
+        event=event, now=NOW + timedelta(seconds=2),
+    ) == 1
+    with pytest.raises(ValueError, match="routing_auxiliary_call_budget_exceeded"):
+        service.consume_auxiliary_call(
+            owner_id=OWNER, scope=SCOPE, decision_id=original.observation.routing_decision_id,
+            event=RoutingDecisionEvent(
+                event_type="auxiliary_call_reserved",
+                occurred_at=NOW + timedelta(seconds=3),
+                outcome_code="summary-call-budget-reserved",
+            ), now=NOW + timedelta(seconds=3),
+        )
+
+
+def test_postgres_auxiliary_call_budget_consumes_once_for_retried_event_id():
+    database = _RoutingSQLDatabase()
+    repository = PostgresRoutingDecisionRepository(database)
+    profile = _profile()
+    task = _task()
+    task = task.model_copy(update={"max_auxiliary_calls": 1})
+    service = RoutingDecisionService(EndpointRegistry((profile,)), repository)
+    decision = _route(service, profile, task=task)
+    event = RoutingDecisionEvent(
+        event_type="auxiliary_call_reserved",
+        event_id=uuid4(),
+        occurred_at=NOW + timedelta(seconds=1),
+        outcome_code="count-call-budget-reserved",
+    )
+
+    assert service.consume_auxiliary_call(
+        owner_id=OWNER, scope=SCOPE, decision_id=decision.observation.routing_decision_id,
+        event=event, now=NOW + timedelta(seconds=1),
+    ) == 1
+    assert service.consume_auxiliary_call(
+        owner_id=OWNER, scope=SCOPE, decision_id=decision.observation.routing_decision_id,
+        event=event, now=NOW + timedelta(seconds=2),
+    ) == 1
+    stored = repository.get(
+        owner_id=OWNER, scope=SCOPE, decision_id=decision.observation.routing_decision_id
+    )
+    assert stored.events[-1] == event
+    assert database.connection_value.records[decision.observation.routing_decision_id][
+        "auxiliary_calls_used"
+    ] == 1
+    with pytest.raises(PersistenceConflict, match="budget_exceeded"):
+        service.consume_auxiliary_call(
+            owner_id=OWNER, scope=SCOPE, decision_id=decision.observation.routing_decision_id,
+            event=RoutingDecisionEvent(
+                event_type="auxiliary_call_reserved",
+                occurred_at=NOW + timedelta(seconds=3),
+                outcome_code="new-call",
+            ), now=NOW + timedelta(seconds=3),
         )
 
 
@@ -1090,11 +1886,12 @@ def test_postgres_reselection_appends_flat_parent_event_and_increments_root_budg
         owner_id=OWNER,
         scope=SCOPE,
         decision_id=original.observation.routing_decision_id,
-        event=RoutingDecisionEvent(
-            event_type="preparation_failed",
-            occurred_at=NOW + timedelta(seconds=1),
-            reason_code="fit-failed",
-        ),
+            event=RoutingDecisionEvent(
+                event_type="preparation_failed",
+                occurred_at=NOW + timedelta(seconds=1),
+                reason_code="fit-failed",
+                endpoint_profile_id=original.observation.provisional_plan.selected_endpoint_profile_id,
+            ),
     )
 
     result = service.route(
@@ -1135,6 +1932,7 @@ def test_execution_plan_rejects_unbounded_or_cross_endpoint_final_facts():
             reselection_candidate_refs=(),
             execution_mode="STRICT_FREE",
             required_capabilities=frozenset({"bounded_generation"}),
+            root_deadline_at=NOW + timedelta(seconds=5),
             max_physical_attempts=1,
             max_reselections=0,
             max_auxiliary_calls=0,
@@ -1157,12 +1955,38 @@ def test_postgres_observation_repository_scopes_reads_and_appends_lifecycle_even
     service = RoutingDecisionService(EndpointRegistry((profile,)), repository)
     result = _route(service, profile, now=now)
     invocation_id = uuid4()
-    event = RoutingDecisionEvent(
+    attempt_id = uuid4()
+    reservation_event = RoutingDecisionEvent(
+        event_type="reservation_succeeded",
+        occurred_at=now + timedelta(seconds=1),
+        endpoint_profile_id=profile.endpoint_profile_id,
+        invocation_id=invocation_id,
+        attempt_id=attempt_id,
+        outcome_code="reserved",
+    )
+    repository.append_event(
+        owner_id=OWNER, scope=SCOPE,
+        decision_id=result.observation.routing_decision_id,
+        event=reservation_event,
+    )
+    started_event = RoutingDecisionEvent(
+        event_type="dispatch_started",
+        occurred_at=now + timedelta(milliseconds=1500),
+        endpoint_profile_id=profile.endpoint_profile_id,
+        invocation_id=invocation_id,
+        attempt_id=attempt_id,
+    )
+    repository.append_event(
+        owner_id=OWNER, scope=SCOPE,
+        decision_id=result.observation.routing_decision_id,
+        event=started_event,
+    )
+    completed_event = RoutingDecisionEvent(
         event_type="dispatch_completed",
         occurred_at=now + timedelta(seconds=2),
         endpoint_profile_id=profile.endpoint_profile_id,
         invocation_id=invocation_id,
-        attempt_id=uuid4(),
+        attempt_id=attempt_id,
         outcome_code="success",
     )
 
@@ -1170,8 +1994,32 @@ def test_postgres_observation_repository_scopes_reads_and_appends_lifecycle_even
         owner_id=OWNER,
         scope=SCOPE,
         decision_id=result.observation.routing_decision_id,
-        event=event,
+        event=completed_event,
     )
+    duplicate_append = repository.append_event(
+        owner_id=OWNER,
+        scope=SCOPE,
+        decision_id=result.observation.routing_decision_id,
+        event=completed_event,
+    )
+    with pytest.raises(PersistenceConflict, match="idempotency conflict"):
+        repository.append_event(
+            owner_id=OWNER,
+            scope=SCOPE,
+            decision_id=result.observation.routing_decision_id,
+            event=completed_event.model_copy(update={"outcome_code": "different-payload"}),
+        )
+    with pytest.raises(ValidationError, match="routing_decision_event_transition_invalid"):
+        repository.append_event(
+            owner_id=OWNER,
+            scope=SCOPE,
+            decision_id=result.observation.routing_decision_id,
+            event=RoutingDecisionEvent(
+                event_type="dispatch_started",
+                occurred_at=now + timedelta(seconds=3),
+                endpoint_profile_id=profile.endpoint_profile_id,
+            ),
+        )
     loaded = repository.get(
         owner_id=OWNER,
         scope=SCOPE,
@@ -1180,7 +2028,8 @@ def test_postgres_observation_repository_scopes_reads_and_appends_lifecycle_even
     by_request = repository.list(owner_id=OWNER, scope=SCOPE, request_id="request-123")
     by_invocation = repository.list(owner_id=OWNER, scope=SCOPE, invocation_id=invocation_id)
 
-    assert len(appended.events) == 2
+    assert len(appended.events) == 4
+    assert duplicate_append == appended
     assert loaded.observation == result.observation
     assert by_request[0].observation.routing_decision_id == result.observation.routing_decision_id
     assert by_invocation[0].events[-1].invocation_id == invocation_id
@@ -1233,6 +2082,10 @@ def test_phase21_migration_and_owner_export_inventory_cover_bounded_decision_rec
         Path(__file__).parents[1]
         / "src/personal_ai/persistence/migrations/020_routing_decisions.sql"
     ).read_text(encoding="utf-8")
+    lifecycle_migration = (
+        Path(__file__).parents[1]
+        / "src/personal_ai/persistence/migrations/021_routing_lifecycle_integrity.sql"
+    ).read_text(encoding="utf-8")
     export_repository = (
         Path(__file__).parents[1] / "src/personal_ai/persistence/postgres_auth.py"
     ).read_text(encoding="utf-8")
@@ -1246,6 +2099,8 @@ def test_phase21_migration_and_owner_export_inventory_cover_bounded_decision_rec
     assert "routing_decisions_expiry_idx" in migration
     assert "FOREIGN KEY (scope_id,parent_decision_id)" in migration
     assert "FOREIGN KEY (scope_id,root_decision_id)" in migration
+    assert "ADD COLUMN IF NOT EXISTS auxiliary_calls_used" in lifecycle_migration
+    assert "CHECK (auxiliary_calls_used BETWEEN 0 AND 16)" in lifecycle_migration
     assert "routing_decisions" in OWNER_DATA_COLLECTIONS
     assert "FROM routing_decisions WHERE owner_id=%s AND application_id=%s" in export_repository
     assert 'p_collection_counts["routing_decisions"]' in export_repository

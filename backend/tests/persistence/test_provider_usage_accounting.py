@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
 from uuid import uuid4
@@ -10,9 +11,11 @@ import anyio
 import httpx
 import pytest
 
+from personal_ai.auth.scope import ApplicationScope
 from personal_ai.persistence.postgres import PostgresDatabase
 from personal_ai.persistence.postgres_usage import PostgresProviderUsageAccounting
 from personal_ai.routing.contracts import QuotaBucket
+from personal_ai.routing.phase21 import QuotaReservationRef
 from personal_ai.search.providers import brave
 from personal_ai.search.providers.brave import BraveSearchAdapter, SearchError
 from personal_ai.settings import Settings
@@ -236,6 +239,65 @@ def test_unknown_quota_keeps_unknown_confidence_and_tracks_local_usage(postgres_
 
     assert before == (authority, "requests", "unknown", None, None, 0, 1)
     assert after == (authority, "requests", "unknown", None, None, 1, 0)
+
+
+def test_phase19_routing_proof_binds_live_attempt_scope_operation_endpoint_and_buckets(
+    postgres_database,
+):
+    decision_id = uuid4()
+    bucket = _bucket(f"synthetic-routing-proof-{uuid4()}", f"synthetic-account-{uuid4()}", limit=10)
+    endpoint = _endpoint(
+        f"synthetic:endpoint-{uuid4()}",
+        account=bucket.authority_scope_id,
+        credential="synthetic:key",
+        buckets=(bucket,),
+    )
+    invocation = replace(
+        _invocation(
+            f"owner-{uuid4()}", f"request-{uuid4()}", endpoint,
+        ),
+        routing_decision_id=str(decision_id),
+    )
+    attempt = _attempt()
+    accounting = PostgresProviderUsageAccounting(postgres_database)
+    accounting.begin_invocation(invocation)
+    reserved = accounting.reserve_attempt(invocation, attempt, max_attempts=3)
+    now = reserved.started_at + timedelta(seconds=1)
+    proof = QuotaReservationRef(
+        invocation_id=invocation.invocation_id,
+        attempt_id=reserved.attempt_id,
+        send_number=reserved.send_number,
+        operation="bounded_generation",
+        reserved_at=reserved.started_at,
+        buckets=((bucket.bucket_id, 1),),
+    )
+    expected = {
+        "reservation": proof,
+        "owner_id": invocation.owner_id,
+        "scope": ApplicationScope(
+            application_id=invocation.application_id,
+            workspace_id=invocation.workspace_id,
+        ),
+        "request_id": invocation.request_id,
+        "run_id": invocation.run_id,
+        "routing_decision_id": decision_id,
+        "endpoint_profile_id": endpoint.endpoint_profile_id,
+        "endpoint_profile_version": endpoint.profile_version,
+        "operation": "bounded_generation",
+        "expected_bucket_ids": frozenset({bucket.bucket_id}),
+        "max_physical_attempts": 3,
+        "now": now,
+    }
+    assert accounting.verify_routing_reservation(**expected)
+    assert not accounting.verify_routing_reservation(
+        **{**expected, "routing_decision_id": uuid4()}
+    )
+    assert not accounting.verify_routing_reservation(
+        **{**expected, "expected_bucket_ids": frozenset()}
+    )
+
+    _settle(accounting, invocation, reserved)
+    assert not accounting.verify_routing_reservation(**expected)
 
 
 def test_all_required_quota_buckets_reserve_or_deny_without_partial_units(

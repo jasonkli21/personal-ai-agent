@@ -288,6 +288,80 @@ class PostgresProviderUsageAccounting:
             raise RuntimeError("provider_usage_attempt_not_reserved")
         return reserved_attempt
 
+    def verify_routing_reservation(
+        self,
+        *,
+        reservation,
+        owner_id: str,
+        scope,
+        request_id: str,
+        run_id: str | None,
+        routing_decision_id: UUID,
+        endpoint_profile_id: str,
+        endpoint_profile_version: int,
+        operation: str,
+        expected_bucket_ids: frozenset[str],
+        max_physical_attempts: int,
+        now: datetime,
+    ) -> bool:
+        """Prove a ready routing plan is backed by a live Phase 19 attempt.
+
+        The receipt is reconstructed from the canonical invocation, physical
+        attempt, and bucket rows. Caller supplied IDs or bucket amounts alone
+        can never authorize a send.
+        """
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT i.owner_id,i.application_id,i.workspace_id,i.request_id,i.run_id,"
+                "i.routing_decision_id,i.endpoint_profile_id,i.endpoint_profile_version,"
+                "i.operation,i.outcome,a.send_number,a.started_at,a.status "
+                "FROM provider_attempts a JOIN provider_invocations i USING(invocation_id) "
+                "WHERE i.invocation_id=%s AND a.attempt_id=%s",
+                (reservation.invocation_id, reservation.attempt_id),
+            ).fetchone()
+            if row is None:
+                return False
+            (
+                stored_owner, stored_application, stored_workspace, stored_request,
+                stored_run, stored_decision, stored_endpoint, stored_version,
+                stored_operation, invocation_outcome, send_number, started_at, attempt_status,
+            ) = row
+            started_at = started_at.astimezone(UTC)
+            instant = now.astimezone(UTC)
+            if (
+                stored_owner != owner_id
+                or stored_application != scope.application_id
+                or stored_workspace != scope.workspace_id
+                or stored_request != request_id
+                or stored_run != run_id
+                or stored_decision != str(routing_decision_id)
+                or stored_endpoint != endpoint_profile_id
+                or int(stored_version) != endpoint_profile_version
+                or stored_operation != operation
+                or invocation_outcome != "running"
+                or int(send_number) != reservation.send_number
+                or reservation.operation != operation
+                or reservation.reserved_at != started_at
+                or attempt_status != "pending"
+                or int(send_number) > max_physical_attempts
+                or started_at > instant
+                or (instant - started_at).total_seconds() > self.stale_attempt_seconds
+            ):
+                return False
+            bucket_rows = connection.execute(
+                "SELECT bucket_id,reserved_units,state FROM provider_quota_reservations "
+                "WHERE attempt_id=%s ORDER BY bucket_id",
+                (reservation.attempt_id,),
+            ).fetchall()
+        actual = {bucket_id: int(units) for bucket_id, units, _ in bucket_rows}
+        states = {bucket_id: state for bucket_id, _units, state in bucket_rows}
+        supplied = dict(reservation.buckets)
+        return (
+            frozenset(actual) == expected_bucket_ids
+            and actual == supplied
+            and all(state in {"reserved", "unknown"} for state in states.values())
+        )
+
     def settle_attempt(
         self,
         invocation: InvocationMetadata,
