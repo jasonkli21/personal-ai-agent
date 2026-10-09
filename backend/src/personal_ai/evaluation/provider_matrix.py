@@ -25,6 +25,7 @@ from personal_ai.routing.phase21 import (
     quality_identity_sha256,
     task_configuration_sha256,
 )
+from personal_ai.validation.checks import constraint_passes, json_object, type_matches
 
 FIXTURE_PATH = Path(__file__).with_name("provider-matrix-fixtures.json")
 SCORING_POLICY_ID = "deterministic-task-matrix"
@@ -194,71 +195,6 @@ def evaluation_suite_identity(fixtures: Iterable[EvaluationFixture]):
     return suite_id, suite_version, scoring_id, scoring_version, digest
 
 
-def _json_object(text: str) -> dict | None:
-    try:
-        value = json.loads(text)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def _type_matches(value, expected_type: str) -> bool:
-    if expected_type == "string":
-        return isinstance(value, str)
-    if expected_type == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if expected_type == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected_type == "array":
-        return isinstance(value, list)
-    if expected_type == "object":
-        return isinstance(value, dict)
-    if expected_type == "boolean":
-        return isinstance(value, bool)
-    return False
-
-
-def _path(value, path: str):
-    current = value
-    for part in path.split("."):
-        if isinstance(current, dict) and part in current:
-            current = current[part]
-        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
-            current = current[int(part)]
-        else:
-            return None
-    return current
-
-
-def _constraint_passes(output, constraint) -> bool:
-    actual = _path(output, constraint.path)
-    expected = constraint.value
-    if actual is None:
-        return False
-    if constraint.operator == "lte":
-        return (
-            isinstance(actual, (int, float))
-            and not isinstance(actual, bool)
-            and isinstance(expected, (int, float))
-            and not isinstance(expected, bool)
-            and actual <= expected
-        )
-    if constraint.operator == "gte":
-        return (
-            isinstance(actual, (int, float))
-            and not isinstance(actual, bool)
-            and isinstance(expected, (int, float))
-            and not isinstance(expected, bool)
-            and actual >= expected
-        )
-    if constraint.operator == "equals":
-        return actual == expected
-    if constraint.operator == "not_equals":
-        return actual != expected
-    if constraint.operator == "not_contains":
-        return isinstance(actual, str) and str(expected).casefold() not in actual.casefold()
-    return False
-
 
 def score_output(
     fixture: EvaluationFixture,
@@ -272,13 +208,13 @@ def score_output(
     quota_confidence: str = "unknown",
 ) -> EvaluationMetrics:
     """Apply shared structural checks and the suite's registered task validator."""
-    output = _json_object(output_text)
+    output = json_object(output_text)
     schema_validity = 0.0
     if output is not None:
         schema_validity = float(
             set(fixture.output_schema.required_fields).issubset(output)
             and all(
-                _type_matches(output.get(key), expected_type)
+                type_matches(output.get(key), expected_type)
                 for key, expected_type in fixture.output_schema.field_types.items()
                 if key in output
             )
@@ -289,7 +225,7 @@ def score_output(
         raise ValueError("evaluation_scoring_policy_unregistered")
     semantic = scorer(fixture, output)
 
-    constraints = [_constraint_passes(output or {}, row) for row in fixture.hard_constraints]
+    constraints = [constraint_passes(output or {}, row) for row in fixture.hard_constraints]
     hard_constraint_satisfaction = sum(constraints) / len(constraints) if constraints else 1.0
     privacy = float(
         not any(marker.casefold() in output_text.casefold() for marker in fixture.forbidden_literals)

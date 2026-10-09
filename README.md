@@ -82,8 +82,10 @@ privacy, capability, count-compatibility, and quota-authority facts, and can
 produce strict-free candidates with deterministic rejection reasons. The internal routing
 coordinator persists compact decisions and requires atomic usage reservation plus
 a current, single-use dispatch claim; see the [Phase 18–21 refactor](docs/personal-ai-chapter-2/phase-18-21-architecture-refactor-implementation-plan.md). Current
-application workflows remain Gemini-only; request selection is reserved for a
-later routing phase.
+application workflows remain Gemini-only behind Phase 15 membership and revocation
+acceptance. An internal [bounded task cascade](docs/personal-ai-chapter-2/phase-24-implementation-guide.md)
+validates buffered output and accounts for every count/generation attempt; direct
+routing remains the default because the synthetic baseline did not justify adoption.
 
 Provider sends have a separate usage ledger for physical attempts, quota
 reservations, endpoint health, and bounded owner-attributed summaries. Its

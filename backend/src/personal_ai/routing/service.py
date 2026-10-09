@@ -283,10 +283,17 @@ class RoutingDecisionService:
                 static.assessments,
                 key=lambda item: (item.profile.endpoint_profile_id, item.profile.profile_version),
             ))
+            cascade_endpoint = None
+            if task.cascade_policy is not None:
+                if depth >= len(task.cascade_policy.endpoint_order):
+                    raise ValueError("cascade_depth_exhausted")
+                cascade_endpoint = task.cascade_policy.endpoint_order[depth]
             authorization_references = {}
             authorization_failures = set()
             authorized_profiles = []
             for assessment in assessments:
+                if (cascade_endpoint is not None and assessment.profile.endpoint_profile_id != cascade_endpoint):
+                    continue
                 if assessment.rejection_reasons or (
                     assessment.profile.endpoint_profile_id in request.excluded_endpoint_profile_ids
                 ):
@@ -342,6 +349,8 @@ class RoutingDecisionService:
             for assessment in assessments:
                 profile = assessment.profile
                 reasons = list(assessment.rejection_reasons)
+                if cascade_endpoint is not None and profile.endpoint_profile_id != cascade_endpoint:
+                    reasons.append("cascade-stage-excluded")
                 references = (
                     [authorization_references[profile.endpoint_profile_id]]
                     if profile.endpoint_profile_id in authorization_references
@@ -714,6 +723,8 @@ class RoutingDecisionService:
                 if database_time(c) >= event.permit.expires_at:
                     raise RoutingFinalizationError("routing_permit_expired")
                 return event.permit
+            if record.decision.task.cascade_policy is not None and any(e.validation is not None for e in record.events):
+                raise RoutingFinalizationError("cascade_attempt_already_validated")
             if record.status not in {"selected", "failed"}:
                 raise RoutingFinalizationError("routing_decision_not_finalizable")
             try:
@@ -735,24 +746,7 @@ class RoutingDecisionService:
                     )
                     now = database_time(c)
                     invocation = _invocation(record.decision, profile, preparation, operation)
-                    units = unit_reservations(
-                        input_tokens=preparation.input_tokens,
-                        output_tokens=record.decision.request.requirements.output_tokens,
-                    )
-                    attempt = AttemptMetadata(
-                        attempt_id=uuid5(invocation.invocation_id, "provider-attempt:1"),
-                        parent_attempt_id=None,
-                        send_number=1,
-                        started_at=now,
-                        reservation_units=units,
-                        reserved_tokens=dict(units).get("tokens", 0),
-                    )
-                    attempt = self.usage.reserve_attempt_in_transaction(
-                        c,
-                        invocation,
-                        attempt,
-                        max_attempts=record.decision.task.max_physical_attempts,
-                    )
+                    attempt = self._reserve_physical_attempt(c, record, invocation, now=now)
                     expiry = min(
                         record.decision.root_deadline_at,
                         evidence.valid_until,
@@ -847,7 +841,7 @@ class RoutingDecisionService:
                 max_attempts=record.decision.task.max_physical_attempts,
                 now=now,
             )
-            self.usage.claim_attempt_in_transaction(c, attempt.attempt_id, now=now)
+            self._claim_physical_attempt(c, record, invocation, attempt, now=now)
             self.observations.append_in_transaction(
                 c,
                 scope=scope,
@@ -863,16 +857,56 @@ class RoutingDecisionService:
             raise RoutingFinalizationError("routing_permit_expired")
         return profile, invocation, attempt
 
-    def dispatch(self, *, owner_id, scope, permit, operation, send):
+    def dispatch(self, *, owner_id, scope, permit, operation, send, validate=None):
         """Internal transport seam. Callback receives the exact committed attempt.
 
         Callback must perform one send and return (value, neutral AttemptResult).
         Any exception keeps conservative unknown accounting and closes no success.
         Application workflows remain gated on Phase 15; there is no HTTP route.
         """
+        with self.observations.transaction(owner_id=owner_id) as c:
+            record = self.observations.get_in_transaction(
+                c, owner_id=owner_id, scope=scope, decision_id=permit.decision_id, lock=True
+            )
+        if record.decision.task.cascade_policy is not None and validate is None:
+            raise RoutingFinalizationError("cascade_validation_required")
         profile, invocation, attempt = self.claim(
             owner_id=owner_id, scope=scope, permit=permit, operation=operation
         )
+        try:
+            value, _result = self._send_and_settle(profile, invocation, attempt, send)
+        except BaseException:
+            self.finish(owner_id=owner_id, scope=scope, decision_id=permit.decision_id)
+            raise
+        validation = None
+        if validate is not None:
+            from personal_ai.validation.tasks import ValidationResult
+            try:
+                from personal_ai.llm.client import GenerationResult
+                if record.decision.task.cascade_policy is not None and (
+                    not isinstance(value, GenerationResult)
+                    or (value.metadata.identity.provider_id, value.metadata.identity.model_id,
+                        value.metadata.identity.serializer_id)
+                    != (profile.provider_id, profile.model_id, profile.serializer_id)
+                ):
+                    validation = ValidationResult(accepted=False, reasons=("producing_endpoint_mismatch",))
+                elif datetime.now(UTC) >= record.decision.root_deadline_at:
+                    validation = ValidationResult(accepted=False, reasons=("deadline_exhausted",))
+                else:
+                    validation = ValidationResult.model_validate(validate(value).model_dump())
+            except Exception:  # noqa: BLE001 - validator failure never exposes buffered output
+                validation = ValidationResult(accepted=False, reasons=("validator_failed",))
+        self.finish(
+            owner_id=owner_id,
+            scope=scope,
+            decision_id=permit.decision_id,
+            validation=validation,
+        )
+        if validation is not None and not validation.accepted:
+            return None
+        return value
+
+    def _send_and_settle(self, profile, invocation, attempt, send):
         try:
             value, result = send(profile, invocation, attempt)
             from personal_ai.usage.contracts import AttemptResult
@@ -902,25 +936,104 @@ class RoutingDecisionService:
             self.usage.complete_invocation(
                 invocation, outcome=result.outcome, completed_at=result.completed_at
             )
-            self.finish(owner_id=owner_id, scope=scope, decision_id=permit.decision_id)
             raise
         self.usage.settle_attempt(invocation, attempt, result)
         self.usage.complete_invocation(
             invocation, outcome=result.outcome, completed_at=result.completed_at
         )
-        self.finish(
-            owner_id=owner_id,
-            scope=scope,
-            decision_id=permit.decision_id,
-        )
+        return value, result
+
+    def dispatch_auxiliary(self, *, owner_id, scope, decision_id, event_id,
+                           operation, input_tokens, source_references, send):
+        """One explicitly admitted auxiliary physical send, under root bounds.
+
+        The auxiliary event is the single-use identity; incomplete or unknown
+        outcomes fence the same P19 request. No nested SDK accounting/retry.
+        """
+        from dataclasses import replace
+
+        from personal_ai.routing.contracts import CountRequirement, EndpointCandidateRequirements
+
+        if operation != "token_counting":
+            raise RoutingFinalizationError("routing_auxiliary_operation_unsupported")
+        self.consume_auxiliary_call(owner_id=owner_id, scope=scope,
+                                    decision_id=decision_id, event_id=event_id)
+        with self.observations.transaction(owner_id=owner_id) as c:
+            record = self.observations.lock_root(
+                c, owner_id=owner_id, scope=scope, decision_id=decision_id
+            )
+            decision = record.decision
+            now = database_time(c)
+            if (record.status != "selected" or now >= decision.root_deadline_at
+                or decision.task.cascade_policy is None
+                or not sources_allowed(decision, source_references)
+                or not 0 <= input_tokens <= decision.request.requirements.input_tokens):
+                raise RoutingFinalizationError("routing_auxiliary_not_permitted")
+            requirements = EndpointCandidateRequirements(
+                execution_mode="STRICT_FREE", sensitivity=decision.request.requirements.sensitivity,
+                required_capabilities=frozenset({"token_counting"}), input_tokens=input_tokens,
+                count=CountRequirement(minimum_confidence="authoritative",
+                    structured_schema_id=decision.request.requirements.structured_schema_id),
+            )
+            profile = self.registry.revalidate_selected(
+                decision.selected, requirements, now=now, connection=c
+            )
+            auxiliary_request = decision.request.model_copy(update={
+                "operation": operation, "requirements": requirements,
+            })
+            evidence = self._authorize(c, owner_id, scope, profile.ref, auxiliary_request,
+                                       source_references, now)
+            invocation = replace(
+                _invocation(decision, profile, None, operation),
+                invocation_id=uuid5(decision_id, f"auxiliary:{event_id}"),
+                input_tokens_estimate=input_tokens, output_tokens_bound=0,
+            )
+            self.usage.assert_invocation_unstarted_in_transaction(c, invocation)
+            attempt = self._reserve_physical_attempt(c, record, invocation, now=now)
+            self._claim_physical_attempt(c, record, invocation, attempt, now=now)
+            expiry = min(decision.root_deadline_at, evidence.valid_until)
+            if database_time(c) >= expiry:
+                raise RoutingFinalizationError("routing_auxiliary_expired")
+        if datetime.now(UTC) >= expiry:
+            raise RoutingFinalizationError("routing_auxiliary_expired")
+        value, result = self._send_and_settle(profile, invocation, attempt, send)
+        if result.outcome != "success" or datetime.now(UTC) >= expiry:
+            raise RoutingFinalizationError("routing_auxiliary_incomplete")
         return value
 
-    def finish(self, *, owner_id, scope, decision_id, reason="coordination-failed"):
+    def _reserve_physical_attempt(self, c, record, invocation, *, now):
+        units = unit_reservations(input_tokens=invocation.input_tokens_estimate,
+                                  output_tokens=invocation.output_tokens_bound)
+        attempt = AttemptMetadata(
+            attempt_id=uuid5(invocation.invocation_id, "provider-attempt:1"),
+            parent_attempt_id=None, send_number=1, started_at=now,
+            reservation_units=units, reserved_tokens=dict(units).get("tokens", 0),
+        )
+        attempt = self.usage.reserve_attempt_in_transaction(
+            c, invocation, attempt, max_attempts=record.decision.task.max_physical_attempts,
+        )
+        self._check_cascade_budget(c, record, invocation)
+        return attempt
+
+    def _claim_physical_attempt(self, c, record, invocation, attempt, *, now):
+        self._check_cascade_budget(c, record, invocation)
+        self.usage.claim_attempt_in_transaction(c, attempt.attempt_id, now=now)
+
+    def _check_cascade_budget(self, connection, record, invocation):
+        policy = record.decision.task.cascade_policy
+        if policy is not None:
+            self.usage.assert_request_budget_in_transaction(
+                connection, invocation, max_reserved_tokens=policy.max_reserved_tokens,
+                quota_limits=policy.quota_limits,
+            )
+
+    def finish(self, *, owner_id, scope, decision_id, reason="coordination-failed", validation=None):
         with self.observations.transaction(owner_id=owner_id) as c:
             record = self.observations.lock_root(
                 c, owner_id=owner_id, scope=scope, decision_id=decision_id
             )
             kind = "failed"
+            terminal_attempt_id = None
             if record.status == "dispatched":
                 dispatched = next(e for e in reversed(record.events) if e.kind == "dispatched")
                 receipt = next(
@@ -931,8 +1044,15 @@ class RoutingDecisionService:
                 outcome = self.usage.attempt_outcome_in_transaction(
                     c, receipt.invocation_id, dispatched.attempt_id
                 )
-                kind = "closed" if outcome == "success" else "failed"
-                reason = "attempt-completed"
+                terminal_attempt_id = dispatched.attempt_id
+                if record.decision.task.cascade_policy is not None and validation is None and outcome == "success":
+                    from personal_ai.validation.tasks import ValidationResult
+                    validation = ValidationResult(accepted=False, reasons=("validation_unavailable",))
+                accepted = validation is None or validation.accepted
+                kind = "closed" if outcome == "success" and accepted else "failed"
+                if validation is not None and outcome != "success" and validation.accepted:
+                    raise RoutingFinalizationError("cascade_non_success_validation")
+                reason = "validation-rejected" if validation is not None and not validation.accepted else "attempt-completed"
             self.observations.append_in_transaction(
                 c,
                 scope=scope,
@@ -941,6 +1061,8 @@ class RoutingDecisionService:
                     kind=kind,
                     occurred_at=database_time(c),
                     reason=reason,
+                    validation=validation,
+                    attempt_id=terminal_attempt_id,
                 ),
             )
 
@@ -963,7 +1085,7 @@ def _invocation(decision, profile, preparation, operation):
         routing_strategy_id=decision.strategy.strategy_id,
         routing_strategy_version=decision.strategy.semantic_version,
         policy_version=decision.request.policy_version,
-        input_tokens_estimate=preparation.input_tokens,
+        input_tokens_estimate=preparation.input_tokens if preparation else None,
         output_tokens_bound=decision.request.requirements.output_tokens,
     )
 

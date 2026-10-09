@@ -89,6 +89,57 @@ class PostgresProviderUsageAccounting:
             raise denial
         return result
 
+    def assert_invocation_unstarted_in_transaction(self, connection, invocation):
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+            (f"provider-usage:{_request_budget_scope(invocation)}",),
+        )
+        if connection.execute(
+            "SELECT 1 FROM provider_attempts WHERE invocation_id=%s LIMIT 1",
+            (invocation.invocation_id,),
+        ).fetchone() is not None:
+            raise UsageAdmissionDenied("provider_invocation_already_started")
+
+    def assert_request_budget_in_transaction(
+        self, connection, invocation, *, max_reserved_tokens, quota_limits
+    ):
+        """Read canonical P19 reservations under the existing request lock.
+
+        Count conservative original reservations, including failed/settled sends;
+        quota reset never refunds the root operation's cumulative budget.
+        """
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+            (f"provider-usage:{_request_budget_scope(invocation)}",),
+        )
+        units = dict(unit_reservations(input_tokens=invocation.input_tokens_estimate,
+                                       output_tokens=invocation.output_tokens_bound))
+        if any(_reservation_amount(bucket, units) is None for bucket in
+               _applicable_buckets(invocation.endpoint.quota_buckets, invocation.operation)):
+            raise UsageAdmissionDenied("cascade_quota_units_unpriced")
+        scope = (invocation.owner_id, invocation.application_id,
+                 invocation.workspace_id, invocation.request_id)
+        tokens = connection.execute(
+            "SELECT COALESCE(sum(GREATEST(a.reserved_tokens,COALESCE(a.total_tokens,0),"
+            "COALESCE(a.input_tokens,0)+COALESCE(a.output_tokens,0))),0) FROM provider_attempts a "
+            "JOIN provider_invocations i USING(invocation_id) WHERE i.owner_id=%s "
+            "AND i.application_id=%s AND i.workspace_id IS NOT DISTINCT FROM %s "
+            "AND i.request_id=%s", scope,
+        ).fetchone()[0]
+        if tokens > max_reserved_tokens:
+            raise UsageAdmissionDenied("cascade_token_budget_exceeded")
+        rows = connection.execute(
+            "SELECT r.bucket_id,sum(GREATEST(r.reserved_units,COALESCE(r.settled_units,0))) "
+            "FROM provider_quota_reservations r "
+            "JOIN provider_attempts a USING(attempt_id) "
+            "JOIN provider_invocations i USING(invocation_id) WHERE i.owner_id=%s "
+            "AND i.application_id=%s AND i.workspace_id IS NOT DISTINCT FROM %s "
+            "AND i.request_id=%s GROUP BY r.bucket_id", scope,
+        ).fetchall()
+        if any(bucket not in quota_limits or units > quota_limits[bucket]
+               for bucket, units in rows):
+            raise UsageAdmissionDenied("cascade_quota_budget_exceeded")
+
     def reserve_attempt_in_transaction(self, connection, invocation, attempt, *, max_attempts):
         """Small transaction-aware seam; caller owns commit, never provider IO."""
         now = attempt.started_at.astimezone(UTC)

@@ -18,6 +18,7 @@ from personal_ai.routing.contracts import (
 from personal_ai.routing.phase21 import (
     AuthorizationEvidence,
     CandidateFact,
+    CascadePolicy,
     DispatchPermit,
     EndpointPriority,
     PreparationIdentity,
@@ -69,6 +70,7 @@ __all__ = [
     "CandidateAssessment",
     "CandidateFact",
     "CandidateSetOverflowError",
+    "CascadePolicy",
     "CountRequirement",
     "CounterCompatibility",
     "DataUsePolicy",

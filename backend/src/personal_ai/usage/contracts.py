@@ -135,6 +135,15 @@ class ProviderUsageAccounting(Protocol):
         self, invocation: InvocationMetadata, attempt: AttemptMetadata, *, max_attempts: int
     ) -> AttemptMetadata | None: ...
 
+    def assert_request_budget_in_transaction(
+        self, connection, invocation: InvocationMetadata, *, max_reserved_tokens: int,
+        quota_limits: dict[str, int],
+    ) -> None: ...
+
+    def assert_invocation_unstarted_in_transaction(
+        self, connection, invocation: InvocationMetadata,
+    ) -> None: ...
+
     def settle_attempt(
         self, invocation: InvocationMetadata, attempt: AttemptMetadata, result: AttemptResult
     ) -> None: ...

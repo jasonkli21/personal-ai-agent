@@ -22,6 +22,7 @@ from personal_ai.routing.contracts import (
     EndpointProfile,
     EndpointRef,
 )
+from personal_ai.validation.tasks import ValidationResult
 
 MAX_ROUTING_DECISION_BYTES = 65_536
 MAX_ROUTING_OUTCOME_BYTES = 16_384
@@ -65,6 +66,8 @@ def task_configuration_sha256(task: RoutingTaskProfile) -> str:
     were added to ``RoutingPreferences``.
     """
     task_payload = task.model_dump(mode="json")
+    if task.cascade_policy is None:
+        task_payload.pop("cascade_policy", None)
     for name in (
         "quota_scarcity_weight",
         "quota_unknown_penalty_weight",
@@ -263,6 +266,33 @@ class RoutingPreferences(_FrozenModel):
     degraded_health_penalty: int = Field(default=250, ge=0, le=1_000_000)
 
 
+class CascadePolicy(_FrozenModel):
+    """Trusted weaker-to-stronger order, not inferred from provider names.
+
+    P21 owns depth/attempt/auxiliary/time bounds; P19 owns cumulative reservations.
+    Empty quota limits are forbidden: every applicable bucket must be covered.
+    """
+
+    endpoint_order: tuple[str, ...] = Field(min_length=1, max_length=5)
+    input_contract_id: str = Field(min_length=1, max_length=200)
+    output_contract_id: str = Field(min_length=1, max_length=200)
+    max_reserved_tokens: int = Field(ge=1, le=10_000_000)
+    quota_limits: dict[str, int] = Field(min_length=1, max_length=128)
+    max_output_bytes: int = Field(default=65536, ge=1, le=262144)
+
+    @model_validator(mode="after")
+    def coherent(self):
+        if len(set(self.endpoint_order)) != len(self.endpoint_order):
+            raise ValueError("cascade_endpoint_duplicate")
+        for value in (*self.endpoint_order, self.input_contract_id, self.output_contract_id,
+                      *self.quota_limits):
+            _safe_id(value)
+        if any(type(value) is not int or not 0 <= value <= 1_000_000_000
+               for value in self.quota_limits.values()):
+            raise ValueError("cascade_quota_limit_invalid")
+        return self
+
+
 class RoutingTaskProfile(_FrozenModel):
     """Versioned policy for a known operation; callers do not classify with an LLM."""
 
@@ -279,6 +309,7 @@ class RoutingTaskProfile(_FrozenModel):
     validator_version: str | None = Field(default=None, max_length=100)
     escalation_allowed: bool = False
     cascade_allowed: bool = False
+    cascade_policy: CascadePolicy | None = None
     allow_source_narrowing: bool = False
     max_physical_attempts: int = Field(default=1, ge=1, le=32)
     max_reselections: int = Field(default=0, ge=0, le=4)
@@ -304,6 +335,15 @@ class RoutingTaskProfile(_FrozenModel):
             self.endpoint_priorities
         ):
             raise ValueError("routing_endpoint_priority_duplicate")
+        if self.cascade_policy is not None:
+            depth = len(self.cascade_policy.endpoint_order) - 1
+            if (not self.cascade_allowed or not self.validator_id
+                or (depth and not self.escalation_allowed)
+                or self.max_reselections < depth
+                or self.max_physical_attempts < depth + 1
+                or self.max_auxiliary_calls < depth + 1
+                or self.required_capabilities & {"streaming", "search", "lookup", "embeddings"}):
+                raise ValueError("cascade_task_bounds_invalid")
         return self
 
     def priority_for(self, endpoint_profile_id: str) -> int:
@@ -938,6 +978,7 @@ class RoutingEvent(_FrozenModel):
     linked_decision_id: UUID | None = None
     preparation: PreparationIdentity | None = None
     permit: DispatchPermit | None = None
+    validation: ValidationResult | None = None
 
     @field_validator("occurred_at")
     @classmethod
@@ -948,6 +989,12 @@ class RoutingEvent(_FrozenModel):
     def bounded(self):
         if len(self.model_dump_json().encode()) > MAX_ROUTING_OUTCOME_BYTES:
             raise ValueError("routing_event_payload_too_large")
+        if self.validation is not None and (
+            self.kind not in {"closed", "failed"} or self.attempt_id is None
+            or (self.kind == "closed") != self.validation.accepted
+            or len(self.model_dump_json().encode()) > MAX_ROUTING_TERMINAL_EVENT_BYTES
+        ):
+            raise ValueError("routing_validation_event_invalid")
         if self.kind == "authorized" and (
             self.permit is None
             or self.preparation is None
@@ -1026,6 +1073,8 @@ class RoutingRecord(_FrozenModel):
                 or event.occurred_at >= receipt.expires_at
             ):
                 raise ValueError("routing_dispatch_receipt_mismatch")
+            if event.validation is not None and (receipt is None or event.attempt_id != receipt.attempt_id):
+                raise ValueError("routing_validation_attempt_mismatch")
             if i:
                 expected = transition(expected, event.kind)
         if sum(len(e.model_dump_json().encode("utf-8")) for e in self.events) > MAX_ROUTING_EVENTS_BYTES:

@@ -1,4 +1,4 @@
-.PHONY: research-eval decision-eval domain-eval iterative-research-eval itinerary-proposal-eval quota-scarcity-eval memory-lifecycle-eval memory-eval context-eval context-plan-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend persistence-up persistence-down persistence-ready persistence-bootstrap persistence-clean persistence-test-up persistence-test-down persistence-test
+.PHONY: cascade-eval research-eval decision-eval domain-eval iterative-research-eval itinerary-proposal-eval quota-scarcity-eval memory-lifecycle-eval memory-eval context-eval context-plan-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend persistence-up persistence-down persistence-ready persistence-bootstrap persistence-clean persistence-test-up persistence-test-down persistence-test
 .DEFAULT_GOAL := backend-test
 
 backend-build:
@@ -97,3 +97,6 @@ persistence-test-down:
 
 persistence-test:
 	cd backend && PERSISTENCE_TEST_POSTGRES_DSN='postgresql://personal_ai:personal_ai_test_only@127.0.0.1:54330/personal_ai_test' PERSISTENCE_TEST_DYNAMODB_ENDPOINT='http://127.0.0.1:8001' AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local AWS_DEFAULT_REGION=us-east-1 python -m pytest -m persistence_integration tests/persistence
+
+cascade-eval:
+	cd backend && python -m pytest tests/test_cascade_evaluation.py -q -s
