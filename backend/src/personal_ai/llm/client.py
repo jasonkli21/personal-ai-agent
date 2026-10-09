@@ -10,6 +10,7 @@ import math
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
+from uuid import UUID
 
 import anyio
 
@@ -92,6 +93,38 @@ GenerationStatus = Literal["success", "incomplete", "failure", "rejected"]
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionProvenance:
+    """Observation trust, independent of provider and conversation ownership.
+
+    Bridge observations are local-client facts, not cloud-verified billing proof.
+    Manual labels are optional user declarations and confer no connection authority.
+    """
+
+    mode: Literal["connected_provider", "manual_external"]
+    fact_source: Literal["bridge_observed", "provider_reported", "user_declared"]
+    provider_id: str | None = None
+    model_id: str | None = None
+    connection_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"connected_provider", "manual_external"}:
+            raise ValueError("execution_provenance_invalid")
+        for label in (self.provider_id, self.model_id):
+            if label is not None and (not label.strip() or len(label) > 200):
+                raise ValueError("execution_provenance_invalid")
+        if self.mode == "manual_external":
+            if self.fact_source != "user_declared" or self.connection_id is not None:
+                raise ValueError("manual_provenance_cannot_claim_connection")
+        elif (
+            self.fact_source not in {"bridge_observed", "provider_reported"}
+            or self.provider_id is None or self.model_id is None
+        ):
+            raise ValueError("connected_provenance_requires_observation")
+        if self.connection_id is not None:
+            UUID(self.connection_id)
+
+
+@dataclass(frozen=True, slots=True)
 class GenerationMetadata:
     """Terminal status and per-invocation attribution without provider payloads."""
 
@@ -102,6 +135,15 @@ class GenerationMetadata:
     rate_limits: ProviderRateLimitMetadata | None = None
     invocation_id: str | None = None
     attempt_ids: tuple[str, ...] = ()
+    provenance: ExecutionProvenance | None = None
+
+    def __post_init__(self) -> None:
+        if self.provenance is not None and (
+            self.provenance.mode != "connected_provider"
+            or self.provenance.provider_id != self.identity.provider_id
+            or self.provenance.model_id != self.identity.model_id
+        ):
+            raise ValueError("generation_provenance_mismatch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +159,25 @@ class GenerationResult:
         if self.metadata.status == "rejected":
             raise LLMRejectedError("language model rejected the request")
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalCompletion:
+    """Future external-turn value; no bridge is required for a manual declaration."""
+
+    text: str
+    provenance: ExecutionProvenance
+    generation: GenerationMetadata | None = None
+
+    def __post_init__(self) -> None:
+        if self.provenance.mode == "manual_external":
+            if self.generation is not None:
+                raise ValueError("manual_completion_cannot_claim_generation")
+        elif (
+            self.generation is None or self.generation.status != "success"
+            or self.generation.provenance != self.provenance
+        ):
+            raise ValueError("external_completion_requires_success")
 
 
 class BoundedTextStream(AsyncIterator[str]):

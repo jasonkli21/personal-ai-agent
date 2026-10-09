@@ -18,6 +18,8 @@ dependencies = [
   "psycopg[binary,pool]>=3.2,<4.0",
   "boto3>=1.35,<2.0",
   "litellm==1.102.1",
+  "pyjwt[crypto]>=2.10,<3",
+  "cryptography>=46,<51",
 ]
 
 [project.optional-dependencies]
