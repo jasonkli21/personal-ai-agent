@@ -53,8 +53,11 @@ class PreparedExecution(ApplicationScope):
 
     def canonical(self) -> bytes:
         return json.dumps(
-            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False, allow_nan=False,
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
         ).encode("utf-8")
 
     @property
@@ -64,14 +67,24 @@ class PreparedExecution(ApplicationScope):
     @property
     def dispatch_identity(self) -> str:
         # Proof IDs can be reissued; this scoped reservation cannot be sent twice.
-        return hashlib.sha256(json.dumps([
-            self.owner_id, self.application_id, self.workspace_id,
-            str(self.conversation_id), str(self.reservation_id),
-        ], separators=(",", ":")).encode()).hexdigest()
+        return hashlib.sha256(
+            json.dumps(
+                [
+                    self.owner_id,
+                    self.application_id,
+                    self.workspace_id,
+                    str(self.conversation_id),
+                    str(self.reservation_id),
+                ],
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
 
     def inference_context(self) -> InferenceContext:
         return InferenceContext(
-            self.effective_sensitivity, self.maximum_sensitivity, self.policy_version,
+            self.effective_sensitivity,
+            self.maximum_sensitivity,
+            self.policy_version,
         )
 
     def chat_messages(self) -> tuple[ChatMessage, ...]:

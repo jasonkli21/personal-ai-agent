@@ -29,7 +29,7 @@ from personal_ai.llm.metadata import ProviderRateLimitMetadata
 class ChatMessage:
     """A single ordered, active-path chat message supplied to an LLM."""
 
-    role: MessageRole | Literal["system"]
+    role: MessageRole | Literal["system", "developer"]
     content: str
 
 

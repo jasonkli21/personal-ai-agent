@@ -36,10 +36,15 @@ class DispatchGrant(BaseModel):
     expires_at: int = Field(strict=True, ge=0)
 
     def canonical(self) -> bytes:
-        return b"personal-ai-dispatch-v1\0" + json.dumps(
-            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode()
+        return (
+            b"personal-ai-dispatch-v1\0"
+            + json.dumps(
+                self.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        )
 
 
 class SignedDispatchGrant(BaseModel):
@@ -58,15 +63,29 @@ class DispatchGrantVerifier:
         self.issuer, self.keys, self.audience = issuer, dict(keys), audience
 
     def verify(
-        self, proof: SignedDispatchGrant, package: PreparedExecution, *, caller_id: UUID, now: int,
+        self,
+        proof: SignedDispatchGrant,
+        package: PreparedExecution,
+        *,
+        caller_id: UUID,
+        now: int,
     ) -> DispatchGrant:
+        try:
+            proof = SignedDispatchGrant.model_validate(proof.model_dump())
+            package = PreparedExecution.model_validate(package.model_dump())
+        except (ValueError, AttributeError, TypeError):
+            raise InvalidDispatchGrant() from None
         claims = proof.claims
         key = self.keys.get(claims.key_id)
         if (
-            key is None or claims.issuer != self.issuer or claims.audience != self.audience
-            or claims.caller_id != caller_id or claims.package_hash != package.fingerprint
+            key is None
+            or claims.issuer != self.issuer
+            or claims.audience != self.audience
+            or claims.caller_id != caller_id
+            or claims.package_hash != package.fingerprint
             or claims.connection_id != package.connection_id
-            or claims.provider_id != package.provider_id or claims.model_id != package.model_id
+            or claims.provider_id != package.provider_id
+            or claims.model_id != package.model_id
             or claims.policy_version != package.policy_version
             or claims.effective_sensitivity != package.effective_sensitivity
             or not claims.issued_at <= now < claims.expires_at
