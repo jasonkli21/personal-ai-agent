@@ -25,6 +25,25 @@ def test_settings_load_from_example_file() -> None:
     assert settings.allowed_web_origins == ["http://localhost:3000"]
 
 
+def test_provider_usage_stale_threshold_exceeds_longest_provider_timeout():
+    settings = Settings(
+        _env_file=None,
+        ai_provider="gemini",
+        ai_model="synthetic",
+        request_timeout_seconds=300,
+    )
+    assert settings.provider_usage_stale_attempt_seconds == 360
+
+    with pytest.raises(ValidationError, match="provider_usage_stale_attempt_timeout_unsafe"):
+        Settings(
+            _env_file=None,
+            ai_provider="gemini",
+            ai_model="synthetic",
+            request_timeout_seconds=300,
+            provider_usage_stale_attempt_seconds=359,
+        )
+
+
 def test_production_refuses_development_authentication() -> None:
     with pytest.raises(ValidationError, match="authentication_configuration_invalid"):
         Settings(

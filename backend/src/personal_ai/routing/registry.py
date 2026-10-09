@@ -135,6 +135,12 @@ class EndpointRegistry:
     def registry_version(self) -> str:
         return self.snapshot.registry_version
 
+    def refresh(self) -> EndpointRegistrySnapshot:
+        """Reload the durable snapshot before attributing a provider dispatch."""
+        with self._lock:
+            self._refresh_from_repository_locked()
+            return self._snapshot
+
     def candidates(
         self,
         requirements: EndpointCandidateRequirements,

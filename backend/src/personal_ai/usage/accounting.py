@@ -26,16 +26,18 @@ def new_invocation(
             task_id=task_id if task_id is not None else scope.task_id,
             run_id=run_id if run_id is not None else scope.run_id,
         )
+    invocation_id = scope.invocation_id or uuid4()
     return InvocationMetadata(
-        invocation_id=uuid4(),
+        invocation_id=invocation_id,
         owner_id=scope.owner_id,
         application_id=scope.application_id,
         workspace_id=scope.workspace_id,
         task_id=scope.task_id,
         operation=operation,
-        request_id=(scope.request_id if scope.request_id != "unscoped" else str(uuid4())),
+        request_id=(scope.request_id if scope.request_id != "unscoped" else str(invocation_id)),
         run_id=scope.run_id,
         endpoint=endpoint,
+        registry_version=endpoint.registry_version,
         input_tokens_estimate=input_tokens_estimate,
         output_tokens_bound=output_tokens_bound,
     )

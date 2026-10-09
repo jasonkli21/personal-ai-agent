@@ -22,7 +22,7 @@ PROVIDER_USAGE_EVENT_FIELDS = frozenset({
     "request_id", "run_id", "endpoint_profile_id", "endpoint_profile_version", "provider_id",
     "model_id", "endpoint_id", "deployment_id", "credential_source", "credential_scope_id",
     "account_scope_id", "project_scope_id", "tier_id", "execution_mode", "cost_class",
-    "billing_owner", "serializer_id", "runtime_id", "routing_decision_id",
+    "billing_owner", "serializer_id", "runtime_id", "quota_membership", "routing_decision_id",
     "routing_strategy_id", "routing_strategy_version", "registry_version", "policy_version",
     "status", "error_code", "http_status", "started_at", "completed_at", "latency_ms",
     "input_tokens", "output_tokens", "total_tokens", "usage_source", "usage_confidence",

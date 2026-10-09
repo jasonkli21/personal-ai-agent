@@ -32,7 +32,11 @@ An admitted attempt is a physical send, not a retry estimate. A denied
 pre-dispatch reservation creates no attempt row and does not inflate send or
 retry counts. Timeouts and interrupted sends remain unknown/uncertain under the
 original identity and reservation; unresolved outcomes fence replay. A later
-explicit attempt needs a new ID and its own admission.
+explicit attempt needs a new ID and its own admission. Explicit same-endpoint
+research retries retain one logical invocation and add a linked physical
+attempt. The accounting boundary derives the next send number and parent from
+the persisted attempt history, so denied retries do not create lineage gaps.
+Iterative research keeps its distinct task and run attribution.
 
 ## Admission and quota state
 
@@ -46,6 +50,16 @@ explicit attempt needs a new ID and its own admission.
   buckets deny before dispatch. All required bucket reservations commit
   together. Unknown capacity is retained as unknown and tracked with local
   reserved/consumed units; it is not replaced with a guessed limit.
+- Fixed-provider accounting resolves the exact profile ID from the current
+  durable registry and rechecks its registry/profile versions inside the
+  reservation transaction. Unknown or ambiguous quota-bucket membership is
+  denied before dispatch; verified membership with unknown remaining capacity
+  remains explicitly unknown. This keeps relationship authority distinct from
+  capacity evidence.
+- Stale-attempt recovery uses a configured age greater than the maximum
+  outbound request timeout plus a safety margin. A late result cannot overwrite
+  an orphaned unknown outcome or mark the logical invocation complete while
+  that outcome remains unresolved.
 - Provider rate-limit headers are reduced to bounded numeric limit, remaining,
   reset, and retry-after facts. Freshness and confidence are stored separately;
   provider-reported quota is never equated with a Personal AI billing or
@@ -63,7 +77,11 @@ budgets, scarcity scoring, or provider selection.
   [`017_provider_usage_accounting.sql`](../../backend/src/personal_ai/persistence/migrations/017_provider_usage_accounting.sql)
   creates canonical Postgres invocation, attempt, quota reservation/window,
   endpoint health, and owner-attributed daily aggregate records. Postgres is the
-  admission and settlement authority.
+  admission and settlement authority. Migration
+  [`018_provider_usage_profile_versions.sql`](../../backend/src/personal_ai/persistence/migrations/018_provider_usage_profile_versions.sql)
+  records quota-membership provenance and separates daily aggregates by
+  endpoint profile version; legacy aggregate rows retain a NULL version because
+  their former mixed version cannot be reconstructed.
 - [`persistence/dynamodb_usage.py`](../../backend/src/personal_ai/persistence/dynamodb_usage.py)
   stores bounded, owner/app/workspace-scoped operational attempt events and
   minimal expiry locators. Event publication can be reconciled from Postgres by
@@ -72,8 +90,10 @@ budgets, scarcity scoring, or provider selection.
   records and DynamoDB events. Shared quota-window snapshots and endpoint
   health are operational account/profile state, not owner export rows.
 - Retention uses bounded explicit Postgres and DynamoDB deletes. DynamoDB TTL
-  is only a secondary expiry marker, not the cleanup mechanism. Stale pending
-  attempts are marked unknown and keep their quota reservations.
+  is only a secondary expiry marker, not the cleanup mechanism. Expired quota
+  windows, including operator-attested snapshots, are removed after they close
+  and no reservation references them. Stale pending attempts are marked unknown
+  and keep their quota reservations.
 
 ## Developer summary and provider safeguards
 
@@ -95,8 +115,9 @@ Usage limits, retention, stale-attempt age, cooldown, provider-header freshness,
 and inspection are bounded settings documented in
 [`backend/.env.example`](../../backend/.env.example). The developer summary is
 not a substitute for deployment auth or a provider account review. Apply
-migration 017 before persistent accounting is enabled in a database-backed
-environment. Deterministic fake tests do not establish Postgres transaction
-behavior, DynamoDB Local behavior, IAM, provider usage semantics, account tier,
-source rights, or cloud retention. Those checks remain external acceptance
-gates recorded in the evidence.
+migrations 017 and 018 before persistent accounting is enabled in a database-backed
+environment. The stale-attempt threshold must remain at least the maximum
+provider request timeout plus 60 seconds. Deterministic fake tests do not
+establish Postgres transaction behavior, DynamoDB Local behavior, IAM, provider
+usage semantics, account tier, source rights, or cloud retention. Those checks
+remain external acceptance gates recorded in the evidence.

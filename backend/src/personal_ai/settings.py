@@ -131,7 +131,7 @@ class Settings(BaseSettings):
     provider_usage_max_tokens_per_request: int = Field(default=200000, ge=1, le=2000000)
     provider_usage_default_cooldown_seconds: int = Field(default=60, ge=1, le=3600)
     provider_usage_header_freshness_seconds: int = Field(default=60, ge=1, le=3600)
-    provider_usage_stale_attempt_seconds: int = Field(default=300, ge=30, le=3600)
+    provider_usage_stale_attempt_seconds: int = Field(default=360, ge=30, le=3600)
     provider_usage_inspection_enabled: bool = False
     chat_kill_switch_enabled: bool = False
     research_kill_switch_enabled: bool = False
@@ -294,6 +294,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_context_budget(self) -> "Settings":
+        # Maintenance must not mistake the longest configured outbound call
+        # for a dead worker. The extra minute covers scheduling and settlement.
+        minimum_stale_seconds = math.ceil(self.request_timeout_seconds + 60)
+        if self.provider_usage_stale_attempt_seconds < minimum_stale_seconds:
+            raise ValueError("provider_usage_stale_attempt_timeout_unsafe")
         for aliases in (self.groq_approved_model_aliases, self.cloudflare_approved_model_aliases):
             if (
                 len(set(aliases)) != len(aliases)

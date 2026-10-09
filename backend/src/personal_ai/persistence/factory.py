@@ -168,11 +168,14 @@ class PostgresDynamoPersistenceFactory:
 
     def provider_usage_accounting(self, settings):
         from personal_ai.persistence.dynamodb_usage import DynamoDBProviderUsageEventRepository
+        from personal_ai.persistence.postgres_routing import PostgresEndpointRegistryRepository
         from personal_ai.persistence.postgres_usage import PostgresProviderUsageAccounting
+        from personal_ai.usage.profiles import EndpointProfileResolver
 
         events = DynamoDBProviderUsageEventRepository(
             self.runtime_table, retention_days=settings.provider_usage_retention_days
         )
+        registry_repository = PostgresEndpointRegistryRepository(self.database)
         return PostgresProviderUsageAccounting(
             self.database,
             retention_days=settings.provider_usage_retention_days,
@@ -181,6 +184,9 @@ class PostgresDynamoPersistenceFactory:
             default_cooldown_seconds=settings.provider_usage_default_cooldown_seconds,
             header_freshness_seconds=settings.provider_usage_header_freshness_seconds,
             stale_attempt_seconds=settings.provider_usage_stale_attempt_seconds,
+            endpoint_profile_resolver=EndpointProfileResolver.from_settings(
+                settings, registry_repository
+            ),
             operational_event_writer=events.publish,
             operational_event_purger=lambda now, limit: events.purge_expired(
                 now=now, limit=limit

@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import anyio
+
 from personal_ai.auth.account_data import EXPORT_COLLECTIONS
 from personal_ai.auth.owner_data import OWNER_DATA_COLLECTIONS
 from personal_ai.persistence.dynamodb_usage import (
@@ -11,7 +13,7 @@ from personal_ai.persistence.dynamodb_usage import (
 )
 from personal_ai.persistence.postgres_usage import _operational_event
 from personal_ai.usage.accounting import new_invocation, unit_reservations
-from personal_ai.usage.async_call import rate_limit_metadata
+from personal_ai.usage.async_call import AsyncProviderCall, rate_limit_metadata
 from personal_ai.usage.context import bind_usage_task
 from personal_ai.usage.contracts import AttemptMetadata, AttemptResult, ProviderEndpoint
 from personal_ai.usage.profiles import public_lookup_endpoint
@@ -81,6 +83,7 @@ def test_public_lookup_profile_keeps_quota_capacity_unknown():
     assert bucket.unit == "requests"
     assert bucket.confidence == "unknown"
     assert bucket.limit is None and bucket.remaining is None
+    assert endpoint.quota_membership == "verified"
 
 
 def test_rate_limit_metadata_parses_only_bounded_numeric_facts():
@@ -164,3 +167,66 @@ def test_dynamodb_event_retention_uses_bounded_explicit_deletes():
     assert table.queries[0]["limit"] == 10
     assert len(table.transactions) == 1
     assert len(table.transactions[0]) == 2
+
+
+def test_explicit_research_retries_keep_one_invocation_and_task_lineage():
+    class Accounting:
+        def __init__(self):
+            self.invocations = []
+            self.attempts = []
+            self.completed = []
+
+        def begin_invocation(self, invocation):
+            self.invocations.append(invocation)
+
+        def reserve_attempt(self, invocation, attempt, *, max_attempts):
+            self.attempts.append((invocation, attempt, max_attempts))
+
+        def settle_attempt(self, invocation, attempt, result):
+            pass
+
+        def complete_invocation(self, invocation, *, outcome, completed_at):
+            self.completed.append((invocation, outcome))
+
+    async def run():
+        accounting = Accounting()
+        for task_id in ("web_research_search", "iterative_research_search"):
+            invocation_id = uuid4()
+            for send_number, outcome in ((1, "server_error"), (2, "success")):
+                with bind_usage_task(
+                    task_id,
+                    run_id=f"{task_id}-run",
+                    request_id=f"{task_id}-request",
+                    invocation_id=invocation_id,
+                    send_number=send_number,
+                ):
+                    call = await AsyncProviderCall.begin(
+                        accounting,
+                        _endpoint(),
+                        operation="search",
+                        quota_operation="search",
+                        max_attempts=3,
+                    )
+                    await call.reserve()
+                    await call.finish(outcome)
+        return accounting
+
+    accounting = anyio.run(run)
+    assert len(accounting.invocations) == 4
+    assert len({item.invocation_id for item in accounting.invocations}) == 2
+    assert {item.task_id for item in accounting.invocations} == {
+        "web_research_search", "iterative_research_search"
+    }
+    assert {item.run_id for item in accounting.invocations} == {
+        "web_research_search-run", "iterative_research_search-run"
+    }
+    assert {item.request_id for item in accounting.invocations} == {
+        "web_research_search-request", "iterative_research_search-request"
+    }
+    for first, second in (
+        (accounting.attempts[0][1], accounting.attempts[1][1]),
+        (accounting.attempts[2][1], accounting.attempts[3][1]),
+    ):
+        assert first.send_number == 1 and first.parent_attempt_id is None
+        assert second.send_number == 2 and second.parent_attempt_id == first.attempt_id
+    assert accounting.completed[-1][1] == "success"

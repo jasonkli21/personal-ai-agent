@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
+from uuid import UUID
 
 from personal_ai.auth.scope import current_application_scope, current_request_scope
 
@@ -18,6 +19,8 @@ class UsageExecutionContext:
     request_id: str
     task_id: str
     run_id: str | None = None
+    invocation_id: UUID | None = None
+    send_number: int | None = None
 
 
 _usage_context: ContextVar[UsageExecutionContext | None] = ContextVar(
@@ -39,13 +42,27 @@ def current_usage_context() -> UsageExecutionContext | None:
 
 
 @contextmanager
-def bind_usage_task(task_id: str, *, run_id: str | None = None) -> Iterator[None]:
+def bind_usage_task(
+    task_id: str,
+    *,
+    run_id: str | None = None,
+    request_id: str | None = None,
+    invocation_id: UUID | None = None,
+    send_number: int | None = None,
+) -> Iterator[None]:
     """Add semantic task/run attribution while retaining the validated request scope."""
+    if send_number is not None and send_number < 1:
+        raise ValueError("provider_send_number_invalid")
+    if request_id is not None and (not request_id or len(request_id) > 200):
+        raise ValueError("provider_request_id_invalid")
     current = resolve_execution_context(task_id)
     with bind_usage_context(replace(
         current,
         task_id=task_id,
         run_id=run_id if run_id is not None else current.run_id,
+        request_id=request_id if request_id is not None else current.request_id,
+        invocation_id=invocation_id if invocation_id is not None else current.invocation_id,
+        send_number=send_number if send_number is not None else current.send_number,
     )):
         yield
 
@@ -67,4 +84,6 @@ def resolve_execution_context(operation: str) -> UsageExecutionContext:
         ),
         task_id=explicit.task_id if explicit else operation,
         run_id=explicit.run_id if explicit else None,
+        invocation_id=explicit.invocation_id if explicit else None,
+        send_number=explicit.send_number if explicit else None,
     )

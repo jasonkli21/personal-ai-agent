@@ -15,11 +15,14 @@ were added afterward without changing runtime code.
   LiteLLM transport and direct Brave, Nominatim, and OpenFoodFacts HTTP paths.
   Implicit SDK retries remain disabled; pre-send denial does not count as a
   physical attempt; unknown outcomes remain fenced with their reservations.
-- Added migration
+- Added migrations
   [`017_provider_usage_accounting.sql`](../../backend/src/personal_ai/persistence/migrations/017_provider_usage_accounting.sql)
+  and
+  [`018_provider_usage_profile_versions.sql`](../../backend/src/personal_ai/persistence/migrations/018_provider_usage_profile_versions.sql)
   and Postgres canonical invocation, attempt, quota reservation/window,
   endpoint-health, daily-aggregate, summary, reconciliation, and explicit
-  retention operations.
+  retention operations. The second migration preserves quota-membership
+  provenance and separates daily aggregates by endpoint profile version.
 - Added scoped DynamoDB operational events and bounded explicit event deletion.
   Account export/deletion inventory includes owner-attributed Postgres records
   and the operational events; provider event schema is checked consistently at
@@ -49,10 +52,50 @@ unit reservation/settlement. They did not execute against Postgres in this
 environment. Docker was unavailable, so no local Postgres/DynamoDB stack was
 started. The migration was not applied to a database.
 
+## Independent review follow-up
+
+**Date:** 2026-10-08
+
+**Tested revision:** working tree based on `a3540ac` (`main`) with the review
+follow-up changes described here.
+
+The independent review identified seven correctness gaps and one persistence
+verification gate. The follow-up changes resolve the code findings by carrying
+the exact durable endpoint profile and quota-membership provenance into
+admission; denying unknown or ambiguous membership before dispatch; enforcing
+the stale-attempt age above the maximum provider timeout; preserving explicit
+research retry lineage and task/run attribution; keying aggregates by profile
+version; applying conservative quota corrections while rejecting incompatible
+window identity; and retaining closed, unreferenced operator quota windows
+under the configured bound. Late settlement cannot replace an orphaned unknown
+result. A regression found during full-suite verification also led to lazy
+registry loading, so routes that do not dispatch a provider do not read
+Postgres just to construct the accounting dependency.
+
+The persistence integration suite now has 13 cases, including profile
+membership, quota corrections, retry fencing, aggregation versioning, stale
+attempt handling, and retention. GitHub Actions starts a pgvector/Postgres 17
+service and runs this suite with `PERSISTENCE_TEST_POSTGRES_DSN`; this makes the
+database suite a repeatable CI gate instead of relying on tests that silently
+skip without a DSN.
+
+| Check | Result |
+| --- | --- |
+| `cd backend && .venv/bin/python -m pytest -q` | **Passed:** 915 tests, 39 skipped; one existing Starlette/httpx deprecation warning |
+| `cd backend && .venv/bin/python -m ruff check .` | **Passed** |
+| `git diff --check` | **Passed** |
+| `cd backend && .venv/bin/python -m pytest -q tests/persistence/test_provider_usage_accounting.py` | **Skipped locally:** 13 integration tests require `PERSISTENCE_TEST_POSTGRES_DSN` |
+
+No Docker executable or reachable local Postgres server was available, and no
+local pgvector extension was found. Therefore neither migration 018 nor the
+Postgres concurrency/retention tests were applied or executed locally. The CI
+gate is configured but has not run as part of this local review. Cloud,
+DynamoDB, provider, quota/account, and deployment checks remain open.
+
 ## Configuration and remaining gates
 
 Provider accounting requires the configured Postgres and DynamoDB persistence
-clients and migration 017. `PROVIDER_USAGE_INSPECTION_ENABLED` defaults off.
+clients and migrations 017–018. `PROVIDER_USAGE_INSPECTION_ENABLED` defaults off.
 Unknown or stale quota capacity is not promoted to a known limit or remaining
 amount. Brave search requires its configured prepaid and source-rights facts and
 has no postpaid overflow path.

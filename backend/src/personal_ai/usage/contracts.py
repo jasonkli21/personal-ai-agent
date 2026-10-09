@@ -53,6 +53,9 @@ class ProviderEndpoint:
     billing_owner: str
     serializer_id: str
     runtime_id: str
+    quota_membership: Literal["verified", "unknown", "ambiguous"] = "unknown"
+    registry_version: str | None = None
+    registry_revision: int | None = None
     quota_buckets: tuple[QuotaBucket, ...] = ()
 
 
@@ -127,7 +130,7 @@ class ProviderUsageAccounting(Protocol):
 
     def reserve_attempt(
         self, invocation: InvocationMetadata, attempt: AttemptMetadata, *, max_attempts: int
-    ) -> None: ...
+    ) -> AttemptMetadata | None: ...
 
     def settle_attempt(
         self, invocation: InvocationMetadata, attempt: AttemptMetadata, result: AttemptResult

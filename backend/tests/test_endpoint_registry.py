@@ -25,6 +25,7 @@ from personal_ai.routing import (
     compute_registry_version,
 )
 from personal_ai.settings import Settings
+from personal_ai.usage.profiles import EndpointProfileResolver
 
 
 def _bucket(
@@ -1173,3 +1174,66 @@ def test_initialization_race_does_not_overwrite_a_different_winning_configuratio
 
     with pytest.raises(RegistryConflictError, match="initialization_conflict"):
         EndpointRegistry((_profile("different-profile"),), repository=repository)
+
+
+def test_usage_resolver_uses_exact_active_profile_version_and_rejects_stale_selection():
+    selected = _profile(
+        "gemini:generation",
+        provider_id="gemini",
+        model_id="gemini-model",
+        account_scope_id="account-a",
+        credential_scope_id="credential-a",
+        profile_version=2,
+        quota_buckets=(_bucket("quota-a", authority_scope_id="account-a"),),
+    )
+    other = _profile(
+        "gemini:other",
+        provider_id="gemini",
+        model_id="gemini-model",
+        account_scope_id="account-b",
+        credential_scope_id="credential-b",
+        quota_buckets=(_bucket("quota-b", authority_scope_id="account-b"),),
+    )
+    registry = EndpointRegistry((selected, other))
+    resolver = EndpointProfileResolver(registry)
+
+    endpoint = resolver.resolve(
+        provider_id="gemini", model_id="gemini-model", operation="bounded_generation"
+    )
+
+    assert endpoint.endpoint_profile_id == "gemini:generation"
+    assert endpoint.profile_version == 2
+    assert endpoint.account_scope_id == "account-a"
+    assert endpoint.credential_scope_id == "credential-a"
+    assert endpoint.registry_version == registry.snapshot.registry_version
+    assert endpoint.quota_membership == "verified"
+    resolver.assert_current(endpoint)
+
+    registry.upsert(selected.model_copy(update={
+        "context_limit_tokens": 2048,
+        "profile_version": 3,
+    }))
+    with pytest.raises(ValueError, match="stale"):
+        resolver.assert_current(endpoint)
+
+
+def test_settings_usage_resolver_defers_postgres_registry_read_until_profile_resolution():
+    class CountingRepository(_SharedRegistryRepository):
+        load_count = 0
+
+        def load(self):
+            self.load_count += 1
+            return super().load()
+
+    settings = Settings(_env_file=None, ai_provider="gemini", ai_model="gemini-test")
+    repository = CountingRepository()
+    resolver = EndpointProfileResolver.from_settings(settings, repository)
+
+    assert repository.load_count == 0
+    endpoint = resolver.resolve(
+        provider_id="gemini",
+        model_id="gemini-test",
+        operation="bounded_generation",
+    )
+    assert repository.load_count > 0
+    assert endpoint.endpoint_profile_id == "gemini:generation"

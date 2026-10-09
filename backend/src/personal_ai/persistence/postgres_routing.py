@@ -36,14 +36,19 @@ class PostgresEndpointRegistryRepository:
         self.database = database
 
     def load(self) -> EndpointRegistrySnapshot | None:
-        scope_id = PostgresPayloadRepository.scope_id(_OWNER_ID, _SCOPE)
         with self.database.connection() as connection:
-            row = connection.execute(
-                "SELECT registry_version,revision,payload FROM endpoint_registry_snapshots "
-                "WHERE scope_id=%s AND record_id=%s AND owner_id=%s "
-                "AND application_id=%s AND workspace_id IS NULL",
-                (scope_id, _RECORD_ID, _OWNER_ID, _SCOPE.application_id),
-            ).fetchone()
+            return self.load_from_connection(connection)
+
+    def load_from_connection(self, connection, *, lock: bool = False):
+        """Read a registry snapshot in the caller's admission transaction."""
+        scope_id = PostgresPayloadRepository.scope_id(_OWNER_ID, _SCOPE)
+        lock_clause = " FOR SHARE" if lock else ""
+        row = connection.execute(
+            "SELECT registry_version,revision,payload FROM endpoint_registry_snapshots "
+            "WHERE scope_id=%s AND record_id=%s AND owner_id=%s "
+            "AND application_id=%s AND workspace_id IS NULL" + lock_clause,
+            (scope_id, _RECORD_ID, _OWNER_ID, _SCOPE.application_id),
+        ).fetchone()
         if row is None:
             return None
         registry_version, revision, payload = row

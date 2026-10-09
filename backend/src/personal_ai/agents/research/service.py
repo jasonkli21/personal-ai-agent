@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from time import monotonic
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 import anyio
 
@@ -173,7 +173,10 @@ class ResearchService:
                         await save(attempts=(*current.attempts, begun))
                         try:
                             with bind_usage_task(
-                                "web_research_search", run_id=str(current.id)
+                                "web_research_search",
+                                run_id=str(current.id),
+                                invocation_id=uuid5(query.id, "provider-usage-search"),
+                                send_number=number,
                             ):
                                 fetched = await self.adapter.search(
                                     query.normalized_query,

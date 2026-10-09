@@ -200,7 +200,7 @@ class _TransportState:
             _sync_remaining(self.deadline)
         attempt = self._new_attempt()
         try:
-            self.usage_accounting.reserve_attempt(
+            reserved_attempt = self.usage_accounting.reserve_attempt(
                 self.invocation, attempt, max_attempts=self.max_attempts
             )
         except UsageAdmissionDenied as error:
@@ -209,7 +209,7 @@ class _TransportState:
         except Exception:  # noqa: BLE001 - block dispatch and hide storage details
             self.accounting_violation = "provider_usage_ledger_unavailable"
             raise LLMUnavailableError("provider usage accounting is unavailable") from None
-        self.active_attempt = attempt
+        self.active_attempt = reserved_attempt or attempt
         self.active_attempt_started_monotonic = monotonic()
         self.last_attempt_id = attempt.attempt_id
         self.attempt_ids.append(str(attempt.attempt_id))
@@ -1153,6 +1153,7 @@ class LiteLLMGenerationClient:
                 provider_id=self._profile.provider_id,
                 model_id=self._profile.model_id,
                 operation=operation,
+                resolver=getattr(self._usage_accounting, "endpoint_profile_resolver", None),
             )
         except Exception as error:  # noqa: BLE001 - profile validation errors stay content-free
             logger.info("provider_usage_endpoint_profile_unavailable error_class=%s", type(error).__name__)
@@ -1387,6 +1388,7 @@ class LiteLLMTokenCounter:
                 provider_id="gemini",
                 model_id=self.settings.ai_model,
                 operation="token_counting",
+                resolver=getattr(self._usage_accounting, "endpoint_profile_resolver", None),
             )
         except Exception as error:  # noqa: BLE001 - profile validation errors stay content-free
             logger.info("provider_usage_endpoint_profile_unavailable error_class=%s", type(error).__name__)
@@ -1562,6 +1564,7 @@ class LiteLLMEmbeddingClient:
                 provider_id="google_genai",
                 model_id=self.settings.memory_embedding_model,
                 operation="embeddings",
+                resolver=getattr(self._usage_accounting, "endpoint_profile_resolver", None),
             )
         except Exception as error:  # noqa: BLE001 - profile validation errors stay content-free
             logger.info("provider_usage_endpoint_profile_unavailable error_class=%s", type(error).__name__)

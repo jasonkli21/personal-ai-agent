@@ -1294,7 +1294,11 @@ class IterativeResearchService:
             timeout_seconds = max(0.001, float(call_elapsed))
             async with asyncio.timeout(timeout_seconds):
                 with bind_usage_task(
-                    "iterative_research_search", run_id=str(run.id)
+                    "iterative_research_search",
+                    run_id=str(run.id),
+                    request_id=str(run.id),
+                    invocation_id=uuid5(query.id, "provider-usage-search"),
+                    send_number=attempt_number,
                 ):
                     fetched = await self.adapter.search(query.normalized_query, source_reserve)
             if not isinstance(fetched, (tuple, list)) or len(fetched) > source_reserve:

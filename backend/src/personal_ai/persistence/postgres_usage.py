@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from math import ceil
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from personal_ai.persistence.postgres import PostgresDatabase, _ensure_namespace
 from personal_ai.routing.contracts import QuotaBucket
@@ -37,6 +37,7 @@ class PostgresProviderUsageAccounting:
         default_cooldown_seconds: int = 60,
         header_freshness_seconds: int = 60,
         stale_attempt_seconds: int = 300,
+        endpoint_profile_resolver=None,
         operational_event_writer: Callable[[dict], None] | None = None,
         operational_event_purger: Callable[[datetime, int], int] | None = None,
     ) -> None:
@@ -47,6 +48,7 @@ class PostgresProviderUsageAccounting:
         self.default_cooldown_seconds = default_cooldown_seconds
         self.header_freshness_seconds = header_freshness_seconds
         self.stale_attempt_seconds = stale_attempt_seconds
+        self.endpoint_profile_resolver = endpoint_profile_resolver
         self.operational_event_writer = operational_event_writer
         self.operational_event_purger = operational_event_purger
 
@@ -68,14 +70,25 @@ class PostgresProviderUsageAccounting:
         attempt: AttemptMetadata,
         *,
         max_attempts: int,
-    ) -> None:
+    ) -> AttemptMetadata:
         now = attempt.started_at.astimezone(UTC)
         retention_until = now + timedelta(days=self.retention_days)
         endpoint = invocation.endpoint
         denial: str | None = None
+        reserved_attempt: AttemptMetadata | None = None
         selected_buckets: list[tuple[QuotaBucket, datetime, int | None, str]] = []
         try:
             with self.database.transaction() as connection:
+                if (
+                    self.endpoint_profile_resolver is not None
+                    and endpoint.registry_version is not None
+                ):
+                    try:
+                        self.endpoint_profile_resolver.assert_current_in_transaction(
+                            connection, endpoint
+                        )
+                    except ValueError:
+                        raise UsageAdmissionDenied("provider_endpoint_profile_stale") from None
                 scope_id = _ensure_namespace(
                     connection,
                     invocation.owner_id,
@@ -108,6 +121,30 @@ class PostgresProviderUsageAccounting:
                 elif denial is None and reserved_tokens + call_tokens > self.request_token_limit:
                     denial = "provider_token_budget_exceeded"
 
+                previous_attempt = connection.execute(
+                    "SELECT attempt_id,send_number FROM provider_attempts "
+                    "WHERE invocation_id=%s ORDER BY send_number DESC LIMIT 1 FOR UPDATE",
+                    (invocation.invocation_id,),
+                ).fetchone()
+                expected_send_number = int(previous_attempt[1]) + 1 if previous_attempt else 1
+                expected_parent_id = previous_attempt[0] if previous_attempt else None
+                reserved_attempt = (
+                    attempt
+                    if (
+                        attempt.send_number == expected_send_number
+                        and attempt.parent_attempt_id == expected_parent_id
+                    )
+                    else replace(
+                        attempt,
+                        attempt_id=uuid5(
+                            invocation.invocation_id,
+                            f"provider-attempt:{expected_send_number}",
+                        ),
+                        parent_attempt_id=expected_parent_id,
+                        send_number=expected_send_number,
+                    )
+                )
+
                 health = connection.execute(
                     "SELECT cooldown_until FROM provider_endpoint_health "
                     "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s FOR UPDATE",
@@ -116,8 +153,17 @@ class PostgresProviderUsageAccounting:
                 if denial is None and health and health[0] is not None and health[0] > now:
                     denial = "provider_endpoint_cooling_down"
 
+                applicable_buckets = _applicable_buckets(
+                    endpoint.quota_buckets, invocation.operation
+                )
                 if denial is None:
-                    for bucket in _applicable_buckets(endpoint.quota_buckets, invocation.operation):
+                    if endpoint.quota_membership == "ambiguous":
+                        denial = "provider_quota_membership_ambiguous"
+                    elif endpoint.quota_membership != "verified" or not applicable_buckets:
+                        denial = "provider_quota_membership_unknown"
+
+                if denial is None:
+                    for bucket in applicable_buckets:
                         amount = _reservation_amount(bucket, dict(attempt.reservation_units))
                         window_start, reset_at, confidence = _select_quota_window(
                             connection, bucket, now
@@ -189,8 +235,13 @@ class PostgresProviderUsageAccounting:
                         "WHERE invocation_id=%s",
                         (quota_confidence, invocation.invocation_id),
                     )
+                    connection.execute(
+                        "UPDATE provider_invocations SET outcome='running',completed_at=NULL "
+                        "WHERE invocation_id=%s",
+                        (invocation.invocation_id,),
+                    )
                     _insert_attempt(
-                        connection, invocation, attempt, call_tokens, retention_until,
+                        connection, invocation, reserved_attempt, call_tokens, retention_until,
                         status="pending", error_code=None,
                     )
                     for bucket, window_start, amount, confidence in selected_buckets:
@@ -201,7 +252,7 @@ class PostgresProviderUsageAccounting:
                             "authority_scope_id,unit,window_start,reserved_units,settled_units,state,"
                             "confidence,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s)",
                             (
-                                attempt.attempt_id,
+                                reserved_attempt.attempt_id,
                                 bucket.bucket_id,
                                 bucket.authority_scope_id,
                                 bucket.unit,
@@ -226,6 +277,9 @@ class PostgresProviderUsageAccounting:
             raise
         if denial is not None:
             raise UsageAdmissionDenied(denial)
+        if reserved_attempt is None:
+            raise RuntimeError("provider_usage_attempt_not_reserved")
+        return reserved_attempt
 
     def settle_attempt(
         self,
@@ -337,7 +391,7 @@ class PostgresProviderUsageAccounting:
         with self.database.transaction() as connection:
             connection.execute(
                 "UPDATE provider_invocations SET outcome=%s,completed_at=%s "
-                "WHERE invocation_id=%s",
+                "WHERE invocation_id=%s AND outcome='running'",
                 (outcome, completed_at.astimezone(UTC), invocation.invocation_id),
             )
 
@@ -349,13 +403,13 @@ class PostgresProviderUsageAccounting:
         since = datetime.now(UTC) - timedelta(days=days)
         with self.database.connection(snapshot=True) as connection:
             groups = connection.execute(
-                "SELECT provider_id,model_id,endpoint_profile_id,task_id,operation,"
+                "SELECT provider_id,model_id,endpoint_profile_id,endpoint_profile_version,task_id,operation,"
                 "sum(attempts),sum(successes),sum(rate_limited),sum(server_errors),sum(failures),"
                 "sum(retries),sum(latency_total_ms),sum(input_tokens),sum(output_tokens),"
                 "sum(exact_usage_attempts),sum(derived_usage_attempts),sum(unknown_usage_attempts) "
                 "FROM provider_usage_daily_aggregates WHERE owner_id=%s AND application_id=%s "
                 "AND workspace_id IS NOT DISTINCT FROM %s AND usage_day >= %s::date "
-                "GROUP BY provider_id,model_id,endpoint_profile_id,task_id,operation "
+                "GROUP BY provider_id,model_id,endpoint_profile_id,endpoint_profile_version,task_id,operation "
                 "ORDER BY sum(attempts) DESC,provider_id,model_id,task_id LIMIT 64",
                 (owner_id, application_id, workspace_id, since.date()),
             ).fetchall()
@@ -401,17 +455,18 @@ class PostgresProviderUsageAccounting:
             "groups": [
                 {
                     "provider_id": row[0], "model_id": row[1],
-                    "endpoint_profile_id": row[2], "task_id": row[3], "operation": row[4],
-                    "attempts": int(row[5] or 0), "successes": int(row[6] or 0),
-                    "rate_limited": int(row[7] or 0), "server_errors": int(row[8] or 0),
-                    "failures": int(row[9] or 0), "retries": int(row[10] or 0),
+                    "endpoint_profile_id": row[2], "endpoint_profile_version": row[3],
+                    "task_id": row[4], "operation": row[5],
+                    "attempts": int(row[6] or 0), "successes": int(row[7] or 0),
+                    "rate_limited": int(row[8] or 0), "server_errors": int(row[9] or 0),
+                    "failures": int(row[10] or 0), "retries": int(row[11] or 0),
                     "average_latency_ms": (
-                        round(int(row[11] or 0) / int(row[5]), 1) if row[5] else None
+                        round(int(row[12] or 0) / int(row[6]), 1) if row[6] else None
                     ),
-                    "input_tokens": int(row[12] or 0), "output_tokens": int(row[13] or 0),
-                    "exact_usage_attempts": int(row[14] or 0),
-                    "derived_usage_attempts": int(row[15] or 0),
-                    "unknown_usage_attempts": int(row[16] or 0),
+                    "input_tokens": int(row[13] or 0), "output_tokens": int(row[14] or 0),
+                    "exact_usage_attempts": int(row[15] or 0),
+                    "derived_usage_attempts": int(row[16] or 0),
+                    "unknown_usage_attempts": int(row[17] or 0),
                 }
                 for row in groups
             ],
@@ -478,12 +533,13 @@ class PostgresProviderUsageAccounting:
             ).fetchall()
             aggregates = connection.execute(
                 "WITH expired AS (SELECT owner_id,application_id,workspace_id,usage_day,"
-                "endpoint_profile_id,task_id,operation FROM provider_usage_daily_aggregates "
+                "endpoint_profile_id,endpoint_profile_version,task_id,operation FROM provider_usage_daily_aggregates "
                 "WHERE usage_day < %s::date ORDER BY usage_day LIMIT %s FOR UPDATE SKIP LOCKED) "
                 "DELETE FROM provider_usage_daily_aggregates a USING expired e WHERE "
                 "a.owner_id=e.owner_id AND a.application_id=e.application_id "
                 "AND a.workspace_id IS NOT DISTINCT FROM e.workspace_id AND a.usage_day=e.usage_day "
                 "AND a.endpoint_profile_id=e.endpoint_profile_id AND a.task_id=e.task_id "
+                "AND a.endpoint_profile_version IS NOT DISTINCT FROM e.endpoint_profile_version "
                 "AND a.operation=e.operation RETURNING a.usage_day",
                 (now.date() - timedelta(days=self.retention_days), limit),
             ).fetchall()
@@ -491,8 +547,6 @@ class PostgresProviderUsageAccounting:
                 "WITH expired AS (SELECT b.bucket_id,b.window_start "
                 "FROM provider_quota_bucket_windows b WHERE b.window_start < %s "
                 "AND (b.reset_at IS NULL OR b.reset_at <= %s) "
-                "AND NOT (b.source='operator_attestation' AND b.limit_units IS NOT NULL "
-                "AND b.confidence <> 'unknown') "
                 "AND NOT EXISTS (SELECT 1 FROM provider_quota_reservations r "
                 "WHERE r.bucket_id=b.bucket_id AND r.window_start=b.window_start) "
                 "ORDER BY b.window_start,b.bucket_id LIMIT %s FOR UPDATE SKIP LOCKED) "
@@ -529,6 +583,7 @@ class PostgresProviderUsageAccounting:
             rows = connection.execute(
                 "SELECT i.invocation_id,i.owner_id,i.application_id,i.workspace_id,i.task_id,"
                 "i.operation,i.provider_id,i.model_id,i.endpoint_profile_id,a.attempt_id,"
+                "i.endpoint_profile_version,"
                 "a.parent_attempt_id,a.started_at FROM provider_attempts a "
                 "JOIN provider_invocations i USING(invocation_id) WHERE a.status='pending' "
                 "AND a.started_at<=%s ORDER BY a.started_at,a.attempt_id LIMIT %s "
@@ -538,8 +593,8 @@ class PostgresProviderUsageAccounting:
             for row in rows:
                 (
                     invocation_id, owner_id, application_id, workspace_id, task_id, operation,
-                    provider_id, model_id, endpoint_profile_id, attempt_id, parent_attempt_id,
-                    started_at,
+                    provider_id, model_id, endpoint_profile_id, attempt_id, endpoint_profile_version,
+                    parent_attempt_id, started_at,
                 ) = row
                 latency = max(0, int((now - started_at).total_seconds() * 1000))
                 connection.execute(
@@ -574,7 +629,7 @@ class PostgresProviderUsageAccounting:
                 )
                 invocation = _aggregate_identity(
                     owner_id, application_id, workspace_id, task_id, operation,
-                    provider_id, model_id, endpoint_profile_id,
+                    provider_id, model_id, endpoint_profile_id, endpoint_profile_version,
                 )
                 _aggregate_attempt(
                     connection, invocation, SimpleNamespace(parent_attempt_id=parent_attempt_id),
@@ -594,6 +649,7 @@ class PostgresProviderUsageAccounting:
                 "i.provider_id,i.model_id,i.endpoint_id,i.deployment_id,i.credential_source,"
                 "i.credential_scope_id,i.account_scope_id,i.project_scope_id,i.tier_id,"
                 "i.execution_mode,i.cost_class,i.billing_owner,i.serializer_id,i.runtime_id,"
+                "i.quota_membership,"
                 "i.routing_decision_id,i.routing_strategy_id,i.routing_strategy_version,"
                 "i.registry_version,i.policy_version,"
                 "a.attempt_id,a.parent_attempt_id,a.send_number,a.status,a.error_code,a.http_status,"
@@ -653,7 +709,7 @@ def _scope(application_id, workspace_id):
 def _insert_invocation(connection, invocation, scope_id, now, retention_until):
     endpoint = invocation.endpoint
     quota_confidence = (
-        "unknown" if not endpoint.quota_buckets or any(
+        "unknown" if endpoint.quota_membership != "verified" or not endpoint.quota_buckets or any(
             bucket.confidence == "unknown" for bucket in endpoint.quota_buckets
         ) else "configured"
     )
@@ -662,10 +718,11 @@ def _insert_invocation(connection, invocation, scope_id, now, retention_until):
         "task_id,operation,request_id,run_id,endpoint_profile_id,endpoint_profile_version,provider_id,"
         "model_id,endpoint_id,deployment_id,credential_source,credential_scope_id,account_scope_id,"
         "project_scope_id,tier_id,execution_mode,cost_class,billing_owner,serializer_id,runtime_id,"
+        "quota_membership,"
         "routing_decision_id,routing_strategy_id,routing_strategy_version,registry_version,policy_version,"
         "input_tokens_estimate,output_tokens_bound,quota_confidence,outcome,started_at,retention_until) "
         "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-        "%s,%s,%s,%s,%s,%s,%s,%s,'running',%s,%s) ON CONFLICT(invocation_id) DO NOTHING",
+        "%s,%s,%s,%s,%s,%s,%s,%s,%s,'running',%s,%s) ON CONFLICT(invocation_id) DO NOTHING",
         (
             invocation.invocation_id, scope_id, invocation.owner_id, invocation.application_id,
             invocation.workspace_id, invocation.task_id, invocation.operation,
@@ -674,7 +731,8 @@ def _insert_invocation(connection, invocation, scope_id, now, retention_until):
             endpoint.endpoint_id, endpoint.deployment_id, endpoint.credential_source,
             endpoint.credential_scope_id, endpoint.account_scope_id, endpoint.project_scope_id,
             endpoint.tier_id, endpoint.execution_mode, endpoint.cost_class, endpoint.billing_owner,
-            endpoint.serializer_id, endpoint.runtime_id, invocation.routing_decision_id,
+            endpoint.serializer_id, endpoint.runtime_id, endpoint.quota_membership,
+            invocation.routing_decision_id,
             invocation.routing_strategy_id, invocation.routing_strategy_version,
             invocation.registry_version, invocation.policy_version,
             invocation.input_tokens_estimate, invocation.output_tokens_bound,
@@ -682,14 +740,25 @@ def _insert_invocation(connection, invocation, scope_id, now, retention_until):
         ),
     )
     identity = connection.execute(
-        "SELECT owner_id,application_id,workspace_id,endpoint_profile_id,endpoint_profile_version,"
-        "provider_id,model_id,request_id FROM provider_invocations WHERE invocation_id=%s",
+        "SELECT owner_id,application_id,workspace_id,task_id,operation,request_id,run_id,"
+        "endpoint_profile_id,endpoint_profile_version,provider_id,model_id,endpoint_id,deployment_id,"
+        "credential_source,credential_scope_id,account_scope_id,project_scope_id,tier_id,execution_mode,"
+        "cost_class,billing_owner,serializer_id,runtime_id,quota_membership,routing_decision_id,"
+        "routing_strategy_id,routing_strategy_version,registry_version,policy_version "
+        "FROM provider_invocations WHERE invocation_id=%s",
         (invocation.invocation_id,),
     ).fetchone()
     expected = (
         invocation.owner_id, invocation.application_id, invocation.workspace_id,
+        invocation.task_id, invocation.operation, invocation.request_id, invocation.run_id,
         endpoint.endpoint_profile_id, endpoint.profile_version, endpoint.provider_id,
-        endpoint.model_id, invocation.request_id,
+        endpoint.model_id, endpoint.endpoint_id, endpoint.deployment_id,
+        endpoint.credential_source, endpoint.credential_scope_id, endpoint.account_scope_id,
+        endpoint.project_scope_id, endpoint.tier_id, endpoint.execution_mode, endpoint.cost_class,
+        endpoint.billing_owner, endpoint.serializer_id, endpoint.runtime_id,
+        endpoint.quota_membership, invocation.routing_decision_id,
+        invocation.routing_strategy_id, invocation.routing_strategy_version,
+        invocation.registry_version, invocation.policy_version,
     )
     if identity != expected:
         raise ValueError("provider_invocation_identity_conflict")
@@ -870,7 +939,9 @@ def _lock_or_seed_bucket(connection, bucket, window_start, reset_at, confidence,
         ),
     )
     existing = connection.execute(
-        "SELECT authority_scope_id,unit,observed_at FROM provider_quota_bucket_windows "
+        "SELECT authority_scope_id,unit,window_seconds,reset_at,observed_at,source,confidence,"
+        "limit_units,reported_remaining,consumed_units,reserved_units "
+        "FROM provider_quota_bucket_windows "
         "WHERE bucket_id=%s AND window_start=%s FOR UPDATE",
         (bucket.bucket_id, window_start),
     ).fetchone()
@@ -878,7 +949,13 @@ def _lock_or_seed_bucket(connection, bucket, window_start, reset_at, confidence,
         raise RuntimeError("provider_quota_bucket_state_missing")
     if existing[0] != bucket.authority_scope_id or existing[1] != bucket.unit:
         raise ValueError("provider_quota_bucket_identity_conflict")
-    if observed_at is not None and (existing[2] is None or observed_at > existing[2]):
+    if (
+        bucket.window_seconds is not None
+        and existing[2] is not None
+        and bucket.window_seconds != existing[2]
+    ) or (bucket.reset_at is not None and existing[3] != bucket.reset_at):
+        raise ValueError("provider_quota_window_identity_conflict")
+    if observed_at is not None and (existing[4] is None or observed_at > existing[4]):
         connection.execute(
             "UPDATE provider_quota_bucket_windows SET source=%s,confidence=%s,evidence_reference=%s,"
             "limit_units=%s,reported_remaining=%s,observed_at=%s,fresh_until=%s,"
@@ -886,6 +963,56 @@ def _lock_or_seed_bucket(connection, bucket, window_start, reset_at, confidence,
             (
                 source, confidence, bucket.evidence_reference, bucket.limit, bucket.remaining,
                 observed_at, fresh_until, reset_at, now, bucket.bucket_id, window_start,
+            ),
+        )
+        return
+    if (
+        source in {"operator_attestation", "provider_contract"}
+        and confidence != "unknown"
+        and (bucket.limit is not None or bucket.remaining is not None)
+    ):
+        # A live config correction can lower this window immediately. A higher
+        # limit never restores capacity already constrained by an older fact
+        # or provider remaining observation; it can take effect next window.
+        existing_limit = existing[7]
+        existing_remaining = existing[8]
+        used = int(existing[9]) + int(existing[10])
+        conservative_total = existing_limit
+        if existing_remaining is not None:
+            remaining_total = used + int(existing_remaining)
+            conservative_total = (
+                remaining_total
+                if conservative_total is None
+                else min(int(conservative_total), remaining_total)
+            )
+        if bucket.limit is not None:
+            conservative_total = (
+                int(bucket.limit)
+                if conservative_total is None
+                else min(int(conservative_total), int(bucket.limit))
+            )
+        if bucket.remaining is not None:
+            remaining_total = used + int(bucket.remaining)
+            conservative_total = (
+                remaining_total
+                if conservative_total is None
+                else min(int(conservative_total), remaining_total)
+            )
+        connection.execute(
+            "UPDATE provider_quota_bucket_windows SET source=%s,confidence=%s,evidence_reference=%s,"
+            "limit_units=%s,reported_remaining=NULL,observed_at=NULL,fresh_until=NULL,"
+            "window_seconds=COALESCE(%s,window_seconds),reset_at=COALESCE(%s,reset_at),updated_at=%s "
+            "WHERE bucket_id=%s AND window_start=%s",
+            (
+                source,
+                confidence,
+                bucket.evidence_reference,
+                conservative_total,
+                bucket.window_seconds,
+                reset_at,
+                now,
+                bucket.bucket_id,
+                window_start,
             ),
         )
 
@@ -1012,11 +1139,12 @@ def _aggregate_attempt(
     unknown = int(usage_confidence == "unknown")
     connection.execute(
         "INSERT INTO provider_usage_daily_aggregates(owner_id,application_id,workspace_id,usage_day,"
-        "provider_id,model_id,endpoint_profile_id,task_id,operation,attempts,successes,rate_limited,"
+        "provider_id,model_id,endpoint_profile_id,endpoint_profile_version,task_id,operation,attempts,successes,rate_limited,"
         "server_errors,failures,retries,latency_total_ms,input_tokens,output_tokens,exact_usage_attempts,"
         "derived_usage_attempts,unknown_usage_attempts,updated_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-        "ON CONFLICT(owner_id,application_id,workspace_id,usage_day,endpoint_profile_id,task_id,operation) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT(owner_id,application_id,workspace_id,usage_day,endpoint_profile_id,"
+        "endpoint_profile_version,task_id,operation) "
         "DO UPDATE SET attempts=provider_usage_daily_aggregates.attempts+1,"
         "successes=provider_usage_daily_aggregates.successes+EXCLUDED.successes,"
         "rate_limited=provider_usage_daily_aggregates.rate_limited+EXCLUDED.rate_limited,"
@@ -1033,6 +1161,7 @@ def _aggregate_attempt(
         (
             invocation.owner_id, invocation.application_id, invocation.workspace_id, at.date(),
             endpoint.provider_id, endpoint.model_id, endpoint.endpoint_profile_id,
+            endpoint.profile_version,
             invocation.task_id, invocation.operation, success, rate_limited, server_error,
             failure, int(attempt.parent_attempt_id is not None), max(0, int(latency)),
             max(0, int(input_tokens)), max(0, int(output_tokens)), exact, derived, unknown, at,
@@ -1042,7 +1171,7 @@ def _aggregate_attempt(
 
 def _aggregate_identity(
     owner_id, application_id, workspace_id, task_id, operation,
-    provider_id, model_id, endpoint_profile_id,
+    provider_id, model_id, endpoint_profile_id, endpoint_profile_version,
 ):
     return SimpleNamespace(
         owner_id=owner_id,
@@ -1054,6 +1183,7 @@ def _aggregate_identity(
             provider_id=provider_id,
             model_id=model_id,
             endpoint_profile_id=endpoint_profile_id,
+            profile_version=endpoint_profile_version,
         ),
     )
 
@@ -1097,6 +1227,7 @@ def _operational_event(invocation, attempt, result):
         "billing_owner": endpoint.billing_owner,
         "serializer_id": endpoint.serializer_id,
         "runtime_id": endpoint.runtime_id,
+        "quota_membership": endpoint.quota_membership,
         "routing_decision_id": invocation.routing_decision_id,
         "routing_strategy_id": invocation.routing_strategy_id,
         "routing_strategy_version": invocation.routing_strategy_version,
@@ -1126,7 +1257,7 @@ def _event_from_row(row):
         "request_id", "run_id", "endpoint_profile_id", "endpoint_profile_version", "provider_id",
         "model_id", "endpoint_id", "deployment_id", "credential_source", "credential_scope_id",
         "account_scope_id", "project_scope_id", "tier_id", "execution_mode", "cost_class",
-        "billing_owner", "serializer_id", "runtime_id", "routing_decision_id",
+        "billing_owner", "serializer_id", "runtime_id", "quota_membership", "routing_decision_id",
         "routing_strategy_id", "routing_strategy_version", "registry_version", "policy_version",
         "attempt_id", "parent_attempt_id",
         "send_number", "status", "error_code", "http_status", "started_at", "completed_at",
@@ -1150,7 +1281,7 @@ def _event_from_row(row):
             "endpoint_profile_id", "endpoint_profile_version", "provider_id", "model_id",
             "endpoint_id", "deployment_id", "credential_source", "credential_scope_id",
             "account_scope_id", "project_scope_id", "tier_id", "execution_mode", "cost_class",
-            "billing_owner", "serializer_id", "runtime_id", "routing_decision_id",
+            "billing_owner", "serializer_id", "runtime_id", "quota_membership", "routing_decision_id",
             "routing_strategy_id", "routing_strategy_version", "registry_version", "policy_version",
             "status", "error_code", "http_status", "started_at", "completed_at",
             "latency_ms", "input_tokens", "output_tokens", "total_tokens", "usage_source",

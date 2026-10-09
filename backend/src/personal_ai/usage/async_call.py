@@ -7,12 +7,13 @@ import math
 import re
 from datetime import UTC, datetime
 from time import monotonic
-from uuid import uuid4
+from uuid import uuid5
 
 import anyio
 
 from personal_ai.llm.metadata import ProviderRateLimitMetadata
 from personal_ai.usage.accounting import new_invocation, unit_reservations
+from personal_ai.usage.context import current_usage_context
 from personal_ai.usage.contracts import (
     AttemptMetadata,
     AttemptResult,
@@ -119,19 +120,25 @@ class AsyncProviderCall:
     async def reserve(self) -> None:
         if self.attempt is not None:
             raise RuntimeError("provider_attempt_already_reserved")
+        scope = current_usage_context()
+        send_number = scope.send_number if scope and scope.send_number is not None else 1
         attempt = AttemptMetadata(
-            attempt_id=uuid4(),
-            parent_attempt_id=None,
-            send_number=1,
+            attempt_id=uuid5(self.invocation.invocation_id, f"provider-attempt:{send_number}"),
+            parent_attempt_id=(
+                uuid5(self.invocation.invocation_id, f"provider-attempt:{send_number - 1}")
+                if send_number > 1
+                else None
+            ),
+            send_number=send_number,
             started_at=datetime.now(UTC),
             reservation_units=self.reservation_units,
         )
-        await anyio.to_thread.run_sync(
+        reserved_attempt = await anyio.to_thread.run_sync(
             lambda: self.accounting.reserve_attempt(
                 self.invocation, attempt, max_attempts=self.max_attempts
             )
         )
-        self.attempt = attempt
+        self.attempt = reserved_attempt or attempt
         self.started_monotonic = monotonic()
 
     async def finish(

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from personal_ai.agents.research.contracts import ResearchError
 from personal_ai.search.contracts import SearchResult
 from personal_ai.usage.async_call import AsyncProviderCall, rate_limit_metadata
+from personal_ai.usage.context import current_usage_context
 from personal_ai.usage.contracts import UsageAdmissionDenied
 from personal_ai.usage.profiles import endpoint_for_operation
 
@@ -55,14 +56,16 @@ class BraveSearchAdapter:
                 provider_id="brave_search",
                 model_id="web-search-v1",
                 operation="search",
+                resolver=getattr(self.usage_accounting, "endpoint_profile_resolver", None),
             )
+            scope = current_usage_context()
             usage_call = await AsyncProviderCall.begin(
                 self.usage_accounting,
                 endpoint,
                 operation="search",
                 quota_operation="search",
                 max_attempts=self.settings.provider_usage_max_attempts_per_request,
-                task_id="web_research_search",
+                task_id=scope.task_id if scope is not None else "web_research_search",
             )
         outcome, error_code, response_status, rate_limits = "unknown", None, None, None
         try:
@@ -151,13 +154,13 @@ class BraveSearchAdapter:
             raise
         except httpx.TimeoutException as error:
             outcome, error_code = "timeout", "search_timeout"
-            raise SearchError("search_timeout", retryable=True) from error
+            raise SearchError("search_timeout") from error
         except TimeoutError as error:
             outcome, error_code = "timeout", "search_timeout"
-            raise SearchError("search_timeout", retryable=True) from error
+            raise SearchError("search_timeout") from error
         except httpx.TransportError as error:
             outcome, error_code = "unknown", "search_unavailable"
-            raise SearchError("search_unavailable", retryable=True) from error
+            raise SearchError("search_unavailable") from error
         except (ValueError, KeyError, TypeError, ValidationError) as error:
             outcome, error_code = "failure", "search_invalid_response"
             raise SearchError("search_invalid_response") from error
