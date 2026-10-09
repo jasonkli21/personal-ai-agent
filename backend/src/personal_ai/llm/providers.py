@@ -15,11 +15,13 @@ def build_generation_adapter(
     provider: ProviderName | None = None,
     *,
     usage_accounting: ProviderUsageAccounting | None = None,
+    endpoint_profile=None,
 ):
     """Construct one explicitly named adapter; this is not a router or registry."""
     selected = provider or settings.ai_provider.lower()
     if selected in {"gemini", "groq", "cloudflare_workers_ai"}:
         return LiteLLMGenerationClient(
-            settings, selected, usage_accounting=usage_accounting
+            settings, selected, usage_accounting=usage_accounting,
+            endpoint_profile=endpoint_profile,
         )
     raise LLMInvalidConfigurationError("configured language model provider is unsupported")

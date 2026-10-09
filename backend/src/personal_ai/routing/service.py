@@ -2,7 +2,8 @@
 
 import json
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from dataclasses import replace
+from datetime import timedelta
 from typing import Protocol
 from uuid import NAMESPACE_URL, uuid5
 
@@ -86,6 +87,15 @@ class EvaluationQualityGateAuthority(Protocol):
 class RoutingFinalizationError(RuntimeError):
     def __init__(self, code):
         self.code = code
+        super().__init__(code)
+
+
+class RoutingAuxiliaryFailure(RoutingFinalizationError):
+    """A settled auxiliary send whose known failure may be endpoint-local."""
+
+    def __init__(self, code, *, outcome=None, safe_to_reselect=False):
+        self.outcome = outcome
+        self.safe_to_reselect = safe_to_reselect
         super().__init__(code)
 
 
@@ -640,6 +650,12 @@ class RoutingDecisionService:
             preparation.serializer_id != profile.serializer_id
             or preparation.input_tokens > (requirements.input_tokens or 0)
             or preparation.input_tokens > (profile.context_limit_tokens or 0)
+            or (
+                requirements.output_tokens is not None
+                and profile.context_limit_tokens is not None
+                and preparation.input_tokens + requirements.output_tokens
+                > profile.context_limit_tokens
+            )
         ):
             raise RoutingFinalizationError("routing_preparation_does_not_fit")
         if requirements.count is not None:
@@ -853,7 +869,7 @@ class RoutingDecisionService:
                 permit.expires_at, evidence.valid_until, record.decision.root_deadline_at
             ):
                 raise RoutingFinalizationError("routing_permit_expired")
-        if datetime.now(UTC) >= min(permit.expires_at, evidence.valid_until):
+        if self.current_time(owner_id=owner_id) >= min(permit.expires_at, evidence.valid_until):
             raise RoutingFinalizationError("routing_permit_expired")
         return profile, invocation, attempt
 
@@ -873,6 +889,10 @@ class RoutingDecisionService:
         profile, invocation, attempt = self.claim(
             owner_id=owner_id, scope=scope, permit=permit, operation=operation
         )
+        if self.current_time(owner_id=owner_id) >= record.decision.root_deadline_at:
+            # Keep the claimed attempt fenced; no callback has run, and an
+            # incomplete dispatch event must not be replayed as a terminal result.
+            raise RoutingFinalizationError("routing_deadline_expired")
         try:
             value, _result = self._send_and_settle(profile, invocation, attempt, send)
         except BaseException:
@@ -890,7 +910,7 @@ class RoutingDecisionService:
                     != (profile.provider_id, profile.model_id, profile.serializer_id)
                 ):
                     validation = ValidationResult(accepted=False, reasons=("producing_endpoint_mismatch",))
-                elif datetime.now(UTC) >= record.decision.root_deadline_at:
+                elif self.current_time(owner_id=owner_id) >= record.decision.root_deadline_at:
                     validation = ValidationResult(accepted=False, reasons=("deadline_exhausted",))
                 else:
                     validation = ValidationResult.model_validate(validate(value).model_dump())
@@ -925,18 +945,27 @@ class RoutingDecisionService:
                     "unknown",
                 }
                 or result.completed_at.tzinfo is None
-                or result.completed_at < attempt.started_at
             ):
                 raise TypeError("routing_transport_result_invalid")
         except BaseException:
             from personal_ai.usage.contracts import AttemptResult
 
-            result = AttemptResult(outcome="unknown", completed_at=datetime.now(UTC), latency_ms=0)
+            result = AttemptResult(
+                outcome="unknown",
+                completed_at=max(
+                    self.current_time(owner_id=invocation.owner_id), attempt.started_at
+                ),
+                latency_ms=0,
+            )
             self.usage.settle_attempt(invocation, attempt, result)
             self.usage.complete_invocation(
                 invocation, outcome=result.outcome, completed_at=result.completed_at
             )
             raise
+        authoritative_completion = max(
+            self.current_time(owner_id=invocation.owner_id), attempt.started_at
+        )
+        result = replace(result, completed_at=authoritative_completion)
         self.usage.settle_attempt(invocation, attempt, result)
         self.usage.complete_invocation(
             invocation, outcome=result.outcome, completed_at=result.completed_at
@@ -989,16 +1018,31 @@ class RoutingDecisionService:
                 input_tokens_estimate=input_tokens, output_tokens_bound=0,
             )
             self.usage.assert_invocation_unstarted_in_transaction(c, invocation)
-            attempt = self._reserve_physical_attempt(c, record, invocation, now=now)
+            try:
+                attempt = self._reserve_physical_attempt(c, record, invocation, now=now)
+            except UsageAdmissionDenied as error:
+                if error.code in {"provider_quota_exhausted", "provider_endpoint_cooling_down"}:
+                    raise RoutingAuxiliaryFailure(
+                        error.code, safe_to_reselect=True
+                    ) from error
+                raise
             self._claim_physical_attempt(c, record, invocation, attempt, now=now)
             expiry = min(decision.root_deadline_at, evidence.valid_until)
             if database_time(c) >= expiry:
                 raise RoutingFinalizationError("routing_auxiliary_expired")
-        if datetime.now(UTC) >= expiry:
+        if self.current_time(owner_id=owner_id) >= expiry:
             raise RoutingFinalizationError("routing_auxiliary_expired")
         value, result = self._send_and_settle(profile, invocation, attempt, send)
-        if result.outcome != "success" or datetime.now(UTC) >= expiry:
-            raise RoutingFinalizationError("routing_auxiliary_incomplete")
+        if result.outcome != "success":
+            raise RoutingAuxiliaryFailure(
+                "routing_auxiliary_incomplete", outcome=result.outcome,
+                safe_to_reselect=result.outcome not in {"unknown", "timeout"},
+            )
+        if self.current_time(owner_id=owner_id) >= expiry:
+            raise RoutingAuxiliaryFailure(
+                "routing_auxiliary_expired", outcome=result.outcome,
+                safe_to_reselect=False,
+            )
         return value
 
     def _reserve_physical_attempt(self, c, record, invocation, *, now):
@@ -1041,10 +1085,16 @@ class RoutingDecisionService:
                     for e in reversed(record.events)
                     if e.kind == "authorized" and e.attempt_id == dispatched.attempt_id
                 )
+                terminal_attempt_id = dispatched.attempt_id
+                if (validation is not None and validation.accepted
+                    and database_time(c) >= record.decision.root_deadline_at):
+                    from personal_ai.validation.tasks import ValidationResult
+                    validation = ValidationResult(
+                        accepted=False, reasons=("deadline_exhausted",)
+                    )
                 outcome = self.usage.attempt_outcome_in_transaction(
                     c, receipt.invocation_id, dispatched.attempt_id
                 )
-                terminal_attempt_id = dispatched.attempt_id
                 if record.decision.task.cascade_policy is not None and validation is None and outcome == "success":
                     from personal_ai.validation.tasks import ValidationResult
                     validation = ValidationResult(accepted=False, reasons=("validation_unavailable",))

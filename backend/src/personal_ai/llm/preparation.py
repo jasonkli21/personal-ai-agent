@@ -42,6 +42,7 @@ def prepare_bounded_input(
     timeout_seconds: float | None = None,
     response_schema: Mapping[str, object] | None = None,
     inference_context: InferenceContext | None = None,
+    enforce_input_limit: bool = True,
 ) -> PreparedModelInput:
     """Count the exact endpoint serialization and reject inputs above their ceiling."""
     if not messages or input_limit < 1:
@@ -77,6 +78,6 @@ def prepare_bounded_input(
         or count.serializer_id != generator_identity.serializer_id
     ):
         raise LLMInvalidRequestError("model input counter endpoint mismatch")
-    if count.tokens > input_limit:
+    if enforce_input_limit and count.tokens > input_limit:
         raise LLMInvalidRequestError("model input exceeds its token budget")
     return PreparedModelInput(tuple(messages), count, input_limit)

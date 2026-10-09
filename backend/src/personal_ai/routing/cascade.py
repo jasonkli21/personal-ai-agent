@@ -5,7 +5,6 @@ trusted registered capabilities; output is returned only after durable acceptanc
 """
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from uuid import uuid5
 
 from personal_ai.llm.client import GenerationResult, InferenceContext
@@ -15,6 +14,14 @@ from personal_ai.validation.tasks import ValidationInput, ValidationResult
 
 class CascadeRejected(RuntimeError):
     pass
+
+
+class EndpointLocalPreparationFailure(CascadeRejected):
+    """Known endpoint-specific failure before generation, safe to reselect."""
+
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
 
 
 @dataclass(frozen=True)
@@ -73,10 +80,25 @@ class CascadeCoordinator:
                 )
                 if record.status != "selected":
                     raise CascadeRejected("cascade_operation_already_started")
-            remaining = (decision.root_deadline_at - datetime.now(UTC)).total_seconds()
+            remaining = (
+                decision.root_deadline_at - self.routing.current_time(owner_id=owner_id)
+            ).total_seconds()
             if remaining <= 0:
                 raise CascadeRejected("cascade_deadline_exhausted")
-            prepared = prepare(decision, remaining)
+            try:
+                prepared = prepare(decision, remaining)
+            except Exception as error:
+                safe_to_reselect = isinstance(error, EndpointLocalPreparationFailure) or (
+                    getattr(error, "safe_to_reselect", False) is True
+                )
+                if not safe_to_reselect:
+                    raise
+                reason = getattr(error, "code", "cascade_endpoint_preparation_failed")
+                self._reselect_after_known_endpoint_failure(
+                    owner_id=owner_id, scope=scope, decision=decision, reason=reason
+                )
+                parent = decision.routing_decision_id
+                continue
             identity = PreparationIdentity.model_validate(prepared.identity.model_dump())
             inputs = ValidationInput.model_validate(prepared.validation.model_dump())
             profile = self.routing.registry.revalidate_selected(
@@ -103,10 +125,23 @@ class CascadeCoordinator:
                     != frozen_validation.model_dump(exclude={"sources"})
                     or any(frozen_sources.get(s.source_id) != s for s in inputs.sources)):
                     raise CascadeRejected("cascade_frozen_validation_changed")
-            permit = self.routing.finalize(
-                owner_id=owner_id, scope=scope, decision_id=decision.routing_decision_id,
-                preparation=identity, operation=request.operation,
-            )
+            try:
+                permit = self.routing.finalize(
+                    owner_id=owner_id, scope=scope, decision_id=decision.routing_decision_id,
+                    preparation=identity, operation=request.operation,
+                )
+            except Exception as error:
+                code = getattr(error, "code", "")
+                if code not in {
+                    "routing_preparation_does_not_fit",
+                    "routing_counter_incompatible",
+                    "routing_quality_evidence_expired",
+                    "provider_quota_exhausted",
+                    "provider_endpoint_cooling_down",
+                }:
+                    raise
+                parent = decision.routing_decision_id
+                continue
 
             def validate(value, decision=decision, inputs=inputs, identity=identity):
                 if not isinstance(value, GenerationResult):
@@ -119,7 +154,7 @@ class CascadeCoordinator:
                     return ValidationResult(accepted=False, reasons=("token_budget_exceeded",))
                 if len(value.text.encode("utf-8")) > policy.max_output_bytes:
                     return ValidationResult(accepted=False, reasons=("output_budget_exceeded",))
-                if datetime.now(UTC) >= decision.root_deadline_at:
+                if self.routing.current_time(owner_id=owner_id) >= decision.root_deadline_at:
                     return ValidationResult(accepted=False, reasons=("deadline_exhausted",))
                 return validator.validate(inputs, value.text)
 
@@ -141,6 +176,16 @@ class CascadeCoordinator:
             # P19 fences unknown/timeout outcomes before any child can be created.
             parent = decision.routing_decision_id
         raise CascadeRejected("cascade_validation_exhausted")
+
+    def _reselect_after_known_endpoint_failure(self, *, owner_id, scope, decision, reason):
+        """Persist a known pre-dispatch failure for P21's linked child transition."""
+        try:
+            self.routing.finish(
+                owner_id=owner_id, scope=scope,
+                decision_id=decision.routing_decision_id, reason=reason,
+            )
+        except Exception as error:
+            raise CascadeRejected("cascade_endpoint_failure_not_terminal") from error
 
 
 class EndpointInputPreparer:
@@ -176,17 +221,36 @@ class EndpointInputPreparer:
         if decision.request.operation == "structured_generation" and self.response_schema is None:
             raise CascadeRejected("cascade_response_schema_required")
         generator, counter = self.resolve_runtime(profile)
-        if (generator.identity.provider_id != profile.provider_id
+        if (getattr(generator, "endpoint_profile", None) != profile
+            or getattr(counter, "endpoint_profile", None) != profile
+            or getattr(generator, "gateway_accounting_enabled", None) is not False
+            or getattr(counter, "gateway_accounting_enabled", None) is not False
+            or getattr(generator, "transport_retries", None) != 0
+            or getattr(counter, "transport_retries", None) != 0
+            or getattr(generator, "max_http_requests_per_call", None) != 1
+            or getattr(counter, "max_http_requests_per_call", None) != 1
+            or profile.counter is None
+            or getattr(counter, "counter_id", None) != profile.counter.counter_id
+            or generator.identity.provider_id != profile.provider_id
             or generator.identity.model_id != profile.model_id
             or generator.identity.serializer_id != profile.serializer_id
             or not generator.capabilities.supports(decision.request.operation)):
-            raise CascadeRejected("cascade_runtime_identity_mismatch")
+            raise CascadeRejected("cascade_runtime_binding_mismatch")
         context, inputs = self.assemble(profile, decision)
-        if (context.manifest.effective_sensitivity != decision.request.requirements.sensitivity
-            or context.token_count > decision.request.requirements.input_tokens):
+        if context.manifest.effective_sensitivity != decision.request.requirements.sensitivity:
             raise CascadeRejected("cascade_context_policy_changed")
-        if ({item.source_id for item in context.manifest.items if item.injected}
-            != {source.source_id for source in inputs.sources}):
+        if context.token_count > decision.request.requirements.input_tokens:
+            raise EndpointLocalPreparationFailure("cascade_context_does_not_fit")
+        injected_item_keys = {
+            (item.source_id, item.item_id) for item in context.manifest.items if item.injected
+        }
+        validation_item_keys = {
+            (source.context_source_id, source.context_item_id) for source in inputs.sources
+        }
+        if injected_item_keys != validation_item_keys or any(
+            source.context_source_id is None or source.context_item_id is None
+            for source in inputs.sources
+        ):
             raise CascadeRejected("cascade_source_manifest_mismatch")
         if not sources_allowed(decision, tuple(s.reference_sha256 for s in inputs.sources)):
             raise CascadeRejected("cascade_source_disclosure_changed")
@@ -204,9 +268,10 @@ class EndpointInputPreparer:
                 context.messages, counter, generator=generator, input_limit=limit,
                 timeout_seconds=self._remaining(decision),
                 response_schema=self.response_schema, inference_context=envelope,
+                enforce_input_limit=False,
             )
             return counted, AttemptResult(
-                outcome="success", completed_at=datetime.now(UTC), latency_ms=int((monotonic()-started)*1000),
+                outcome="success", completed_at=self.routing.current_time(owner_id=self.owner_id), latency_ms=int((monotonic()-started)*1000),
             )
 
         counted = self.routing.dispatch_auxiliary(
@@ -215,6 +280,8 @@ class EndpointInputPreparer:
             operation="token_counting", input_tokens=context.token_count,
             source_references=tuple(s.reference_sha256 for s in inputs.sources), send=count_send,
         )
+        if counted.token_count.tokens > limit:
+            raise EndpointLocalPreparationFailure("cascade_authoritative_count_does_not_fit")
         preparation = PreparationIdentity(
             endpoint=profile.ref, serializer_id=profile.serializer_id,
             counter_id=profile.counter.counter_id, input_tokens=counted.token_count.tokens,
@@ -242,7 +309,7 @@ class EndpointInputPreparer:
                 result = generator.complete(counted.messages, **kwargs)
             usage = result.metadata.usage
             return result, AttemptResult(
-                outcome=result.metadata.status, completed_at=datetime.now(UTC),
+                outcome=result.metadata.status, completed_at=self.routing.current_time(owner_id=self.owner_id),
                 latency_ms=int((monotonic()-started)*1000), input_tokens=usage.input_tokens if usage else None,
                 output_tokens=usage.output_tokens if usage else None,
                 total_tokens=usage.total_tokens if usage else None,
@@ -253,9 +320,10 @@ class EndpointInputPreparer:
 
         return PreparedCascadeInput(preparation, inputs, send)
 
-    @staticmethod
-    def _remaining(decision):
-        remaining = (decision.root_deadline_at - datetime.now(UTC)).total_seconds()
+    def _remaining(self, decision):
+        remaining = (
+            decision.root_deadline_at - self.routing.current_time(owner_id=self.owner_id)
+        ).total_seconds()
         if remaining <= 0:
             raise CascadeRejected("cascade_deadline_exhausted")
         return remaining
@@ -295,7 +363,22 @@ def replay_cascade(records, strategy, *, now):
     if len(chain) != len(records):
         raise RoutingReplayUnavailable("cascade_replay_unavailable")
     terminal = current.events[-1]
-    accepted = current.status == "closed" and terminal.validation is not None and terminal.validation.accepted
+    if current.status == "closed":
+        if terminal.kind != "closed" or terminal.validation is None or not terminal.validation.accepted:
+            raise RoutingReplayUnavailable("cascade_replay_unavailable")
+        accepted = True
+    elif current.status == "failed":
+        if terminal.kind != "failed" or terminal.validation is None or terminal.validation.accepted:
+            raise RoutingReplayUnavailable("cascade_replay_unavailable")
+        accepted = False
+    elif current.status == "no_route":
+        if terminal.kind != "no_route" or current.decision.selected is not None:
+            raise RoutingReplayUnavailable("cascade_replay_unavailable")
+        accepted = False
+    else:
+        # selected/authorized/dispatched and unclassified failed decisions can
+        # be interrupted work; never turn them into negative replay labels.
+        raise RoutingReplayUnavailable("cascade_replay_unavailable")
     return {
         "initial_endpoint": roots[0].decision.selected,
         "final_endpoint": current.decision.selected if accepted else None,

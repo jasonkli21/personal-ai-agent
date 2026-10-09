@@ -791,6 +791,8 @@ class LiteLLMGenerationClient:
     """Provider-selected generation adapter using LiteLLM below neutral contracts."""
 
     requires_inference_context = True
+    transport_retries = 0
+    max_http_requests_per_call = 1
 
     def __init__(
         self,
@@ -800,6 +802,7 @@ class LiteLLMGenerationClient:
         async_transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
         sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
         usage_accounting: ProviderUsageAccounting | None = None,
+        endpoint_profile=None,
     ):
         self._settings = settings
         selected = provider or settings.ai_provider.lower()
@@ -807,6 +810,8 @@ class LiteLLMGenerationClient:
         self._async_transport_factory = async_transport_factory
         self._sync_transport_factory = sync_transport_factory
         self._usage_accounting = usage_accounting
+        self.endpoint_profile = _bind_endpoint_profile(settings, selected, endpoint_profile)
+        self.gateway_accounting_enabled = usage_accounting is not None
         self.identity = ProviderIdentity(
             self._profile.provider_id, self._profile.model_id, self._profile.serializer_id
         )
@@ -1232,6 +1237,8 @@ class LiteLLMTokenCounter:
 
     requires_inference_context = True
     count_confidence = "authoritative"
+    transport_retries = 0
+    max_http_requests_per_call = 1
 
     def __init__(
         self,
@@ -1239,11 +1246,19 @@ class LiteLLMTokenCounter:
         *,
         sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
         usage_accounting: ProviderUsageAccounting | None = None,
+        endpoint_profile=None,
     ):
         self.settings = settings
         self._profile = _provider_profile(settings, "gemini")
         self._sync_transport_factory = sync_transport_factory
         self._usage_accounting = usage_accounting
+        self.endpoint_profile = _bind_endpoint_profile(settings, "gemini", endpoint_profile)
+        if self.endpoint_profile is not None and self.endpoint_profile.counter is None:
+            raise LLMInvalidConfigurationError("token counter is not registered for endpoint")
+        self.counter_id = (
+            self.endpoint_profile.counter.counter_id if self.endpoint_profile is not None else None
+        )
+        self.gateway_accounting_enabled = usage_accounting is not None
         self.identity = ProviderIdentity("gemini", settings.ai_model, "gemini-content-v1")
         self.capabilities = ProviderCapabilities(frozenset({"token_counting"}))
 
@@ -1589,6 +1604,31 @@ class _WireMetadata:
     status: Literal["success", "incomplete", "rejected"]
     usage: UsageMetadata | None = None
     refused: bool = False
+
+
+def _bind_endpoint_profile(settings: Settings, provider: str, endpoint_profile):
+    """Bind this fixed transport to one exact configured Phase 18 profile.
+
+    The gateway has provider-specific URL, model, and credential configuration;
+    accepting a profile that merely shares its neutral provider identity would
+    misattribute account/deployment selection. Custom profile changes therefore
+    fail closed until the transport itself supports them.
+    """
+    from personal_ai.routing.configured import build_initial_endpoint_profiles
+
+    configured = tuple(
+        profile for profile in build_initial_endpoint_profiles(settings)
+        if profile.provider_id == provider
+    )
+    if not configured and endpoint_profile is None:
+        return None
+    if endpoint_profile is None:
+        if len(configured) != 1:
+            raise LLMInvalidConfigurationError("endpoint profile binding is ambiguous")
+        return configured[0]
+    if endpoint_profile not in configured:
+        raise LLMInvalidConfigurationError("endpoint profile is not bound to this transport")
+    return endpoint_profile
 
 
 def _provider_profile(settings: Settings, provider: str) -> _ProviderProfile:

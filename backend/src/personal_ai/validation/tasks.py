@@ -40,6 +40,14 @@ class PreparedSource(FrozenContract):
     source_id: str = Field(min_length=1, max_length=200)
     reference_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     text: str = Field(max_length=262144)
+    context_source_id: str | None = Field(default=None, min_length=1, max_length=200)
+    context_item_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def context_identity_is_paired(self):
+        if (self.context_source_id is None) != (self.context_item_id is None):
+            raise ValueError("validation_context_item_identity_incomplete")
+        return self
 
 
 class ValidationInput(FrozenContract):

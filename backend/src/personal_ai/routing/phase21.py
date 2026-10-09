@@ -337,11 +337,12 @@ class RoutingTaskProfile(_FrozenModel):
             raise ValueError("routing_endpoint_priority_duplicate")
         if self.cascade_policy is not None:
             depth = len(self.cascade_policy.endpoint_order) - 1
+            stages = depth + 1
             if (not self.cascade_allowed or not self.validator_id
                 or (depth and not self.escalation_allowed)
                 or self.max_reselections < depth
-                or self.max_physical_attempts < depth + 1
-                or self.max_auxiliary_calls < depth + 1
+                or self.max_physical_attempts < 2 * stages
+                or self.max_auxiliary_calls < stages
                 or self.required_capabilities & {"streaming", "search", "lookup", "embeddings"}):
                 raise ValueError("cascade_task_bounds_invalid")
         return self

@@ -19,6 +19,7 @@ class GeminiLLMClient(LiteLLMGenerationClient):
         async_transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
         sync_transport_factory: Callable[[], httpx.BaseTransport] | None = None,
         usage_accounting: ProviderUsageAccounting | None = None,
+        endpoint_profile=None,
     ) -> None:
         super().__init__(
             settings,
@@ -26,4 +27,5 @@ class GeminiLLMClient(LiteLLMGenerationClient):
             async_transport_factory=async_transport_factory,
             sync_transport_factory=sync_transport_factory,
             usage_accounting=usage_accounting,
+            endpoint_profile=endpoint_profile,
         )

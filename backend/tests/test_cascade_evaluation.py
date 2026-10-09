@@ -57,7 +57,7 @@ def test_paired_baseline_counts_every_attempt_and_keeps_direct(tmp_path):
         assembler = FrozenContextAssembler(
             messages=tuple(ChatMessage(m.role, m.content) for m in fixture.messages), entries=(),
             policy=ContextBuildPolicy(global_input_tokens=8192, source_max_tokens={k:8192 for k in SOURCE_CLASSES}),
-            validation=validation_input(),
+            validation=validation_input(), clock=lambda: routing.current_time(owner_id="owner"),
         )
 
         def runtime(profile):
@@ -70,9 +70,17 @@ def test_paired_baseline_counts_every_attempt_and_keeps_direct(tmp_path):
                 text = "invalid" if weak_bad and profile.endpoint_profile_id == "endpoint-a" else reference
                 return GenerationResult(text, GenerationMetadata(status="success", identity=identity))
 
+            runtime_contract = {
+                "endpoint_profile": profile,
+                "gateway_accounting_enabled": False,
+                "transport_retries": 0,
+                "max_http_requests_per_call": 1,
+            }
             return (SimpleNamespace(identity=identity, complete=complete,
-                capabilities=ProviderCapabilities(frozenset({"bounded_generation"}))),
-                SimpleNamespace(identity=identity, count_with_timeout=count))
+                capabilities=ProviderCapabilities(frozenset({"bounded_generation"})),
+                **runtime_contract),
+                SimpleNamespace(identity=identity, count_with_timeout=count,
+                    counter_id=profile.counter.counter_id, **runtime_contract))
 
         prepare = EndpointInputPreparer(routing, owner_id="owner", scope=SCOPE,
                                        assemble=assembler, resolve_runtime=runtime)
