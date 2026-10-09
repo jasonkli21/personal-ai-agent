@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import NAMESPACE_URL, uuid5
 
+from pydantic import ValidationError
+
 from personal_ai.persistence.postgres_routing_observations import database_time
 from personal_ai.routing.contracts import confidence_meets
 from personal_ai.routing.phase21 import (
@@ -17,6 +19,7 @@ from personal_ai.routing.phase21 import (
     EvaluationQualityGate,
     PreparationIdentity,
     QualityEvidence,
+    QuotaBucketDecisionFact,
     RoutingDecision,
     RoutingEvent,
     RoutingRequestFacts,
@@ -29,7 +32,7 @@ from personal_ai.routing.phase21 import (
     sources_allowed,
     task_configuration_sha256,
 )
-from personal_ai.routing.strategy import DeterministicScoringStrategy
+from personal_ai.routing.strategy import QuotaAwareDeterministicStrategy
 from personal_ai.usage.accounting import unit_reservations
 from personal_ai.usage.contracts import AttemptMetadata, InvocationMetadata, UsageAdmissionDenied
 from personal_ai.usage.profiles import from_profile
@@ -91,7 +94,7 @@ class RoutingDecisionService:
     ):
         self.registry = registry
         self.observations = observations
-        self.strategy = strategy or DeterministicScoringStrategy()
+        self.strategy = strategy or QuotaAwareDeterministicStrategy()
         self.usage = usage
         self.authorization = authorization
         self.evaluation_quality_authority = evaluation_quality_authority
@@ -162,6 +165,15 @@ class RoutingDecisionService:
     ):
         task = RoutingTaskProfile.model_validate(task.model_dump())
         request = RoutingRequestFacts.model_validate(request.model_dump())
+        if request.operation is None:
+            if len(request.requirements.required_capabilities) != 1:
+                raise ValueError("routing_operation_required")
+            request = RoutingRequestFacts.model_validate(
+                {
+                    **request.model_dump(),
+                    "operation": next(iter(request.requirements.required_capabilities)),
+                }
+            )
         if evaluation_quality_gate is not None:
             evaluation_quality_gate = EvaluationQualityGate.model_validate(
                 evaluation_quality_gate.model_dump()
@@ -217,6 +229,7 @@ class RoutingDecisionService:
                     or p.task != task
                     or p.request.request_id != request.request_id
                     or p.request.run_id != request.run_id
+                    or p.request.operation != request.operation
                     or p.request.policy_version != request.policy_version
                     or not reselection_requirements_preserved(
                         p.request.requirements, request.requirements
@@ -250,15 +263,23 @@ class RoutingDecisionService:
                 if existing.decision.task != task or existing.decision.request != request:
                     raise ValueError("routing_decision_idempotency_conflict")
                 return existing.decision
-            static = self.registry.candidates(request.requirements, now=now)
+            static = self.registry.candidates(
+                request.requirements, now=now, connection=c
+            )
             quality = _by_id(quality_evidence, QualityEvidence)
             signals = _by_id(routing_signals, RoutingSignals)
             candidates = []
-            for assessment in static.assessments:
+            quota_snapshots = {}
+            quota_snapshot_overflow = False
+            for assessment in sorted(
+                static.assessments,
+                key=lambda item: item.profile.endpoint_profile_id,
+            ):
                 profile = assessment.profile
                 reasons = list(assessment.rejection_reasons)
                 references = []
                 until = None
+                runtime = None
                 if profile.endpoint_profile_id in request.excluded_endpoint_profile_ids:
                     reasons.append("endpoint-excluded-after-reselection")
                 if not reasons:
@@ -270,7 +291,7 @@ class RoutingDecisionService:
                             profile.ref,
                             request,
                             request.source_reference_sha256s,
-                            database_time(c),
+                            now,
                         )
                         references.append(auth.reference)
                     except Exception:  # noqa: BLE001 - missing authority/invalid strategy fails closed
@@ -279,13 +300,25 @@ class RoutingDecisionService:
                         reasons.append("routing_runtime_authority_unavailable")
                     else:
                         try:
-                            reasons.extend(
-                                self.usage.runtime_rejections(
-                                    c, profile, request.requirements, now=database_time(c)
-                                )
+                            runtime = self.usage.routing_snapshot(
+                                c,
+                                profile,
+                                request.requirements,
+                                operation=request.operation,
+                                now=now,
                             )
+                            reasons.extend(runtime.rejection_reasons)
+                            for bucket in runtime.quota_buckets:
+                                if bucket.bucket_id in quota_snapshots:
+                                    if quota_snapshots[bucket.bucket_id] != bucket:
+                                        raise ValueError("provider_quota_snapshot_conflict")
+                                else:
+                                    quota_snapshots[bucket.bucket_id] = bucket
+                                    if len(quota_snapshots) > 128:
+                                        quota_snapshot_overflow = True
                         except Exception:  # noqa: BLE001 - missing authority/invalid strategy fails closed
                             reasons.append("routing_runtime_authority_unavailable")
+                            runtime = None
                 q = quality.get(profile.endpoint_profile_id)
                 q_current = _quality_current(task, request.policy_version, profile, q, now)
                 gate_target = (
@@ -344,6 +377,16 @@ class RoutingDecisionService:
                         reliability=signal.reliability
                         if signal_current and task.preferences.reliability_weight
                         else None,
+                        quota_bucket_ids=(
+                            tuple(sorted(bucket.bucket_id for bucket in runtime.quota_buckets))
+                            if runtime is not None
+                            else ()
+                        ),
+                        health_status=runtime.health_status if runtime is not None else "unknown",
+                        cooldown_until=runtime.cooldown_until if runtime is not None else None,
+                        health_failure_streak=(
+                            runtime.failure_streak if runtime is not None else 0
+                        ),
                         evidence_references=tuple(references),
                         quality_valid_until=until,
                         quality_profile_id=q.quality_profile_id if q_applied else None,
@@ -356,13 +399,68 @@ class RoutingDecisionService:
                         quality_identity_sha256=q.quality_identity_sha256 if q_applied else None,
                     )
                 )
+            if quota_snapshot_overflow:
+                quota_snapshots.clear()
+                candidates = [
+                    candidate.model_copy(
+                        update={
+                            "rejection_reasons": tuple(
+                                dict.fromkeys(
+                                    (*candidate.rejection_reasons, "quota-snapshot-overflow")
+                                )
+                            ),
+                            "quota_bucket_ids": (),
+                        }
+                    )
+                    for candidate in candidates
+                ]
+            quota_facts = {
+                bucket_id: QuotaBucketDecisionFact(
+                    bucket_id=bucket.bucket_id,
+                    unit=bucket.unit,
+                    window_seconds=bucket.window_seconds,
+                    window_start=bucket.window_start,
+                    reset_at=bucket.reset_at,
+                    time_to_reset_seconds=bucket.time_to_reset_seconds,
+                    source=bucket.source,
+                    confidence=bucket.confidence,
+                    evidence_reference=bucket.evidence_reference,
+                    limit_units=bucket.limit_units,
+                    reported_remaining_units=bucket.reported_remaining_units,
+                    consumed_units=bucket.consumed_units,
+                    reserved_units=bucket.reserved_units,
+                    remaining_units=bucket.remaining_units,
+                    reservation_units=bucket.reservation_units,
+                    observed_at=bucket.observed_at,
+                    fresh_until=bucket.fresh_until,
+                )
+                for bucket_id, bucket in quota_snapshots.items()
+            }
+            eligible_candidates = tuple(c for c in candidates if c.eligible)
+            eligible_bucket_ids = {
+                bucket_id
+                for candidate in eligible_candidates
+                for bucket_id in candidate.quota_bucket_ids
+            }
             view = StrategyView(
                 preferences=task.preferences,
-                candidates=tuple(r.strategy_view() for r in candidates if r.eligible),
+                candidates=tuple(r.strategy_view() for r in eligible_candidates),
+                quota_buckets=tuple(
+                    quota_facts[bucket_id]
+                    for bucket_id in sorted(eligible_bucket_ids)
+                    if bucket_id in quota_facts
+                ),
+                observed_at=now,
             )
-            reason = "no-eligible-endpoint" if not view.candidates else None
+            reason = (
+                "quota-snapshot-overflow"
+                if quota_snapshot_overflow
+                else "no-eligible-endpoint"
+                if not view.candidates
+                else None
+            )
             ranking = ()
-            if view.candidates:
+            if view.candidates and not quota_snapshot_overflow:
                 try:
                     from personal_ai.routing.phase21 import RankedCandidate
 
@@ -389,27 +487,48 @@ class RoutingDecisionService:
                     replay_until = min(replay_until, dependency_expires_at)
             if database_time(c) >= deadline:
                 reason, ranking = "routing-deadline-expired", ()
-            decision = RoutingDecision(
-                schema_version=3 if evaluation_quality_gate is not None else 2,
-                routing_decision_id=decision_id,
-                root_decision_id=root_id,
-                parent_decision_id=parent_decision_id,
-                reselection_depth=depth,
-                owner_id=owner_id,
-                application_id=scope.application_id,
-                workspace_id=scope.workspace_id,
-                created_at=now,
-                root_deadline_at=deadline,
-                replay_until=replay_until,
-                request=request,
-                task=task,
-                evaluation_quality_gate=evaluation_quality_gate,
-                strategy=self.strategy.ref,
-                registry_version=static.registry_version,
-                candidates=tuple(candidates),
-                ranking=ranking,
-                no_route_reason=reason,
-            )
+            decision_fields = {
+                "schema_version": 4,
+                "routing_decision_id": decision_id,
+                "root_decision_id": root_id,
+                "parent_decision_id": parent_decision_id,
+                "reselection_depth": depth,
+                "owner_id": owner_id,
+                "application_id": scope.application_id,
+                "workspace_id": scope.workspace_id,
+                "created_at": now,
+                "root_deadline_at": deadline,
+                "replay_until": replay_until,
+                "request": request,
+                "task": task,
+                "evaluation_quality_gate": evaluation_quality_gate,
+                "strategy": self.strategy.ref,
+                "registry_version": static.registry_version,
+                "candidates": tuple(candidates),
+                "quota_buckets": tuple(
+                    quota_facts[bucket_id] for bucket_id in sorted(quota_facts)
+                ),
+                "ranking": ranking,
+                "no_route_reason": reason,
+            }
+            try:
+                decision = RoutingDecision(**decision_fields)
+            except ValidationError as error:
+                if not any(
+                    str(item.get("ctx", {}).get("error", ""))
+                    == "routing_decision_payload_too_large"
+                    for item in error.errors()
+                ):
+                    raise
+                # Preserve the existing byte bound and persist an explicit
+                # no-route outcome rather than truncating replay facts.
+                decision_fields.update(
+                    candidates=(),
+                    quota_buckets=(),
+                    ranking=(),
+                    no_route_reason="routing-decision-overflow",
+                )
+                decision = RoutingDecision(**decision_fields)
             # Nested begin would acquire a second connection. Use this exact transaction.
             self.observations.begin_in_transaction(
                 c, owner_id=owner_id, scope=scope, decision=decision
@@ -431,7 +550,9 @@ class RoutingDecisionService:
             decision.selected, decision.request.requirements, now=now, connection=c
         )
         requirements = decision.request.requirements
-        if operation not in requirements.required_capabilities:
+        if operation not in requirements.required_capabilities or (
+            decision.request.operation is not None and operation != decision.request.operation
+        ):
             raise RoutingFinalizationError("routing_operation_invalid")
         if (
             preparation.serializer_id != profile.serializer_id
@@ -480,7 +601,12 @@ class RoutingDecisionService:
         if self.usage is None:
             raise RoutingFinalizationError("routing_runtime_authority_unavailable")
         reasons = self.usage.runtime_rejections(
-            c, profile, requirements, now=database_time(c), check_capacity=False
+            c,
+            profile,
+            requirements,
+            now=database_time(c),
+            check_capacity=False,
+            operation=operation,
         )
         if reasons:
             raise RoutingFinalizationError(reasons[0])

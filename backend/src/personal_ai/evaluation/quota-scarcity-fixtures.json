@@ -1,0 +1,390 @@
+{
+  "schema_version": "quota-scarcity-suite-v1",
+  "scenarios": [
+    {
+      "scenario_id": "scarcity-before-reset",
+      "demand_count": 4,
+      "quality_floor": 0.85,
+      "preferences": {
+        "quota_scarcity_weight": 4000,
+        "quota_unknown_penalty_weight": 2000,
+        "quota_reset_relief_seconds": 86400,
+        "degraded_health_penalty": 250
+      },
+      "observed_at": "2026-10-01T00:00:00Z",
+      "protected_bucket_ids": [
+        "strong-capacity"
+      ],
+      "endpoints": [
+        {
+          "endpoint": {
+            "endpoint_profile_id": "strong-route",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 1,
+          "quality_score": 0.96,
+          "latency_ms": 100,
+          "reliability": 0.99,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "strong-capacity"
+          ]
+        },
+        {
+          "endpoint": {
+            "endpoint_profile_id": "substitute-route",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 0,
+          "quality_score": 0.9,
+          "latency_ms": 120,
+          "reliability": 0.98,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "substitute-capacity"
+          ]
+        }
+      ],
+      "quota_buckets": [
+        {
+          "bucket_id": "strong-capacity",
+          "unit": "requests",
+          "window_seconds": 604800,
+          "window_start": "2026-09-24T00:00:00Z",
+          "reset_at": "2026-10-08T00:00:00Z",
+          "source": "provider_contract",
+          "confidence": "derived",
+          "evidence_reference": "quota:fixture-strong",
+          "limit_units": 2,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 2,
+          "reservation_units": 1,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 604800
+        },
+        {
+          "bucket_id": "substitute-capacity",
+          "unit": "requests",
+          "window_seconds": 604800,
+          "window_start": "2026-09-24T00:00:00Z",
+          "reset_at": "2026-10-08T00:00:00Z",
+          "source": "provider_contract",
+          "confidence": "derived",
+          "evidence_reference": "quota:fixture-substitute",
+          "limit_units": 10,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 10,
+          "reservation_units": 1,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 604800
+        }
+      ]
+    },
+    {
+      "scenario_id": "scarcity-near-reset",
+      "demand_count": 2,
+      "quality_floor": 0.85,
+      "preferences": {
+        "quota_scarcity_weight": 4000,
+        "quota_unknown_penalty_weight": 2000,
+        "quota_reset_relief_seconds": 86400,
+        "degraded_health_penalty": 250
+      },
+      "observed_at": "2026-10-01T00:00:00Z",
+      "protected_bucket_ids": [],
+      "endpoints": [
+        {
+          "endpoint": {
+            "endpoint_profile_id": "resetting-route",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 1,
+          "quality_score": 0.96,
+          "latency_ms": 100,
+          "reliability": 0.99,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "resetting-capacity"
+          ]
+        },
+        {
+          "endpoint": {
+            "endpoint_profile_id": "resetting-substitute",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 0,
+          "quality_score": 0.9,
+          "latency_ms": 120,
+          "reliability": 0.98,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "resetting-alternative-capacity"
+          ]
+        }
+      ],
+      "quota_buckets": [
+        {
+          "bucket_id": "resetting-capacity",
+          "unit": "requests",
+          "window_seconds": 604800,
+          "window_start": "2026-09-24T00:00:00Z",
+          "reset_at": "2026-10-01T00:01:00Z",
+          "source": "provider_contract",
+          "confidence": "derived",
+          "evidence_reference": "quota:fixture-resetting",
+          "limit_units": 1,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 1,
+          "reservation_units": 1,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 60
+        },
+        {
+          "bucket_id": "resetting-alternative-capacity",
+          "unit": "requests",
+          "window_seconds": 604800,
+          "window_start": "2026-09-24T00:00:00Z",
+          "reset_at": "2026-10-08T00:00:00Z",
+          "source": "provider_contract",
+          "confidence": "derived",
+          "evidence_reference": "quota:fixture-resetting-alternative",
+          "limit_units": 20,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 20,
+          "reservation_units": 1,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 604800
+        }
+      ]
+    },
+    {
+      "scenario_id": "unknown-capacity",
+      "demand_count": 2,
+      "quality_floor": 0.85,
+      "preferences": {
+        "quota_scarcity_weight": 4000,
+        "quota_unknown_penalty_weight": 2000,
+        "quota_reset_relief_seconds": 86400,
+        "degraded_health_penalty": 250
+      },
+      "observed_at": "2026-10-01T00:00:00Z",
+      "protected_bucket_ids": [],
+      "endpoints": [
+        {
+          "endpoint": {
+            "endpoint_profile_id": "uncertain-route",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 1,
+          "quality_score": 0.95,
+          "latency_ms": 100,
+          "reliability": 0.99,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "unknown-capacity-bucket"
+          ]
+        },
+        {
+          "endpoint": {
+            "endpoint_profile_id": "known-route",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 0,
+          "quality_score": 0.9,
+          "latency_ms": 120,
+          "reliability": 0.98,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "known-capacity-bucket"
+          ]
+        }
+      ],
+      "quota_buckets": [
+        {
+          "bucket_id": "unknown-capacity-bucket",
+          "unit": "neurons",
+          "window_seconds": 86400,
+          "window_start": "2026-10-01T00:00:00Z",
+          "reset_at": "2026-10-02T00:00:00Z",
+          "source": "unknown",
+          "confidence": "unknown",
+          "evidence_reference": null,
+          "limit_units": null,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": null,
+          "reservation_units": null,
+          "observed_at": null,
+          "fresh_until": null,
+          "time_to_reset_seconds": null
+        },
+        {
+          "bucket_id": "known-capacity-bucket",
+          "unit": "requests",
+          "window_seconds": 86400,
+          "window_start": "2026-10-01T00:00:00Z",
+          "reset_at": "2026-10-02T00:00:00Z",
+          "source": "provider_contract",
+          "confidence": "configured",
+          "evidence_reference": "quota:fixture-known",
+          "limit_units": 10,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 10,
+          "reservation_units": 1,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 86400
+        }
+      ]
+    },
+    {
+      "scenario_id": "free-exhaustion-no-overflow",
+      "demand_count": 2,
+      "quality_floor": 0.85,
+      "preferences": {
+        "quota_scarcity_weight": 4000,
+        "quota_unknown_penalty_weight": 2000,
+        "quota_reset_relief_seconds": 86400,
+        "degraded_health_penalty": 250
+      },
+      "observed_at": "2026-10-01T00:00:00Z",
+      "protected_bucket_ids": [],
+      "endpoints": [
+        {
+          "endpoint": {
+            "endpoint_profile_id": "exhausted-free-a",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 1,
+          "quality_score": 0.95,
+          "latency_ms": 100,
+          "reliability": 0.99,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "exhausted-a"
+          ]
+        },
+        {
+          "endpoint": {
+            "endpoint_profile_id": "exhausted-free-b",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 0,
+          "quality_score": 0.9,
+          "latency_ms": 120,
+          "reliability": 0.98,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "exhausted-b"
+          ]
+        },
+        {
+          "endpoint": {
+            "endpoint_profile_id": "byok-overflow",
+            "profile_version": 1
+          },
+          "execution_mode": "EXPLICIT_BYOK",
+          "hard_eligible": true,
+          "configured_priority": 100,
+          "quality_score": 0.99,
+          "latency_ms": 10,
+          "reliability": 1.0,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "byok-capacity"
+          ]
+        }
+      ],
+      "quota_buckets": [
+        {
+          "bucket_id": "exhausted-a",
+          "unit": "requests",
+          "window_seconds": 86400,
+          "window_start": "2026-10-01T00:00:00Z",
+          "reset_at": "2026-10-02T00:00:00Z",
+          "source": "provider_contract",
+          "confidence": "configured",
+          "evidence_reference": "quota:fixture-exhausted-a",
+          "limit_units": 0,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 0,
+          "reservation_units": 1,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 86400
+        },
+        {
+          "bucket_id": "exhausted-b",
+          "unit": "requests",
+          "window_seconds": 86400,
+          "window_start": "2026-10-01T00:00:00Z",
+          "reset_at": "2026-10-02T00:00:00Z",
+          "source": "provider_contract",
+          "confidence": "configured",
+          "evidence_reference": "quota:fixture-exhausted-b",
+          "limit_units": 0,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 0,
+          "reservation_units": 1,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 86400
+        },
+        {
+          "bucket_id": "byok-capacity",
+          "unit": "requests",
+          "window_seconds": 86400,
+          "window_start": "2026-10-01T00:00:00Z",
+          "reset_at": "2026-10-02T00:00:00Z",
+          "source": "provider_contract",
+          "confidence": "configured",
+          "evidence_reference": "quota:fixture-byok",
+          "limit_units": 100,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 100,
+          "reservation_units": 1,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 86400
+        }
+      ]
+    }
+  ]
+}

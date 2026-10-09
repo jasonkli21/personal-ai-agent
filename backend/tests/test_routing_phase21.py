@@ -28,6 +28,7 @@ from personal_ai.routing import (
     PreparationIdentity,
     QualityEvidence,
     QualityPolicy,
+    QuotaAwareDeterministicStrategy,
     RankedCandidate,
     RoutingDecision,
     RoutingDecisionService,
@@ -51,6 +52,7 @@ from personal_ai.routing.phase21 import (
     transition,
 )
 from personal_ai.usage.contracts import AttemptResult, UsageAdmissionDenied
+from personal_ai.usage.quota import EndpointRuntimeSnapshot
 from tests.test_endpoint_registry import _profile, _requirements
 
 SCOPE = ApplicationScope()
@@ -201,13 +203,34 @@ class Usage:
         self.denied = False
         self.reserve_calls = 0
 
-    def runtime_rejections(self, c, profile, requirements, *, now, check_capacity=True):
+    def runtime_rejections(
+        self, c, profile, requirements, *, now, check_capacity=True, operation=None
+    ):
         return (
             ("quota-exhausted",)
             if self.exhausted and check_capacity
             else ("cooldown",)
             if self.health
             else ()
+        )
+
+    def routing_snapshot(
+        self, c, profile, requirements, *, operation, now, check_capacity=True
+    ):
+        rejections = self.runtime_rejections(
+            c,
+            profile,
+            requirements,
+            now=now,
+            check_capacity=check_capacity,
+            operation=operation,
+        )
+        return EndpointRuntimeSnapshot(
+            health_status="cooldown" if self.health else "unobserved",
+            cooldown_until=now + timedelta(seconds=30) if self.health else None,
+            failure_streak=1 if self.health else 0,
+            quota_buckets=(),
+            rejection_reasons=rejections,
         )
 
     def reserve_attempt_in_transaction(self, c, invocation, attempt, *, max_attempts):
@@ -328,7 +351,9 @@ def test_known_tasks_route_without_classification(system, task_type):
     decision = route(system, task=t)
     assert decision.selected.endpoint_profile_id == "endpoint-a"
     assert (
-        replay_deterministic_decision(decision, DeterministicScoringStrategy(), now=system[1].now)
+        replay_deterministic_decision(
+            decision, QuotaAwareDeterministicStrategy(), now=system[1].now
+        )
         == decision.ranking
     )
 
@@ -344,7 +369,6 @@ def test_least_knowledge_strategy_and_hard_ineligible_isolation(system):
     for forbidden in (
         "credential",
         "account",
-        "quota",
         "privacy",
         "policy_version",
         "serializer",
@@ -375,7 +399,9 @@ def test_semantic_identity_replay_retention_and_registry_changes(system):
     decision = route(system)
     system[0].registry.remove("endpoint-a")
     assert (
-        replay_deterministic_decision(decision, DeterministicScoringStrategy(), now=system[1].now)
+        replay_deterministic_decision(
+            decision, QuotaAwareDeterministicStrategy(), now=system[1].now
+        )
         == decision.ranking
     )
     changed = DeterministicScoringStrategy()

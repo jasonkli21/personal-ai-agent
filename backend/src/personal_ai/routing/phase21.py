@@ -29,8 +29,10 @@ MAX_ROUTING_OUTCOMES = 128
 MAX_ROUTING_EVENTS_BYTES = MAX_ROUTING_OUTCOMES * MAX_ROUTING_OUTCOME_BYTES
 MAX_ROUTING_TERMINAL_EVENT_BYTES = 1_024
 MAX_ROUTING_SOURCE_REFERENCES = 64
+MAX_ROUTING_QUOTA_BUCKET_FACTS = 128
 MAX_REPLAY_SECONDS = 90 * 24 * 60 * 60
 _SAFE_ID = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9._:/@+_-]{0,199}$")
+_SAFE_EVIDENCE_REF = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9._:/@+-]{0,499}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{7,64}(-working-tree-[0-9a-f]{12})?$")
 _CONFIDENCE_RANK: dict[CounterConfidence, int] = {
@@ -55,8 +57,22 @@ def endpoint_configuration_sha256(profile: EndpointProfile) -> str:
 
 
 def task_configuration_sha256(task: RoutingTaskProfile) -> str:
-    """Digest the complete versioned task contract used by quality evidence."""
-    payload = json.dumps(task.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    """Digest task/output policy while excluding routing-only scarcity preferences.
+
+    Quality evidence predates Phase 23 and remains valid when only the route's
+    quota preference changes. Preserve the former serialized shape so existing
+    Phase 22 evidence does not become stale merely because new defaulted fields
+    were added to ``RoutingPreferences``.
+    """
+    task_payload = task.model_dump(mode="json")
+    for name in (
+        "quota_scarcity_weight",
+        "quota_unknown_penalty_weight",
+        "quota_reset_relief_seconds",
+        "degraded_health_penalty",
+    ):
+        task_payload["preferences"].pop(name, None)
+    payload = json.dumps(task_payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -226,6 +242,10 @@ class RoutingPreferences(_FrozenModel):
     quality_weight: int = Field(default=0, ge=0, le=1_000_000)
     reliability_weight: int = Field(default=0, ge=0, le=1_000_000)
     latency_penalty_per_second: int = Field(default=0, ge=0, le=1_000_000)
+    quota_scarcity_weight: int = Field(default=1_000, ge=0, le=1_000_000)
+    quota_unknown_penalty_weight: int = Field(default=2_000, ge=0, le=1_000_000)
+    quota_reset_relief_seconds: int = Field(default=86_400, ge=1, le=31_536_000)
+    degraded_health_penalty: int = Field(default=250, ge=0, le=1_000_000)
 
 
 class RoutingTaskProfile(_FrozenModel):
@@ -287,6 +307,7 @@ class RoutingRequestFacts(_FrozenModel):
 
     request_id: str
     run_id: str | None = None
+    operation: EndpointOperation | None = None
     requirements: EndpointCandidateRequirements
     policy_version: str
     source_reference_sha256s: tuple[str, ...] = Field(
@@ -315,6 +336,12 @@ class RoutingRequestFacts(_FrozenModel):
         if len(set(values)) != len(values):
             raise ValueError("routing_excluded_endpoint_duplicate")
         return tuple(_safe_id(value) for value in values)
+
+    @model_validator(mode="after")
+    def operation_is_required_capability(self) -> RoutingRequestFacts:
+        if self.operation is not None and self.operation not in self.requirements.required_capabilities:
+            raise ValueError("routing_operation_not_required")
+        return self
 
     @property
     def source_count(self):
@@ -454,6 +481,76 @@ class StrategyCandidate(_FrozenModel):
     quality_score: float | None = Field(default=None, ge=0, le=1)
     latency_ms: int | None = Field(default=None, ge=0, le=600_000)
     reliability: float | None = Field(default=None, ge=0, le=1)
+    quota_bucket_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    health_status: Literal["unobserved", "healthy", "degraded", "cooldown", "unknown"] = "unobserved"
+    cooldown_until: datetime | None = None
+
+    @field_validator("quota_bucket_ids")
+    @classmethod
+    def unique_quota_bucket_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(values)) != len(values):
+            raise ValueError("routing_quota_bucket_duplicate")
+        return tuple(_safe_id(value) for value in values)
+
+    @field_validator("cooldown_until")
+    @classmethod
+    def cooldown_timestamp(cls, value: datetime | None) -> datetime | None:
+        return _aware(value) if value is not None else None
+
+
+class QuotaBucketDecisionFact(_FrozenModel):
+    """Bounded immutable view of one P19 quota window used by a decision."""
+
+    bucket_id: str
+    unit: str
+    window_seconds: int | None = Field(default=None, ge=1, le=31_536_000)
+    window_start: datetime
+    reset_at: datetime | None = None
+    time_to_reset_seconds: int | None = Field(default=None, ge=0, le=31_536_000)
+    source: Literal["provider_contract", "provider_headers", "operator_attestation", "unknown"]
+    confidence: Literal["exact", "derived", "configured", "unknown"]
+    evidence_reference: str | None = Field(default=None, max_length=500)
+    limit_units: int | None = Field(default=None, ge=0)
+    reported_remaining_units: int | None = Field(default=None, ge=0)
+    consumed_units: int = Field(ge=0)
+    reserved_units: int = Field(ge=0)
+    remaining_units: int | None = Field(default=None, ge=0)
+    reservation_units: int | None = Field(default=None, ge=0)
+    observed_at: datetime | None = None
+    fresh_until: datetime | None = None
+
+    @field_validator("bucket_id", "unit")
+    @classmethod
+    def valid_identity(cls, value: str) -> str:
+        return _safe_id(value)
+
+    @field_validator("evidence_reference")
+    @classmethod
+    def valid_evidence_reference(cls, value: str | None) -> str | None:
+        if value is not None and not _SAFE_EVIDENCE_REF.fullmatch(value):
+            raise ValueError("routing_quota_evidence_reference_invalid")
+        return value
+
+    @field_validator("window_start", "reset_at", "observed_at", "fresh_until")
+    @classmethod
+    def valid_quota_time(cls, value: datetime | None) -> datetime | None:
+        return _aware(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def known_capacity_is_qualified(self) -> QuotaBucketDecisionFact:
+        if self.confidence == "unknown" and self.remaining_units is not None:
+            raise ValueError("routing_unknown_quota_has_no_remaining_estimate")
+        if self.confidence == "unknown" and self.time_to_reset_seconds is not None:
+            raise ValueError("routing_unknown_quota_has_no_reset_estimate")
+        if self.time_to_reset_seconds is not None and self.reset_at is None:
+            raise ValueError("routing_quota_reset_estimate_missing_timestamp")
+        if self.remaining_units is not None and self.reservation_units is None:
+            raise ValueError("routing_quota_estimate_missing_reservation_basis")
+        if self.fresh_until is not None and (
+            self.observed_at is None or self.fresh_until < self.observed_at
+        ):
+            raise ValueError("routing_quota_freshness_invalid")
+        return self
 
 
 class CandidateFact(StrategyCandidate):
@@ -470,6 +567,7 @@ class CandidateFact(StrategyCandidate):
     quality_confidence: float | None = Field(default=None, ge=0, le=1)
     quality_sample_count: int | None = Field(default=None, ge=1, le=100_000)
     quality_identity_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    health_failure_streak: int = Field(default=0, ge=0)
 
     @field_validator("evidence_references", "rejection_reasons")
     @classmethod
@@ -494,6 +592,26 @@ class CandidateFact(StrategyCandidate):
 class StrategyView(_FrozenModel):
     preferences: RoutingPreferences
     candidates: tuple[StrategyCandidate, ...] = Field(max_length=32)
+    quota_buckets: tuple[QuotaBucketDecisionFact, ...] = Field(
+        default=(), max_length=MAX_ROUTING_QUOTA_BUCKET_FACTS
+    )
+    observed_at: datetime | None = None
+
+    @field_validator("observed_at")
+    @classmethod
+    def strategy_time(cls, value: datetime | None) -> datetime | None:
+        return _aware(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def quota_references_resolve(self) -> StrategyView:
+        bucket_ids = {bucket.bucket_id for bucket in self.quota_buckets}
+        if len(bucket_ids) != len(self.quota_buckets) or any(
+            bucket_id not in bucket_ids
+            for candidate in self.candidates
+            for bucket_id in candidate.quota_bucket_ids
+        ):
+            raise ValueError("routing_strategy_quota_snapshot_incomplete")
+        return self
 
 
 class RankedCandidate(_FrozenModel):
@@ -529,7 +647,7 @@ class EvaluationQualityGate(_FrozenModel):
 
 
 class RoutingDecision(_FrozenModel):
-    schema_version: Literal[2, 3] = 2
+    schema_version: Literal[2, 3, 4] = 2
     routing_decision_id: UUID
     root_decision_id: UUID
     parent_decision_id: UUID | None = None
@@ -546,6 +664,9 @@ class RoutingDecision(_FrozenModel):
     strategy: StrategyRef
     registry_version: str = Field(max_length=100)
     candidates: tuple[CandidateFact, ...] = Field(default=(), max_length=32)
+    quota_buckets: tuple[QuotaBucketDecisionFact, ...] = Field(
+        default=(), max_length=MAX_ROUTING_QUOTA_BUCKET_FACTS
+    )
     ranking: tuple[RankedCandidate, ...] = Field(default=(), max_length=32)
     no_route_reason: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._:+/-]{1,100}$")
 
@@ -567,6 +688,8 @@ class RoutingDecision(_FrozenModel):
             raise ValueError("routing_task_capability_requirement_mismatch")
         if self.schema_version == 2 and self.evaluation_quality_gate is not None:
             raise ValueError("legacy_routing_decision_evaluation_gate_invalid")
+        if self.schema_version == 4 and self.request.operation is None:
+            raise ValueError("routing_operation_missing")
         if self.evaluation_quality_gate is not None:
             gate = self.evaluation_quality_gate
             if (
@@ -603,6 +726,16 @@ class RoutingDecision(_FrozenModel):
         ids = [c.endpoint.endpoint_profile_id for c in self.candidates]
         if len(ids) != len(set(ids)):
             raise ValueError("routing_candidate_duplicate")
+        quota_bucket_ids = [bucket.bucket_id for bucket in self.quota_buckets]
+        if len(quota_bucket_ids) != len(set(quota_bucket_ids)):
+            raise ValueError("routing_quota_bucket_duplicate")
+        quota_bucket_id_set = set(quota_bucket_ids)
+        if any(
+            bucket_id not in quota_bucket_id_set
+            for candidate in self.candidates
+            for bucket_id in candidate.quota_bucket_ids
+        ):
+            raise ValueError("routing_quota_snapshot_incomplete")
         ranked = [r.endpoint for r in self.ranking]
         eligible = [c.endpoint for c in self.candidates if c.eligible]
         if (
@@ -624,9 +757,15 @@ class RoutingDecision(_FrozenModel):
         return self.ranking[0].endpoint if self.ranking else None
 
     def strategy_view(self):
+        eligible = tuple(c for c in self.candidates if c.eligible)
+        needed = {bucket_id for c in eligible for bucket_id in c.quota_bucket_ids}
         return StrategyView(
             preferences=self.task.preferences,
-            candidates=tuple(c.strategy_view() for c in self.candidates if c.eligible),
+            candidates=tuple(c.strategy_view() for c in eligible),
+            quota_buckets=tuple(
+                bucket for bucket in self.quota_buckets if bucket.bucket_id in needed
+            ),
+            observed_at=self.created_at,
         )
 
 

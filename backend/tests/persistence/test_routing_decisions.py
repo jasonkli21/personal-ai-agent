@@ -20,10 +20,13 @@ from personal_ai.persistence.postgres_routing_observations import (
 from personal_ai.persistence.postgres_usage import PostgresProviderUsageAccounting
 from personal_ai.routing import (
     DeterministicScoringStrategy,
+    EndpointPriority,
     EndpointRegistry,
     PreparationIdentity,
+    QuotaBucket,
     RoutingDecisionService,
     RoutingFinalizationError,
+    RoutingPreferences,
     RoutingRequestFacts,
     RoutingTaskProfile,
     replay_deterministic_decision,
@@ -98,6 +101,122 @@ def finalize(system):
         preparation=prep,
         operation="bounded_generation",
     )
+
+
+def test_quota_snapshot_is_frozen_and_capacity_loss_reselects_without_dispatch(database):
+    owner = f"quota-route-owner-{uuid4()}"
+    suffix = uuid4().hex
+    strong_id = f"quota-strong-{suffix}"
+    substitute_id = f"quota-substitute-{suffix}"
+    strong_bucket_id = f"quota-account-a-{suffix}:generation-requests"
+    profiles = []
+    for profile_id, account_id, bucket_id in (
+        (strong_id, f"quota-account-a-{suffix}", strong_bucket_id),
+        (substitute_id, f"quota-account-b-{suffix}", f"quota-account-b-{suffix}:generation-requests"),
+    ):
+        bucket = QuotaBucket(
+            bucket_id=bucket_id,
+            authority_scope_id=account_id,
+            operations=frozenset({"bounded_generation"}),
+            unit="requests",
+            window_seconds=3600,
+            source="provider_contract",
+            confidence="verified",
+            reservation_units_per_request=1,
+            evidence_reference="quota:phase23-test",
+            limit=100,
+        )
+        profiles.append(
+            _profile(
+                profile_id,
+                account_scope_id=account_id,
+                quota_buckets=(bucket,),
+            )
+        )
+    catalog = PostgresEndpointRegistryRepository(database)
+    registry = EndpointRegistry(tuple(profiles), repository=catalog)
+    repository = PostgresRoutingDecisionRepository(database)
+    usage = PostgresProviderUsageAccounting(
+        database, endpoint_profile_resolver=EndpointProfileResolver(registry, catalog)
+    )
+    service = RoutingDecisionService(
+        registry, repository, usage=usage, authorization=Authorization()
+    )
+    routing_task = RoutingTaskProfile(
+        task_id="chat",
+        profile_id="task:phase23-quota",
+        profile_version=1,
+        task_type="chat",
+        required_capabilities=frozenset({"bounded_generation"}),
+        endpoint_priorities=(EndpointPriority(endpoint_profile_id=strong_id, priority=10),),
+        preferences=RoutingPreferences(
+            quota_scarcity_weight=0, quota_unknown_penalty_weight=0
+        ),
+        max_reselections=1,
+        deadline_ms=600000,
+    )
+    request_facts = RoutingRequestFacts(
+        request_id=f"quota-route-request-{uuid4()}",
+        policy_version="policy:v1",
+        requirements=_requirements(input_tokens=64, output_tokens=16),
+    )
+    decision = service.route(
+        owner_id=owner,
+        scope=SCOPE,
+        task=routing_task,
+        request=request_facts,
+    )
+
+    assert decision.selected.endpoint_profile_id == strong_id
+    assert len(decision.quota_buckets) == 2
+    first_snapshot = next(
+        fact for fact in decision.quota_buckets if fact.bucket_id == strong_bucket_id
+    )
+    assert first_snapshot.confidence == "derived"
+    assert first_snapshot.remaining_units == 100
+    assert first_snapshot.reservation_units == 1
+    assert first_snapshot.reset_at is not None
+
+    with database.transaction() as connection:
+        connection.execute(
+            "UPDATE provider_quota_bucket_windows SET limit_units=0 "
+            "WHERE bucket_id=%s",
+            (strong_bucket_id,),
+        )
+    preparation = PreparationIdentity(
+        endpoint=decision.selected,
+        serializer_id="synthetic-chat-v1",
+        input_tokens=32,
+        count_source="test-estimate",
+        count_confidence="estimated",
+        prepared_input_sha256="2" * 64,
+        prepared_at=service.current_time(owner_id=owner),
+    )
+    with pytest.raises(RoutingFinalizationError, match="provider_quota_exhausted"):
+        service.finalize(
+            owner_id=owner,
+            scope=SCOPE,
+            decision_id=decision.routing_decision_id,
+            preparation=preparation,
+            operation="bounded_generation",
+        )
+    with database.connection() as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM provider_attempts a JOIN provider_invocations i USING(invocation_id) "
+            "WHERE i.request_id=%s AND i.owner_id=%s",
+            (request_facts.request_id, owner),
+        ).fetchone()[0] == 0
+
+    child = service.route(
+        owner_id=owner,
+        scope=SCOPE,
+        task=routing_task,
+        request=request_facts,
+        parent_decision_id=decision.routing_decision_id,
+    )
+    assert child.parent_decision_id == decision.routing_decision_id
+    assert child.selected.endpoint_profile_id == substitute_id
+    assert child.request.excluded_endpoint_profile_ids == (strong_id,)
 
 
 def test_concurrent_authorization_one_reservation_and_single_send_claim(database):

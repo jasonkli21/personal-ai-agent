@@ -18,7 +18,13 @@ from personal_ai.usage.contracts import (
     InvocationMetadata,
     UsageAdmissionDenied,
 )
-from personal_ai.usage.quota import QuotaObservation as QuotaBucket
+from personal_ai.usage.quota import (
+    EndpointRuntimeSnapshot,
+    QuotaLedgerBucketSnapshot,
+)
+from personal_ai.usage.quota import (
+    QuotaObservation as QuotaBucket,
+)
 
 logger = logging.getLogger(__name__)
 _QUOTA_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -306,25 +312,37 @@ class PostgresProviderUsageAccounting:
             raise RuntimeError("provider_usage_attempt_not_reserved")
         return reserved_attempt
 
-    def runtime_rejections(self, connection, profile, requirements, *, now, check_capacity=True):
-        """Current runtime authority. No failure row means no observed health failure.
-
-        Unknown capacity remains unknown and never asserts available units; the
-        strict-free static attestation excludes billable overflow independently.
-        """
+    def routing_snapshot(
+        self,
+        connection,
+        profile,
+        requirements,
+        *,
+        operation=None,
+        now,
+        check_capacity=True,
+    ):
+        """Read locked decision-time health and quota facts from the P19 ledger."""
         from personal_ai.usage.profiles import from_profile
 
         endpoint = from_profile(profile)
-        health = connection.execute(
-            "SELECT health_status,cooldown_until FROM provider_endpoint_health "
-            "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s",
-            (profile.endpoint_profile_id, profile.profile_version),
-        ).fetchone()
         reasons = []
-        if _health_unavailable(health, now):
-            reasons.append("endpoint_health_unavailable")
         if not check_capacity:
-            return tuple(reasons)
+            health = connection.execute(
+                "SELECT health_status,cooldown_until,failure_streak FROM provider_endpoint_health "
+                "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s",
+                (profile.endpoint_profile_id, profile.profile_version),
+            ).fetchone()
+            if health is not None and _health_unavailable(health[:2], now):
+                reasons.append("endpoint_health_unavailable")
+            return EndpointRuntimeSnapshot(
+                health_status=health[0] if health is not None else "unobserved",
+                cooldown_until=health[1] if health is not None else None,
+                failure_streak=int(health[2]) if health is not None else 0,
+                quota_buckets=(),
+                rejection_reasons=tuple(dict.fromkeys(reasons)),
+            )
+
         from personal_ai.usage.accounting import unit_reservations
 
         values = dict(
@@ -332,35 +350,127 @@ class PostgresProviderUsageAccounting:
                 input_tokens=requirements.input_tokens, output_tokens=requirements.output_tokens
             )
         )
-        for bucket in sorted(endpoint.quota_buckets, key=lambda b: b.bucket_id):
-            if not requirements.required_capabilities.intersection(bucket.operations):
-                continue
-            start, reset, confidence = _select_quota_window(connection, bucket, now)
-            _lock_or_seed_bucket(connection, bucket, start, reset, confidence, now)
+        if operation is not None and operation not in requirements.required_capabilities:
+            raise ValueError("provider_usage_operation_not_required")
+        applicable = tuple(
+            bucket
+            for bucket in endpoint.quota_buckets
+            if (
+                operation in bucket.operations
+                if operation is not None
+                else bool(requirements.required_capabilities.intersection(bucket.operations))
+            )
+        )
+        if endpoint.quota_membership == "ambiguous":
+            reasons.append("provider_quota_membership_ambiguous")
+        elif endpoint.quota_membership != "verified" or not applicable:
+            reasons.append("provider_quota_membership_unknown")
+
+        snapshots = []
+        for bucket in sorted(applicable, key=lambda item: item.bucket_id):
+            start, reset, _window_confidence = _select_quota_window(connection, bucket, now)
+            _lock_or_seed_bucket(connection, bucket, start, reset, _window_confidence, now)
             row = connection.execute(
-                "SELECT limit_units,reported_remaining,consumed_units,reserved_units,confidence,"
-                "fresh_until,reset_at FROM provider_quota_bucket_windows "
-                "WHERE bucket_id=%s AND window_start=%s",
+                "SELECT authority_scope_id,unit,window_seconds,reset_at,source,confidence,"
+                "evidence_reference,limit_units,reported_remaining,observed_at,fresh_until,"
+                "consumed_units,reserved_units FROM provider_quota_bucket_windows "
+                "WHERE bucket_id=%s AND window_start=%s FOR UPDATE",
                 (bucket.bucket_id, start),
             ).fetchone()
             if row is None:
                 raise RuntimeError("provider_quota_state_missing")
-            limit, remaining, consumed, reserved, confidence, fresh, reset = row
+            (
+                authority_scope,
+                unit,
+                window_seconds,
+                reset_at,
+                source,
+                confidence,
+                evidence_reference,
+                limit_units,
+                reported_remaining,
+                observed_at,
+                fresh_until,
+                consumed,
+                reserved,
+            ) = row
+            if authority_scope != bucket.authority_scope_id or unit != bucket.unit:
+                raise ValueError("provider_quota_bucket_identity_conflict")
             known = (
                 confidence != "unknown"
-                and (fresh is None or fresh > now)
-                and (reset is None or reset > now)
+                and (limit_units is not None or reported_remaining is not None)
+                and (fresh_until is None or fresh_until > now)
+                and (reset_at is None or reset_at > now)
             )
             amount = _reservation_amount(bucket, values)
-            if known and (limit is not None or remaining is not None):
-                if amount is None:
-                    reasons.append("provider_quota_unit_unpriced")
-                elif (
-                    min(v for v in (limit, remaining) if v is not None) - consumed - reserved
-                    < amount
-                ):
-                    reasons.append("endpoint_quota_exhausted")
-        return tuple(dict.fromkeys(reasons))
+            limits = []
+            if limit_units is not None:
+                limits.append(int(limit_units) - int(consumed) - int(reserved))
+            if reported_remaining is not None:
+                limits.append(int(reported_remaining) - int(consumed) - int(reserved))
+            remaining_units = max(0, min(limits)) if known and limits else None
+            snapshot_confidence = confidence if known else "unknown"
+            if known and amount is None:
+                reasons.append("provider_quota_unit_unpriced")
+            elif known and remaining_units is not None and remaining_units < amount:
+                reasons.append("endpoint_quota_exhausted")
+            snapshots.append(
+                QuotaLedgerBucketSnapshot(
+                    bucket_id=bucket.bucket_id,
+                    unit=unit,
+                    window_seconds=window_seconds,
+                    window_start=start,
+                    reset_at=reset_at,
+                    time_to_reset_seconds=(
+                        min(31_536_000, max(0, ceil((reset_at - now).total_seconds())))
+                        if known and reset_at is not None
+                        else None
+                    ),
+                    source=source,
+                    confidence=snapshot_confidence,
+                    evidence_reference=evidence_reference,
+                    limit_units=int(limit_units) if limit_units is not None else None,
+                    reported_remaining_units=(
+                        int(reported_remaining) if reported_remaining is not None else None
+                    ),
+                    consumed_units=int(consumed),
+                    reserved_units=int(reserved),
+                    remaining_units=remaining_units,
+                    reservation_units=amount,
+                    observed_at=observed_at,
+                    fresh_until=fresh_until,
+                )
+            )
+        # Reservation code locks quota buckets before endpoint health; match
+        # that order to avoid cycles with concurrent finalization.
+        _lock_endpoint_health(connection, endpoint)
+        health = connection.execute(
+            "SELECT health_status,cooldown_until,failure_streak FROM provider_endpoint_health "
+            "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s FOR SHARE",
+            (profile.endpoint_profile_id, profile.profile_version),
+        ).fetchone()
+        if health is not None and _health_unavailable(health[:2], now):
+            reasons.append("endpoint_health_unavailable")
+        return EndpointRuntimeSnapshot(
+            health_status=health[0] if health is not None else "unobserved",
+            cooldown_until=health[1] if health is not None else None,
+            failure_streak=int(health[2]) if health is not None else 0,
+            quota_buckets=tuple(snapshots),
+            rejection_reasons=tuple(dict.fromkeys(reasons)),
+        )
+
+    def runtime_rejections(
+        self, connection, profile, requirements, *, now, check_capacity=True, operation=None
+    ):
+        """Current runtime hard-admission reasons, projected from the P19 ledger."""
+        return self.routing_snapshot(
+            connection,
+            profile,
+            requirements,
+            operation=operation,
+            now=now,
+            check_capacity=check_capacity,
+        ).rejection_reasons
 
     def reserved_attempt_in_transaction(
         self, connection, invocation, attempt_id, *, expected_units, max_attempts, now

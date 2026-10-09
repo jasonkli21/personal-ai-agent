@@ -23,6 +23,7 @@ from personal_ai.routing.phase21 import (
     PreparationIdentity,
     QualityEvidence,
     QualityPolicy,
+    QuotaBucketDecisionFact,
     RankedCandidate,
     RoutingDecision,
     RoutingEvent,
@@ -47,6 +48,7 @@ from personal_ai.routing.registry import (
 )
 from personal_ai.routing.strategy import (
     DeterministicScoringStrategy,
+    QuotaAwareDeterministicStrategy,
     RoutingReplayUnavailable,
     RoutingStrategy,
     replay_deterministic_decision,
@@ -83,7 +85,9 @@ __all__ = [
     "PreparationIdentity",
     "QualityEvidence",
     "QualityPolicy",
+    "QuotaAwareDeterministicStrategy",
     "QuotaBucket",
+    "QuotaBucketDecisionFact",
     "RankedCandidate",
     "RegistryConflictError",
     "RegistryPayloadTooLargeError",

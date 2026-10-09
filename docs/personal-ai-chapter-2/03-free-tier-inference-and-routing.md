@@ -4,7 +4,7 @@
 
 The project optimizes for a fully hosted strict-$0 AI system without requiring local AI hardware. Model/search quota is expected to be the near-term throughput limiter, but durable storage and cloud resource use accumulate over time and are tracked separately.
 
-This is the Chapter 2 routing contract. Strict-free/free-first is the default automatic execution goal; optional explicit user-funded capacity is additive. Phase 21's deterministic routing core is implemented locally, but request workflows remain Gemini-only until the Phase 15 membership and end-to-end revocation prerequisite is complete. See [current state](../current-state.md) and the [Phase 21 evidence](phase-21-implementation-evidence.md) for delivered behavior and gates.
+This is the Chapter 2 routing contract. Strict-free/free-first is the default automatic execution goal; optional explicit user-funded capacity is additive. Phases 21–23 provide a local deterministic routing core with quota-aware ranking and paired synthetic evaluation, but request workflows remain Gemini-only until the Phase 15 membership and end-to-end revocation prerequisite is complete. See [current state](../current-state.md), the [Phase 21 evidence](phase-21-implementation-evidence.md), and [Phase 23 evidence](phase-23-implementation-evidence.md) for delivered behavior and gates.
 
 ## Provider boundary
 
@@ -18,7 +18,7 @@ The intended sequence is:
 19  usage/quota ledger and invocation observations
 21  deterministic semantic routing and RoutingStrategy baseline — local core implemented
 22  task-profile x endpoint-profile quality evidence
-23  deterministic scarcity-aware strategy inputs
+23  deterministic scarcity-aware strategy and frozen P19 quota snapshots — local core implemented
 24  bounded Personal AI cascades and deterministic validation
 35  adaptive strategy experiments
 ```
@@ -45,7 +45,7 @@ policy/source/profile revalidation -> atomic quota reservation
 final ExecutionPlan -> Personal AI inference gateway -> LiteLLM SDK -> selected endpoint
 ```
 
-The Phase 21 strategy only makes a provisional choice among hard-eligible endpoints. It does not establish context fit or authorize dispatch. The implemented `RoutingDecisionService` and `ExecutionPlan` types enforce the local decision/preparation boundary. Request workflows remain disconnected while the explicit Phase 15 membership and end-to-end revocation prerequisite is open. Once integration is authorized, the orchestrator completes endpoint-specific preparation, revalidates policy and source permissions, reserves applicable quota, and finalizes one selected endpoint plan before the gateway sends.
+The Phase 21–23 strategy only makes a provisional choice among hard-eligible endpoints. Phase 23 adds typed P19 quota-window, reset, and health facts to the frozen decision and deterministically ranks scarcity after all existing hard filters. It does not establish context fit or authorize dispatch. The implemented `RoutingDecisionService` and `ExecutionPlan` types enforce the local decision/preparation boundary. Request workflows remain disconnected while the explicit Phase 15 membership and end-to-end revocation prerequisite is open. Once integration is authorized, the orchestrator completes endpoint-specific preparation, revalidates policy and source permissions, reserves applicable quota, and finalizes one selected endpoint plan before the gateway sends.
 
 Gemini, Groq, and Cloudflare are initial reference endpoint families, not privileged identities or a closed universe. A LiteLLM-supported provider normally adds endpoint/configuration/profile/evaluation without new provider transport code. A narrow provider-specific shim remains only for a demonstrated LiteLLM compatibility gap. OpenRouter is a possible later provider family through endpoint profiles, credential/account/cost metadata, privacy eligibility, evaluation, and quota handling; it is not a Phase 17R or Phase 18–24 live-provider requirement.
 
@@ -116,7 +116,7 @@ Phases 25.1–25.4 add explicit user-controlled ChatGPT-plan execution through a
 
 ## Routing strategy and execution plan
 
-Phase 21 introduced a project-owned `RoutingStrategy` that consumes a versioned task/profile, the eligible endpoint profiles and versions, decision-time policy context, quality evidence, and configured latency/reliability inputs. The local deterministic scorer is the baseline implementation of this seam, not the architecture embedded in request orchestration. Phase 23 may enrich that baseline or add another deterministic strategy and quota/scarcity inputs. Phase 35 can add interchangeable learned strategies without rewriting orchestration or provider transport.
+Phase 21 introduced a project-owned `RoutingStrategy`; Phase 23 extends it with `QuotaAwareDeterministicStrategy`, which consumes only candidates that passed static, authorization, runtime, and quality admission. Its immutable feature view includes bounded P19 bucket facts keyed by stable bucket ID, unit/window and operation-specific reservation basis, known remaining capacity and time-to-reset, source/confidence/freshness, and endpoint health/cooldown. It converts each bucket to equivalent sends for the current operation, never compares incompatible raw units, applies explicit uncertainty and degraded-health penalties, and preserves the original deterministic scorer identity for historical replay and rollback. The synthetic paired evaluator selects this strategy only when its configured gates pass; it does not change live application wiring or supply production-provider evidence. Phase 35 can add interchangeable learned strategies without rewriting orchestration or provider transport.
 
 The strategy returns a bounded, explainable provisional result: selected eligible endpoint, optional ranked eligible candidates/scores, strategy ID/version, and reason. Personal AI assembles/counts for that endpoint, revalidates policy/source/profile, reserves quota, and then finalizes an `ExecutionPlan` containing task/profile identity, selected endpoint, advisory `reselection_candidate_refs`, execution mode, required capabilities, endpoint-specific prepared-input/count identity and fit, validator/escalation permission, physical-attempt/time/token/auxiliary-call/quota bounds, registry/policy versions, decision ID, strategy identity/version, and reason. These references are not executable fallbacks. Selecting another endpoint requires a linked decision, recomputed endpoint-specific preparation/count, revalidation, reservation, and a new final plan. The execution layer carries out only the final selected endpoint through the Personal AI inference gateway. Provider/model names are profile and provenance data, never generic fallback order.
 
@@ -136,7 +136,7 @@ The shared record contract includes, where each phase has the fact:
 - the candidate endpoint/profile IDs and versions seen at decision time, eligibility or rejection and reasons, selected endpoint, strategy ranking/score/reason, and the registry/policy versions;
 - exact quality evidence/profile versions and latency/reliability inputs used by the strategy;
 - required task-quality floor, evidence freshness/coverage, and the exact score/eligibility facts used;
-- a bounded decision-time quota/scarcity snapshot with every consumed bucket ID, unit/window, reset, source, confidence, and reserved/observed amount once Phase 19/23 supply them; unknown values remain unknown;
+- a bounded decision-time quota/scarcity snapshot with every consumed bucket ID, unit/window, reset and time-to-reset when known, source/confidence/freshness, reservation basis and consumed/reserved/remaining amount; unknown values remain unknown;
 - actual invocation latency, usage/count confidence, status/error, normalized retries and outcomes from Phase 19;
 - task-specific evaluation/quality evidence and its version from Phase 22;
 - validator ID/version, result, escalation reason, attempt lineage, and final accepted attempt from Phase 24;

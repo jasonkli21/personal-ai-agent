@@ -1,4 +1,4 @@
-.PHONY: research-eval decision-eval domain-eval iterative-research-eval itinerary-proposal-eval memory-lifecycle-eval memory-eval context-eval context-plan-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend persistence-up persistence-down persistence-ready persistence-bootstrap persistence-clean persistence-test-up persistence-test-down persistence-test
+.PHONY: research-eval decision-eval domain-eval iterative-research-eval itinerary-proposal-eval quota-scarcity-eval memory-lifecycle-eval memory-eval context-eval context-plan-eval backend-test backend-lint backend-build frontend-test frontend-lint frontend-typecheck frontend-build run-backend run-frontend persistence-up persistence-down persistence-ready persistence-bootstrap persistence-clean persistence-test-up persistence-test-down persistence-test
 .DEFAULT_GOAL := backend-test
 
 backend-build:
@@ -69,6 +69,9 @@ iterative-research-eval:
 
 itinerary-proposal-eval:
 	cd backend && python -m personal_ai.evaluation.itinerary_proposals
+
+quota-scarcity-eval:
+	cd backend && python -m personal_ai.evaluation.quota_scarcity
 
 persistence-up:
 	docker compose -f docker-compose.persistence.yml up -d --wait postgres dynamodb-local

@@ -144,12 +144,24 @@ class EndpointRegistry:
         requirements: EndpointCandidateRequirements,
         *,
         now: datetime | None = None,
+        connection=None,
     ) -> EndpointCandidateSet:
-        """Return every profile fact and hard-admission rejection, without scores."""
+        """Return every profile fact and hard-admission rejection, without scores.
+
+        When called from routing admission, read and lock the profile snapshot
+        through the caller's transaction so endpoint and P19 ledger facts share
+        one admission boundary.
+        """
         instant = _aware_utc(now or datetime.now(UTC))
         with self._lock:
-            self._refresh_from_repository_locked()
-            snapshot = self._snapshot
+            if connection is not None and self._repository is not None:
+                snapshot = self._repository.load_from_connection(connection, lock=True)
+                if snapshot is None:
+                    raise EndpointRegistryError("endpoint_registry_snapshot_missing")
+                snapshot = self._validated_snapshot(snapshot)
+            else:
+                self._refresh_from_repository_locked()
+                snapshot = self._snapshot
             assessments = tuple(
                 _assess(profile, requirements, instant) for profile in snapshot.profiles
             )
