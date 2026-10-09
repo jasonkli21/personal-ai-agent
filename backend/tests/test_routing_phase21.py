@@ -43,8 +43,11 @@ from personal_ai.routing import (
     source_reference_manifest_sha256,
 )
 from personal_ai.routing.phase21 import (
+    endpoint_configuration_sha256,
+    quality_identity_sha256,
     reselection_requirements_preserved,
     sources_allowed,
+    task_configuration_sha256,
     transition,
 )
 from personal_ai.usage.contracts import AttemptResult, UsageAdmissionDenied
@@ -718,15 +721,50 @@ def test_measured_quality_floor_before_strategy(system):
         )
     )
     assert route(system, task=t).selected is None
+    profile = next(
+        item for item in system[0].registry.profiles if item.endpoint_profile_id == "endpoint-b"
+    )
+    endpoint_digest = endpoint_configuration_sha256(profile)
+    task_digest = task_configuration_sha256(t)
     q = QualityEvidence(
+        quality_evidence_id=uuid4(),
+        quality_evidence_version=1,
         task_profile_id=t.profile_id,
         task_profile_version=1,
         endpoint_profile_id="endpoint-b",
         endpoint_profile_version=1,
+        provider_id=profile.provider_id,
+        model_id=profile.model_id,
+        endpoint_id=profile.endpoint_id,
+        deployment_id=profile.deployment_id,
+        account_scope_id=profile.account_scope_id,
+        credential_scope_id=profile.credential_scope_id,
+        serializer_id=profile.serializer_id,
+        runtime_id=profile.runtime_id,
+        counter_id=profile.counter.counter_id if profile.counter else None,
+        counter_confidence=profile.counter.confidence if profile.counter else "unknown",
         quality_profile_id="quality:chat",
         quality_profile_version=1,
+        policy_version="policy:v1",
+        endpoint_configuration_sha256=endpoint_digest,
+        task_configuration_sha256=task_digest,
+        quality_identity_sha256=quality_identity_sha256(
+            endpoint_digest=endpoint_digest,
+            task_digest=task_digest,
+            policy_version="policy:v1",
+            quality_profile_id="quality:chat",
+            quality_profile_version=1,
+            scoring_policy_id="deterministic-task-matrix",
+            scoring_policy_version=1,
+            tested_revision="a1b2c3d",
+        ),
+        scoring_policy_id="deterministic-task-matrix",
+        scoring_policy_version=1,
+        tested_revision="a1b2c3d",
         score=0.9,
         coverage=1,
+        confidence=0.9,
+        sample_count=20,
         measured_at=system[1].now,
         fresh_until=system[1].now + timedelta(minutes=1),
         evidence_reference="quality:evaluation",

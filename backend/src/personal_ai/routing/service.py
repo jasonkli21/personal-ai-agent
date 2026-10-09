@@ -14,6 +14,7 @@ from personal_ai.routing.phase21 import (
     AuthorizationEvidence,
     CandidateFact,
     DispatchPermit,
+    EvaluationQualityGate,
     PreparationIdentity,
     QualityEvidence,
     RoutingDecision,
@@ -22,8 +23,11 @@ from personal_ai.routing.phase21 import (
     RoutingSignals,
     RoutingTaskProfile,
     StrategyView,
+    endpoint_configuration_sha256,
+    quality_identity_sha256,
     reselection_requirements_preserved,
     sources_allowed,
+    task_configuration_sha256,
 )
 from personal_ai.routing.strategy import DeterministicScoringStrategy
 from personal_ai.usage.accounting import unit_reservations
@@ -52,6 +56,22 @@ class RoutingAuthorizationAuthority(Protocol):
     ) -> AuthorizationEvidence: ...
 
 
+class EvaluationQualityGateAuthority(Protocol):
+    """Current run/case authority for the one-case quality bootstrap."""
+
+    def authorize(
+        self,
+        *,
+        connection,
+        owner_id,
+        scope,
+        gate,
+        task,
+        request,
+        now,
+    ) -> bool: ...
+
+
 class RoutingFinalizationError(RuntimeError):
     def __init__(self, code):
         self.code = code
@@ -59,12 +79,42 @@ class RoutingFinalizationError(RuntimeError):
 
 
 class RoutingDecisionService:
-    def __init__(self, registry, observations, strategy=None, *, usage=None, authorization=None):
+    def __init__(
+        self,
+        registry,
+        observations,
+        strategy=None,
+        *,
+        usage=None,
+        authorization=None,
+        evaluation_quality_authority=None,
+    ):
         self.registry = registry
         self.observations = observations
         self.strategy = strategy or DeterministicScoringStrategy()
         self.usage = usage
         self.authorization = authorization
+        self.evaluation_quality_authority = evaluation_quality_authority
+
+    def _authorize_evaluation_gate(self, c, owner_id, scope, gate, task, request, now):
+        if gate is None:
+            return
+        if self.evaluation_quality_authority is None:
+            raise RoutingFinalizationError("routing_evaluation_quality_authority_unavailable")
+        try:
+            allowed = self.evaluation_quality_authority.authorize(
+                connection=c,
+                owner_id=owner_id,
+                scope=scope,
+                gate=gate,
+                task=task,
+                request=request,
+                now=now,
+            )
+        except Exception as error:
+            raise RoutingFinalizationError("routing_evaluation_quality_gate_unavailable") from error
+        if allowed is not True:
+            raise RoutingFinalizationError("routing_evaluation_quality_gate_denied")
 
     def _authorize(self, c, owner_id, scope, endpoint, request, sources, now):
         if self.authorization is None:
@@ -101,11 +151,27 @@ class RoutingDecisionService:
         request: RoutingRequestFacts,
         quality_evidence: Sequence[QualityEvidence] = (),
         routing_signals: Sequence[RoutingSignals] = (),
+        evaluation_quality_gate: EvaluationQualityGate | None = None,
         parent_decision_id=None,
         dependency_expires_at=None,
     ):
         task = RoutingTaskProfile.model_validate(task.model_dump())
         request = RoutingRequestFacts.model_validate(request.model_dump())
+        if evaluation_quality_gate is not None:
+            evaluation_quality_gate = EvaluationQualityGate.model_validate(
+                evaluation_quality_gate.model_dump()
+            )
+            if (
+                task.quality.mode != "measured_floor"
+                or request.run_id != str(evaluation_quality_gate.evaluation_run_id)
+                or evaluation_quality_gate.task_profile_id != task.profile_id
+                or evaluation_quality_gate.task_profile_version != task.profile_version
+                or evaluation_quality_gate.quality_profile_id != task.quality.quality_profile_id
+                or evaluation_quality_gate.quality_profile_version
+                != task.quality.quality_profile_version
+                or evaluation_quality_gate.policy_version != request.policy_version
+            ):
+                raise ValueError("routing_evaluation_quality_gate_invalid")
         if (
             request.requirements.execution_mode != "STRICT_FREE"
             or not request.requirements.automatic
@@ -129,6 +195,9 @@ class RoutingDecisionService:
         )
         with self.observations.transaction(owner_id=owner_id) as c:
             now = database_time(c)
+            self._authorize_evaluation_gate(
+                c, owner_id, scope, evaluation_quality_gate, task, request, now
+            )
             root_id = decision_id
             depth = 0
             deadline = now + timedelta(milliseconds=task.deadline_ms)
@@ -213,23 +282,37 @@ class RoutingDecisionService:
                         except Exception:  # noqa: BLE001 - missing authority/invalid strategy fails closed
                             reasons.append("routing_runtime_authority_unavailable")
                 q = quality.get(profile.endpoint_profile_id)
-                q_current = _quality_current(task, profile, q, now)
+                q_current = _quality_current(task, request.policy_version, profile, q, now)
+                gate_target = (
+                    evaluation_quality_gate is not None
+                    and evaluation_quality_gate.endpoint == profile.ref
+                )
+                evaluation_target = _evaluation_gate_matches(
+                    evaluation_quality_gate, task, request, profile
+                )
+                q_applied = q_current and not evaluation_target
+                if gate_target and not evaluation_target:
+                    reasons.append("evaluation-gate-profile-identity-mismatch")
+                if evaluation_quality_gate is not None and not evaluation_target:
+                    reasons.append("evaluation-target-only")
                 if task.quality.mode == "measured_floor":
-                    if not q_current:
+                    if not q_current and not evaluation_target:
                         reasons.append("required_quality_evidence_stale_or_missing")
-                    elif (
+                    elif q_current and not evaluation_target and (
                         q.score < task.quality.minimum_score
                         or q.coverage < task.quality.minimum_coverage
+                        or q.confidence < task.quality.minimum_confidence
+                        or q.sample_count < task.quality.minimum_samples
                     ):
                         reasons.append("required_quality_floor_not_met")
-                    else:
+                    elif q_current and not evaluation_target:
                         references.append(q.evidence_reference)
                         until = min(
                             q.fresh_until,
                             q.measured_at + timedelta(seconds=task.quality.max_age_seconds),
                         )
                 if (
-                    q_current
+                    q_applied
                     and task.preferences.quality_weight
                     and q.evidence_reference not in references
                 ):
@@ -248,7 +331,7 @@ class RoutingDecisionService:
                         rejection_reasons=tuple(dict.fromkeys(reasons)),
                         configured_priority=task.priority_for(profile.endpoint_profile_id),
                         quality_score=q.score
-                        if q_current and task.preferences.quality_weight
+                        if q_applied and task.preferences.quality_weight
                         else None,
                         latency_ms=signal.latency_ms
                         if signal_current and task.preferences.latency_penalty_per_second
@@ -258,6 +341,14 @@ class RoutingDecisionService:
                         else None,
                         evidence_references=tuple(references),
                         quality_valid_until=until,
+                        quality_profile_id=q.quality_profile_id if q_applied else None,
+                        quality_profile_version=q.quality_profile_version if q_applied else None,
+                        quality_evidence_id=q.quality_evidence_id if q_applied else None,
+                        quality_evidence_version=q.quality_evidence_version if q_applied else None,
+                        quality_coverage=q.coverage if q_applied else None,
+                        quality_confidence=q.confidence if q_applied else None,
+                        quality_sample_count=q.sample_count if q_applied else None,
+                        quality_identity_sha256=q.quality_identity_sha256 if q_applied else None,
                     )
                 )
             view = StrategyView(
@@ -294,6 +385,7 @@ class RoutingDecisionService:
             if database_time(c) >= deadline:
                 reason, ranking = "routing-deadline-expired", ()
             decision = RoutingDecision(
+                schema_version=3 if evaluation_quality_gate is not None else 2,
                 routing_decision_id=decision_id,
                 root_decision_id=root_id,
                 parent_decision_id=parent_decision_id,
@@ -306,6 +398,7 @@ class RoutingDecisionService:
                 replay_until=replay_until,
                 request=request,
                 task=task,
+                evaluation_quality_gate=evaluation_quality_gate,
                 strategy=self.strategy.ref,
                 registry_version=static.registry_version,
                 candidates=tuple(candidates),
@@ -355,7 +448,18 @@ class RoutingDecisionService:
         ):
             raise RoutingFinalizationError("routing_counter_incompatible")
         candidate = next(r for r in decision.candidates if r.endpoint == decision.selected)
-        if decision.task.quality.mode == "measured_floor" and (
+        gate = decision.evaluation_quality_gate
+        self._authorize_evaluation_gate(
+            c, owner_id, scope, gate, decision.task, decision.request, now
+        )
+        evaluation_gate_matches = _evaluation_gate_matches(
+            gate, decision.task, decision.request, profile
+        )
+        if gate is not None and not evaluation_gate_matches:
+            raise RoutingFinalizationError("routing_evaluation_quality_gate_stale")
+        if gate is not None and preparation.prepared_input_sha256 != gate.prepared_input_sha256:
+            raise RoutingFinalizationError("routing_evaluation_preparation_identity_mismatch")
+        if decision.task.quality.mode == "measured_floor" and not evaluation_gate_matches and (
             candidate.quality_valid_until is None or candidate.quality_valid_until <= now
         ):
             raise RoutingFinalizationError("routing_quality_evidence_expired")
@@ -670,13 +774,53 @@ def _by_id(values, model):
     return result
 
 
-def _quality_current(task, profile, evidence, now):
+def _evaluation_gate_matches(gate, task, request, profile):
+    return gate is not None and (
+        gate.endpoint == profile.ref
+        and gate.request_id == request.request_id
+        and request.run_id == str(gate.evaluation_run_id)
+        and gate.task_profile_id == task.profile_id
+        and gate.task_profile_version == task.profile_version
+        and gate.quality_profile_id == task.quality.quality_profile_id
+        and gate.quality_profile_version == task.quality.quality_profile_version
+        and gate.policy_version == request.policy_version
+        and gate.endpoint_configuration_sha256 == endpoint_configuration_sha256(profile)
+        and gate.task_configuration_sha256 == task_configuration_sha256(task)
+    )
+
+
+def _quality_current(task, policy_version, profile, evidence, now):
     policy = task.quality
     return evidence is not None and (
         evidence.task_profile_id == task.profile_id
         and evidence.task_profile_version == task.profile_version
         and evidence.endpoint_profile_id == profile.endpoint_profile_id
         and evidence.endpoint_profile_version == profile.profile_version
+        and evidence.provider_id == profile.provider_id
+        and evidence.model_id == profile.model_id
+        and evidence.endpoint_id == profile.endpoint_id
+        and evidence.deployment_id == profile.deployment_id
+        and evidence.account_scope_id == profile.account_scope_id
+        and evidence.credential_scope_id == profile.credential_scope_id
+        and evidence.serializer_id == profile.serializer_id
+        and evidence.runtime_id == profile.runtime_id
+        and evidence.counter_id == (profile.counter.counter_id if profile.counter else None)
+        and evidence.counter_confidence
+        == (profile.counter.confidence if profile.counter else "unknown")
+        and evidence.endpoint_configuration_sha256 == endpoint_configuration_sha256(profile)
+        and evidence.task_configuration_sha256 == task_configuration_sha256(task)
+        and evidence.quality_identity_sha256
+        == quality_identity_sha256(
+            endpoint_digest=evidence.endpoint_configuration_sha256,
+            task_digest=evidence.task_configuration_sha256,
+            policy_version=policy_version,
+            quality_profile_id=evidence.quality_profile_id,
+            quality_profile_version=evidence.quality_profile_version,
+            scoring_policy_id=evidence.scoring_policy_id,
+            scoring_policy_version=evidence.scoring_policy_version,
+            tested_revision=evidence.tested_revision,
+        )
+        and evidence.policy_version == policy_version
         and (
             policy.quality_profile_id is None
             or policy.quality_profile_id == evidence.quality_profile_id

@@ -51,6 +51,7 @@ class PersistenceFactory(Protocol):
     def provider_rate_limiter(self, provider: str, repository=None): ...
     def provider_usage_accounting(self, settings): ...
     def routing_decision_repository(self): ...
+    def provider_matrix_evaluation_repository(self): ...
     def artifact_service(self, settings): ...
     def artifact_maintenance_service(self, settings): ...
 
@@ -227,6 +228,13 @@ class PostgresDynamoPersistenceFactory:
         )
 
         return PostgresRoutingDecisionRepository(self.database)
+
+    def provider_matrix_evaluation_repository(self):
+        from personal_ai.persistence.postgres_provider_matrix import (
+            PostgresProviderMatrixRepository,
+        )
+
+        return PostgresProviderMatrixRepository(self.database)
 
     def provider_usage_accounting(self, settings):
         from personal_ai.persistence.dynamodb_usage import DynamoDBProviderUsageEventRepository

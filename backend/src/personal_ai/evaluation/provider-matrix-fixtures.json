@@ -1,0 +1,152 @@
+{
+  "schema_version": "provider-matrix-fixtures-v1",
+  "synthetic": true,
+  "task_profile": {
+    "task_id": "evaluation:synthetic-synthesis",
+    "profile_id": "task-profile:provider-matrix-synthesis",
+    "profile_version": 1,
+    "task_type": "research_synthesis",
+    "required_capabilities": ["bounded_generation"],
+    "quality": {
+      "mode": "measured_floor",
+      "quality_profile_id": "quality-policy:provider-matrix-synthesis",
+      "quality_profile_version": 1,
+      "minimum_score": 0.78,
+      "minimum_coverage": 0.9,
+      "minimum_confidence": 0.8,
+      "minimum_samples": 20,
+      "minimum_benefit": 0.02,
+      "max_age_seconds": 2592000
+    },
+    "endpoint_priorities": [],
+    "citation_policy": "required",
+    "max_physical_attempts": 1,
+    "max_reselections": 0,
+    "max_auxiliary_calls": 0,
+    "deadline_ms": 30000,
+    "replay_retention_seconds": 7776000
+  },
+  "scoring_policy": {"id": "deterministic-task-matrix", "version": 1},
+  "fixtures": [
+    {
+      "fixture_id": "synthesis-riverton-01",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {"role": "system", "content": "Return one JSON object with answer, claims, citations, budget_usd, and recommended_action. Only state facts supported by the supplied sources. Each claim must include its claim_id, exact value, and source_ids."},
+        {"role": "user", "content": "Compare the supplied family-day options for Riverton. The park guide says Riverton has 3 public parks. The travel quote totals 55 USD. The museum source says it is closed Mondays. Recommend the option within a 60 USD budget and cite the source IDs."}
+      ],
+      "source_ids": ["source:parks", "source:budget", "source:museum-hours"],
+      "expected_claims": [
+        {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
+        {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
+        {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+      ],
+      "required_terms": ["Riverton", "3 parks", "55 USD", "Monday"],
+      "forbidden_literals": ["PRIVATE_NOTE_", "secret-token-"],
+      "output_schema_id": "evaluation:synthesis-json-v1",
+      "output_schema": {
+        "required_fields": ["answer", "claims", "citations", "budget_usd", "recommended_action"],
+        "field_types": {"answer": "string", "claims": "array", "citations": "array", "budget_usd": "number", "recommended_action": "string"}
+      },
+      "hard_constraints": [
+        {"path": "budget_usd", "operator": "lte", "value": 60},
+        {"path": "recommended_action", "operator": "not_contains", "value": "museum"}
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Riverton has 3 parks. The 55 USD quote is within budget. The museum is closed Monday, so choose a park day.",
+        "claims": [
+          {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
+          {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
+          {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+        ],
+        "citations": ["source:parks", "source:budget", "source:museum-hours"],
+        "budget_usd": 55,
+        "recommended_action": "Choose a park day"
+      }
+    },
+    {
+      "fixture_id": "synthesis-riverton-02",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {"role": "system", "content": "Return one JSON object with answer, claims, citations, budget_usd, and recommended_action. Only state facts supported by the supplied sources. Each claim must include its claim_id, exact value, and source_ids."},
+        {"role": "user", "content": "Plan a short Riverton visit. Source source:parks lists 3 public parks. Source source:budget quotes a 55 USD total. Source source:museum-hours says the museum closes on Mondays. Stay within 60 USD and do not recommend a Monday museum visit."}
+      ],
+      "source_ids": ["source:parks", "source:budget", "source:museum-hours"],
+      "expected_claims": [
+        {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
+        {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
+        {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+      ],
+      "required_terms": ["Riverton", "3 parks", "55 USD", "Monday"],
+      "forbidden_literals": ["PRIVATE_NOTE_", "secret-token-"],
+      "output_schema_id": "evaluation:synthesis-json-v1",
+      "output_schema": {
+        "required_fields": ["answer", "claims", "citations", "budget_usd", "recommended_action"],
+        "field_types": {"answer": "string", "claims": "array", "citations": "array", "budget_usd": "number", "recommended_action": "string"}
+      },
+      "hard_constraints": [
+        {"path": "budget_usd", "operator": "lte", "value": 60},
+        {"path": "recommended_action", "operator": "not_contains", "value": "museum"}
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Riverton has 3 parks. The 55 USD option is within the 60 USD limit. Avoid visiting the museum on Monday.",
+        "claims": [
+          {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
+          {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
+          {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+        ],
+        "citations": ["source:parks", "source:budget", "source:museum-hours"],
+        "budget_usd": 55,
+        "recommended_action": "Choose a park day"
+      }
+    },
+    {
+      "fixture_id": "synthesis-riverton-03",
+      "data_classification": "synthetic_public",
+      "task_profile_id": "task-profile:provider-matrix-synthesis",
+      "task_profile_version": 1,
+      "policy_version": "evaluation-policy:v1",
+      "messages": [
+        {"role": "system", "content": "Return one JSON object with answer, claims, citations, budget_usd, and recommended_action. Only state facts supported by the supplied sources. Each claim must include its claim_id, exact value, and source_ids."},
+        {"role": "user", "content": "Summarize these Riverton choices: 3 parks are listed; the quoted option costs 55 USD; the museum is closed Mondays. The family budget is at most 60 USD. Give a concise recommendation with citations."}
+      ],
+      "source_ids": ["source:parks", "source:budget", "source:museum-hours"],
+      "expected_claims": [
+        {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
+        {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
+        {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+      ],
+      "required_terms": ["Riverton", "3 parks", "55 USD", "Monday"],
+      "forbidden_literals": ["PRIVATE_NOTE_", "secret-token-"],
+      "output_schema_id": "evaluation:synthesis-json-v1",
+      "output_schema": {
+        "required_fields": ["answer", "claims", "citations", "budget_usd", "recommended_action"],
+        "field_types": {"answer": "string", "claims": "array", "citations": "array", "budget_usd": "number", "recommended_action": "string"}
+      },
+      "hard_constraints": [
+        {"path": "budget_usd", "operator": "lte", "value": 60},
+        {"path": "recommended_action", "operator": "not_contains", "value": "museum"}
+      ],
+      "held_out": true,
+      "reference_output": {
+        "answer": "Riverton has 3 parks. The quote costs 55 USD, within the 60 USD budget. Avoid the museum on Monday.",
+        "claims": [
+          {"claim_id": "park_count", "value": "3", "source_ids": ["source:parks"]},
+          {"claim_id": "budget_usd", "value": "55", "source_ids": ["source:budget"]},
+          {"claim_id": "museum_closed_mondays", "value": "true", "source_ids": ["source:museum-hours"]}
+        ],
+        "citations": ["source:parks", "source:budget", "source:museum-hours"],
+        "budget_usd": 55,
+        "recommended_action": "Choose a park day"
+      }
+    }
+  ]
+}

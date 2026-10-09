@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -99,6 +101,42 @@ class EvaluationObservationBatch(_ObservationModel):
     cases: tuple[EvaluationCase, ...] = Field(min_length=1, max_length=10000)
 
 
+class RawEvaluationOutput(_ObservationModel):
+    """Provider output only. Prompt text, fixture inputs and credentials are forbidden."""
+
+    case_id: str = Field(min_length=1, max_length=200, pattern=_SAFE_TOKEN.pattern)
+    task_profile_id: str = Field(min_length=1, max_length=200, pattern=_SAFE_TOKEN.pattern)
+    endpoint_profile_id: str = Field(min_length=1, max_length=200, pattern=_SAFE_TOKEN.pattern)
+    endpoint_profile_version: int = Field(ge=1)
+    provider_id: str = Field(min_length=1, max_length=100, pattern=_SAFE_TOKEN.pattern)
+    model_id: str = Field(min_length=1, max_length=200, pattern=_SAFE_TOKEN.pattern)
+    serializer_id: str = Field(min_length=1, max_length=200, pattern=_SAFE_TOKEN.pattern)
+    runtime_id: str = Field(min_length=1, max_length=200, pattern=_SAFE_TOKEN.pattern)
+    invocation_id: UUID
+    attempt_id: UUID
+    status: Literal["success", "incomplete", "failure", "rejected"]
+    output_text: str = Field(max_length=65_536)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    usage_confidence: Literal["exact", "derived", "configured", "unknown"] = "unknown"
+    latency_ms: int = Field(ge=0, le=600_000)
+
+
+class RawEvaluationOutputBatch(_ObservationModel):
+    schema_version: Literal["evaluation-raw-outputs-v1"] = "evaluation-raw-outputs-v1"
+    evaluation_run_id: UUID
+    retention_policy_reference: str = Field(min_length=1, max_length=200, pattern=_SAFE_TOKEN.pattern)
+    retention_expires_at: datetime
+    outputs: tuple[RawEvaluationOutput, ...] = Field(min_length=1, max_length=16)
+
+    @field_validator("retention_expires_at")
+    @classmethod
+    def retention_timestamp_is_aware(cls, value):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("artifact_retention_timestamp_invalid")
+        return value
+
+
 class DebugReplayObservationBatch(_ObservationModel):
     schema_version: Literal["debug-replay-observations-v1"] = "debug-replay-observations-v1"
     cases: tuple[EvaluationCase, ...] = Field(min_length=1, max_length=10000)
@@ -156,6 +194,8 @@ def validate_observation(kind: str, value, *, jsonl: bool):
             raise ValueError("artifact_routing_trace_format_invalid")
         return RoutingObservation.model_validate(value).model_dump(mode="json")
     if kind == "evaluation":
+        if not jsonl and isinstance(value, dict) and value.get("schema_version") == "evaluation-raw-outputs-v1":
+            return RawEvaluationOutputBatch.model_validate(value).model_dump(mode="json")
         items = value if jsonl else [value]
         if not isinstance(items, (list, tuple)):
             raise ValueError("artifact_evaluation_format_invalid")

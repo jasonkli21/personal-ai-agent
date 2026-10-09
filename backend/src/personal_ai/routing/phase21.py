@@ -19,6 +19,7 @@ from personal_ai.routing.contracts import (
     CounterConfidence,
     EndpointCandidateRequirements,
     EndpointOperation,
+    EndpointProfile,
     EndpointRef,
 )
 
@@ -31,6 +32,7 @@ MAX_ROUTING_SOURCE_REFERENCES = 64
 MAX_REPLAY_SECONDS = 90 * 24 * 60 * 60
 _SAFE_ID = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9._:/@+_-]{0,199}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_REVISION = re.compile(r"^[0-9a-f]{7,64}(-working-tree)?$")
 _CONFIDENCE_RANK: dict[CounterConfidence, int] = {
     "unknown": 0,
     "estimated": 1,
@@ -44,6 +46,46 @@ def source_reference_manifest_sha256(references: tuple[str, ...]) -> str:
     """Hash a canonical set of opaque, per-source digests for subset checks."""
     normalized = tuple(sorted(set(references)))
     return hashlib.sha256(json.dumps(normalized, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def endpoint_configuration_sha256(profile: EndpointProfile) -> str:
+    """Digest all registered, secret-free endpoint facts used by quality evidence."""
+    payload = json.dumps(profile.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def task_configuration_sha256(task: RoutingTaskProfile) -> str:
+    """Digest the complete versioned task contract used by quality evidence."""
+    payload = json.dumps(task.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def quality_identity_sha256(
+    *,
+    endpoint_digest: str,
+    task_digest: str,
+    policy_version: str,
+    quality_profile_id: str,
+    quality_profile_version: int,
+    scoring_policy_id: str,
+    scoring_policy_version: int,
+    tested_revision: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "endpoint_configuration_sha256": endpoint_digest,
+            "policy_version": policy_version,
+            "quality_profile_id": quality_profile_id,
+            "quality_profile_version": quality_profile_version,
+            "scoring_policy_id": scoring_policy_id,
+            "scoring_policy_version": scoring_policy_version,
+            "task_configuration_sha256": task_digest,
+            "tested_revision": tested_revision,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _safe_id(value: str) -> str:
@@ -130,6 +172,9 @@ class QualityPolicy(_FrozenModel):
     quality_profile_version: int | None = Field(default=None, ge=1, le=2_147_483_647)
     minimum_score: float | None = Field(default=None, ge=0, le=1)
     minimum_coverage: float = Field(default=0, ge=0, le=1)
+    minimum_confidence: float = Field(default=0, ge=0, le=1)
+    minimum_benefit: float = Field(default=0, ge=0, le=1)
+    minimum_samples: int = Field(default=1, ge=1, le=100_000)
     max_age_seconds: int = Field(default=30 * 24 * 60 * 60, ge=1, le=MAX_REPLAY_SECONDS)
 
     @field_validator("quality_profile_id")
@@ -265,22 +310,45 @@ class RoutingRequestFacts(_FrozenModel):
 
 
 class QualityEvidence(_FrozenModel):
-    """Fresh task x endpoint measurement; it is admission evidence, not a guess."""
+    """Fresh task x endpoint measurement bound to its complete safe configuration."""
 
+    quality_evidence_id: UUID
+    quality_evidence_version: int = Field(ge=1, le=2_147_483_647)
     task_profile_id: str
     task_profile_version: int = Field(ge=1, le=2_147_483_647)
     endpoint_profile_id: str
     endpoint_profile_version: int = Field(ge=1, le=2_147_483_647)
+    provider_id: str
+    model_id: str
+    endpoint_id: str
+    deployment_id: str
+    account_scope_id: str | None = None
+    credential_scope_id: str | None = None
+    serializer_id: str
+    runtime_id: str
+    counter_id: str | None = None
+    counter_confidence: str = "unknown"
     quality_profile_id: str
     quality_profile_version: int = Field(ge=1, le=2_147_483_647)
+    policy_version: str
+    endpoint_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    quality_identity_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scoring_policy_id: str
+    scoring_policy_version: int = Field(ge=1, le=2_147_483_647)
+    tested_revision: str = Field(pattern=_REVISION.pattern)
     score: float = Field(ge=0, le=1)
     coverage: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    sample_count: int = Field(ge=1, le=100_000)
     measured_at: datetime
     fresh_until: datetime
     evidence_reference: str = Field(min_length=1, max_length=500)
 
     @field_validator(
-        "task_profile_id", "endpoint_profile_id", "quality_profile_id", "evidence_reference"
+        "task_profile_id", "endpoint_profile_id", "provider_id", "model_id", "endpoint_id",
+        "deployment_id", "serializer_id", "runtime_id", "quality_profile_id", "policy_version",
+        "scoring_policy_id", "evidence_reference",
     )
     @classmethod
     def valid_quality_identity(cls, value: str) -> str:
@@ -290,6 +358,11 @@ class QualityEvidence(_FrozenModel):
     @classmethod
     def valid_quality_timestamps(cls, value: datetime) -> datetime:
         return _aware(value)
+
+    @field_validator("account_scope_id", "credential_scope_id", "counter_id")
+    @classmethod
+    def valid_optional_quality_identity(cls, value: str | None) -> str | None:
+        return _safe_id(value) if value is not None else None
 
     @model_validator(mode="after")
     def valid_quality_interval(self) -> QualityEvidence:
@@ -351,6 +424,14 @@ class CandidateFact(StrategyCandidate):
     rejection_reasons: tuple[str, ...] = Field(default=(), max_length=64)
     evidence_references: tuple[str, ...] = Field(default=(), max_length=4)
     quality_valid_until: datetime | None = None
+    quality_profile_id: str | None = None
+    quality_profile_version: int | None = Field(default=None, ge=1, le=2_147_483_647)
+    quality_evidence_id: UUID | None = None
+    quality_evidence_version: int | None = Field(default=None, ge=1, le=2_147_483_647)
+    quality_coverage: float | None = Field(default=None, ge=0, le=1)
+    quality_confidence: float | None = Field(default=None, ge=0, le=1)
+    quality_sample_count: int | None = Field(default=None, ge=1, le=100_000)
+    quality_identity_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("evidence_references", "rejection_reasons")
     @classmethod
@@ -383,8 +464,34 @@ class RankedCandidate(_FrozenModel):
     reason_code: str = Field(pattern=r"^[A-Za-z0-9._:+/-]{1,100}$")
 
 
+class EvaluationQualityGate(_FrozenModel):
+    """Exact, temporary waiver for measuring one task/profile/endpoint tuple."""
+
+    evaluation_run_id: UUID
+    request_id: str
+    fixture_id: str
+    prepared_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    endpoint: EndpointRef
+    endpoint_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_profile_id: str
+    task_profile_version: int = Field(ge=1, le=2_147_483_647)
+    quality_profile_id: str
+    quality_profile_version: int = Field(ge=1, le=2_147_483_647)
+    policy_version: str
+    case_identity_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    mode: Literal["synthetic", "live"]
+
+    @field_validator(
+        "request_id", "fixture_id", "task_profile_id", "quality_profile_id", "policy_version"
+    )
+    @classmethod
+    def valid_evaluation_gate_identity(cls, value: str) -> str:
+        return _safe_id(value)
+
+
 class RoutingDecision(_FrozenModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[2, 3] = 2
     routing_decision_id: UUID
     root_decision_id: UUID
     parent_decision_id: UUID | None = None
@@ -397,6 +504,7 @@ class RoutingDecision(_FrozenModel):
     replay_until: datetime
     request: RoutingRequestFacts
     task: RoutingTaskProfile
+    evaluation_quality_gate: EvaluationQualityGate | None = None
     strategy: StrategyRef
     registry_version: str = Field(max_length=100)
     candidates: tuple[CandidateFact, ...] = Field(default=(), max_length=32)
@@ -419,6 +527,23 @@ class RoutingDecision(_FrozenModel):
             self.request.requirements.required_capabilities
         ):
             raise ValueError("routing_task_capability_requirement_mismatch")
+        if self.schema_version == 2 and self.evaluation_quality_gate is not None:
+            raise ValueError("legacy_routing_decision_evaluation_gate_invalid")
+        if self.evaluation_quality_gate is not None:
+            gate = self.evaluation_quality_gate
+            if (
+                self.task.quality.mode != "measured_floor"
+                or gate.task_profile_id != self.task.profile_id
+                or gate.task_profile_version != self.task.profile_version
+                or gate.quality_profile_id != self.task.quality.quality_profile_id
+                or gate.quality_profile_version != self.task.quality.quality_profile_version
+                or gate.policy_version != self.request.policy_version
+                or self.request.run_id != str(gate.evaluation_run_id)
+                or self.request.request_id != gate.request_id
+                or (self.selected is not None and self.selected != gate.endpoint)
+                or gate.task_configuration_sha256 != task_configuration_sha256(self.task)
+            ):
+                raise ValueError("routing_evaluation_quality_gate_invalid")
         if (
             not self.created_at
             < self.replay_until

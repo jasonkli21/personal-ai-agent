@@ -10,6 +10,8 @@ from personal_ai.llm.client import SYSTEM_INSTRUCTION, ChatMessage
 class EstimatedTokenCounter:
     """UTF-8 byte upper estimate plus message overhead; never an exact count."""
 
+    counter_version = "estimated-byte-upper-v1"
+
     def __init__(self, safety_factor: float = 1.1) -> None:
         if safety_factor < 1:
             raise ValueError("estimator safety factor must be at least one")
