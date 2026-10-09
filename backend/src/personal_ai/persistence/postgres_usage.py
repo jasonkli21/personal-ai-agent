@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid5
 
 from personal_ai.persistence.postgres import PostgresDatabase, _ensure_namespace
+from personal_ai.usage.accounting import unit_reservations
 from personal_ai.usage.contracts import (
     AttemptMetadata,
     AttemptResult,
@@ -21,6 +22,7 @@ from personal_ai.usage.contracts import (
 from personal_ai.usage.quota import (
     EndpointRuntimeSnapshot,
     QuotaLedgerBucketSnapshot,
+    QuotaReservationRequirement,
 )
 from personal_ai.usage.quota import (
     QuotaObservation as QuotaBucket,
@@ -322,101 +324,117 @@ class PostgresProviderUsageAccounting:
         now,
         check_capacity=True,
     ):
-        """Read locked decision-time health and quota facts from the P19 ledger."""
+        """Single-profile adapter over the batch lock-order authority."""
+        if operation is None:
+            operations = requirements.required_capabilities
+            if len(operations) != 1:
+                raise ValueError("provider_usage_operation_required")
+            operation = next(iter(operations))
+        return self.routing_snapshots(
+            connection,
+            (profile,),
+            requirements,
+            operation=operation,
+            now=now,
+            check_capacity=check_capacity,
+        )[profile.endpoint_profile_id]
+
+    def routing_snapshots(
+        self,
+        connection,
+        profiles,
+        requirements,
+        *,
+        operation,
+        now,
+        check_capacity=True,
+    ):
+        """Project candidate runtime state after acquiring a global P19 lock order.
+
+        Every canonical quota window is seeded/read once in bucket-ID order.
+        Endpoint health locks follow in profile-ID/version order, matching P19
+        reservation and settlement ordering. Candidate-specific reservation
+        amounts are returned separately from shared mutable bucket state.
+        """
         from personal_ai.usage.profiles import from_profile
 
-        endpoint = from_profile(profile)
-        reasons = []
-        if not check_capacity:
-            health = connection.execute(
-                "SELECT health_status,cooldown_until,failure_streak FROM provider_endpoint_health "
-                "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s",
-                (profile.endpoint_profile_id, profile.profile_version),
-            ).fetchone()
-            if health is not None and _health_unavailable(health[:2], now):
-                reasons.append("endpoint_health_unavailable")
-            return EndpointRuntimeSnapshot(
-                health_status=health[0] if health is not None else "unobserved",
-                cooldown_until=health[1] if health is not None else None,
-                failure_streak=int(health[2]) if health is not None else 0,
-                quota_buckets=(),
-                rejection_reasons=tuple(dict.fromkeys(reasons)),
-            )
-
-        from personal_ai.usage.accounting import unit_reservations
-
+        profiles = tuple(sorted(profiles, key=lambda row: (row.endpoint_profile_id, row.profile_version)))
+        if operation not in requirements.required_capabilities:
+            raise ValueError("provider_usage_operation_not_required")
+        reasons_by_profile = {profile.endpoint_profile_id: [] for profile in profiles}
+        buckets_by_profile = {}
+        requirements_by_profile = {}
+        canonical_buckets = {}
         values = dict(
             unit_reservations(
                 input_tokens=requirements.input_tokens, output_tokens=requirements.output_tokens
             )
         )
-        if operation is not None and operation not in requirements.required_capabilities:
-            raise ValueError("provider_usage_operation_not_required")
-        applicable = tuple(
-            bucket
-            for bucket in endpoint.quota_buckets
-            if (
-                operation in bucket.operations
-                if operation is not None
-                else bool(requirements.required_capabilities.intersection(bucket.operations))
+        for profile in profiles:
+            endpoint = from_profile(profile)
+            applicable = (
+                _applicable_buckets(endpoint.quota_buckets, operation) if check_capacity else ()
             )
-        )
-        if endpoint.quota_membership == "ambiguous":
-            reasons.append("provider_quota_membership_ambiguous")
-        elif endpoint.quota_membership != "verified" or not applicable:
-            reasons.append("provider_quota_membership_unknown")
+            buckets_by_profile[profile.endpoint_profile_id] = applicable
+            if check_capacity:
+                if endpoint.quota_membership == "ambiguous":
+                    reasons_by_profile[profile.endpoint_profile_id].append(
+                        "provider_quota_membership_ambiguous"
+                    )
+                elif endpoint.quota_membership != "verified" or not applicable:
+                    reasons_by_profile[profile.endpoint_profile_id].append(
+                        "provider_quota_membership_unknown"
+                    )
+            edge_requirements = []
+            for bucket in applicable:
+                prior = canonical_buckets.get(bucket.bucket_id)
+                if prior is not None and not _same_shared_bucket_observation(prior, bucket):
+                    raise ValueError("provider_quota_snapshot_conflict")
+                canonical_buckets.setdefault(bucket.bucket_id, bucket)
+                edge_requirements.append(
+                    QuotaReservationRequirement(
+                        bucket_id=bucket.bucket_id,
+                        reservation_units=_reservation_amount(bucket, values),
+                    )
+                )
+            requirements_by_profile[profile.endpoint_profile_id] = tuple(edge_requirements)
 
-        snapshots = []
-        for bucket in sorted(applicable, key=lambda item: item.bucket_id):
-            start, reset, _window_confidence = _select_quota_window(connection, bucket, now)
-            _lock_or_seed_bucket(connection, bucket, start, reset, _window_confidence, now)
-            row = connection.execute(
-                "SELECT authority_scope_id,unit,window_seconds,reset_at,source,confidence,"
-                "evidence_reference,limit_units,reported_remaining,observed_at,fresh_until,"
-                "consumed_units,reserved_units FROM provider_quota_bucket_windows "
-                "WHERE bucket_id=%s AND window_start=%s FOR UPDATE",
-                (bucket.bucket_id, start),
-            ).fetchone()
-            if row is None:
-                raise RuntimeError("provider_quota_state_missing")
-            (
-                authority_scope,
-                unit,
-                window_seconds,
-                reset_at,
-                source,
-                confidence,
-                evidence_reference,
-                limit_units,
-                reported_remaining,
-                observed_at,
-                fresh_until,
-                consumed,
-                reserved,
-            ) = row
-            if authority_scope != bucket.authority_scope_id or unit != bucket.unit:
-                raise ValueError("provider_quota_bucket_identity_conflict")
-            known = (
-                confidence != "unknown"
-                and (limit_units is not None or reported_remaining is not None)
-                and (fresh_until is None or fresh_until > now)
-                and (reset_at is None or reset_at > now)
-            )
-            amount = _reservation_amount(bucket, values)
-            limits = []
-            if limit_units is not None:
-                limits.append(int(limit_units) - int(consumed) - int(reserved))
-            if reported_remaining is not None:
-                limits.append(int(reported_remaining) - int(consumed) - int(reserved))
-            remaining_units = max(0, min(limits)) if known and limits else None
-            snapshot_confidence = confidence if known else "unknown"
-            if known and amount is None:
-                reasons.append("provider_quota_unit_unpriced")
-            elif known and remaining_units is not None and remaining_units < amount:
-                reasons.append("endpoint_quota_exhausted")
-            snapshots.append(
-                QuotaLedgerBucketSnapshot(
-                    bucket_id=bucket.bucket_id,
+        shared_snapshots = {}
+        if check_capacity:
+            for bucket_id in sorted(canonical_buckets):
+                bucket = canonical_buckets[bucket_id]
+                start, reset, window_confidence = _select_quota_window(connection, bucket, now)
+                _lock_or_seed_bucket(connection, bucket, start, reset, window_confidence, now)
+                row = connection.execute(
+                    "SELECT authority_scope_id,unit,window_seconds,reset_at,source,confidence,"
+                    "evidence_reference,limit_units,reported_remaining,observed_at,fresh_until,"
+                    "consumed_units,reserved_units FROM provider_quota_bucket_windows "
+                    "WHERE bucket_id=%s AND window_start=%s FOR UPDATE",
+                    (bucket_id, start),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("provider_quota_state_missing")
+                (
+                    authority_scope, unit, window_seconds, reset_at, source, confidence,
+                    evidence_reference, limit_units, reported_remaining, observed_at,
+                    fresh_until, consumed, reserved,
+                ) = row
+                if authority_scope != bucket.authority_scope_id or unit != bucket.unit:
+                    raise ValueError("provider_quota_bucket_identity_conflict")
+                known = (
+                    confidence != "unknown"
+                    and (limit_units is not None or reported_remaining is not None)
+                    and (fresh_until is None or fresh_until > now)
+                    and (reset_at is None or reset_at > now)
+                )
+                limits = []
+                if limit_units is not None:
+                    limits.append(int(limit_units) - int(consumed) - int(reserved))
+                if reported_remaining is not None:
+                    limits.append(int(reported_remaining) - int(consumed) - int(reserved))
+                remaining_units = max(0, min(limits)) if known and limits else None
+                shared_snapshots[bucket_id] = QuotaLedgerBucketSnapshot(
+                    bucket_id=bucket_id,
                     unit=unit,
                     window_seconds=window_seconds,
                     window_start=start,
@@ -427,7 +445,7 @@ class PostgresProviderUsageAccounting:
                         else None
                     ),
                     source=source,
-                    confidence=snapshot_confidence,
+                    confidence=confidence if known else "unknown",
                     evidence_reference=evidence_reference,
                     limit_units=int(limit_units) if limit_units is not None else None,
                     reported_remaining_units=(
@@ -436,28 +454,66 @@ class PostgresProviderUsageAccounting:
                     consumed_units=int(consumed),
                     reserved_units=int(reserved),
                     remaining_units=remaining_units,
-                    reservation_units=amount,
                     observed_at=observed_at,
                     fresh_until=fresh_until,
                 )
+            for profile_id, bucket_requirements in requirements_by_profile.items():
+                for requirement in bucket_requirements:
+                    snapshot = shared_snapshots[requirement.bucket_id]
+                    if snapshot.confidence != "unknown" and requirement.reservation_units is None:
+                        reasons_by_profile[profile_id].append("provider_quota_unit_unpriced")
+                    elif (
+                        snapshot.remaining_units is not None
+                        and requirement.reservation_units is not None
+                        and snapshot.remaining_units < requirement.reservation_units
+                    ):
+                        reasons_by_profile[profile_id].append("endpoint_quota_exhausted")
+
+        # Do not interleave endpoint locks with bucket locks. Settlement updates
+        # quota rows first, then health, so every participant sees the same order.
+        health_by_profile = {}
+        for profile in profiles:
+            endpoint = from_profile(profile)
+            if check_capacity:
+                _lock_endpoint_health(connection, endpoint)
+                query = (
+                    "SELECT health_status,cooldown_until,failure_streak FROM provider_endpoint_health "
+                    "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s FOR SHARE"
+                )
+            else:
+                # The following P19 reservation owns the locked health check;
+                # this advisory read must not invert bucket-before-health order.
+                query = (
+                    "SELECT health_status,cooldown_until,failure_streak FROM provider_endpoint_health "
+                    "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s"
+                )
+            health = connection.execute(
+                query, (profile.endpoint_profile_id, profile.profile_version)
+            ).fetchone()
+            health_by_profile[profile.endpoint_profile_id] = health
+            if health is not None and _health_unavailable(health[:2], now):
+                reasons_by_profile[profile.endpoint_profile_id].append(
+                    "endpoint_health_unavailable"
+                )
+
+        return {
+            profile.endpoint_profile_id: EndpointRuntimeSnapshot(
+                health_status=(health_by_profile[profile.endpoint_profile_id][0]
+                    if health_by_profile[profile.endpoint_profile_id] is not None else "unobserved"),
+                cooldown_until=(health_by_profile[profile.endpoint_profile_id][1]
+                    if health_by_profile[profile.endpoint_profile_id] is not None else None),
+                failure_streak=(int(health_by_profile[profile.endpoint_profile_id][2])
+                    if health_by_profile[profile.endpoint_profile_id] is not None else 0),
+                quota_buckets=tuple(
+                    shared_snapshots[bucket.bucket_id]
+                    for bucket in buckets_by_profile[profile.endpoint_profile_id]
+                    if bucket.bucket_id in shared_snapshots
+                ),
+                rejection_reasons=tuple(dict.fromkeys(reasons_by_profile[profile.endpoint_profile_id])),
+                quota_requirements=requirements_by_profile[profile.endpoint_profile_id],
             )
-        # Reservation code locks quota buckets before endpoint health; match
-        # that order to avoid cycles with concurrent finalization.
-        _lock_endpoint_health(connection, endpoint)
-        health = connection.execute(
-            "SELECT health_status,cooldown_until,failure_streak FROM provider_endpoint_health "
-            "WHERE endpoint_profile_id=%s AND endpoint_profile_version=%s FOR SHARE",
-            (profile.endpoint_profile_id, profile.profile_version),
-        ).fetchone()
-        if health is not None and _health_unavailable(health[:2], now):
-            reasons.append("endpoint_health_unavailable")
-        return EndpointRuntimeSnapshot(
-            health_status=health[0] if health is not None else "unobserved",
-            cooldown_until=health[1] if health is not None else None,
-            failure_streak=int(health[2]) if health is not None else 0,
-            quota_buckets=tuple(snapshots),
-            rejection_reasons=tuple(dict.fromkeys(reasons)),
-        )
+            for profile in profiles
+        }
 
     def runtime_rejections(
         self, connection, profile, requirements, *, now, check_capacity=True, operation=None
@@ -1246,6 +1302,24 @@ def _applicable_buckets(buckets: tuple[QuotaBucket, ...], operation: str):
             key=lambda bucket: bucket.bucket_id,
         )
     )
+
+
+def _same_shared_bucket_observation(left: QuotaBucket, right: QuotaBucket) -> bool:
+    """Require one unambiguous static observation for a shared bucket ID."""
+    fields = (
+        "authority_scope_id",
+        "unit",
+        "window_seconds",
+        "source",
+        "confidence",
+        "evidence_reference",
+        "limit",
+        "remaining",
+        "observed_at",
+        "fresh_until",
+        "reset_at",
+    )
+    return all(getattr(left, name) == getattr(right, name) for name in fields)
 
 
 def _reservation_amount(bucket: QuotaBucket, values: dict[str, int]) -> int | None:

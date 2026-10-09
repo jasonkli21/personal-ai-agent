@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Protocol
@@ -11,6 +12,8 @@ from personal_ai.usage.quota import QuotaObservation
 
 if TYPE_CHECKING:
     from personal_ai.llm.metadata import ProviderRateLimitMetadata
+    from personal_ai.routing.contracts import EndpointCandidateRequirements, EndpointProfile
+    from personal_ai.usage.quota import EndpointRuntimeSnapshot
 
 AttemptOutcome = Literal[
     "success",
@@ -140,6 +143,17 @@ class ProviderUsageAccounting(Protocol):
         self, invocation: InvocationMetadata, *, outcome: AttemptOutcome,
         completed_at: datetime
     ) -> None: ...
+
+    def routing_snapshots(
+        self,
+        connection,
+        profiles: Sequence[EndpointProfile],
+        requirements: EndpointCandidateRequirements,
+        *,
+        operation: str,
+        now: datetime,
+        check_capacity: bool = True,
+    ) -> dict[str, EndpointRuntimeSnapshot]: ...
 
     def summary(self, *, owner_id: str, application_id: str, workspace_id: str | None,
                 days: int = 30) -> dict: ...

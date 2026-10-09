@@ -20,6 +20,7 @@ from personal_ai.routing.phase21 import (
     PreparationIdentity,
     QualityEvidence,
     QuotaBucketDecisionFact,
+    QuotaReservationRequirement,
     RoutingDecision,
     RoutingEvent,
     RoutingRequestFacts,
@@ -29,10 +30,17 @@ from personal_ai.routing.phase21 import (
     endpoint_configuration_sha256,
     quality_identity_sha256,
     reselection_requirements_preserved,
+    routing_strategy_configuration_sha256,
     sources_allowed,
     task_configuration_sha256,
 )
-from personal_ai.routing.strategy import QuotaAwareDeterministicStrategy
+from personal_ai.routing.strategy import (
+    QuotaAwareDeterministicStrategy,
+    implementation_sha256_for,
+)
+from personal_ai.routing.strategy import (
+    strategy_dependencies as strategy_dependencies_for,
+)
 from personal_ai.usage.accounting import unit_reservations
 from personal_ai.usage.contracts import AttemptMetadata, InvocationMetadata, UsageAdmissionDenied
 from personal_ai.usage.profiles import from_profile
@@ -271,54 +279,98 @@ class RoutingDecisionService:
             candidates = []
             quota_snapshots = {}
             quota_snapshot_overflow = False
-            for assessment in sorted(
+            assessments = tuple(sorted(
                 static.assessments,
-                key=lambda item: item.profile.endpoint_profile_id,
-            ):
+                key=lambda item: (item.profile.endpoint_profile_id, item.profile.profile_version),
+            ))
+            authorization_references = {}
+            authorization_failures = set()
+            authorized_profiles = []
+            for assessment in assessments:
+                if assessment.rejection_reasons or (
+                    assessment.profile.endpoint_profile_id in request.excluded_endpoint_profile_ids
+                ):
+                    continue
+                profile = assessment.profile
+                try:
+                    auth = self._authorize(
+                        c,
+                        owner_id,
+                        scope,
+                        profile.ref,
+                        request,
+                        request.source_reference_sha256s,
+                        now,
+                    )
+                    authorization_references[profile.endpoint_profile_id] = auth.reference
+                    authorized_profiles.append(profile)
+                except Exception:  # noqa: BLE001 - missing authority/invalid strategy fails closed
+                    authorization_failures.add(profile.endpoint_profile_id)
+
+            applicable_bucket_ids = {
+                bucket.bucket_id
+                for profile in authorized_profiles
+                for bucket in profile.quota_buckets
+                if request.operation in bucket.operations
+            }
+            if len(applicable_bucket_ids) > 128:
+                # Bound P19 lock work as well as the persisted replay record.
+                quota_snapshot_overflow = True
+
+            runtime_by_profile = {}
+            runtime_batch_failed = False
+            if authorized_profiles:
+                if self.usage is None or quota_snapshot_overflow:
+                    runtime_batch_failed = True
+                else:
+                    try:
+                        runtime_by_profile = self.usage.routing_snapshots(
+                            c,
+                            tuple(authorized_profiles),
+                            request.requirements,
+                            operation=request.operation,
+                            now=now,
+                        )
+                        if set(runtime_by_profile) != {
+                            profile.endpoint_profile_id for profile in authorized_profiles
+                        }:
+                            raise ValueError("provider_usage_batch_snapshot_incomplete")
+                    except Exception:  # noqa: BLE001 - a partial batch is not a consistent snapshot
+                        runtime_batch_failed = True
+                        runtime_by_profile = {}
+
+            for assessment in assessments:
                 profile = assessment.profile
                 reasons = list(assessment.rejection_reasons)
-                references = []
+                references = (
+                    [authorization_references[profile.endpoint_profile_id]]
+                    if profile.endpoint_profile_id in authorization_references
+                    else []
+                )
                 until = None
                 runtime = None
                 if profile.endpoint_profile_id in request.excluded_endpoint_profile_ids:
                     reasons.append("endpoint-excluded-after-reselection")
-                if not reasons:
-                    try:
-                        auth = self._authorize(
-                            c,
-                            owner_id,
-                            scope,
-                            profile.ref,
-                            request,
-                            request.source_reference_sha256s,
-                            now,
-                        )
-                        references.append(auth.reference)
-                    except Exception:  # noqa: BLE001 - missing authority/invalid strategy fails closed
+                if not assessment.rejection_reasons and profile.endpoint_profile_id not in request.excluded_endpoint_profile_ids:
+                    if profile.endpoint_profile_id in authorization_failures:
                         reasons.append("endpoint_authorization_unavailable")
-                    if self.usage is None:
+                    elif self.usage is None or runtime_batch_failed:
                         reasons.append("routing_runtime_authority_unavailable")
                     else:
-                        try:
-                            runtime = self.usage.routing_snapshot(
-                                c,
-                                profile,
-                                request.requirements,
-                                operation=request.operation,
-                                now=now,
-                            )
+                        runtime = runtime_by_profile.get(profile.endpoint_profile_id)
+                        if runtime is None:
+                            reasons.append("routing_runtime_authority_unavailable")
+                        else:
                             reasons.extend(runtime.rejection_reasons)
                             for bucket in runtime.quota_buckets:
-                                if bucket.bucket_id in quota_snapshots:
-                                    if quota_snapshots[bucket.bucket_id] != bucket:
-                                        raise ValueError("provider_quota_snapshot_conflict")
-                                else:
-                                    quota_snapshots[bucket.bucket_id] = bucket
-                                    if len(quota_snapshots) > 128:
-                                        quota_snapshot_overflow = True
-                        except Exception:  # noqa: BLE001 - missing authority/invalid strategy fails closed
-                            reasons.append("routing_runtime_authority_unavailable")
-                            runtime = None
+                                prior = quota_snapshots.get(bucket.bucket_id)
+                                if prior is not None and prior != bucket:
+                                    reasons.append("routing_runtime_authority_unavailable")
+                                    runtime = None
+                                    break
+                                quota_snapshots[bucket.bucket_id] = bucket
+                            if len(quota_snapshots) > 128:
+                                quota_snapshot_overflow = True
                 q = quality.get(profile.endpoint_profile_id)
                 q_current = _quality_current(task, request.policy_version, profile, q, now)
                 gate_target = (
@@ -382,6 +434,17 @@ class RoutingDecisionService:
                             if runtime is not None
                             else ()
                         ),
+                        quota_requirements=(
+                            tuple(
+                                QuotaReservationRequirement(
+                                    bucket_id=row.bucket_id,
+                                    reservation_units=row.reservation_units,
+                                )
+                                for row in runtime.quota_requirements
+                            )
+                            if runtime is not None
+                            else ()
+                        ),
                         health_status=runtime.health_status if runtime is not None else "unknown",
                         cooldown_until=runtime.cooldown_until if runtime is not None else None,
                         health_failure_streak=(
@@ -410,6 +473,7 @@ class RoutingDecisionService:
                                 )
                             ),
                             "quota_bucket_ids": (),
+                            "quota_requirements": (),
                         }
                     )
                     for candidate in candidates
@@ -430,7 +494,6 @@ class RoutingDecisionService:
                     consumed_units=bucket.consumed_units,
                     reserved_units=bucket.reserved_units,
                     remaining_units=bucket.remaining_units,
-                    reservation_units=bucket.reservation_units,
                     observed_at=bucket.observed_at,
                     fresh_until=bucket.fresh_until,
                 )
@@ -487,8 +550,10 @@ class RoutingDecisionService:
                     replay_until = min(replay_until, dependency_expires_at)
             if database_time(c) >= deadline:
                 reason, ranking = "routing-deadline-expired", ()
+            strategy_dependencies = strategy_dependencies_for(self.strategy)
+            strategy_implementation = implementation_sha256_for(self.strategy)
             decision_fields = {
-                "schema_version": 4,
+                "schema_version": 5,
                 "routing_decision_id": decision_id,
                 "root_decision_id": root_id,
                 "parent_decision_id": parent_decision_id,
@@ -503,6 +568,14 @@ class RoutingDecisionService:
                 "task": task,
                 "evaluation_quality_gate": evaluation_quality_gate,
                 "strategy": self.strategy.ref,
+                "strategy_dependencies": strategy_dependencies,
+                "strategy_implementation_sha256": strategy_implementation,
+                "strategy_tie_break_version": getattr(
+                    self.strategy, "tie_break_version", "custom-tie-break-unspecified"
+                ),
+                "strategy_configuration_sha256": routing_strategy_configuration_sha256(
+                    task.preferences, strategy_dependencies
+                ),
                 "registry_version": static.registry_version,
                 "candidates": tuple(candidates),
                 "quota_buckets": tuple(

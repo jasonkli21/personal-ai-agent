@@ -1,5 +1,7 @@
 """Pure replaceable strategy over admitted, least-knowledge candidate features."""
 
+import hashlib
+import inspect
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -22,6 +24,7 @@ class RoutingReplayUnavailable(LookupError):
 
 
 class DeterministicScoringStrategy:
+    tie_break_version = "score-then-endpoint-id-version-ascending-v1"
     # Manual replay identity, not a source/build digest. Bump semantic_version
     # when externally visible scoring semantics change; bump artifact_id for
     # every implementation behavior change, including bug fixes that preserve
@@ -31,6 +34,14 @@ class DeterministicScoringStrategy:
         semantic_version="1",
         artifact_id="priority-complete-signals-lexical-v1",
     )
+
+    @property
+    def dependencies(self) -> tuple[StrategyRef, ...]:
+        return ()
+
+    @property
+    def implementation_sha256(self) -> str:
+        return _implementation_sha256(self.select)
 
     def select(self, view: StrategyView) -> tuple[RankedCandidate, ...]:
         preferences = view.preferences
@@ -76,6 +87,7 @@ class DeterministicScoringStrategy:
 
 
 class QuotaAwareDeterministicStrategy:
+    tie_break_version = "score-then-endpoint-id-version-ascending-v1"
     """Deterministic scarcity ranking over Phase 19's frozen decision facts.
 
     Capacity is converted to equivalent sends of the current operation before
@@ -89,6 +101,18 @@ class QuotaAwareDeterministicStrategy:
         semantic_version="1",
         artifact_id="remaining-sends-reset-relief-health-v1",
     )
+
+    @property
+    def dependencies(self) -> tuple[StrategyRef, ...]:
+        return (DeterministicScoringStrategy.ref,)
+
+    @property
+    def implementation_sha256(self) -> str:
+        return _implementation_sha256(
+            DeterministicScoringStrategy.select,
+            self.select,
+            _quota_scarcity_penalty,
+        )
 
     def select(self, view: StrategyView) -> tuple[RankedCandidate, ...]:
         base = DeterministicScoringStrategy().select(view)
@@ -108,6 +132,8 @@ class QuotaAwareDeterministicStrategy:
                 components.append("quota-scarcity")
             elif scarcity_kind == "unknown":
                 components.append("quota-uncertain")
+            elif scarcity_kind == "mixed":
+                components.append("quota-mixed")
             if degraded_penalty:
                 components.append("health-degraded")
             adjusted.append(
@@ -134,24 +160,28 @@ def _quota_scarcity_penalty(candidate, buckets, view):
     preferences = view.preferences
     if preferences.quota_scarcity_weight == 0 and preferences.quota_unknown_penalty_weight == 0:
         return 0, "none"
-    observations = [buckets[bucket_id] for bucket_id in candidate.quota_bucket_ids]
+    requirements = {row.bucket_id: row.reservation_units for row in candidate.quota_requirements}
+    observations = [
+        (buckets[bucket_id], requirements.get(bucket_id))
+        for bucket_id in candidate.quota_bucket_ids
+    ]
     if not observations:
         return 0, "none"
-    penalties = []
-    unknown = False
-    for bucket in observations:
+    penalties: list[tuple[str, int]] = []
+    for bucket, reservation_units in observations:
+        if reservation_units == 0:
+            # A quota dimension this operation does not consume cannot make
+            # its capacity uncertain or scarce.
+            continue
         if (
             bucket.confidence == "unknown"
             or bucket.remaining_units is None
-            or bucket.reservation_units is None
+            or reservation_units is None
         ):
-            unknown = True
+            if preferences.quota_unknown_penalty_weight:
+                penalties.append(("unknown", preferences.quota_unknown_penalty_weight))
             continue
-        if bucket.reservation_units == 0:
-            # This request consumes no capacity from this bucket, so the bucket
-            # imposes neither scarcity nor uncertainty for this operation.
-            continue
-        sends_remaining = bucket.remaining_units // bucket.reservation_units
+        sends_remaining = bucket.remaining_units // reservation_units
         pressure_milli = 1000 // (sends_remaining + 1)
         if bucket.time_to_reset_seconds is not None:
             reset_relief = min(
@@ -159,16 +189,15 @@ def _quota_scarcity_penalty(candidate, buckets, view):
                 bucket.time_to_reset_seconds / preferences.quota_reset_relief_seconds,
             )
             pressure_milli = round(pressure_milli * reset_relief)
-        penalties.append(
-            (preferences.quota_scarcity_weight * pressure_milli + 500) // 1000
-        )
-    # One unknown bucket makes the endpoint's aggregate capacity uncertain.
-    # The conservative default is explicit, deterministic and configurable.
-    if unknown:
-        penalties.append(preferences.quota_unknown_penalty_weight)
+        penalty = (preferences.quota_scarcity_weight * pressure_milli + 500) // 1000
+        if penalty:
+            penalties.append(("known", penalty))
     if not penalties:
         return 0, "none"
-    return max(penalties), "unknown" if unknown else "known"
+    maximum = max(amount for _, amount in penalties)
+    winners = {kind for kind, amount in penalties if amount == maximum}
+    kind = next(iter(winners)) if len(winners) == 1 else "mixed"
+    return maximum, kind
 
 
 def replay_deterministic_decision(
@@ -183,9 +212,41 @@ def replay_deterministic_decision(
         raise RoutingReplayUnavailable("routing_replay_expired")
     if strategy.ref != decision.strategy:
         raise RoutingReplayUnavailable("historical_strategy_unavailable")
+    if decision.no_route_reason in {"quota-snapshot-overflow", "routing-decision-overflow"}:
+        raise RoutingReplayUnavailable("routing_replay_facts_unavailable")
+    if decision.schema_version == 5:
+        dependencies = strategy_dependencies(strategy)
+        if dependencies != decision.strategy_dependencies:
+            raise RoutingReplayUnavailable("historical_strategy_dependency_unavailable")
+        if implementation_sha256_for(strategy) != decision.strategy_implementation_sha256:
+            raise RoutingReplayUnavailable("historical_strategy_implementation_unavailable")
+        if getattr(strategy, "tie_break_version", "custom-tie-break-unspecified") != (
+            decision.strategy_tie_break_version
+        ):
+            raise RoutingReplayUnavailable("historical_strategy_tie_break_unavailable")
     if decision.no_route_reason == "routing-strategy-contract-invalid":
         raise RoutingReplayUnavailable("routing_strategy_result_unavailable")
     result = strategy.select(decision.strategy_view()) if decision.selected else ()
     if result != decision.ranking:
         raise RoutingReplayUnavailable("routing_replay_outcome_mismatch")
     return result
+
+
+def _implementation_sha256(*callables) -> str:
+    source = "\n\n".join(inspect.getsource(function) for function in callables)
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def strategy_dependencies(strategy) -> tuple[StrategyRef, ...]:
+    return tuple(getattr(strategy, "dependencies", ()))
+
+
+def implementation_sha256_for(strategy) -> str:
+    declared = getattr(strategy, "implementation_sha256", None)
+    if declared is not None:
+        return declared
+    identity = (
+        f"{type(strategy).__module__}.{type(strategy).__qualname__}:"
+        f"{strategy.ref.model_dump_json()}"
+    )
+    return hashlib.sha256(identity.encode()).hexdigest()

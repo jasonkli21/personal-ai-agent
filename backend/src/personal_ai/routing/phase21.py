@@ -76,6 +76,21 @@ def task_configuration_sha256(task: RoutingTaskProfile) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def routing_strategy_configuration_sha256(
+    preferences: RoutingPreferences, dependencies: tuple[StrategyRef, ...] = ()
+) -> str:
+    """Digest the effective scorer inputs and composed strategy identities."""
+    payload = json.dumps(
+        {
+            "dependencies": [row.model_dump(mode="json") for row in dependencies],
+            "preferences": preferences.model_dump(mode="json"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def quality_identity_sha256(
     *,
     endpoint_digest: str,
@@ -475,6 +490,18 @@ class StrategyRef(_FrozenModel):
         return _safe_id(value)
 
 
+class QuotaReservationRequirement(_FrozenModel):
+    """Candidate-specific consumption from a shared canonical bucket."""
+
+    bucket_id: str
+    reservation_units: int | None = Field(default=None, ge=0)
+
+    @field_validator("bucket_id")
+    @classmethod
+    def valid_bucket_id(cls, value: str) -> str:
+        return _safe_id(value)
+
+
 class StrategyCandidate(_FrozenModel):
     endpoint: EndpointRef
     configured_priority: int = Field(default=0, ge=-100_000, le=100_000)
@@ -482,6 +509,7 @@ class StrategyCandidate(_FrozenModel):
     latency_ms: int | None = Field(default=None, ge=0, le=600_000)
     reliability: float | None = Field(default=None, ge=0, le=1)
     quota_bucket_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    quota_requirements: tuple[QuotaReservationRequirement, ...] = Field(default=(), max_length=32)
     health_status: Literal["unobserved", "healthy", "degraded", "cooldown", "unknown"] = "unobserved"
     cooldown_until: datetime | None = None
 
@@ -491,6 +519,16 @@ class StrategyCandidate(_FrozenModel):
         if len(set(values)) != len(values):
             raise ValueError("routing_quota_bucket_duplicate")
         return tuple(_safe_id(value) for value in values)
+
+    @field_validator("quota_requirements")
+    @classmethod
+    def unique_quota_requirements(
+        cls, values: tuple[QuotaReservationRequirement, ...]
+    ) -> tuple[QuotaReservationRequirement, ...]:
+        bucket_ids = tuple(row.bucket_id for row in values)
+        if len(bucket_ids) != len(set(bucket_ids)):
+            raise ValueError("routing_quota_requirement_duplicate")
+        return tuple(sorted(values, key=lambda row: row.bucket_id))
 
     @field_validator("cooldown_until")
     @classmethod
@@ -515,6 +553,8 @@ class QuotaBucketDecisionFact(_FrozenModel):
     consumed_units: int = Field(ge=0)
     reserved_units: int = Field(ge=0)
     remaining_units: int | None = Field(default=None, ge=0)
+    # Retained only to read frozen schema-4 decisions. Schema 5 stores this on
+    # the candidate-to-bucket edge instead of shared bucket state.
     reservation_units: int | None = Field(default=None, ge=0)
     observed_at: datetime | None = None
     fresh_until: datetime | None = None
@@ -544,8 +584,6 @@ class QuotaBucketDecisionFact(_FrozenModel):
             raise ValueError("routing_unknown_quota_has_no_reset_estimate")
         if self.time_to_reset_seconds is not None and self.reset_at is None:
             raise ValueError("routing_quota_reset_estimate_missing_timestamp")
-        if self.remaining_units is not None and self.reservation_units is None:
-            raise ValueError("routing_quota_estimate_missing_reservation_basis")
         if self.fresh_until is not None and (
             self.observed_at is None or self.fresh_until < self.observed_at
         ):
@@ -611,6 +649,12 @@ class StrategyView(_FrozenModel):
             for bucket_id in candidate.quota_bucket_ids
         ):
             raise ValueError("routing_strategy_quota_snapshot_incomplete")
+        for candidate in self.candidates:
+            requirement_ids = tuple(row.bucket_id for row in candidate.quota_requirements)
+            if requirement_ids and set(requirement_ids) != set(candidate.quota_bucket_ids):
+                raise ValueError("routing_strategy_quota_requirements_incomplete")
+            if len(requirement_ids) != len(set(requirement_ids)):
+                raise ValueError("routing_strategy_quota_requirement_duplicate")
         return self
 
 
@@ -647,7 +691,7 @@ class EvaluationQualityGate(_FrozenModel):
 
 
 class RoutingDecision(_FrozenModel):
-    schema_version: Literal[2, 3, 4] = 2
+    schema_version: Literal[2, 3, 4, 5] = 2
     routing_decision_id: UUID
     root_decision_id: UUID
     parent_decision_id: UUID | None = None
@@ -662,6 +706,10 @@ class RoutingDecision(_FrozenModel):
     task: RoutingTaskProfile
     evaluation_quality_gate: EvaluationQualityGate | None = None
     strategy: StrategyRef
+    strategy_dependencies: tuple[StrategyRef, ...] = Field(default=(), max_length=8)
+    strategy_implementation_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    strategy_configuration_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    strategy_tie_break_version: str | None = None
     registry_version: str = Field(max_length=100)
     candidates: tuple[CandidateFact, ...] = Field(default=(), max_length=32)
     quota_buckets: tuple[QuotaBucketDecisionFact, ...] = Field(
@@ -688,8 +736,22 @@ class RoutingDecision(_FrozenModel):
             raise ValueError("routing_task_capability_requirement_mismatch")
         if self.schema_version == 2 and self.evaluation_quality_gate is not None:
             raise ValueError("legacy_routing_decision_evaluation_gate_invalid")
-        if self.schema_version == 4 and self.request.operation is None:
+        if self.schema_version in (4, 5) and self.request.operation is None:
             raise ValueError("routing_operation_missing")
+        if self.schema_version == 5:
+            if (
+                self.strategy_implementation_sha256 is None
+                or self.strategy_configuration_sha256 is None
+                or self.strategy_tie_break_version is None
+            ):
+                raise ValueError("routing_strategy_provenance_incomplete")
+            _safe_id(self.strategy_tie_break_version)
+            if any(bucket.reservation_units is not None for bucket in self.quota_buckets):
+                raise ValueError("routing_shared_quota_fact_contains_candidate_cost")
+            if self.strategy_configuration_sha256 != routing_strategy_configuration_sha256(
+                self.task.preferences, self.strategy_dependencies
+            ):
+                raise ValueError("routing_strategy_configuration_digest_mismatch")
         if self.evaluation_quality_gate is not None:
             gate = self.evaluation_quality_gate
             if (
@@ -736,6 +798,13 @@ class RoutingDecision(_FrozenModel):
             for bucket_id in candidate.quota_bucket_ids
         ):
             raise ValueError("routing_quota_snapshot_incomplete")
+        if self.schema_version == 5 and any(
+            {row.bucket_id for row in candidate.quota_requirements}
+            != set(candidate.quota_bucket_ids)
+            or len(candidate.quota_requirements) != len(candidate.quota_bucket_ids)
+            for candidate in self.candidates
+        ):
+            raise ValueError("routing_quota_requirements_incomplete")
         ranked = [r.endpoint for r in self.ranking]
         eligible = [c.endpoint for c in self.candidates if c.eligible]
         if (
@@ -759,9 +828,24 @@ class RoutingDecision(_FrozenModel):
     def strategy_view(self):
         eligible = tuple(c for c in self.candidates if c.eligible)
         needed = {bucket_id for c in eligible for bucket_id in c.quota_bucket_ids}
+        bucket_facts = {bucket.bucket_id: bucket for bucket in self.quota_buckets}
+        candidates = []
+        for candidate in eligible:
+            document = candidate.strategy_view().model_dump()
+            if not candidate.quota_requirements:
+                # Schema-4 persisted the send basis on the shared bucket fact.
+                document["quota_requirements"] = tuple(
+                    QuotaReservationRequirement(
+                        bucket_id=bucket_id,
+                        reservation_units=bucket_facts[bucket_id].reservation_units,
+                    )
+                    for bucket_id in candidate.quota_bucket_ids
+                    if bucket_id in bucket_facts
+                )
+            candidates.append(StrategyCandidate.model_validate(document))
         return StrategyView(
             preferences=self.task.preferences,
-            candidates=tuple(c.strategy_view() for c in eligible),
+            candidates=tuple(candidates),
             quota_buckets=tuple(
                 bucket for bucket in self.quota_buckets if bucket.bucket_id in needed
             ),

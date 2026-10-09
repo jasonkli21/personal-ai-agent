@@ -30,6 +30,12 @@
           "health_status": "healthy",
           "quota_bucket_ids": [
             "strong-capacity"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "strong-capacity",
+              "reservation_units": 1
+            }
           ]
         },
         {
@@ -46,6 +52,12 @@
           "health_status": "healthy",
           "quota_bucket_ids": [
             "substitute-capacity"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "substitute-capacity",
+              "reservation_units": 1
+            }
           ]
         }
       ],
@@ -64,7 +76,6 @@
           "consumed_units": 0,
           "reserved_units": 0,
           "remaining_units": 2,
-          "reservation_units": 1,
           "observed_at": "2026-10-01T00:00:00Z",
           "fresh_until": "2026-10-02T00:00:00Z",
           "time_to_reset_seconds": 604800
@@ -83,12 +94,12 @@
           "consumed_units": 0,
           "reserved_units": 0,
           "remaining_units": 10,
-          "reservation_units": 1,
           "observed_at": "2026-10-01T00:00:00Z",
           "fresh_until": "2026-10-02T00:00:00Z",
           "time_to_reset_seconds": 604800
         }
-      ]
+      ],
+      "advance_seconds_per_demand": 0
     },
     {
       "scenario_id": "scarcity-near-reset",
@@ -117,6 +128,12 @@
           "health_status": "healthy",
           "quota_bucket_ids": [
             "resetting-capacity"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "resetting-capacity",
+              "reservation_units": 1
+            }
           ]
         },
         {
@@ -133,6 +150,12 @@
           "health_status": "healthy",
           "quota_bucket_ids": [
             "resetting-alternative-capacity"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "resetting-alternative-capacity",
+              "reservation_units": 1
+            }
           ]
         }
       ],
@@ -151,7 +174,6 @@
           "consumed_units": 0,
           "reserved_units": 0,
           "remaining_units": 1,
-          "reservation_units": 1,
           "observed_at": "2026-10-01T00:00:00Z",
           "fresh_until": "2026-10-02T00:00:00Z",
           "time_to_reset_seconds": 60
@@ -170,12 +192,12 @@
           "consumed_units": 0,
           "reserved_units": 0,
           "remaining_units": 20,
-          "reservation_units": 1,
           "observed_at": "2026-10-01T00:00:00Z",
           "fresh_until": "2026-10-02T00:00:00Z",
           "time_to_reset_seconds": 604800
         }
-      ]
+      ],
+      "advance_seconds_per_demand": 120
     },
     {
       "scenario_id": "unknown-capacity",
@@ -204,6 +226,12 @@
           "health_status": "healthy",
           "quota_bucket_ids": [
             "unknown-capacity-bucket"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "unknown-capacity-bucket",
+              "reservation_units": null
+            }
           ]
         },
         {
@@ -220,6 +248,12 @@
           "health_status": "healthy",
           "quota_bucket_ids": [
             "known-capacity-bucket"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "known-capacity-bucket",
+              "reservation_units": 1
+            }
           ]
         }
       ],
@@ -238,7 +272,6 @@
           "consumed_units": 0,
           "reserved_units": 0,
           "remaining_units": null,
-          "reservation_units": null,
           "observed_at": null,
           "fresh_until": null,
           "time_to_reset_seconds": null
@@ -257,12 +290,12 @@
           "consumed_units": 0,
           "reserved_units": 0,
           "remaining_units": 10,
-          "reservation_units": 1,
           "observed_at": "2026-10-01T00:00:00Z",
           "fresh_until": "2026-10-02T00:00:00Z",
           "time_to_reset_seconds": 86400
         }
-      ]
+      ],
+      "advance_seconds_per_demand": 0
     },
     {
       "scenario_id": "free-exhaustion-no-overflow",
@@ -291,6 +324,12 @@
           "health_status": "healthy",
           "quota_bucket_ids": [
             "exhausted-a"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "exhausted-a",
+              "reservation_units": 1
+            }
           ]
         },
         {
@@ -307,6 +346,12 @@
           "health_status": "healthy",
           "quota_bucket_ids": [
             "exhausted-b"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "exhausted-b",
+              "reservation_units": 1
+            }
           ]
         },
         {
@@ -323,6 +368,12 @@
           "health_status": "healthy",
           "quota_bucket_ids": [
             "byok-capacity"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "byok-capacity",
+              "reservation_units": 1
+            }
           ]
         }
       ],
@@ -341,7 +392,6 @@
           "consumed_units": 0,
           "reserved_units": 0,
           "remaining_units": 0,
-          "reservation_units": 1,
           "observed_at": "2026-10-01T00:00:00Z",
           "fresh_until": "2026-10-02T00:00:00Z",
           "time_to_reset_seconds": 86400
@@ -360,7 +410,6 @@
           "consumed_units": 0,
           "reserved_units": 0,
           "remaining_units": 0,
-          "reservation_units": 1,
           "observed_at": "2026-10-01T00:00:00Z",
           "fresh_until": "2026-10-02T00:00:00Z",
           "time_to_reset_seconds": 86400
@@ -379,10 +428,108 @@
           "consumed_units": 0,
           "reserved_units": 0,
           "remaining_units": 100,
-          "reservation_units": 1,
           "observed_at": "2026-10-01T00:00:00Z",
           "fresh_until": "2026-10-02T00:00:00Z",
           "time_to_reset_seconds": 86400
+        }
+      ],
+      "advance_seconds_per_demand": 0
+    },
+    {
+      "scenario_id": "freshness-boundary",
+      "demand_count": 2,
+      "advance_seconds_per_demand": 120,
+      "quality_floor": 0.85,
+      "preferences": {
+        "quota_scarcity_weight": 4000,
+        "quota_unknown_penalty_weight": 2000,
+        "quota_reset_relief_seconds": 86400,
+        "degraded_health_penalty": 250
+      },
+      "observed_at": "2026-10-01T00:00:00Z",
+      "protected_bucket_ids": [],
+      "endpoints": [
+        {
+          "endpoint": {
+            "endpoint_profile_id": "stale-route",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 1,
+          "quality_score": 0.95,
+          "latency_ms": 100,
+          "reliability": 0.99,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "stale-capacity"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "stale-capacity",
+              "reservation_units": 1
+            }
+          ]
+        },
+        {
+          "endpoint": {
+            "endpoint_profile_id": "fresh-route",
+            "profile_version": 1
+          },
+          "execution_mode": "STRICT_FREE",
+          "hard_eligible": true,
+          "configured_priority": 0,
+          "quality_score": 0.9,
+          "latency_ms": 120,
+          "reliability": 0.98,
+          "health_status": "healthy",
+          "quota_bucket_ids": [
+            "fresh-capacity"
+          ],
+          "quota_requirements": [
+            {
+              "bucket_id": "fresh-capacity",
+              "reservation_units": 1
+            }
+          ]
+        }
+      ],
+      "quota_buckets": [
+        {
+          "bucket_id": "stale-capacity",
+          "unit": "requests",
+          "window_seconds": 86400,
+          "window_start": "2026-10-01T00:00:00Z",
+          "reset_at": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 86400,
+          "source": "provider_headers",
+          "confidence": "exact",
+          "evidence_reference": "quota:fixture-stale",
+          "limit_units": 100,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 100,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-01T00:01:00Z"
+        },
+        {
+          "bucket_id": "fresh-capacity",
+          "unit": "requests",
+          "window_seconds": 86400,
+          "window_start": "2026-10-01T00:00:00Z",
+          "reset_at": "2026-10-02T00:00:00Z",
+          "time_to_reset_seconds": 86400,
+          "source": "provider_contract",
+          "confidence": "configured",
+          "evidence_reference": "quota:fixture-fresh",
+          "limit_units": 20,
+          "reported_remaining_units": null,
+          "consumed_units": 0,
+          "reserved_units": 0,
+          "remaining_units": 20,
+          "observed_at": "2026-10-01T00:00:00Z",
+          "fresh_until": "2026-10-02T00:00:00Z"
         }
       ]
     }

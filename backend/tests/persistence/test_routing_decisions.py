@@ -3,12 +3,13 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
+from threading import Barrier, Event, get_ident
 from uuid import uuid4
 
 import pytest
 
 from personal_ai.auth.scope import ApplicationScope
+from personal_ai.persistence import postgres_usage as postgres_usage_module
 from personal_ai.persistence.postgres import PersistenceConflict, PostgresDatabase
 from personal_ai.persistence.postgres_artifacts import PostgresArtifactMetadataRepository
 from personal_ai.persistence.postgres_owner_lifecycle import OwnerFenced
@@ -23,6 +24,7 @@ from personal_ai.routing import (
     EndpointPriority,
     EndpointRegistry,
     PreparationIdentity,
+    QuotaAwareDeterministicStrategy,
     QuotaBucket,
     RoutingDecisionService,
     RoutingFinalizationError,
@@ -31,7 +33,10 @@ from personal_ai.routing import (
     RoutingTaskProfile,
     replay_deterministic_decision,
 )
-from personal_ai.usage.contracts import AttemptResult, UsageAdmissionDenied
+from personal_ai.usage.contracts import (
+    AttemptResult,
+    UsageAdmissionDenied,
+)
 from personal_ai.usage.profiles import EndpointProfileResolver
 from tests.test_endpoint_registry import _profile, _requirements
 from tests.test_routing_phase21 import Authorization
@@ -53,7 +58,7 @@ def database():
         db.close()
 
 
-def setup(database, *, owner_id=None, scope=SCOPE, request_id=None, **task_changes):
+def setup(database, *, owner_id=None, scope=SCOPE, request_id=None, strategy=None, **task_changes):
     owner = owner_id or f"route-owner-{uuid4()}"
     p = _profile(f"route-endpoint-{uuid4()}")
     catalog = PostgresEndpointRegistryRepository(database)
@@ -63,7 +68,9 @@ def setup(database, *, owner_id=None, scope=SCOPE, request_id=None, **task_chang
         database, endpoint_profile_resolver=EndpointProfileResolver(registry, catalog)
     )
     auth = Authorization()
-    service = RoutingDecisionService(registry, repo, usage=usage, authorization=auth)
+    service = RoutingDecisionService(
+        registry, repo, strategy=strategy, usage=usage, authorization=auth
+    )
     t = RoutingTaskProfile(
         task_id="chat",
         profile_id="task:test",
@@ -174,7 +181,8 @@ def test_quota_snapshot_is_frozen_and_capacity_loss_reselects_without_dispatch(d
     )
     assert first_snapshot.confidence == "derived"
     assert first_snapshot.remaining_units == 100
-    assert first_snapshot.reservation_units == 1
+    selected_candidate = next(row for row in decision.candidates if row.endpoint == decision.selected)
+    assert selected_candidate.quota_requirements[0].reservation_units == 1
     assert first_snapshot.reset_at is not None
 
     with database.transaction() as connection:
@@ -217,6 +225,317 @@ def test_quota_snapshot_is_frozen_and_capacity_loss_reselects_without_dispatch(d
     assert child.parent_decision_id == decision.routing_decision_id
     assert child.selected.endpoint_profile_id == substitute_id
     assert child.request.excluded_endpoint_profile_ids == (strong_id,)
+
+
+def test_shared_bucket_candidate_costs_score_and_reserve_independently(database):
+    owner = f"shared-cost-owner-{uuid4()}"
+    suffix = uuid4().hex
+    authority = f"shared-cost-account-{suffix}"
+    bucket_id = f"shared-cost-bucket-{suffix}"
+    profiles = []
+    for profile_id, cost in ((f"low-cost-{suffix}", 10), (f"high-cost-{suffix}", 20)):
+        bucket = QuotaBucket(
+            bucket_id=bucket_id,
+            authority_scope_id=authority,
+            operations=frozenset({"bounded_generation"}),
+            unit="neurons",
+            window_seconds=3600,
+            source="provider_contract",
+            confidence="verified",
+            reservation_units_per_request=cost,
+            evidence_reference="quota:shared-cost-test",
+            limit=200,
+        )
+        profiles.append(
+            _profile(
+                profile_id,
+                account_scope_id=authority,
+                quota_buckets=(bucket,),
+            )
+        )
+
+    catalog = PostgresEndpointRegistryRepository(database)
+    registry = EndpointRegistry(tuple(profiles), repository=catalog)
+    repository = PostgresRoutingDecisionRepository(database)
+    usage = PostgresProviderUsageAccounting(
+        database, endpoint_profile_resolver=EndpointProfileResolver(registry, catalog)
+    )
+    service = RoutingDecisionService(
+        registry, repository, usage=usage, authorization=Authorization()
+    )
+    routing_task = RoutingTaskProfile(
+        task_id="chat",
+        profile_id="task:shared-cost",
+        profile_version=1,
+        task_type="chat",
+        required_capabilities=frozenset({"bounded_generation"}),
+        preferences=RoutingPreferences(quota_scarcity_weight=4_000),
+        deadline_ms=600000,
+    )
+    request_facts = RoutingRequestFacts(
+        request_id=f"shared-cost-request-{suffix}",
+        policy_version="policy:v1",
+        requirements=_requirements(input_tokens=64, output_tokens=16),
+    )
+    decision = service.route(
+        owner_id=owner, scope=SCOPE, task=routing_task, request=request_facts
+    )
+
+    assert decision.selected.endpoint_profile_id == f"low-cost-{suffix}"
+    assert len(decision.quota_buckets) == 1
+    assert decision.quota_buckets[0].reservation_units is None
+    candidate_requirements = {
+        row.endpoint.endpoint_profile_id: row.quota_requirements[0].reservation_units
+        for row in decision.candidates
+    }
+    assert candidate_requirements == {
+        f"low-cost-{suffix}": 10,
+        f"high-cost-{suffix}": 20,
+    }
+    assert decision.ranking[0].score > decision.ranking[1].score
+    assert replay_deterministic_decision(
+        decision, QuotaAwareDeterministicStrategy()
+    ) == decision.ranking
+
+    preparation = PreparationIdentity(
+        endpoint=decision.selected,
+        serializer_id=registry.historical(decision.selected).serializer_id,
+        input_tokens=32,
+        count_source="test-estimate",
+        count_confidence="estimated",
+        prepared_input_sha256="3" * 64,
+        prepared_at=service.current_time(owner_id=owner),
+    )
+    permit = service.finalize(
+        owner_id=owner,
+        scope=SCOPE,
+        decision_id=decision.routing_decision_id,
+        preparation=preparation,
+        operation="bounded_generation",
+    )
+    with database.connection() as connection:
+        reserved = connection.execute(
+            "SELECT reserved_units FROM provider_quota_reservations "
+            "WHERE attempt_id=%s AND bucket_id=%s",
+            (permit.attempt_id, bucket_id),
+        ).fetchone()[0]
+    assert reserved == 10
+
+
+def test_batch_route_snapshot_orders_overlapping_buckets_before_settlement_and_finalize(
+    database, monkeypatch
+):
+    owner = f"overlapping-route-owner-{uuid4()}"
+    suffix = uuid4().hex
+    authority = f"overlapping-account-{suffix}"
+    bucket_a = QuotaBucket(
+        bucket_id=f"a-{suffix}", authority_scope_id=authority,
+        operations=frozenset({"bounded_generation"}), unit="requests", window_seconds=3600,
+        source="provider_contract", confidence="verified", reservation_units_per_request=1,
+        evidence_reference="quota:overlap-test", limit=100,
+    )
+    bucket_z = QuotaBucket(
+        bucket_id=f"z-{suffix}", authority_scope_id=authority,
+        operations=frozenset({"bounded_generation"}), unit="requests", window_seconds=3600,
+        source="provider_contract", confidence="verified", reservation_units_per_request=1,
+        evidence_reference="quota:overlap-test", limit=100,
+    )
+    first_id = f"a-route-first-{suffix}"
+    second_id = f"b-route-second-{suffix}"
+    profiles = (
+        _profile(first_id, account_scope_id=authority, quota_buckets=(bucket_z,)),
+        _profile(second_id, account_scope_id=authority, quota_buckets=(bucket_a, bucket_z)),
+    )
+    catalog = PostgresEndpointRegistryRepository(database)
+    registry = EndpointRegistry(profiles, repository=catalog)
+    repository = PostgresRoutingDecisionRepository(database)
+    usage = PostgresProviderUsageAccounting(
+        database, endpoint_profile_resolver=EndpointProfileResolver(registry, catalog)
+    )
+    service = RoutingDecisionService(
+        registry, repository, usage=usage, authorization=Authorization()
+    )
+    routing_task = RoutingTaskProfile(
+        task_id="chat",
+        profile_id="task:overlapping-quota",
+        profile_version=1,
+        task_type="chat",
+        required_capabilities=frozenset({"bounded_generation"}),
+        endpoint_priorities=(EndpointPriority(endpoint_profile_id=second_id, priority=10),),
+        deadline_ms=600000,
+    )
+    first_request = RoutingRequestFacts(
+        request_id=f"overlap-seed-request-{suffix}",
+        policy_version="policy:v1",
+        requirements=_requirements(input_tokens=64, output_tokens=16),
+    )
+    seed = service.route(owner_id=owner, scope=SCOPE, task=routing_task, request=first_request)
+    assert seed.selected.endpoint_profile_id == second_id
+    prep = PreparationIdentity(
+        endpoint=seed.selected,
+        serializer_id=registry.historical(seed.selected).serializer_id,
+        input_tokens=32,
+        count_source="test-estimate",
+        count_confidence="estimated",
+        prepared_input_sha256="4" * 64,
+        prepared_at=service.current_time(owner_id=owner),
+    )
+    permit = service.finalize(
+        owner_id=owner,
+        scope=SCOPE,
+        decision_id=seed.routing_decision_id,
+        preparation=prep,
+        operation="bounded_generation",
+    )
+    _profile_ref, invocation, attempt = service.claim(
+        owner_id=owner, scope=SCOPE, permit=permit, operation="bounded_generation"
+    )
+
+    snapshot_ready = Event()
+    release_route = Event()
+    original_snapshots = usage.routing_snapshots
+
+    def held_snapshots(*args, **kwargs):
+        result = original_snapshots(*args, **kwargs)
+        if len(args[1]) > 1:
+            snapshot_ready.set()
+            if not release_route.wait(timeout=10):
+                raise TimeoutError("route_snapshot_release_timeout")
+        return result
+
+    usage.routing_snapshots = held_snapshots
+    settled = Event()
+    original_settle = usage.settle_attempt
+
+    def tracked_settle(*args, **kwargs):
+        settled.set()
+        return original_settle(*args, **kwargs)
+
+    usage.settle_attempt = tracked_settle
+    next_request = RoutingRequestFacts(
+        request_id=f"overlap-concurrent-request-{suffix}",
+        policy_version="policy:v1",
+        requirements=_requirements(input_tokens=64, output_tokens=16),
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        route_future = pool.submit(
+            service.route,
+            owner_id=owner,
+            scope=SCOPE,
+            task=routing_task,
+            request=next_request,
+        )
+        assert snapshot_ready.wait(timeout=10)
+        settlement_future = pool.submit(
+            usage.settle_attempt,
+            invocation,
+            attempt,
+            AttemptResult(
+                outcome="success",
+                completed_at=attempt.started_at + timedelta(seconds=1),
+                latency_ms=1,
+                input_tokens=32,
+                output_tokens=8,
+                total_tokens=40,
+                usage_source="provider",
+                usage_confidence="exact",
+            ),
+        )
+        assert settled.wait(timeout=10)
+        release_route.set()
+        next_decision = route_future.result(timeout=15)
+        settlement_future.result(timeout=15)
+    assert next_decision.selected is not None
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT bucket_id,consumed_units,reserved_units FROM provider_quota_bucket_windows "
+            "WHERE bucket_id IN (%s,%s) ORDER BY bucket_id",
+            (bucket_a.bucket_id, bucket_z.bucket_id),
+        ).fetchall()
+    assert rows == [(bucket_a.bucket_id, 1, 0), (bucket_z.bucket_id, 1, 0)]
+
+    snapshot_ready.clear()
+    release_route.clear()
+    final_request = RoutingRequestFacts(
+        request_id=f"overlap-final-request-{suffix}",
+        policy_version="policy:v1",
+        requirements=_requirements(input_tokens=64, output_tokens=16),
+    )
+    usage.routing_snapshots = original_snapshots
+    final_preparation = PreparationIdentity(
+        endpoint=next_decision.selected,
+        serializer_id=registry.historical(next_decision.selected).serializer_id,
+        input_tokens=32,
+        count_source="test-estimate",
+        count_confidence="estimated",
+        prepared_input_sha256="5" * 64,
+        prepared_at=service.current_time(owner_id=owner),
+    )
+    route_buckets_locked = Event()
+    route_thread_id = []
+    finalizer_thread_id = []
+    finalizer_bucket_attempt = Event()
+    original_health_lock = postgres_usage_module._lock_endpoint_health
+    original_select_bucket = postgres_usage_module._select_quota_window
+
+    def pause_route_before_health(connection, endpoint):
+        if route_thread_id and get_ident() == route_thread_id[0] and not release_route.is_set():
+            route_buckets_locked.set()
+            if not release_route.wait(timeout=10):
+                raise TimeoutError("route_health_lock_release_timeout")
+        return original_health_lock(connection, endpoint)
+
+    monkeypatch.setattr(
+        postgres_usage_module, "_lock_endpoint_health", pause_route_before_health
+    )
+
+    def track_finalizer_bucket_attempt(connection, bucket, now):
+        if finalizer_thread_id and get_ident() == finalizer_thread_id[0]:
+            finalizer_bucket_attempt.set()
+        return original_select_bucket(connection, bucket, now)
+
+    monkeypatch.setattr(
+        postgres_usage_module, "_select_quota_window", track_finalizer_bucket_attempt
+    )
+
+    def make_final_route():
+        route_thread_id.append(get_ident())
+        return service.route(
+            owner_id=owner,
+            scope=SCOPE,
+            task=routing_task,
+            request=final_request,
+        )
+
+    def finalize_next_decision():
+        finalizer_thread_id.append(get_ident())
+        return service.finalize(
+            owner_id=owner,
+            scope=SCOPE,
+            decision_id=next_decision.routing_decision_id,
+            preparation=final_preparation,
+            operation="bounded_generation",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        route_future = pool.submit(make_final_route)
+        try:
+            assert route_buckets_locked.wait(timeout=10)
+            reserve_future = pool.submit(finalize_next_decision)
+            assert finalizer_bucket_attempt.wait(timeout=10)
+        finally:
+            release_route.set()
+        final_decision = route_future.result(timeout=15)
+        final_permit = reserve_future.result(timeout=15)
+    assert final_decision.selected is not None
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT bucket_id,consumed_units,reserved_units FROM provider_quota_bucket_windows "
+            "WHERE bucket_id IN (%s,%s) ORDER BY bucket_id",
+            (bucket_a.bucket_id, bucket_z.bucket_id),
+        ).fetchall()
+    assert rows == [(bucket_a.bucket_id, 1, 1), (bucket_z.bucket_id, 1, 1)]
+    assert final_permit.attempt_id is not None
 
 
 def test_concurrent_authorization_one_reservation_and_single_send_claim(database):
@@ -337,7 +656,12 @@ def test_source_scope_replay_immutable_history_and_corrupt_state(database):
     owner, service, d, _prep, repo, _usage, _auth = system
     service.registry.remove(d.selected.endpoint_profile_id)
     assert service.registry.historical(d.selected).ref == d.selected
-    assert replay_deterministic_decision(d, DeterministicScoringStrategy()) == d.ranking
+    assert replay_deterministic_decision(d, QuotaAwareDeterministicStrategy()) == d.ranking
+    baseline_system = setup(database, strategy=DeterministicScoringStrategy())
+    baseline_decision = baseline_system[2]
+    assert replay_deterministic_decision(
+        baseline_decision, DeterministicScoringStrategy()
+    ) == baseline_decision.ranking
     with pytest.raises(LookupError):
         repo.get(owner_id="other-owner", scope=SCOPE, decision_id=d.routing_decision_id)
     with database.transaction() as c:

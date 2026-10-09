@@ -233,6 +233,21 @@ class Usage:
             rejection_reasons=rejections,
         )
 
+    def routing_snapshots(
+        self, c, profiles, requirements, *, operation, now, check_capacity=True
+    ):
+        return {
+            profile.endpoint_profile_id: self.routing_snapshot(
+                c,
+                profile,
+                requirements,
+                operation=operation,
+                now=now,
+                check_capacity=check_capacity,
+            )
+            for profile in profiles
+        }
+
     def reserve_attempt_in_transaction(self, c, invocation, attempt, *, max_attempts):
         self.reserve_calls += 1
         if self.denied or self.exhausted:

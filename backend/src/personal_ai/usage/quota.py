@@ -28,9 +28,16 @@ class QuotaLedgerBucketSnapshot:
     consumed_units: int
     reserved_units: int
     remaining_units: int | None
-    reservation_units: int | None
     observed_at: datetime | None
     fresh_until: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class QuotaReservationRequirement:
+    """Candidate-specific amount reserved from one canonical quota bucket."""
+
+    bucket_id: str
+    reservation_units: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +49,7 @@ class EndpointRuntimeSnapshot:
     failure_streak: int
     quota_buckets: tuple[QuotaLedgerBucketSnapshot, ...]
     rejection_reasons: tuple[str, ...]
+    quota_requirements: tuple[QuotaReservationRequirement, ...] = ()
 
 
 class QuotaObservation(QuotaBucket):
